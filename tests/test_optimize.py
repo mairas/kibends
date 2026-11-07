@@ -182,17 +182,15 @@ def test_vertex_deep_inside_obstacle_is_frozen_and_kept() -> None:
     assert result.after.length < result.before.length
 
 
-# Enough outer iterations for the detour to reach the pocket's corners, where
-# edges cut across them and are rejected.
-DETOUR_REJECTING_ITERATIONS = 6
+# Enough outer iterations at coarse settings for the detour to reach the
+# pocket's corners, where edges cut across them and are rejected.
+DETOUR_REJECTING_ITERATIONS = 5
 
 
 def test_edges_cutting_a_corner_are_rejected() -> None:
     scenario = scenarios.detour()
 
-    result = run(
-        scenario, replace(SETTINGS, max_iterations=DETOUR_REJECTING_ITERATIONS)
-    )
+    result = run(scenario, replace(COARSE, max_iterations=DETOUR_REJECTING_ITERATIONS))
 
     assert result.rejected_edges > 0
     assert all_edges_clear(result.polyline, scenario.field)
@@ -200,10 +198,11 @@ def test_edges_cutting_a_corner_are_rejected() -> None:
 
 @pytest.mark.parametrize("cap", [8, 10])
 def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
-    # Resampling lays chords across the pocket's corners in these iterations.
+    # Resampling lays chords across the pocket's corners in these iterations,
+    # at coarse settings as at the defaults.
     scenario = scenarios.detour()
 
-    result = run(scenario, replace(SETTINGS, max_iterations=cap))
+    result = run(scenario, replace(COARSE, max_iterations=cap))
 
     assert all_edges_clear(result.polyline, scenario.field)
 
