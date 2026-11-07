@@ -20,7 +20,7 @@ def _point_segment_distance(
     t = np.einsum("ij,ij->i", points - starts, edge) / np.where(
         squared > 0.0, squared, 1.0
     )
-    closest = starts + np.clip(t, 0.0, 1.0)[:, None] * edge
+    closest: FloatArray = starts + np.clip(t, 0.0, 1.0)[:, None] * edge
     return np.asarray(np.linalg.norm(points - closest, axis=1))
 
 
@@ -126,7 +126,7 @@ class Box:
 def _clip_to_rectangle(
     starts: FloatArray, ends: FloatArray, low: FloatArray, high: FloatArray
 ) -> tuple[FloatArray, FloatArray]:
-    """Liang–Barsky: parameter interval of each segment inside the closed box.
+    """Liang-Barsky: parameter interval of each segment inside the closed box.
 
     The segment misses the box where the returned enter exceeds leave.
     """
