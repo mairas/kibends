@@ -41,4 +41,7 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: takes several seconds; deselect with -m 'not slow'"]
+markers = [
+    "slow: takes several seconds; deselect with -m 'not slow'",
+    "kicad_cli: runs the real kicad-cli; skipped when it is not installed",
+]
