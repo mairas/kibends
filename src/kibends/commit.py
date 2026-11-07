@@ -1,6 +1,6 @@
 """Replace the chain's tracks in KiCad as one undoable commit.
 
-`commit_label`, `create_checked` and `push_tolerant` are copied and
+`commit_label`, `create_checked` and `push_checked` are copied and
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
@@ -48,6 +48,10 @@ class DeleteItemsError(RuntimeError):
     pass
 
 
+class CommitUncertainError(RuntimeError):
+    """The push timed out or lost the connection; the commit may have landed."""
+
+
 def commit_label(command: str, now: datetime | None = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     return f"{COMMIT_PREFIX} {command} {stamp}"
@@ -78,11 +82,11 @@ def commit_chain(
         raise
 
     # Outside the try above: once pushed, the commit can't be dropped.
-    if push_tolerant(board, commit, label):
-        logger.info(
-            f"Committed '{label}': replaced {len(chain.segment_ids)} tracks "
-            f"with {len(new_tracks)}"
-        )
+    push_checked(board, commit, label)
+    logger.info(
+        f"Committed '{label}': replaced {len(chain.segment_ids)} tracks "
+        f"with {len(new_tracks)}"
+    )
 
 
 def _unchanged_tracks(
@@ -184,23 +188,21 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[Wr
     return [kbt.unwrap(r.item) for r in response.created_items]
 
 
-def push_tolerant(board: kipy.board.Board, commit: Commit, label: str) -> bool:
-    """Push the commit; True once KiCad confirms it landed.
+def push_checked(board: kipy.board.Board, commit: Commit, label: str) -> None:
+    """Push the commit and raise unless KiCad confirms it landed.
 
-    A lost or timed-out connection doesn't mean KiCad didn't land it, so that
-    only warns. An ApiError is KiCad's answer, so nothing landed and the
-    commit is dropped.
+    A lost or timed-out connection doesn't mean KiCad didn't land it, so the
+    commit is kept and `CommitUncertainError` raised. An ApiError is KiCad's
+    answer, so nothing landed and the commit is dropped.
     """
     try:
         board.push_commit(commit, label)
     except KiCadConnectionError as e:
-        logger.warning(
+        raise CommitUncertainError(
             f"Committing '{label}' timed out or lost the connection to KiCad "
             f"({e}); it may have landed. Check KiCad's undo history before "
             "running again"
-        )
-        return False
+        ) from None
     except ApiError:
         board.drop_commit(commit)
         raise
-    return True

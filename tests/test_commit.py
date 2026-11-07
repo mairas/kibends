@@ -146,11 +146,11 @@ class TestRefusals:
 
         assert board.calls[-1] == "drop_commit"
 
-    def test_push_timeout_keeps_the_commit_and_warns(self, log: list[str]) -> None:
+    def test_push_timeout_keeps_the_commit_and_raises(self) -> None:
         # The commit may have landed: dropping it then would be wrong.
         board, chain, selected = setup(push_error=KiCadConnectionError("timed out"))
 
-        run_commit(board, chain, selected)
+        with pytest.raises(commit.CommitUncertainError, match="may have landed"):
+            run_commit(board, chain, selected)
 
         assert "drop_commit" not in board.calls
-        assert any("may have landed" in line for line in log)

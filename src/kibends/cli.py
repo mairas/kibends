@@ -26,6 +26,7 @@ from kibends import drc
 from kibends.chain import NM_PER_MM, Chain, ChainError, Segment, extract_chain
 from kibends.commit import (
     BoardChangedError,
+    CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
     commit_chain,
@@ -83,11 +84,13 @@ class DrcViolationsError(RuntimeError):
     pass
 
 
-# Failures that leave the board untouched and need no traceback.
+# Failures that need no traceback; all but CommitUncertainError leave the
+# board untouched.
 EXPECTED_ERRORS = (
     SelectionError,
     ChainError,
     BoardChangedError,
+    CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
     NoBoardError,

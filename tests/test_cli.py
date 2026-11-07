@@ -565,6 +565,16 @@ class TestErrors:
         assert "KiCad created 0 of" in exit_message(log)
         assert board.calls[-1] == "drop_commit"
 
+    def test_lost_connection_on_push_exits_with_a_warning(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(l_board(push_error=KiCadConnectionError("timed out")))
+
+        message = exit_message(log)
+
+        assert "may have landed" in message and "undo history" in message
+        assert "drop_commit" not in board.calls
+
     def test_vanished_track_exits_before_any_change(
         self,
         connect: Connector,
