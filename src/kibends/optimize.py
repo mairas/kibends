@@ -185,9 +185,15 @@ def optimize(
     if mask.all():
         return finish(polyline, anchors, Termination.NOTHING_TO_DO, 0)
 
+    # Resampling can lay a chord across an obstacle corner, and a burst only
+    # rejects crossings its own moves create, so the result is limited to
+    # polylines that cut no more corners than the input did.
+    allowed_cuts = _cut_corners(points, field)
     best, best_mask = points, mask
     best_energy = total_energy(points, mask, field, params)[0]
-    best_energies = [best_energy]
+    # The stall check follows every iteration, not just the ones the guard
+    # accepts, or a briefly cut corner would end the run early.
+    lowest_energies = [best_energy]
     rejected_edges = 0
     accepted = polyline
     termination = Termination.ITERATION_CAP
@@ -198,12 +204,12 @@ def optimize(
         shape_change = _shape_change(accepted, burst.points)
         accepted = burst.points
         energy = total_energy(burst.points, mask, field, params)[0]
-        if energy <= best_energy:
+        if energy <= best_energy and _cut_corners(burst.points, field) <= allowed_cuts:
             best, best_mask, best_energy = burst.points, mask, energy
-        best_energies.append(best_energy)
+        lowest_energies.append(min(lowest_energies[-1], energy))
         converged = burst.rejected_edges == 0 and (
             shape_change < settings.displacement_tolerance * settings.spacing
-            or _stalled(best_energies, settings)
+            or _stalled(lowest_energies, settings)
         )
         if burst.abnormal:
             termination = Termination.ABNORMAL
@@ -217,11 +223,23 @@ def optimize(
     return finish(best, best_mask, termination, iteration, rejected_edges)
 
 
-def _stalled(best_energies: list[float], settings: OptimizerSettings) -> bool:
-    if len(best_energies) <= settings.stall_window:
+def _cut_corners(points: FloatArray, field: ObstacleField) -> int:
+    """Edges with both ends clear that still pass through an obstacle.
+
+    Edges with an end inside an obstacle belong to a violation the input
+    already had, such as the neighbourhood of a frozen vertex.
+    """
+    distance, _ = field.signed_distance(points)
+    ends_clear = (distance[:-1] >= 0.0) & (distance[1:] >= 0.0)
+    crossing = ~field.segments_clear(points[:-1], points[1:])
+    return int(np.count_nonzero(ends_clear & crossing))
+
+
+def _stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
+    if len(lowest_energies) <= settings.stall_window:
         return False
-    earlier = best_energies[-1 - settings.stall_window]
-    return earlier - best_energies[-1] <= settings.stall_tolerance
+    earlier = lowest_energies[-1 - settings.stall_window]
+    return earlier - lowest_energies[-1] <= settings.stall_tolerance
 
 
 def resample(

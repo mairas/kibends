@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import scenarios
-from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
+from distance_fields import Box, Disc, FloatArray, FreeSpace, Union, Walls
 from scenarios import PARAMS, Field, Scenario, chain, path
 from shapely import wkt
 
@@ -183,6 +183,35 @@ def test_edges_cutting_a_corner_are_rejected() -> None:
 
     assert result.rejected_edges > 0
     assert all_edges_clear(result.polyline, scenario.field)
+
+
+@pytest.mark.parametrize("cap", [8, 10])
+def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
+    # Resampling lays chords across the pocket's corners in these iterations.
+    scenario = scenarios.detour()
+
+    result = run(scenario, replace(SETTINGS, max_iterations=cap))
+
+    assert all_edges_clear(result.polyline, scenario.field)
+
+
+FROZEN_DISC_RADIUS = 0.3
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("x", [3.0, 9.0, 16.0])
+def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
+    detour = scenarios.detour()
+    field = Union([*detour.field.shapes, Disc(x, 0.0, FROZEN_DISC_RADIUS)])
+    polyline = np.insert(detour.polyline, 1 if x < 9.85 else 5, [x, 0.0], axis=0)
+
+    result = optimize(
+        polyline, scenarios.endpoints_fixed(polyline), field, detour.params, SETTINGS
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert len(result.frozen) == 1
+    assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-2)
 
 
 @pytest.mark.slow
