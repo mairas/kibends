@@ -254,6 +254,7 @@ class FakeClient:
 @dataclass
 class FakeProject:
     netclasses: list[NetClass]
+    path: str = ""
 
     def get_net_classes(self) -> list[NetClass]:
         return self.netclasses
@@ -273,6 +274,8 @@ class FakeBoard:
     zones: list[kbt.Zone] = field(default_factory=list)
     netclasses: dict[str, NetClass] = field(default_factory=dict)
     default_clearance: float | None = 0.2
+    name: str = "board.kicad_pcb"
+    project_dir: str = ""
     drops_pads: bool = False
     client: FakeClient = field(default_factory=FakeClient)
 
@@ -321,7 +324,22 @@ class FakeBoard:
         return netclass("Default", self.default_clearance)
 
     def get_project(self) -> FakeProject:
-        return FakeProject([self.default_netclass(), *self.netclasses.values()])
+        return FakeProject(
+            [self.default_netclass(), *self.netclasses.values()], self.project_dir
+        )
+
+    def get_as_string(self) -> str:
+        """The board file text, holding only the straight tracks."""
+        segments = "".join(
+            f"\t(segment\n\t\t(start {t.start.x / NM_PER_MM} {t.start.y / NM_PER_MM})\n"
+            f"\t\t(end {t.end.x / NM_PER_MM} {t.end.y / NM_PER_MM})\n"
+            f"\t\t(width {t.width / NM_PER_MM})\n"
+            f'\t\t(layer "F.Cu")\n\t\t(net "{t.net.name}")\n'
+            f'\t\t(uuid "{t.id.value}")\n\t)\n'
+            for t in self.tracks
+            if type(t) is kbt.Track
+        )
+        return f"(kicad_pcb\n\t(version 20260206)\n{segments}\t(embedded_fonts no)\n)\n"
 
 
 @dataclass
@@ -417,3 +435,6 @@ class FakeKiCad:
 
     def get_board(self) -> FakeBoard:
         return self.board
+
+    def get_kicad_binary_path(self, binary_name: str) -> str:
+        return ""

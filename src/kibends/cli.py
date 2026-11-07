@@ -7,6 +7,7 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 import argparse
 import os
 import sys
+import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,12 +22,14 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends.chain import ChainError, Segment, extract_chain
+from kibends import drc
+from kibends.chain import NM_PER_MM, Chain, ChainError, Segment, extract_chain
 from kibends.commit import (
     BoardChangedError,
     CreateItemsError,
     DeleteItemsError,
     commit_chain,
+    grid_points,
 )
 from kibends.energy import DistanceField, EnergyParams, FloatArray
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, build_obstacles
@@ -76,6 +79,10 @@ class OptimizerFailedError(RuntimeError):
     pass
 
 
+class DrcViolationsError(RuntimeError):
+    pass
+
+
 # Failures that leave the board untouched and need no traceback.
 EXPECTED_ERRORS = (
     SelectionError,
@@ -86,6 +93,11 @@ EXPECTED_ERRORS = (
     NoBoardError,
     PlotUnavailableError,
     OptimizerFailedError,
+    DrcViolationsError,
+    drc.KiCadCliNotFound,
+    drc.ProjectFilesError,
+    drc.BoardTextError,
+    drc.DrcError,
 )
 
 
@@ -111,6 +123,14 @@ class SmoothOptions:
     chord_tolerance: float
     dry_run: bool
     plot: Path | None
+    drc: bool
+    kicad_cli: str | None
+
+
+@dataclass(frozen=True)
+class DrcSetup:
+    kicad_cli: Path
+    project: drc.ProjectFiles
 
 
 def _fail(message: str) -> NoReturn:
@@ -143,6 +163,12 @@ def smooth(options: SmoothOptions) -> None:
     render = _plot_renderer() if options.plot is not None else None
     kicad = kipy.KiCad()
     board = _open_board(kicad)
+    gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
+    if gate is None:
+        logger.warning(
+            "Skipping the DRC check (--no-drc): custom rules, board minimums "
+            "and edge and hole clearances are not checked"
+        )
 
     selected = read_selection(board)
     layer, net = _layer_and_net(selected)
@@ -211,10 +237,81 @@ def smooth(options: SmoothOptions) -> None:
             f"The optimizer stopped at its cap of {DEFAULT_SETTINGS.max_iterations} "
             "iterations without converging; using the best result found"
         )
+    if gate is not None:
+        _check_drc(gate, board, chain, simplified, options.dry_run)
     if options.dry_run:
         logger.info("Dry run: nothing committed")
         return
     commit_chain(board, chain, selected, simplified)
+
+
+def _prepare_drc(
+    kicad: kipy.KiCad, board: kipy.board.Board, explicit_cli: str | None
+) -> DrcSetup:
+    kicad_cli = drc.locate_kicad_cli(explicit_cli, kicad)
+    logger.info(f"Using {kicad_cli} ({drc.kicad_cli_version(kicad_cli)})")
+    project = drc.project_files(board)
+    logger.info(
+        f"DRC uses the project files on disk: {project.pro}"
+        + (f", {project.dru}" if project.dru else " (no .kicad_dru)")
+        + "; unsaved rule or netclass edits in KiCad are not seen"
+    )
+    return DrcSetup(kicad_cli, project)
+
+
+def _check_drc(
+    gate: DrcSetup,
+    board: kipy.board.Board,
+    chain: Chain,
+    polyline: FloatArray,
+    dry_run: bool,
+) -> None:
+    """Print the DRC verdict; raise if the result adds violations."""
+    tracks = drc.NewTracks(
+        points=tuple((x / NM_PER_MM, y / NM_PER_MM) for x, y in grid_points(polyline)),
+        width=chain.width,
+        layer=chain.layer,
+        net=chain.net,
+    )
+    with tempfile.TemporaryDirectory(prefix="kibends-drc-") as tmp:
+        found = drc.check(
+            gate.kicad_cli,
+            gate.project,
+            board.get_as_string(),
+            chain.segment_ids,
+            tracks,
+            Path(tmp),
+        )
+    print(_verdict(found))
+    if not found:
+        return
+    if dry_run:
+        logger.warning("A real run would refuse to commit this result")
+        return
+    raise DrcViolationsError(
+        f"DRC: the result adds {_new_violations(len(found.violations))}; "
+        "nothing committed"
+    )
+
+
+def _new_violations(n: int) -> str:
+    return f"{n} new violation{'' if n == 1 else 's'}"
+
+
+def _verdict(found: drc.Introduced) -> str:
+    if not found:
+        return "DRC: no new violations"
+    return "\n".join(
+        [
+            f"DRC: {_new_violations(len(found.violations))}",
+            *(f"  {v}" for v in found.violations),
+            *(
+                f"  More connectivity violations on {net}: the new path may "
+                f"split a pour of {net}"
+                for net in sorted(found.split_nets)
+            ),
+        ]
+    )
 
 
 def _plot_renderer() -> Renderer:
@@ -370,6 +467,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Draw the original and smoothed chain over the area it must avoid; "
         "the format follows the extension (needs the `plot` extra)",
     )
+    smooth_parser.add_argument(
+        "--no-drc",
+        action="store_true",
+        help="Commit without the kicad-cli DRC check against the board's rules",
+    )
+    smooth_parser.add_argument(
+        "--kicad-cli",
+        metavar="PATH",
+        help="kicad-cli to run the DRC check with (default: the one the running "
+        "KiCad reports, then PATH, then the usual install locations)",
+    )
     return parser.parse_args(argv)
 
 
@@ -388,6 +496,8 @@ def execute_smooth(args: argparse.Namespace) -> None:
         chord_tolerance=args.chord_tolerance,
         dry_run=args.dry_run,
         plot=args.plot,
+        drc=not args.no_drc,
+        kicad_cli=args.kicad_cli,
     )
     with _exit_on_failure():
         smooth(options)

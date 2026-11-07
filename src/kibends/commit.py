@@ -111,18 +111,9 @@ def _unchanged_tracks(
 def track_items(
     polyline: FloatArray, width: float, model: kbt.Track
 ) -> list[kbt.Track]:
-    """Straight tracks along `polyline`, on the layer and net of `model`.
-
-    Vertices are rounded to KiCad's 1 nm grid; consecutive vertices that land
-    on the same grid point make no track.
-    """
-    points: list[NmPoint] = []
-    for x, y in polyline:
-        p = (_nm(x), _nm(y))
-        if not points or p != points[-1]:
-            points.append(p)
+    """Straight tracks along `polyline`, on the layer and net of `model`."""
     tracks = []
-    for start, end in pairwise(points):
+    for start, end in pairwise(grid_points(polyline)):
         track = kbt.Track()
         track.start = Vector2.from_xy(*start)
         track.end = Vector2.from_xy(*end)
@@ -131,6 +122,16 @@ def track_items(
         track.net = model.net
         tracks.append(track)
     return tracks
+
+
+def grid_points(polyline: FloatArray) -> list[NmPoint]:
+    """`polyline` rounded to KiCad's 1 nm grid, without repeated points."""
+    points: list[NmPoint] = []
+    for x, y in polyline:
+        p = (_nm(x), _nm(y))
+        if not points or p != points[-1]:
+            points.append(p)
+    return points
 
 
 def _nm(v: float) -> int:

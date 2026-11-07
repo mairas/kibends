@@ -1,3 +1,5 @@
+import json
+import stat
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -18,7 +20,7 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from shapely.geometry import LineString, box
 
-from kibends import cli
+from kibends import cli, drc
 from kibends.energy import EnergyParams
 from kibends.obstacles import Obstacles
 from kibends.optimize import OptimizeResult, Termination
@@ -59,18 +61,85 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
 
+# Answers DRC runs with the reports in reports.json next to it, keyed by the
+# board's stem ("baseline" or "candidate"); no file means no violations.
+FAKE_KICAD_CLI = """
+import json, pathlib, sys
+here = pathlib.Path(sys.argv[0])
+args = sys.argv[1:]
+if args == ["version"]:
+    print("10.0.8")
+    sys.exit(0)
+with here.with_suffix(".log").open("a") as f:
+    f.write(json.dumps(args) + "\\n")
+pcb = pathlib.Path(args[-1])
+reports = here.parent / "reports.json"
+report = json.loads(reports.read_text()).get(pcb.stem, {}) if reports.exists() else {}
+pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps(report))
+"""
+
+
+def write_kicad_cli(directory: Path) -> Path:
+    directory.mkdir(exist_ok=True)
+    path = directory / "kicad-cli"
+    path.write_text(f"#!{sys.executable}\n{FAKE_KICAD_CLI}")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def kicad_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = write_kicad_cli(tmp_path / "bin")
+    monkeypatch.setattr(drc.shutil, "which", lambda name: str(path))
+    monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", ())
+    return path
+
+
+def drc_runs(kicad_cli: Path) -> int:
+    log = kicad_cli.with_suffix(".log")
+    return len(log.read_text().splitlines()) if log.exists() else 0
+
+
+def report_on(kicad_cli: Path, **reports: list[dict[str, Any]]) -> None:
+    """Make the fake kicad-cli report `reports[stem]` as violations."""
+    (kicad_cli.parent / "reports.json").write_text(
+        json.dumps({stem: {"violations": vs} for stem, vs in reports.items()})
+    )
+
+
+PAD_CLEARANCE = {
+    "type": "clearance",
+    "description": "Clearance violation (rule 'pad_clearance' clearance 0.1700 mm; "
+    "actual 0.1670 mm)",
+    "severity": "error",
+    "items": [
+        {"description": "Pad 3 [GND] of J1 on F.Cu", "pos": {"x": 3.2, "y": 0.8}}
+    ],
+}
+
+
 @pytest.fixture
-def connect(monkeypatch: pytest.MonkeyPatch) -> "Connector":
-    return Connector(monkeypatch)
+def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> "Connector":
+    return Connector(monkeypatch, tmp_path / "project")
 
 
 class Connector:
-    """Points kipy.KiCad() at a fake board, or makes it fail."""
+    """Points kipy.KiCad() at a fake board, or makes it fail.
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    The board is saved to a project directory unless `saved` is false.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
         self.monkeypatch = monkeypatch
+        self.directory = directory
 
-    def to(self, board: CommitBoard) -> CommitBoard:
+    def to(self, board: CommitBoard, saved: bool = True) -> CommitBoard:
+        if saved:
+            self.directory.mkdir(exist_ok=True)
+            pcb = self.directory / board.name
+            pcb.write_text(board.get_as_string())
+            pcb.with_suffix(".kicad_pro").write_text("{}")
+            board.project_dir = str(self.directory)
         self.monkeypatch.setattr(cli.kipy, "KiCad", lambda: FakeKiCad(board))
         return board
 
@@ -241,6 +310,160 @@ class TestSmooth:
         monkeypatch.setattr(cli, "optimize", abnormal)
 
         assert "abnormally" in exit_message(log)
+        assert board.calls == []
+
+
+class TestDrc:
+    def test_clean_result_is_committed_after_both_runs(
+        self, connect: Connector, kicad_cli: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        board = connect.to(l_board())
+
+        run()
+
+        assert drc_runs(kicad_cli) == 2
+        assert "push_commit" in board.calls
+        assert "DRC: no new violations" in capsys.readouterr().out
+
+    def test_introduced_violation_refuses_to_commit_and_lists_it(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
+
+        message = exit_message(log)
+
+        assert "1 new violation" in message and "nothing committed" in message
+        out = capsys.readouterr().out
+        assert "clearance: Clearance violation (rule 'pad_clearance'" in out
+        assert "Pad 3 [GND] of J1 on F.Cu @ (3.200, 0.800)" in out
+        assert board.calls == []
+
+    def test_violation_already_in_the_baseline_does_not_block(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(l_board())
+        report_on(kicad_cli, baseline=[PAD_CLEARANCE], candidate=[PAD_CLEARANCE])
+
+        run()
+
+        assert "push_commit" in board.calls
+
+    def test_split_pour_names_the_net(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        connect.to(l_board())
+        unconnected = {
+            "type": "unconnected_items",
+            "description": "Missing connection between items",
+            "severity": "error",
+            "items": [{"description": "Zone [GND] on F.Cu", "pos": {"x": 1, "y": 1}}],
+        }
+        report_on(kicad_cli, candidate=[unconnected])
+
+        exit_message(log)
+
+        assert "split a pour of GND" in capsys.readouterr().out
+
+    def test_dry_run_prints_the_verdict_and_commits_nothing(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
+
+        run("--dry-run")
+
+        out = capsys.readouterr().out
+        assert "DRC: 1 new violation" in out
+        assert "Pad 3 [GND]" in out
+        assert any("would refuse" in line for line in log)
+        assert board.calls == []
+
+    def test_no_drc_commits_without_running_it_and_warns(
+        self, connect: Connector, kicad_cli: Path, log: list[str]
+    ) -> None:
+        board = connect.to(l_board(), saved=False)
+        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
+
+        run("--no-drc")
+
+        assert drc_runs(kicad_cli) == 0
+        assert "push_commit" in board.calls
+        assert any(line.startswith("WARNING") and "--no-drc" in line for line in log)
+
+    def test_unsaved_board_is_refused_before_optimizing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board(), saved=False)
+        monkeypatch.setattr(cli, "optimize", lambda *a, **k: pytest.fail("optimized"))
+
+        message = exit_message(log)
+
+        assert "save" in message
+        assert board.calls == []
+
+    def test_says_unsaved_rule_edits_are_not_seen(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(l_board())
+
+        run("--dry-run")
+
+        assert any("unsaved" in line and "not seen" in line for line in log)
+
+    def test_kicad_cli_option_picks_the_binary(
+        self, connect: Connector, kicad_cli: Path, tmp_path: Path
+    ) -> None:
+        connect.to(l_board())
+        other = write_kicad_cli(tmp_path / "other")
+
+        run("--dry-run", f"--kicad-cli={other}")
+
+        assert drc_runs(other) == 2
+        assert drc_runs(kicad_cli) == 0
+
+    def test_missing_kicad_cli_suggests_no_drc(
+        self, connect: Connector, tmp_path: Path, log: list[str]
+    ) -> None:
+        connect.to(l_board())
+
+        message = exit_message(log, f"--kicad-cli={tmp_path / 'nope'}")
+
+        assert "not an executable" in message
+
+    def test_nothing_to_do_runs_no_drc(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        connect.to(straight_board())
+
+        run()
+
+        assert drc_runs(kicad_cli) == 0
+
+    def test_track_missing_from_the_board_text_fails_before_drc(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        board = connect.to(l_board())
+        monkeypatch.setattr(board, "get_as_string", lambda: "(kicad_pcb\n)\n")
+
+        assert "not found in the board text" in exit_message(log)
+        assert drc_runs(kicad_cli) == 0
         assert board.calls == []
 
 
