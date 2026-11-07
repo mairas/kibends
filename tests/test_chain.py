@@ -1,7 +1,4 @@
-from collections.abc import Iterator
-
 import pytest
-from loguru import logger
 from shapely.geometry import LineString, Point, Polygon, box
 
 from kibends.chain import NM_PER_MM, Chain, ChainError, Segment, extract_chain
@@ -35,14 +32,6 @@ def seg(
         net=net,
         locked=locked,
     )
-
-
-@pytest.fixture
-def log() -> Iterator[list[str]]:
-    lines: list[str] = []
-    sink = logger.add(lambda m: lines.append(str(m)), format="{level} {message}")
-    yield lines
-    logger.remove(sink)
 
 
 def l_z_segments() -> list[Segment]:
