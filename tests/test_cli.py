@@ -3,6 +3,7 @@ import re
 import stat
 import sys
 from collections import Counter
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,7 +26,7 @@ from shapely.geometry import LineString, box
 from kibends import cli, drc
 from kibends.energy import EnergyParams
 from kibends.obstacles import Obstacles
-from kibends.optimize import OptimizeResult, Termination
+from kibends.optimize import OptimizeResult, OptimizerSettings, Termination, optimize
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -65,6 +66,19 @@ def straight_board() -> CommitBoard:
 @pytest.fixture(autouse=True)
 def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
+
+
+COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+
+
+@pytest.fixture
+def coarse_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the real optimizer at coarse settings, about 5x faster.
+
+    For tests of error mapping and commit wiring, which need a real smoothed
+    chain but not a finely smoothed one.
+    """
+    monkeypatch.setattr(cli, "optimize", partial(optimize, settings=COARSE))
 
 
 # Answers DRC runs with the reports in reports.json next to it, keyed by the
@@ -267,6 +281,7 @@ class TestSmooth:
         assert ends[nm(STUB_TOUCH[0]), nm(STUB_TOUCH[1])] == 2
         assert (nm(4), 0) not in ends
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_prints_statistics(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -286,6 +301,7 @@ class TestSmooth:
         ):
             assert label in out
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_dry_run_prints_statistics_and_commits_nothing(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -341,6 +357,7 @@ class TestSmooth:
         )
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize(
         ("args", "expected"), [((), 0.025), (("--chord-tolerance=0.01",), 0.01)]
     )
@@ -371,6 +388,7 @@ class TestSmooth:
 
         assert raised.value.code == 2
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_abnormal_termination_is_refused(
         self,
         connect: Connector,
@@ -391,6 +409,7 @@ class TestSmooth:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_iteration_cap_warns_and_still_checks_and_commits(
         self,
         connect: Connector,
@@ -419,6 +438,7 @@ class TestSmooth:
 
 
 class TestDrc:
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_clean_result_is_committed_after_both_runs(
         self, connect: Connector, kicad_cli: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -430,6 +450,7 @@ class TestDrc:
         assert "push_commit" in board.calls
         assert "DRC: no new violations" in capsys.readouterr().out
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_checks_the_tracks_it_commits(
         self, connect: Connector, kicad_cli: Path
     ) -> None:
@@ -444,6 +465,7 @@ class TestDrc:
         candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
         assert '(uuid "a")' not in candidate and '(uuid "b")' not in candidate
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_introduced_violation_refuses_to_commit_and_lists_it(
         self,
         connect: Connector,
@@ -462,6 +484,7 @@ class TestDrc:
         assert "Pad 3 [GND] of J1 on F.Cu @ (3.200, 0.800)" in out
         assert board.calls == []
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_violation_already_in_the_baseline_does_not_block(
         self, connect: Connector, kicad_cli: Path
     ) -> None:
@@ -472,6 +495,7 @@ class TestDrc:
 
         assert "push_commit" in board.calls
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_split_pour_names_the_net(
         self,
         connect: Connector,
@@ -492,6 +516,7 @@ class TestDrc:
 
         assert "split a pour of GND" in capsys.readouterr().out
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_dry_run_prints_the_verdict_and_commits_nothing(
         self,
         connect: Connector,
@@ -510,6 +535,7 @@ class TestDrc:
         assert any("would refuse" in line for line in log)
         assert board.calls == []
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_no_drc_commits_without_running_it_and_warns(
         self, connect: Connector, kicad_cli: Path, log: list[str]
     ) -> None:
@@ -533,6 +559,7 @@ class TestDrc:
         assert "save" in message
         assert board.calls == []
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_says_unsaved_rule_edits_are_not_seen(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -542,6 +569,7 @@ class TestDrc:
 
         assert any("unsaved" in line and "not seen" in line for line in log)
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_kicad_cli_option_picks_the_binary(
         self, connect: Connector, kicad_cli: Path, tmp_path: Path
     ) -> None:
@@ -571,6 +599,7 @@ class TestDrc:
 
         assert drc_runs(kicad_cli) == 0
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_track_missing_from_the_board_text_fails_before_drc(
         self,
         connect: Connector,
@@ -587,6 +616,7 @@ class TestDrc:
 
 
 class TestPlot:
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_writes_the_figure(self, connect: Connector, tmp_path: Path) -> None:
         board = connect.to(l_board())
         figure = tmp_path / "chain.png"
@@ -629,6 +659,7 @@ class TestErrors:
         assert "Cannot reach KiCad" in message
         assert "not running" in message and "timed out" in message
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_kicad_client_waits_longer_than_kipys_default(
         self, connect: Connector
     ) -> None:
@@ -668,6 +699,7 @@ class TestErrors:
         assert "selected tracks form 2 separate pieces" in message
         assert "ChainError" not in message
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_refused_create_exits_with_the_reason(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -676,6 +708,7 @@ class TestErrors:
         assert "KiCad created 0 of" in exit_message(log)
         assert board.calls[-1] == "drop_commit"
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_push_refused_by_kicad_exits_with_the_reason(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -686,6 +719,7 @@ class TestErrors:
         assert "KiCad refused the request" in message and "nope" in message
         assert board.calls[-1] == "drop_commit"
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_lost_connection_on_push_exits_with_a_warning(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -696,6 +730,7 @@ class TestErrors:
         assert "may have landed" in message and "undo history" in message
         assert "drop_commit" not in board.calls
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_vanished_track_exits_before_any_change(
         self,
         connect: Connector,

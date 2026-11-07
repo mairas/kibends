@@ -2,7 +2,7 @@ import numpy as np
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from scenarios import PARAMS, chain, path
 
-from kibends.optimize import measure, optimize
+from kibends.optimize import OptimizerSettings, measure, optimize
 from kibends.simplify import simplify
 
 SPACING = 0.1
@@ -70,7 +70,9 @@ class TestWrapAroundDisc:
 
 def test_optimized_straight_line_simplifies_to_one_segment() -> None:
     polyline, fixed = chain((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
-    optimized = optimize(polyline, fixed, FreeSpace(), PARAMS)
+    # Leaves a bow of about 15 µm for simplify to flatten, as the defaults do.
+    settings = OptimizerSettings(spacing=0.2, burst_maxiter=100)
+    optimized = optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
 
     result = simplify(optimized.polyline, optimized.fixed, FreeSpace())
 
