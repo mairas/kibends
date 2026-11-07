@@ -3,9 +3,11 @@ import re
 import stat
 import sys
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import kipy.board_types as kbt
 import pytest
@@ -112,7 +114,11 @@ def write_kicad_cli(directory: Path) -> Path:
 @pytest.fixture(autouse=True)
 def kicad_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = write_kicad_cli(tmp_path / "bin")
-    monkeypatch.setattr(drc.shutil, "which", lambda name: str(path))
+
+    def which(name: str) -> str:
+        return str(path)
+
+    monkeypatch.setattr(drc.shutil, "which", which)
     monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", ())
     return path
 
@@ -153,7 +159,7 @@ PAD_CLEARANCE = {
 
 
 @pytest.fixture
-def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> "Connector":
+def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Connector:
     return Connector(monkeypatch, tmp_path / "project")
 
 
@@ -396,13 +402,10 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real = cli.optimize
+        real: Callable[..., OptimizeResult] = cli.optimize
 
         def abnormal(*args: object, **kwargs: object) -> OptimizeResult:
-            result = real(*args, **kwargs)  # type: ignore[arg-type]
-            return OptimizeResult(
-                **{**result.__dict__, "termination": Termination.ABNORMAL}
-            )
+            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
         monkeypatch.setattr(cli, "optimize", abnormal)
 
@@ -418,13 +421,10 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real = cli.optimize
+        real: Callable[..., OptimizeResult] = cli.optimize
 
         def capped(*args: object, **kwargs: object) -> OptimizeResult:
-            result = real(*args, **kwargs)  # type: ignore[arg-type]
-            return OptimizeResult(
-                **{**result.__dict__, "termination": Termination.ITERATION_CAP}
-            )
+            return replace(real(*args, **kwargs), termination=Termination.ITERATION_CAP)
 
         monkeypatch.setattr(cli, "optimize", capped)
 
@@ -552,7 +552,10 @@ class TestDrc:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(l_board(), saved=False)
-        monkeypatch.setattr(cli, "optimize", lambda *a, **k: pytest.fail("optimized"))
+        def never(*args: object, **kwargs: object) -> NoReturn:
+            pytest.fail("optimized")
+
+        monkeypatch.setattr(cli, "optimize", never)
 
         message = exit_message(log)
 
@@ -692,7 +695,7 @@ class TestErrors:
             kipy_track("a", "SIG", (0, 0), (5, 0)),
             kipy_track("b", "SIG", (7, 0), (9, 0)),
         ]
-        connect.to(CommitBoard(selection=tracks, tracks=tracks))
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
 
         message = exit_message(log)
 
