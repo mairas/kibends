@@ -1,0 +1,28 @@
+[project]
+name = "kibends"
+version = "0.0.1"
+authors = [{ name = "Matti Airas", email = "matti.airas@hatlabs.fi" }]
+description = "Smooth KiCad track corners by subdividing tracks and minimizing their length"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["KiCad", "EDA", "PCB", "tracks", "rounding"]
+dependencies = [
+    "kicad-python >= 0.8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mairas/kibends"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
