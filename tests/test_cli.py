@@ -1,4 +1,5 @@
 import json
+import re
 import stat
 import sys
 from pathlib import Path
@@ -65,6 +66,7 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # Answers DRC runs with the reports in reports.json next to it, keyed by the
 # board's stem ("baseline" or "candidate"); no file means no violations.
+# Keeps a copy of each board it checks next to it.
 FAKE_KICAD_CLI = """
 import json, pathlib, sys
 here = pathlib.Path(sys.argv[0])
@@ -75,6 +77,7 @@ if args == ["version"]:
 with here.with_suffix(".log").open("a") as f:
     f.write(json.dumps(args) + "\\n")
 pcb = pathlib.Path(args[-1])
+(here.parent / pcb.name).write_text(pcb.read_text())
 reports = here.parent / "reports.json"
 report = json.loads(reports.read_text()).get(pcb.stem, {}) if reports.exists() else {}
 pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps(report))
@@ -100,6 +103,18 @@ def kicad_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def drc_runs(kicad_cli: Path) -> int:
     log = kicad_cli.with_suffix(".log")
     return len(log.read_text().splitlines()) if log.exists() else 0
+
+
+SEGMENT_ENDS = re.compile(r"\(start (\S+) (\S+)\)\s*\(end (\S+) (\S+)\)")
+
+
+def checked_segments(kicad_cli: Path, stem: str) -> list[tuple[int, int, int, int]]:
+    """Segment endpoints (nm) in the board the fake kicad-cli checked last."""
+    text = (kicad_cli.parent / f"{stem}.kicad_pcb").read_text()
+    return [
+        (nm(float(a)), nm(float(b)), nm(float(c)), nm(float(d)))
+        for a, b, c, d in SEGMENT_ENDS.findall(text)
+    ]
 
 
 def report_on(kicad_cli: Path, **reports: list[dict[str, Any]]) -> None:
@@ -383,6 +398,20 @@ class TestDrc:
         assert drc_runs(kicad_cli) == 2
         assert "push_commit" in board.calls
         assert "DRC: no new violations" in capsys.readouterr().out
+
+    def test_checks_the_tracks_it_commits(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(l_board())
+
+        run()
+
+        created = cast(list[kbt.Track], board.created)
+        assert sorted(checked_segments(kicad_cli, "candidate")) == sorted(
+            (t.start.x, t.start.y, t.end.x, t.end.y) for t in created
+        )
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        assert '(uuid "a")' not in candidate and '(uuid "b")' not in candidate
 
     def test_introduced_violation_refuses_to_commit_and_lists_it(
         self,

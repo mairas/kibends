@@ -23,14 +23,14 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
-from kibends.chain import NM_PER_MM, Chain, ChainError, Segment, extract_chain
+from kibends.chain import Chain, ChainError, Segment, extract_chain
 from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
     commit_chain,
-    grid_points,
+    snapped_points,
 )
 from kibends.energy import DistanceField, EnergyParams, FloatArray
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, build_obstacles
@@ -279,7 +279,7 @@ def _check_drc(
 ) -> None:
     """Print the DRC verdict; raise if the result adds violations."""
     tracks = drc.NewTracks(
-        points=tuple((x / NM_PER_MM, y / NM_PER_MM) for x, y in grid_points(polyline)),
+        points=tuple(snapped_points(polyline)),
         width=chain.width,
         layer=chain.layer,
         net=chain.net,

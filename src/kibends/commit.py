@@ -29,7 +29,7 @@ from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
 
-from kibends.chain import NM_PER_MM, Chain, NmPoint, Segment
+from kibends.chain import NM_PER_MM, Chain, Point2, Segment
 from kibends.energy import FloatArray
 from kibends.snapshot import segment_from_track
 
@@ -117,10 +117,10 @@ def track_items(
 ) -> list[kbt.Track]:
     """Straight tracks along `polyline`, on the layer and net of `model`."""
     tracks = []
-    for start, end in pairwise(grid_points(polyline)):
+    for start, end in pairwise(snapped_points(polyline)):
         track = kbt.Track()
-        track.start = Vector2.from_xy(*start)
-        track.end = Vector2.from_xy(*end)
+        track.start = Vector2.from_xy(_nm(start[0]), _nm(start[1]))
+        track.end = Vector2.from_xy(_nm(end[0]), _nm(end[1]))
         track.width = _nm(width)
         track.layer = model.layer
         track.net = model.net
@@ -128,11 +128,14 @@ def track_items(
     return tracks
 
 
-def grid_points(polyline: FloatArray) -> list[NmPoint]:
-    """`polyline` rounded to KiCad's 1 nm grid, without repeated points."""
-    points: list[NmPoint] = []
+def snapped_points(polyline: FloatArray) -> list[Point2]:
+    """`polyline` (mm) rounded to KiCad's 1 nm grid, without repeated points.
+
+    These are the committed tracks' vertices, in mm.
+    """
+    points: list[Point2] = []
     for x, y in polyline:
-        p = (_nm(x), _nm(y))
+        p = (_nm(x) / NM_PER_MM, _nm(y) / NM_PER_MM)
         if not points or p != points[-1]:
             points.append(p)
     return points
