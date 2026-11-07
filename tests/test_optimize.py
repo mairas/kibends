@@ -173,6 +173,22 @@ def test_path_at_exact_clearance_is_not_frozen_and_moves() -> None:
     assert all_edges_clear(result.polyline, scenario.field)
 
 
+def test_input_that_cuts_a_corner_is_still_pulled_tight() -> None:
+    # The edge from (4, -0.9) to (6, -0.9) cuts 100 µm into the disc;
+    # resampling puts free vertices inside it with zero bubbles.
+    field = Disc(5.0, 0.0, 1.0)
+    polyline, fixed = chain(
+        (0.0, -0.9), (2.5, -3.0), (4.0, -0.9), (6.0, -0.9), (10.0, -0.9)
+    )
+
+    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+
+    assert result.after.length == pytest.approx(10.0, abs=0.02)
+    clear = field.segments_clear(result.polyline[:-1], result.polyline[1:])
+    crossing_starts = ~clear & np.concatenate(([True], clear[:-1]))
+    assert crossing_starts.sum() == 1
+
+
 def test_vertex_deep_inside_obstacle_is_frozen_and_kept() -> None:
     scenario = scenarios.frozen()
 
@@ -202,10 +218,12 @@ def test_edges_cutting_a_corner_are_rejected() -> None:
     assert all_edges_clear(result.polyline, scenario.field)
 
 
-@pytest.mark.parametrize("cap", [8, 10])
+# Resampling lays chords across the pocket's corners at caps 8 and 10; at 13
+# to 20 the lowest-energy burst so far has vertices up to 31 µm inside the
+# clearance and, at 17 and 20, an edge 52 µm inside. A sweep of caps 1 to 30
+# takes about 6 s, so these stand in for it.
+@pytest.mark.parametrize("cap", [8, 10, 13, 15, 17, 20])
 def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
-    # Resampling lays chords across the pocket's corners in these iterations,
-    # at coarse settings as at the defaults.
     scenario = scenarios.detour()
 
     result = run(scenario, replace(COARSE, max_iterations=cap))
@@ -230,6 +248,56 @@ def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
     assert result.termination is Termination.CONVERGED
     assert len(result.frozen) == 1
     assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-2)
+
+
+# Without the guard, the result at this cap has a vertex 16 µm inside the
+# pocket's clearance.
+FROZEN_DETOUR_CAP = 13
+
+
+def test_frozen_vertex_does_not_excuse_a_violation_elsewhere() -> None:
+    detour = scenarios.detour()
+    assert isinstance(detour.field, Union)
+    frozen_at = (3.0, 0.0)
+    field = Union([*detour.field.shapes, Disc(*frozen_at, FROZEN_DISC_RADIUS)])
+    polyline = np.insert(detour.polyline, 1, frozen_at, axis=0)
+
+    result = optimize(
+        polyline,
+        scenarios.endpoints_fixed(polyline),
+        field,
+        detour.params,
+        replace(COARSE, max_iterations=FROZEN_DETOUR_CAP),
+    )
+
+    assert [vertex.position for vertex in result.frozen] == [frozen_at]
+    assert np.all(result.polyline == frozen_at, axis=1).sum() == 1
+    assert result.after.length < result.before.length
+    assert all_edges_clear(result.polyline, detour.field)
+
+
+SHALLOW_DEPTH = 0.001
+
+
+def test_inside_run_holding_anchors_may_split() -> None:
+    # Pins at both ends and a frozen vertex between them share one run of
+    # vertices 1 µm inside the box; the standoff pushes the free ones out,
+    # leaving a separate run at each anchor.
+    frozen_at = (6.0, 0.0)
+    field = Union(
+        [
+            Box(5.0, SHALLOW_DEPTH - 5.0, 6.0, 5.0),
+            Disc(*frozen_at, FROZEN_DISC_RADIUS),
+        ]
+    )
+    polyline, fixed = chain((0.0, 0.0), frozen_at, (10.0, 0.0))
+
+    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+
+    assert [vertex.position for vertex in result.frozen] == [frozen_at]
+    assert np.all(result.polyline == frozen_at, axis=1).sum() == 1
+    assert y_at(result.polyline, 3.0) > SHALLOW_DEPTH
+    assert y_at(result.polyline, 8.0) > SHALLOW_DEPTH
 
 
 def test_detour_in_narrow_channel_is_pulled_tight() -> None:

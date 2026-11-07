@@ -185,10 +185,12 @@ def optimize(
     if mask.all():
         return finish(polyline, anchors, Termination.NOTHING_TO_DO, 0)
 
-    # Resampling can lay a chord across an obstacle corner, and a burst only
-    # rejects crossings its own moves create, so the result is limited to
-    # polylines that cut no more corners than the input did.
-    allowed_cuts = _cut_corners(points, field)
+    # Resampling can lay a chord across an obstacle corner or put a vertex
+    # inside one, and a burst only rejects crossings its own moves create, so
+    # the result is limited to polylines with no more violations than the
+    # resampled input. Counting rather than locating them lets the input's own
+    # violations move as the chain tightens.
+    allowed_violations = _violations(points, mask, field)
     best, best_mask = points, mask
     best_energy = total_energy(points, mask, field, params)[0]
     # The stall check follows every iteration, not just the ones the guard
@@ -204,7 +206,10 @@ def optimize(
         shape_change = _shape_change(accepted, burst.points)
         accepted = burst.points
         energy = total_energy(burst.points, mask, field, params)[0]
-        if energy <= best_energy and _cut_corners(burst.points, field) <= allowed_cuts:
+        if (
+            energy <= best_energy
+            and _violations(burst.points, mask, field) <= allowed_violations
+        ):
             best, best_mask, best_energy = burst.points, mask, energy
         lowest_energies.append(min(lowest_energies[-1], energy))
         converged = burst.rejected_edges == 0 and (
@@ -223,16 +228,28 @@ def optimize(
     return finish(best, best_mask, termination, iteration, rejected_edges)
 
 
-def _cut_corners(points: FloatArray, field: ObstacleField) -> int:
-    """Edges with both ends clear that still pass through an obstacle.
+def _violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> int:
+    """Places where the polyline enters the clearance away from its anchors.
 
-    Edges with an end inside an obstacle belong to a violation the input
-    already had, such as the neighbourhood of a frozen vertex.
+    Each corner cut, an edge with both ends clear that passes through an
+    obstacle, counts once, and so does each run of consecutive vertices
+    inside the clearance that holds no anchor. A run that holds a frozen
+    vertex or a pin in the clearance cannot move away and is not counted.
+    A run is consecutive in the chain, so inside vertices in two touching
+    or overlapping obstacles form one. The count says nothing about how deep
+    a violation goes, and an edge from any run to a clear vertex adds nothing
+    to it whatever obstacles the edge passes through.
     """
     distance, _ = field.signed_distance(points)
-    ends_clear = (distance[:-1] >= 0.0) & (distance[1:] >= 0.0)
-    crossing = ~field.segments_clear(points[:-1], points[1:])
-    return int(np.count_nonzero(ends_clear & crossing))
+    inside = distance < 0.0
+    ends_clear = ~inside[:-1] & ~inside[1:]
+    cuts = np.count_nonzero(
+        ~field.segments_clear(points[:-1][ends_clear], points[1:][ends_clear])
+    )
+    run_starts = inside & ~np.concatenate(([False], inside[:-1]))
+    run = np.cumsum(run_starts)
+    loose_runs = np.count_nonzero(run_starts & ~np.isin(run, run[inside & anchors]))
+    return int(cuts + loose_runs)
 
 
 def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
