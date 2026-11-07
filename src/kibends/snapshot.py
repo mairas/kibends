@@ -10,8 +10,6 @@ canonical layer naming are copied and trimmed from kistitch's snapshot.py
 (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
-from __future__ import annotations
-
 import enum
 import math
 from collections import Counter
@@ -389,7 +387,7 @@ def _read_pads(
         f.id.value: _clearance_override(f.proto.overrides, "copper_clearance")
         for f in footprints
     }
-    out = []
+    out: list[Pad] = []
     for p in pads:
         drill = p.padstack.drill.diameter
         parent = p.parent.value if p.parent is not None else None
@@ -437,8 +435,10 @@ def _rectangle_ring(shape: common_types.Rectangle) -> list[Point2]:
     """The closed outline of a rectangle, with arcs at rounded corners."""
     (ax, ay), (bx, by) = _mm(shape.top_left), _mm(shape.bottom_right)
     x0, x1, y0, y1 = min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)
-    # kipy has no accessor for the corner radius KiCad 10 added.
-    r = shape._graphic_proto.rectangle.corner_radius.value_nm / NM_PER_MM
+    # kipy 0.8.0 has no accessor for the corner radius KiCad 10 added, and
+    # copper text renders as a plain Rectangle, so the proto is the only source.
+    proto = shape._graphic_proto  # pyright: ignore[reportPrivateUsage]
+    r = proto.rectangle.corner_radius.value_nm / NM_PER_MM
     r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
     if r <= 0:
         return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
@@ -482,7 +482,7 @@ def _shape_geometry(
 
 
 def _read_copper_shapes(shapes: Iterable[kbt.BoardShape], layer: str) -> list[Graphic]:
-    graphics = []
+    graphics: list[Graphic] = []
     for s in shapes:
         if canonical_name(s.layer) != layer:
             continue
@@ -537,7 +537,7 @@ def _read_copper_text(
             "only the DRC check covers it"
         )
         return []
-    graphics = []
+    graphics: list[Graphic] = []
     for t, rendered in zip(texts, reply.text_with_shapes, strict=True):
         stroke = t.attributes.stroke_width / NM_PER_MM
         parts = [
@@ -612,5 +612,8 @@ def _edge_paths(shape: kbt.BoardShape) -> list[list[Point2]]:
                 for pwh in shape.polygons
                 for ring in (_ring(pwh.outline), *(_ring(h) for h in pwh.holes))
             ]
-    logger.warning(f"Ignoring unsupported Edge.Cuts shape {type(shape).__name__}")
-    return []
+        case _:
+            logger.warning(
+                f"Ignoring unsupported Edge.Cuts shape {type(shape).__name__}"
+            )
+            return []
