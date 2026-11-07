@@ -87,8 +87,8 @@ def extract_chain(
 ) -> Chain:
     """Build the one open chain that `segments` form, or raise `ChainError`.
 
-    `same_net_copper` holds the copper of the chain's net on its layer: pad
-    and via outlines (polygons) and unselected tracks. A track
+    `same_net_copper` holds the copper of the chain's net on its layer: pad,
+    via and copper shape outlines (polygons) and unselected tracks. A track
     touches the chain where its copper reaches the chain's copper.
     Zones must not be passed: they reflow after the edit, so they never pin.
     Locked segments stay out of the chain, with a warning; where one touches

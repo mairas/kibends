@@ -127,7 +127,7 @@ class LayerSnapshot:
         return self.clearances.get(net, self.default_clearance)
 
     def same_net_copper(self, net: str) -> list[SameNetCopper]:
-        """Pad and via outlines and the tracks of `net` on the layer.
+        """Pad, via and copper shape outlines and the tracks of `net` on the layer.
 
         This is what `extract_chain` pins the chain to.
         """
@@ -139,6 +139,7 @@ class LayerSnapshot:
                 if v.net == net
             ),
             *(SameNetTrack(t.centreline, t.width) for t in self.tracks if t.net == net),
+            *(g.geometry for g in self.graphics if g.net == net),
         ]
 
     @classmethod

@@ -26,7 +26,7 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
 from shapely.geometry import LineString, Point, Polygon
 
-from kibends.chain import SameNetTrack, Segment
+from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
 from kibends.snapshot import (
     LayerSnapshot,
     PadKind,
@@ -245,7 +245,7 @@ class TestClearances:
 
 
 class TestSameNetCopper:
-    def test_same_net_pads_vias_and_unselected_tracks(self) -> None:
+    def test_same_net_pads_vias_tracks_and_copper_shapes(self) -> None:
         fake = FakeBoard(
             pads=[kipy_pad("p", "SIG", 0, 0), kipy_pad("q", "GND", 5, 0)],
             vias=[kipy_via("v", "SIG", 2, 0, 0.6), kipy_via("w", "GND", 3, 0)],
@@ -254,17 +254,33 @@ class TestSameNetCopper:
                 kipy_track("stub", "SIG", (2, 0), (2, 3), width=0.3),
                 kipy_track("gnd", "GND", (0, 5), (5, 5)),
             ],
+            shapes=[
+                kipy_segment((0, 7), (4, 7), width=0.2, net="SIG", shape_id="s"),
+                kipy_segment((0, 8), (4, 8), width=0.2, net="GND", shape_id="g"),
+            ],
         )
 
         copper = snapshot(fake, frozenset({"sel"})).same_net_copper("SIG")
 
-        pad, via, stub = copper
+        pad, via, stub, shape = copper
         assert isinstance(pad, Polygon) and pad.contains(Point(0, 0))
         assert isinstance(via, Polygon)
         assert via.area == pytest.approx(math.pi * 0.3**2, rel=1e-2)
         assert isinstance(stub, SameNetTrack)
         assert stub.centreline.equals(LineString([(2, 0), (2, 3)]))
         assert stub.width == pytest.approx(0.3)
+        assert isinstance(shape, Polygon) and shape.contains(Point(2, 7))
+
+    def test_same_net_copper_shape_over_the_route_pins_the_chain(self) -> None:
+        fake = FakeBoard(
+            shapes=[kipy_segment((5, -1), (5, 1), width=1, net="SIG")],
+        )
+        chain_segment = Segment("a", (0, 0), (10 * NM_PER_MM, 0), 250_000, LAYER, "SIG")
+
+        chain = extract_chain([chain_segment], snapshot(fake).same_net_copper("SIG"))
+
+        assert chain.points == ((0, 0), (4.5, 0), (5.5, 0), (10, 0))
+        assert chain.pinned == (True, True, True, True)
 
     def test_same_net_copper_zone_is_never_included(self) -> None:
         zone = kipy_zone(kipy_rect(-5, -5, 5, 5), [BL.BL_F_Cu], rule_area=False)

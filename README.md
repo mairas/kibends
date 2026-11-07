@@ -63,7 +63,7 @@ or let KiCad's DRC refill them.
 
 Locked tracks in the selection are left untouched. The chain's two ends
 stay where they are, as does every point where unselected copper of the same
-net (a pad, via or track) touches the chain.
+net (a pad, via, track or copper shape) touches the chain.
 
 ### Options
 
