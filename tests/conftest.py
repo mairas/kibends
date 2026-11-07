@@ -311,9 +311,10 @@ class FakeClient:
             raise self.error
         response = base_commands_pb2.GetTextAsShapesResponse()
         for entry in command.text:
-            text = Text(entry.text) if entry.HasField("text") else None
-            box = TextBox(entry.textbox) if text is None else None
-            position = text.position if text is not None else box.top_left  # type: ignore[union-attr]
+            if entry.HasField("text"):
+                position = Text(entry.text).position
+            else:
+                position = TextBox(entry.textbox).top_left
             reply = response.text_with_shapes.add()
             reply.shapes.shapes.append(
                 _text_box(position.x / NM_PER_MM, position.y / NM_PER_MM)
