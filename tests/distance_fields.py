@@ -93,7 +93,8 @@ class Box:
         enter, leave = _clip_to_rectangle(starts, ends, low, high)
         meets_core = enter <= leave
         if self.corner_radius == 0.0:
-            middle = starts + ((enter + leave) / 2)[:, None] * (ends - starts)
+            t = np.where(meets_core, (enter + leave) / 2, 0.0)
+            middle = starts + t[:, None] * (ends - starts)
             strictly_inside = np.all((middle > low) & (middle < high), axis=1)
             return np.asarray(~(meets_core & strictly_inside))
         corners = (low, np.array([low[0], high[1]]), high, np.array([high[0], low[1]]))
