@@ -577,7 +577,10 @@ class TestErrors:
         ]
         connect.to(CommitBoard(selection=tracks, tracks=tracks))
 
-        assert "ChainError" not in exit_message(log)
+        message = exit_message(log)
+
+        assert "selected tracks form 2 separate pieces" in message
+        assert "ChainError" not in message
 
     def test_refused_create_exits_with_the_reason(
         self, connect: Connector, log: list[str]
