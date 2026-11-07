@@ -36,7 +36,6 @@ TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
 
 
-
 @pytest.fixture
 def log() -> Iterator[list[str]]:
     lines: list[str] = []
@@ -234,7 +233,9 @@ def kipy_bezier(shape_id: str = "bezier") -> kbt.BoardBezier:
     return _drawn(b, BL.BL_F_Cu, 0.1, "", shape_id)
 
 
-def kipy_text(value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu) -> kbt.BoardText:
+def kipy_text(
+    value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu
+) -> kbt.BoardText:
     t = kbt.BoardText()
     t.proto.id.value = f"text-{value}"
     t.value = value
@@ -244,7 +245,11 @@ def kipy_text(value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu) 
 
 
 def kipy_field(
-    value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu, visible: bool = True
+    value: str,
+    x: float,
+    y: float,
+    layer: BL.ValueType = BL.BL_F_Cu,
+    visible: bool = True,
 ) -> kbt.Field:
     f = kbt.Field()
     f.name = "Reference"
@@ -332,10 +337,16 @@ class FakeBoard:
     selection: list[Wrapper] = field(default_factory=list[Wrapper])
     pads: list[kbt.Pad] = field(default_factory=list[kbt.Pad])
     vias: list[kbt.Via] = field(default_factory=list[kbt.Via])
-    tracks: list[kbt.Track | kbt.ArcTrack] = field(default_factory=list[kbt.Track | kbt.ArcTrack])
+    tracks: list[kbt.Track | kbt.ArcTrack] = field(
+        default_factory=list[kbt.Track | kbt.ArcTrack]
+    )
     shapes: list[kbt.BoardShape] = field(default_factory=list[kbt.BoardShape])
-    texts: list[kbt.BoardText | kbt.BoardTextBox] = field(default_factory=list[kbt.BoardText | kbt.BoardTextBox])
-    footprints: list[kbt.FootprintInstance] = field(default_factory=list[kbt.FootprintInstance])
+    texts: list[kbt.BoardText | kbt.BoardTextBox] = field(
+        default_factory=list[kbt.BoardText | kbt.BoardTextBox]
+    )
+    footprints: list[kbt.FootprintInstance] = field(
+        default_factory=list[kbt.FootprintInstance]
+    )
     zones: list[kbt.Zone] = field(default_factory=list[kbt.Zone])
     netclasses: dict[str, NetClass] = field(default_factory=dict[str, NetClass])
     default_clearance: float | None = 0.2

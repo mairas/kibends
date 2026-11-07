@@ -323,7 +323,9 @@ def _pin_touches(
     lengths = (Point(a).distance(Point(b)) for a, b in pairwise(points))
     stations = [
         _Station(along, p, i in (0, last), original=True)
-        for i, (along, p) in enumerate(zip(accumulate(lengths, initial=0.0), points, strict=True))
+        for i, (along, p) in enumerate(
+            zip(accumulate(lengths, initial=0.0), points, strict=True)
+        )
     ]
     for item in copper:
         if isinstance(item, SameNetTrack):

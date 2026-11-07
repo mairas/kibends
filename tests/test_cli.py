@@ -552,6 +552,7 @@ class TestDrc:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(l_board(), saved=False)
+
         def never(*args: object, **kwargs: object) -> NoReturn:
             pytest.fail("optimized")
 
