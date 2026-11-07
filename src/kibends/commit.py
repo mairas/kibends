@@ -184,9 +184,10 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
         if r.status.code != ItemStatusCode.ISC_OK
     ]
     if refused or len(response.created_items) != len(items):
+        reasons = f": {'; '.join(sorted(set(refused)))}" if refused else ""
         raise CreateItemsError(
             f"KiCad created {len(response.created_items) - len(refused)} of "
-            f"{len(items)} tracks: {'; '.join(sorted(set(refused)))}"
+            f"{len(items)} tracks{reasons}"
         )
 
 

@@ -131,7 +131,9 @@ class TestRefusals:
     def test_short_create_reply_drops_the_commit(self) -> None:
         board, chain, selected = setup(short_create=True)
 
-        with pytest.raises(commit.CreateItemsError, match="created 2 of 3"):
+        with pytest.raises(
+            commit.CreateItemsError, match=r"^KiCad created 2 of 3 tracks$"
+        ):
             run_commit(board, chain, selected)
 
         assert board.calls[-1] == "drop_commit"
