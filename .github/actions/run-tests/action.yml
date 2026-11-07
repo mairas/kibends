@@ -1,0 +1,24 @@
+name: Run tests
+description: Lint, type-check and test kibends
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+    - name: Install dependencies
+      shell: bash
+      run: ./run sync
+
+    - name: Lint
+      shell: bash
+      run: ./run lint
+
+    - name: Type-check
+      shell: bash
+      run: ./run typecheck
+
+    - name: Test
+      shell: bash
+      run: ./run test-all
