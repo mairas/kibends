@@ -1,12 +1,20 @@
 import pytest
 from shapely.geometry import LineString, Point, Polygon, box
 
-from kibends.chain import NM_PER_MM, Chain, ChainError, Segment, extract_chain
+from kibends.chain import (
+    NM_PER_MM,
+    Chain,
+    ChainError,
+    SameNetTrack,
+    Segment,
+    extract_chain,
+)
 
 WIDTH_NM = 250_000
 LAYER = "F.Cu"
 NET = "SIG"
 PIN_TOLERANCE_MM = 1e-6
+WIDTH_MM = WIDTH_NM / NM_PER_MM
 
 
 def nm(x_mm: float, y_mm: float) -> tuple[int, int]:
@@ -164,6 +172,40 @@ class TestPinning:
         assert_points(chain, [(0, 0), (2, 0), (6, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, True, False, False, True)
 
+    def test_track_whose_copper_reaches_the_chain_copper_pins_nearest_point(
+        self,
+    ) -> None:
+        branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.2)]), WIDTH_MM)
+
+        chain = extract_chain(l_z_segments(), [branch])
+
+        assert_points(chain, [(0, 0), (2.5, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, True, False, False, True)
+
+    def test_wide_track_reaches_further(self) -> None:
+        branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.6)]), 1.0)
+
+        chain = extract_chain(l_z_segments(), [branch])
+
+        assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
+
+    def test_track_whose_copper_stops_short_of_the_chain_copper_does_not_pin(
+        self,
+    ) -> None:
+        branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.3)]), WIDTH_MM)
+
+        chain = extract_chain(l_z_segments(), [branch])
+
+        assert chain.pinned == (True, False, False, True)
+
+    def test_track_ending_on_the_chain_pins_only_the_junction(self) -> None:
+        tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
+
+        chain = extract_chain(l_z_segments(), [tee])
+
+        assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, True, False, False, True)
+
     def test_pad_outline_crossed_pins_entry_and_exit(self) -> None:
         pad = box(4, -1, 6, 1)
 
@@ -227,6 +269,20 @@ class TestLocked:
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert "lock" not in chain.segment_ids
         assert any(line.startswith("WARNING") and "lock" in line for line in log)
+
+    def test_locked_segment_continuing_the_chain_pins_only_the_ends(self) -> None:
+        segments = [*l_z_segments(), seg("lock", (20, 5), (25, 5), locked=True)]
+
+        chain = extract_chain(segments)
+
+        assert chain.pinned == (True, False, False, True)
+
+    def test_locked_branch_whose_copper_reaches_the_chain_pins_it(self) -> None:
+        segments = [*l_z_segments(), seg("lock", (2.5, 3), (2.5, 0.2), locked=True)]
+
+        chain = extract_chain(segments)
+
+        assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
 
     def test_locked_segment_splitting_the_chain_is_an_error(self) -> None:
         segments = [

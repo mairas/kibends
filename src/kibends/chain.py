@@ -54,6 +54,16 @@ class Segment:
 Adjacency = dict[NmPoint, list[Segment]]
 
 
+class SameNetTrack(NamedTuple):
+    """A same-net track that is not part of the chain; `width` in mm."""
+
+    centreline: LineString
+    width: float
+
+
+SameNetCopper = BaseGeometry | SameNetTrack
+
+
 @dataclass(frozen=True)
 class Chain:
     """An ordered polyline in mm that replaces the segments in `segment_ids`.
@@ -73,12 +83,13 @@ class Chain:
 
 
 def extract_chain(
-    segments: Sequence[Segment], same_net_copper: Iterable[BaseGeometry] = ()
+    segments: Sequence[Segment], same_net_copper: Iterable[SameNetCopper] = ()
 ) -> Chain:
     """Build the one open chain that `segments` form, or raise `ChainError`.
 
-    `same_net_copper` holds the chain net's pad and via outlines (polygons)
-    and unselected track centrelines (line strings) on the chain's layer.
+    `same_net_copper` holds the copper of the chain's net on its layer: pad
+    and via outlines (polygons) and unselected tracks. A track
+    touches the chain where its copper reaches the chain's copper.
     Zones must not be passed: they reflow after the edit, so they never pin.
     Locked segments stay out of the chain, with a warning; where one touches
     the chain, it pins it like unselected copper.
@@ -111,7 +122,12 @@ def extract_chain(
         [_mm(p) for p in _walk(adjacency)],
         [
             *same_net_copper,
-            *(LineString([_mm(s.start), _mm(s.end)]) for s in locked_here),
+            *(
+                SameNetTrack(
+                    LineString([_mm(s.start), _mm(s.end)]), s.width / NM_PER_MM
+                )
+                for s in locked_here
+            ),
         ],
         width / NM_PER_MM / 2,
     )
@@ -303,7 +319,7 @@ class _Station(NamedTuple):
 
 
 def _pin_touches(
-    points: Sequence[Point2], copper: Iterable[BaseGeometry], half_width: float
+    points: Sequence[Point2], copper: Iterable[SameNetCopper], half_width: float
 ) -> tuple[list[Point2], list[bool]]:
     """Insert and pin a vertex wherever `copper` touches the chain."""
     line = LineString(points)
@@ -314,7 +330,11 @@ def _pin_touches(
         for i, (along, p) in enumerate(zip(accumulate(lengths, initial=0.0), points))
     ]
     for item in copper:
-        for touch in _touch_points(line, item, half_width):
+        if isinstance(item, SameNetTrack):
+            geometry, reach = item.centreline, half_width + item.width / 2
+        else:
+            geometry, reach = item, half_width
+        for touch in _touch_points(line, geometry, reach):
             along = line.project(Point(touch))
             on_line = line.interpolate(along)
             stations.append(
@@ -337,16 +357,14 @@ def _pin_touches(
     return [st.point for st in merged], [st.pinned for st in merged]
 
 
-def _touch_points(
-    line: LineString, copper: BaseGeometry, half_width: float
-) -> list[Point2]:
+def _touch_points(line: LineString, copper: BaseGeometry, reach: float) -> list[Point2]:
     """Where `copper` meets the chain: outline crossings, else the nearest point
-    if the chain's copper reaches it without its centreline doing so."""
+    if `copper` is within `reach` of the centreline without crossing it."""
     outline = copper.boundary if isinstance(copper, Polygon | MultiPolygon) else copper
     crossings = _points_of(line.intersection(outline))
     if crossings:
         return crossings
-    if not copper.intersects(line) and copper.distance(line) <= half_width:
+    if not copper.intersects(line) and copper.distance(line) <= reach:
         nearest, _ = nearest_points(line, copper)
         return [(nearest.x, nearest.y)]
     return []

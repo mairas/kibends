@@ -26,7 +26,7 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
 from shapely.geometry import LineString, Point, Polygon
 
-from kibends.chain import Segment
+from kibends.chain import SameNetTrack, Segment
 from kibends.snapshot import (
     LayerSnapshot,
     PadKind,
@@ -251,7 +251,7 @@ class TestSameNetCopper:
             vias=[kipy_via("v", "SIG", 2, 0, 0.6), kipy_via("w", "GND", 3, 0)],
             tracks=[
                 kipy_track("sel", "SIG", (0, 0), (2, 0)),
-                kipy_track("stub", "SIG", (2, 0), (2, 3)),
+                kipy_track("stub", "SIG", (2, 0), (2, 3), width=0.3),
                 kipy_track("gnd", "GND", (0, 5), (5, 5)),
             ],
         )
@@ -262,7 +262,9 @@ class TestSameNetCopper:
         assert isinstance(pad, Polygon) and pad.contains(Point(0, 0))
         assert isinstance(via, Polygon)
         assert via.area == pytest.approx(math.pi * 0.3**2, rel=1e-2)
-        assert stub.equals(LineString([(2, 0), (2, 3)]))
+        assert isinstance(stub, SameNetTrack)
+        assert stub.centreline.equals(LineString([(2, 0), (2, 3)]))
+        assert stub.width == pytest.approx(0.3)
 
     def test_same_net_copper_zone_is_never_included(self) -> None:
         zone = kipy_zone(kipy_rect(-5, -5, 5, 5), [BL.BL_F_Cu], rule_area=False)

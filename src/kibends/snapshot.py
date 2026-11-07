@@ -34,7 +34,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize, unary_union
 
-from kibends.chain import NM_PER_MM, Point2, Segment
+from kibends.chain import NM_PER_MM, Point2, SameNetCopper, SameNetTrack, Segment
 
 EDGE_CUTS = "Edge.Cuts"
 DEFAULT_NETCLASS = "Default"
@@ -126,8 +126,8 @@ class LayerSnapshot:
         """The net's netclass clearance; the Default one for no net."""
         return self.clearances.get(net, self.default_clearance)
 
-    def same_net_copper(self, net: str) -> list[BaseGeometry]:
-        """Pad and via outlines and track centrelines of `net` on the layer.
+    def same_net_copper(self, net: str) -> list[SameNetCopper]:
+        """Pad and via outlines and the tracks of `net` on the layer.
 
         This is what `extract_chain` pins the chain to.
         """
@@ -138,7 +138,7 @@ class LayerSnapshot:
                 for v in self.vias
                 if v.net == net
             ),
-            *(t.centreline for t in self.tracks if t.net == net),
+            *(SameNetTrack(t.centreline, t.width) for t in self.tracks if t.net == net),
         ]
 
     @classmethod
