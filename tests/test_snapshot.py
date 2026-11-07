@@ -52,8 +52,8 @@ def board(fake: FakeBoard) -> kipy.board.Board:
     return cast(kipy.board.Board, fake)
 
 
-def snapshot(fake: FakeBoard, selected: frozenset[str] = frozenset()) -> LayerSnapshot:
-    return LayerSnapshot.from_board(board(fake), LAYER, selected)
+def snapshot(fake: FakeBoard, replaced: frozenset[str] = frozenset()) -> LayerSnapshot:
+    return LayerSnapshot.from_board(board(fake), LAYER, replaced)
 
 
 class TestReadSelection:
@@ -132,7 +132,7 @@ class TestReadSelection:
 
 
 class TestCopperOnLayer:
-    def test_selected_tracks_and_other_layers_are_left_out(self) -> None:
+    def test_replaced_tracks_and_other_layers_are_left_out(self) -> None:
         fake = FakeBoard(
             tracks=[
                 kipy_track("sel", "SIG", (0, 0), (1, 0)),
@@ -243,7 +243,7 @@ class TestClearances:
         assert snap.clearance("") == pytest.approx(0.15)
         assert snap.clearance("NOT_ON_LAYER") == pytest.approx(0.15)
 
-    def test_selected_net_is_looked_up_even_without_other_copper(self) -> None:
+    def test_replaced_net_is_looked_up_even_without_other_copper(self) -> None:
         fake = FakeBoard(
             tracks=[kipy_track("sel", "HV", (0, 0), (1, 0))],
             netclasses={"HV": netclass("HighVoltage", 0.5)},

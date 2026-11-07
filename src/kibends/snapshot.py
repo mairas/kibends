@@ -104,7 +104,7 @@ class Graphic:
 
 @dataclass(frozen=True, eq=False)
 class LayerSnapshot:
-    """The copper of one layer, without the selected tracks.
+    """The copper of one layer, without the tracks being replaced.
 
     Pads and vias are listed whatever their layers, since their holes cross
     every layer. Copper zones are not read: they reflow after an edit.
@@ -144,12 +144,12 @@ class LayerSnapshot:
 
     @classmethod
     def from_board(
-        cls, board: kipy.board.Board, layer: str, selected_ids: Collection[str]
+        cls, board: kipy.board.Board, layer: str, replaced_ids: Collection[str]
     ) -> LayerSnapshot:
-        """Read `layer` and everything that crosses it, leaving out the selection.
+        """Read `layer` and everything crossing it, less the tracks being replaced.
 
-        The selection's own nets are looked up too, so their clearance is
-        known even when the selected tracks are the only copper of their net.
+        The replaced tracks' nets are looked up too, so their clearance is
+        known even when those tracks are the only copper of their net.
         """
         layer_id = layer_from_canonical_name(layer)
         footprints = board.get_footprints()
@@ -157,7 +157,7 @@ class LayerSnapshot:
         tracks = tuple(
             _read_track(t)
             for t in all_tracks
-            if canonical_name(t.layer) == layer and t.id.value not in selected_ids
+            if canonical_name(t.layer) == layer and t.id.value not in replaced_ids
         )
         pads = _read_pads(board, board.get_pads(), footprints, layer_id)
         vias = tuple(_read_via(v) for v in board.get_vias())
@@ -172,7 +172,7 @@ class LayerSnapshot:
             *(t.net for t in tracks),
             *(v.net for v in vias),
             *(g.net for g in graphics),
-            *(t.net.name for t in all_tracks if t.id.value in selected_ids),
+            *(t.net.name for t in all_tracks if t.id.value in replaced_ids),
         } - {""}
         default_clearance = _default_clearance(board)
         snap = cls(

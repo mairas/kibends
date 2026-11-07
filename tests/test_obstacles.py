@@ -50,10 +50,10 @@ FD_STEP = 1e-6
 
 def obstacles_of(
     fake: FakeBoard,
-    selected: frozenset[str] = frozenset(),
+    replaced: frozenset[str] = frozenset(),
     **clearances: float,
 ) -> Obstacles:
-    snap = LayerSnapshot.from_board(cast(kipy.board.Board, fake), LAYER, selected)
+    snap = LayerSnapshot.from_board(cast(kipy.board.Board, fake), LAYER, replaced)
     return build_obstacles(snap, NET, WIDTH, **clearances)
 
 
