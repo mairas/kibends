@@ -32,9 +32,37 @@ function test {
 }
 
 function test-all {
-  #@ Run every test, including slow and kicad-cli ones (before committing)
+  #@ Run every test, including slow and kicad-cli ones
   #@ Category: Development
   .venv/bin/python -m pytest "$@"
+}
+
+function lint {
+  #@ Check linting and formatting with ruff
+  #@ Category: Development
+  .venv/bin/ruff check .
+  .venv/bin/ruff format --check .
+}
+
+function format {
+  #@ Format the code and apply ruff's safe lint fixes
+  #@ Category: Development
+  .venv/bin/ruff check --fix .
+  .venv/bin/ruff format .
+}
+
+function typecheck {
+  #@ Type-check with pyright in strict mode
+  #@ Category: Development
+  .venv/bin/pyright
+}
+
+function check {
+  #@ Run lint, typecheck and every test, as CI does (before committing)
+  #@ Category: Development
+  lint
+  typecheck
+  test-all
 }
 
 ################################################################################
