@@ -8,6 +8,7 @@ from kibends.chain import (
     SameNetTrack,
     Segment,
     extract_chain,
+    extract_chains,
 )
 
 WIDTH_NM = 250_000
@@ -270,7 +271,37 @@ class TestLocked:
 
         assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
 
-    def test_locked_segment_splitting_the_chain_is_an_error(self) -> None:
+    def test_locked_segment_splitting_the_selection_gives_two_pinned_chains(
+        self,
+    ) -> None:
+        segments = [
+            seg("a", (0, 0), (10, 0)),
+            seg("lock", (10, 0), (10, 5), locked=True),
+            seg("c", (10, 5), (20, 5)),
+        ]
+
+        first, second = extract_chains(segments)
+
+        assert_points(first, [(0, 0), (10, 0)])
+        assert_points(second, [(10, 5), (20, 5)])
+        assert first.pinned == second.pinned == (True, True)
+        assert (first.segment_ids, second.segment_ids) == (("a",), ("c",))
+
+    def test_locked_segment_splitting_the_selection_pins_where_it_touches(
+        self,
+    ) -> None:
+        segments = [
+            seg("a", (0, 0), (10, 0)),
+            seg("lock", (10, 0), (20, 0), locked=True),
+            seg("c", (15, 0), (15, 10)),
+        ]
+
+        first, second = extract_chains(segments)
+
+        assert pinned_points(first) == [(0, 0), (10, 0)]
+        assert pinned_points(second) == [(15, 0), (15, 10)]
+
+    def test_extract_chain_still_refuses_a_locked_splitter(self) -> None:
         segments = [
             seg("a", (0, 0), (10, 0)),
             seg("lock", (10, 0), (10, 5), locked=True),
@@ -328,12 +359,6 @@ class TestTopologyErrors:
         with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\)"):
             extract_chain(segments)
 
-    def test_disconnected_pieces_are_an_error_naming_their_ends(self) -> None:
-        segments = [seg("a", (0, 0), (10, 0)), seg("b", (20, 0), (30, 0))]
-
-        with pytest.raises(ChainError, match=r"2 separate pieces.*\(20\.000, 0\.000\)"):
-            extract_chain(segments)
-
 
 class TestMixedAttributes:
     def test_mixed_widths_are_an_error_naming_the_widths(self) -> None:
@@ -369,3 +394,122 @@ class TestMixedAttributes:
         chain = extract_chain(segments)
 
         assert chain.layer == LAYER
+
+
+class TestSeveralChains:
+    def test_disjoint_chains_of_different_nets_give_one_chain_each(self) -> None:
+        segments = [
+            seg("g1", (0, 10), (10, 10), net="GND"),
+            *l_z_segments(),
+            seg("g2", (10, 10), (10, 20), net="GND"),
+        ]
+        gnd_pad = box(4, 9, 6, 11)
+
+        def copper(net: str) -> list[Polygon]:
+            return [gnd_pad] if net == "GND" else []
+
+        gnd, sig = extract_chains(segments, copper)
+
+        assert (gnd.net, sig.net) == ("GND", NET)
+        assert_points(gnd, [(0, 10), (4, 10), (6, 10), (10, 10), (10, 20)])
+        assert gnd.pinned == (True, True, True, False, True)
+        assert sorted(gnd.segment_ids) == ["g1", "g2"]
+        assert_points(sig, [(0, 0), (10, 0), (10, 5), (20, 5)])
+        assert sig.pinned == (True, False, False, True)
+
+    def test_one_chain_is_what_extract_chain_gives(self) -> None:
+        segments = [*l_z_segments(), seg("dup", (10, 0), (0, 0))]
+        tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
+
+        assert extract_chains(segments, lambda _net: [tee]) == [
+            extract_chain(segments, [tee])
+        ]
+
+    def test_disjoint_pieces_of_one_net_give_two_chains(self) -> None:
+        segments = [seg("b", (20, 0), (30, 0)), seg("a", (10, 0), (0, 0))]
+
+        first, second = extract_chains(segments)
+
+        assert_points(first, [(0, 0), (10, 0)])
+        assert_points(second, [(20, 0), (30, 0)])
+        assert (first.segment_ids, second.segment_ids) == (("a",), ("b",))
+
+    def test_extract_chain_still_refuses_several_pieces(self) -> None:
+        segments = [seg("a", (0, 0), (10, 0)), seg("b", (20, 0), (30, 0))]
+
+        with pytest.raises(ChainError, match=r"2 separate pieces.*\(20\.000, 0\.000\)"):
+            extract_chain(segments)
+
+    def test_neck_down_gives_two_chains_pinned_at_the_junction(self) -> None:
+        segments = [
+            seg("wide", (10, 0), (20, 0), width=500_000),
+            seg("thin", (0, 0), (10, 0)),
+        ]
+
+        thin, wide = extract_chains(segments)
+
+        assert (thin.width, wide.width) == (pytest.approx(0.25), pytest.approx(0.5))
+        assert_points(thin, [(0, 0), (10, 0)])
+        assert_points(wide, [(10, 0), (20, 0)])
+
+    def test_same_net_tee_with_a_narrower_stub_names_the_branch_point(self) -> None:
+        segments = [*l_z_segments(), seg("stub", (10, 0), (15, -5), width=150_000)]
+
+        with pytest.raises(ChainError, match=r"branch.*\(10\.000, 0\.000\).*stub"):
+            extract_chains(segments)
+
+    def test_stub_of_another_width_ending_mid_segment_is_a_branch(self) -> None:
+        segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0), width=500_000)]
+
+        with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\).*tee"):
+            extract_chains(segments)
+
+    def test_same_width_tee_is_a_branch(self) -> None:
+        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5))]
+
+        with pytest.raises(ChainError, match=r"branch.*\(10\.000, 0\.000\)"):
+            extract_chains(segments)
+
+    def test_tracks_of_two_widths_on_the_same_span_are_refused(self) -> None:
+        segments = [seg("a", (0, 0), (10, 0)), seg("b", (10, 0), (0, 0), width=500_000)]
+
+        with pytest.raises(ChainError, match=r"a and b overlap.*different widths"):
+            extract_chains(segments)
+
+    def test_tee_across_nets_is_two_chains(self) -> None:
+        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5), net="GND")]
+
+        gnd, sig = extract_chains(segments)
+
+        assert gnd.segment_ids == ("d",)
+        assert sorted(sig.segment_ids) == ["a", "b", "c"]
+
+    def test_net_with_only_a_zero_length_track_is_refused(self) -> None:
+        segments = [seg("a", (0, 0), (10, 0)), seg("z", (50, 50), (50, 50), net="G")]
+
+        with pytest.raises(ChainError, match=r"z.*\(50\.000, 50\.000\)"):
+            extract_chains(segments)
+
+    def test_track_ending_at_the_junction_tolerance_is_a_branch(self) -> None:
+        segments = [
+            seg("a", (0, 0), (1, 0)),
+            seg("tee", (0.5, -3), (0.5, -10 / NM_PER_MM)),
+        ]
+
+        with pytest.raises(ChainError, match=r"branch.*tee ends in the middle of a"):
+            extract_chains(segments)
+
+    def test_isolated_zero_length_track_is_refused(self) -> None:
+        segments = [*l_z_segments(), seg("stray", (50, 50), (50, 50))]
+
+        with pytest.raises(ChainError, match=r"stray.*\(50\.000, 50\.000\)"):
+            extract_chains(segments)
+
+    def test_two_layers_still_suggest_one_run_per_layer(self) -> None:
+        segments = [
+            seg("a", (0, 0), (10, 0)),
+            seg("b", (10, 0), (20, 0), layer="B.Cu"),
+        ]
+
+        with pytest.raises(ChainError, match=r"layers.*B\.Cu.*F\.Cu.*once per layer"):
+            extract_chains(segments)
