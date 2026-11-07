@@ -64,10 +64,6 @@ NET_WIDE_TYPES = frozenset(
 NET_TAG = re.compile(r"\[(.*)\]")
 # Connectivity violations naming no net are counted together under this.
 UNNAMED_NET = "(unnamed)"
-# Stands in for a chain track in a violation key: a track's description
-# includes its length and its position is its start, so neither survives
-# the chain being replaced.
-CHAIN_ITEM_KEY = ("(chain track)", 0.0, 0.0)
 
 SEGMENT_OPEN = "\n\t(segment"
 FONTS_MARKER = "\n\t(embedded_fonts"
@@ -365,32 +361,49 @@ def parse_report(report: Report) -> list[Violation]:
     return out
 
 
-ViolationKey = tuple[str, tuple[tuple[str, float, float], ...]]
+@dataclass(frozen=True)
+class _ItemsKey:
+    """A violation identified by its items' descriptions and positions.
+
+    Chain tracks are only counted: a track's description includes its length
+    and its position is its start, so neither survives the chain being
+    replaced.
+    """
+
+    type: str
+    items: tuple[tuple[str, float, float], ...]
+    chain_items: int
+
+
+@dataclass(frozen=True)
+class _NetWideKey:
+    """A violation of a whole net, whose items move with any edit of it."""
+
+    type: str
+    description: str
+    nets: frozenset[str]
+
+
+ViolationKey = _ItemsKey | _NetWideKey
 
 
 def _key(v: Violation, chain_ids: Collection[str]) -> ViolationKey:
     if v.type in NET_WIDE_TYPES:
-        return (
-            v.type,
-            tuple(
-                (f"{v.description} {net}", 0.0, 0.0)
-                for net in sorted(violation_nets(v))
-            ),
-        )
-    return (
+        return _NetWideKey(v.type, v.description, violation_nets(v))
+    return _ItemsKey(
         v.type,
         tuple(
             sorted(
-                CHAIN_ITEM_KEY
-                if i.uuid in chain_ids
-                else (
+                (
                     i.description,
                     round(i.position[0], POSITION_DECIMALS),
                     round(i.position[1], POSITION_DECIMALS),
                 )
                 for i in v.items
+                if i.uuid not in chain_ids
             )
         ),
+        sum(i.uuid in chain_ids for i in v.items),
     )
 
 
