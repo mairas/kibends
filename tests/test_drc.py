@@ -9,7 +9,7 @@ import json
 import shutil
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +71,8 @@ def tokenize(text: str) -> Iterator[str | tuple[str, str]]:
         elif c.isspace():
             i += 1
         elif c == '"':
-            j, buf = i + 1, []
+            j = i + 1
+            buf: list[str] = []
             while text[j] != '"':
                 if text[j] == "\\":
                     j += 1
@@ -191,14 +192,14 @@ class TestInject:
 # ---- report parsing ----------------------------------------------------------
 
 
-def item(desc: str, x: float, y: float, uuid: str = "u") -> dict[str, Any]:
+def item(desc: str, x: float, y: float, uuid: str = "u") -> drc.ReportItem:
     return {"description": desc, "pos": {"x": x, "y": y}, "uuid": uuid}
 
 
 def violation(
-    vtype: str, *items: dict[str, Any], excluded: bool = False
-) -> dict[str, Any]:
-    v: dict[str, Any] = {
+    vtype: str, *items: drc.ReportItem, excluded: bool = False
+) -> drc.ReportViolation:
+    v: drc.ReportViolation = {
         "description": f"{vtype} issue",
         "items": list(items),
         "severity": "error",
@@ -210,7 +211,8 @@ def violation(
 
 
 def parsed(
-    *violations: dict[str, Any], unconnected: tuple[dict[str, Any], ...] = ()
+    *violations: drc.ReportViolation,
+    unconnected: tuple[drc.ReportViolation, ...] = (),
 ) -> list[drc.Violation]:
     return drc.parse_report(
         {"violations": list(violations), "unconnected_items": list(unconnected)}
@@ -228,7 +230,7 @@ class TestParseReport:
         assert out[0].items == (drc.ViolationItem("Pad 1 [GND]", (3, 3), "u"),)
 
     def test_reads_a_kicad_report(self) -> None:
-        report = {
+        report: drc.Report = {
             "violations": [
                 {
                     "description": "Clearance violation",
@@ -259,11 +261,11 @@ PAD = item("Pad 3 [GND] of J1 on F.Cu", 15, 6, "pad")
 OTHER_PAD = item("Pad 4 [GND] of J1 on F.Cu", 9, 16, "pad4")
 
 
-def old_track(length: float = 10.0, x: float = 5.0) -> dict[str, Any]:
+def old_track(length: float = 10.0, x: float = 5.0) -> drc.ReportItem:
     return item(f"Track [SIG] on F.Cu, length {length:.4f} mm", x, 10, "old")
 
 
-def new_track(length: float = 9.1, x: float = 14.0) -> dict[str, Any]:
+def new_track(length: float = 9.1, x: float = 14.0) -> drc.ReportItem:
     return item(f"Track [SIG] on F.Cu, length {length:.4f} mm", x, 6.775, "new")
 
 
@@ -319,7 +321,10 @@ class TestIntroduced:
 
     def test_net_wide_violation_with_new_values_is_introduced(self) -> None:
         base = violation("skew_out_of_range", item("Pad 1 [/USB_D+] of TP5", 1, 1))
-        changed = dict(base, description="Skew out of range (actual -3.9 mm)")
+        changed: drc.ReportViolation = {
+            **base,
+            "description": "Skew out of range (actual -3.9 mm)",
+        }
 
         result = introduced(parsed(base), parsed(changed))
 
@@ -453,9 +458,18 @@ class FakeKiCad:
         return self.path
 
 
+def which_finding(path: Path | None) -> Callable[[str], str | None]:
+    """A stand-in for shutil.which that finds `path` whatever is asked."""
+
+    def which(name: str) -> str | None:
+        return None if path is None else str(path)
+
+    return which
+
+
 @pytest.fixture
 def no_system_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(drc.shutil, "which", lambda name: None)
+    monkeypatch.setattr(drc.shutil, "which", which_finding(None))
     monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", ())
 
 
@@ -480,7 +494,7 @@ class TestLocateKiCadCli:
         from_api = make_executable(tmp_path / "api")
         on_path = make_executable(tmp_path / "onpath")
         known = make_executable(tmp_path / "known")
-        monkeypatch.setattr(drc.shutil, "which", lambda name: str(on_path))
+        monkeypatch.setattr(drc.shutil, "which", which_finding(on_path))
         monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", (str(known),))
 
         assert drc.locate_kicad_cli(None, FakeKiCad(str(from_api))) == from_api
@@ -488,7 +502,7 @@ class TestLocateKiCadCli:
             drc.locate_kicad_cli(None, FakeKiCad(error=ApiError("old KiCad")))
             == on_path
         )
-        monkeypatch.setattr(drc.shutil, "which", lambda name: None)
+        monkeypatch.setattr(drc.shutil, "which", which_finding(None))
         assert drc.locate_kicad_cli(None, FakeKiCad(str(tmp_path / "gone"))) == known
 
     def test_not_found_anywhere(self, no_system_cli: None) -> None:
@@ -659,7 +673,7 @@ class TestCheck:
         monkeypatch.setattr(drc, "DRC_TIMEOUT_S", 0.2)
         cli = make_executable(tmp_path / "kicad-cli", "import time; time.sleep(30)")
 
-        with pytest.raises(drc.DrcError, match="timed out after 0.2 s"):
+        with pytest.raises(drc.DrcError, match=r"timed out after 0\.2 s"):
             drc.check(
                 cli,
                 project(tmp_path),
