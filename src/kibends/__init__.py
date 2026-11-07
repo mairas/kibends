@@ -1,0 +1,1 @@
+"""Smooth KiCad track corners."""

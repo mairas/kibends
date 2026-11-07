@@ -1,0 +1,50 @@
+[project]
+name = "kibends"
+version = "0.0.1"
+authors = [{ name = "Matti Airas", email = "matti.airas@hatlabs.fi" }]
+description = "Smooth KiCad tracks into short, clearance-keeping paths"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["KiCad", "EDA", "PCB", "tracks", "rounding"]
+dependencies = [
+    "kicad-python >= 0.8.0",
+    "loguru>=0.7.3",
+    "numpy>=2.4.6",
+    "scipy>=1.17.1",
+    "shapely>=2.2.0",
+]
+
+[project.scripts]
+kibends = "kibends.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mairas/kibends"
+
+[project.optional-dependencies]
+plot = [
+    "matplotlib>=3.11.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "types-protobuf>=7.35.1.20260906",
+    "types-shapely>=2.1.0.20261030",
+    "scipy-stubs>=1.17.1.5",
+    "pytest-xdist>=3.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Parallel by default; pass `-n 0` to run serially (e.g. for pdb).
+addopts = "-n auto"
+markers = [
+    "slow: takes several seconds; deselect with -m 'not slow'",
+    "kicad_cli: runs the real kicad-cli; skipped when it is not installed",
+]
