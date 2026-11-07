@@ -9,6 +9,7 @@ from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import PARAMS, Field, Scenario, chain, path
 from shapely import wkt
 
+import kibends.optimize as optimize_module
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     OptimizeResult,
@@ -323,3 +324,17 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
     assert result.termination is Termination.CONVERGED
     assert result.iterations < STALL_ITERATION_LIMIT
     assert result.after.min_clearance >= 0.0
+
+
+class TestStalled:
+    # Binary-exact values, so the boundary comparison is not a rounding test.
+    SETTINGS = OptimizerSettings(stall_tolerance=0.5, stall_window=3)
+
+    def test_needs_a_full_window_of_history(self) -> None:
+        assert not optimize_module._stalled([5.0, 5.0, 5.0], self.SETTINGS)
+
+    def test_improvement_of_exactly_the_tolerance_is_a_stall(self) -> None:
+        assert optimize_module._stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
+
+    def test_larger_improvement_over_the_window_keeps_going(self) -> None:
+        assert not optimize_module._stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
