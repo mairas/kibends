@@ -209,7 +209,7 @@ def optimize(
         lowest_energies.append(min(lowest_energies[-1], energy))
         converged = burst.rejected_edges == 0 and (
             shape_change < settings.displacement_tolerance * settings.spacing
-            or _stalled(lowest_energies, settings)
+            or stalled(lowest_energies, settings)
         )
         if burst.abnormal:
             termination = Termination.ABNORMAL
@@ -235,7 +235,7 @@ def _cut_corners(points: FloatArray, field: ObstacleField) -> int:
     return int(np.count_nonzero(ends_clear & crossing))
 
 
-def _stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
+def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
     if len(lowest_energies) <= settings.stall_window:
         return False
     earlier = lowest_energies[-1 - settings.stall_window]

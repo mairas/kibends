@@ -377,13 +377,13 @@ class TestStalled:
     SETTINGS = OptimizerSettings(stall_tolerance=0.5, stall_window=3)
 
     def test_needs_a_full_window_of_history(self) -> None:
-        assert not optimize_module._stalled([5.0, 5.0, 5.0], self.SETTINGS)
+        assert not optimize_module.stalled([5.0, 5.0, 5.0], self.SETTINGS)
 
     def test_improvement_of_exactly_the_tolerance_is_a_stall(self) -> None:
-        assert optimize_module._stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
+        assert optimize_module.stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
 
     def test_larger_improvement_over_the_window_keeps_going(self) -> None:
-        assert not optimize_module._stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
+        assert not optimize_module.stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
 
 
 class ReachIgnored:
