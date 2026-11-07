@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
-from distance_fields import Box, Disc, FloatArray, FreeSpace, Union, Walls
+from distance_fields import Box, Disc, FloatArray, FreeSpace, MisleadingWalls, Union
 from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
@@ -420,16 +420,6 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
     assert result.iterations == 2
     assert all_edges_clear(result.polyline, scenario.field)
     assert result.after.length < result.before.length
-
-
-class MisleadingWalls(Walls):
-    """Walls whose distance gradient points the wrong way."""
-
-    def signed_distance(
-        self, points: FloatArray, reach: float = np.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        distance, gradient = super().signed_distance(points)
-        return distance, -gradient
 
 
 def test_abnormal_lbfgsb_termination_is_reported() -> None:
