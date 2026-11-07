@@ -1,11 +1,15 @@
+import json
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 import scenarios
 from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import PARAMS, Field, Scenario, chain, path
+from shapely import wkt
 
+from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     OptimizeResult,
     OptimizerSettings,
@@ -13,10 +17,12 @@ from kibends.optimize import (
     measure,
     optimize,
 )
+from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 
 SETTINGS = OptimizerSettings()
-# Positions of a straight result within this of the ideal line, mm.
-STRAIGHT_TOLERANCE = 5e-3
+# Positions of a straight result within this of the ideal line, mm: the
+# energy cannot resolve smaller bows, and simplify flattens them anyway.
+STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
 
 
 def run(scenario: Scenario, settings: OptimizerSettings = SETTINGS) -> OptimizeResult:
@@ -286,3 +292,34 @@ def test_abnormal_lbfgsb_termination_is_reported() -> None:
 
     assert result.termination is Termination.ABNORMAL
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
+
+
+STALL_FIXTURE = Path(__file__).parent / "fixtures" / "stall" / "vin_sense_chain.json"
+STALL_ITERATION_LIMIT = 30
+
+
+@pytest.mark.slow
+def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
+    # A real chain whose free stretch sits at the fringe of the repulsion
+    # range: the shape keeps wandering by tens of µm while the energy no
+    # longer improves, so only an energy-based stop ends it.
+    data = json.loads(STALL_FIXTURE.read_text())
+    field = Obstacles(
+        [
+            Obstacle("fixture", wkt.loads(o["geometry"]), o["inflation"])
+            for o in data["obstacles"]
+        ]
+    )
+    params = replace(PARAMS, repulsion=0.5, falloff_range=1.0)
+
+    result = optimize(
+        np.array(data["points"]),
+        np.array(data["pinned"]),
+        field,
+        params,
+        OptimizerSettings(max_iterations=STALL_ITERATION_LIMIT),
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert result.iterations < STALL_ITERATION_LIMIT
+    assert result.after.min_clearance >= 0.0

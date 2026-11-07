@@ -82,6 +82,12 @@ class OptimizerSettings:
     """Convergence threshold on a burst's largest shape change, as a
     fraction of the spacing."""
     max_iterations: int = 200
+    stall_tolerance: float = 1e-3
+    """Converged when the best energy improved by less than this over
+    `stall_window` iterations. The energy is in mm of track length, so this
+    is 1 µm of length: in flat stretches the shape keeps wandering by tens
+    of µm while the energy creeps down by far less."""
+    stall_window: int = 3
     burst_maxiter: int = 300
     """L-BFGS-B iterations per burst."""
 
@@ -181,6 +187,7 @@ def optimize(
 
     best, best_mask = points, mask
     best_energy = total_energy(points, mask, field, params)[0]
+    best_energies = [best_energy]
     rejected_edges = 0
     accepted = polyline
     termination = Termination.ITERATION_CAP
@@ -193,9 +200,10 @@ def optimize(
         energy = total_energy(burst.points, mask, field, params)[0]
         if energy <= best_energy:
             best, best_mask, best_energy = burst.points, mask, energy
-        converged = (
-            burst.rejected_edges == 0
-            and shape_change < settings.displacement_tolerance * settings.spacing
+        best_energies.append(best_energy)
+        converged = burst.rejected_edges == 0 and (
+            shape_change < settings.displacement_tolerance * settings.spacing
+            or _stalled(best_energies, settings)
         )
         if burst.abnormal:
             termination = Termination.ABNORMAL
@@ -207,6 +215,13 @@ def optimize(
             break
         points, mask = resample(burst.points, mask, settings.spacing)
     return finish(best, best_mask, termination, iteration, rejected_edges)
+
+
+def _stalled(best_energies: list[float], settings: OptimizerSettings) -> bool:
+    if len(best_energies) <= settings.stall_window:
+        return False
+    earlier = best_energies[-1 - settings.stall_window]
+    return earlier - best_energies[-1] <= settings.stall_tolerance
 
 
 def resample(
