@@ -20,9 +20,9 @@ readonly PROJECT_ROOT=$(pwd)
 # Development Commands
 
 function sync {
-  #@ Create or update the virtualenv with dev dependencies
+  #@ Create or update the virtualenv with dev dependencies and the plot extra
   #@ Category: Development
-  uv sync
+  uv sync --extra plot
 }
 
 function test {
