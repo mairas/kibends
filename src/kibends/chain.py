@@ -6,13 +6,11 @@ is shapely geometry in millimetres. The resulting chain is in millimetre
 floats. Every coordinate is in KiCad's board frame, with y pointing down.
 """
 
-from __future__ import annotations
-
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from itertools import accumulate, pairwise
-from typing import NamedTuple, TypeVar
+from typing import NamedTuple
 
 import shapely
 from loguru import logger
@@ -30,8 +28,6 @@ PIN_MERGE_TOLERANCE_MM = 0.5 / NM_PER_MM
 # diagonal segment.
 JUNCTION_TOLERANCE_NM = 10
 MAX_CHAIN_DEGREE = 2
-
-_Attribute = TypeVar("_Attribute", int, str)
 
 
 class ChainError(ValueError):
@@ -163,14 +159,14 @@ def _uniform_attributes(segments: Sequence[Segment]) -> tuple[int, str, str]:
     return width, layer, net
 
 
-def _single_value(
+def _single_value[Attribute: (int, str)](
     segments: Sequence[Segment],
     what: str,
-    key: Callable[[Segment], _Attribute],
-    fmt: Callable[[_Attribute], str],
+    key: Callable[[Segment], Attribute],
+    fmt: Callable[[Attribute], str],
     hint: str = "",
-) -> _Attribute:
-    ids_by_value: dict[_Attribute, list[str]] = defaultdict(list)
+) -> Attribute:
+    ids_by_value: dict[Attribute, list[str]] = defaultdict(list)
     for s in segments:
         ids_by_value[key(s)].append(s.id)
     if len(ids_by_value) == 1:
@@ -327,7 +323,7 @@ def _pin_touches(
     lengths = (Point(a).distance(Point(b)) for a, b in pairwise(points))
     stations = [
         _Station(along, p, i in (0, last), original=True)
-        for i, (along, p) in enumerate(zip(accumulate(lengths, initial=0.0), points))
+        for i, (along, p) in enumerate(zip(accumulate(lengths, initial=0.0), points, strict=True))
     ]
     for item in copper:
         if isinstance(item, SameNetTrack):

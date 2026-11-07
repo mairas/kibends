@@ -6,7 +6,6 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import TypeVar
 
 import kipy.board_types as kbt
 import pytest
@@ -36,7 +35,6 @@ PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
 
-ShapeT = TypeVar("ShapeT", bound=kbt.BoardShape)
 
 
 @pytest.fixture
@@ -152,7 +150,7 @@ def kipy_footprint(
     return f
 
 
-def _drawn(
+def _drawn[ShapeT: kbt.BoardShape](
     shape: ShapeT,
     layer: int,
     width: float,
