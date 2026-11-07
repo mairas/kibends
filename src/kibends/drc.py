@@ -290,28 +290,28 @@ def inject(board_text: str, tracks: NewTracks) -> tuple[str, tuple[str, ...]]:
 # ---- reports -------------------------------------------------------------------
 
 
-class _Position(TypedDict):
+class ReportPosition(TypedDict):
     x: float
     y: float
 
 
-class _ReportItem(TypedDict):
+class ReportItem(TypedDict):
     description: str
-    pos: _Position
+    pos: ReportPosition
     uuid: NotRequired[str]
 
 
-class _ReportViolation(TypedDict, total=False):
+class ReportViolation(TypedDict, total=False):
     type: str
     description: str
     severity: str
-    items: list[_ReportItem]
+    items: list[ReportItem]
     excluded: bool
 
 
 class Report(TypedDict, total=False):
-    violations: list[_ReportViolation]
-    unconnected_items: list[_ReportViolation]
+    violations: list[ReportViolation]
+    unconnected_items: list[ReportViolation]
 
 
 @dataclass(frozen=True)
