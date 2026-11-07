@@ -4,6 +4,7 @@ FakeBoard and the kipy builders are adapted from kistitch's
 tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
@@ -304,9 +305,11 @@ class FakeClient:
     """Renders every text as a filled box of 2 x 1 mm around its position."""
 
     error: Exception | None = None
+    renders: int = 0
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
         assert isinstance(command, base_commands_pb2.GetTextAsShapes)
+        self.renders += 1
         if self.error is not None:
             raise self.error
         response = base_commands_pb2.GetTextAsShapesResponse()
@@ -333,7 +336,7 @@ class FakeProject:
 
 @dataclass
 class FakeBoard:
-    """Answers the reads the snapshot makes."""
+    """Answers the reads the snapshot makes; `reads` counts them by method."""
 
     selection: list[Wrapper] = field(default_factory=list[Wrapper])
     pads: list[kbt.Pad] = field(default_factory=list[kbt.Pad])
@@ -355,16 +358,21 @@ class FakeBoard:
     project_dir: str = ""
     drops_pads: bool = False
     client: FakeClient = field(default_factory=FakeClient)
+    reads: Counter[str] = field(default_factory=Counter[str])
 
     def get_selection(self) -> list[Wrapper]:
+        self.reads["get_selection"] += 1
         return self.selection
 
     def get_pads(self) -> list[kbt.Pad]:
+        self.reads["get_pads"] += 1
         return self.pads
 
     def get_pad_shapes_as_polygons(
         self, pads: kbt.Pad | Sequence[kbt.Pad], layer: int
     ) -> PolygonWithHoles | list[PolygonWithHoles]:
+        self.reads["get_pad_shapes_as_polygons"] += 1
+
         def shape(p: kbt.Pad) -> PolygonWithHoles:
             x, y = p.position.x / NM_PER_MM, p.position.y / NM_PER_MM
             h = PAD_HALF_SIZE
@@ -376,24 +384,31 @@ class FakeBoard:
         return [shape(p) for p in pads[: -1 if self.drops_pads else None]]
 
     def get_vias(self) -> list[kbt.Via]:
+        self.reads["get_vias"] += 1
         return self.vias
 
     def get_tracks(self) -> list[kbt.Track | kbt.ArcTrack]:
+        self.reads["get_tracks"] += 1
         return self.tracks
 
     def get_shapes(self) -> list[kbt.BoardShape]:
+        self.reads["get_shapes"] += 1
         return self.shapes
 
     def get_text(self) -> list[kbt.BoardText | kbt.BoardTextBox]:
+        self.reads["get_text"] += 1
         return self.texts
 
     def get_footprints(self) -> list[kbt.FootprintInstance]:
+        self.reads["get_footprints"] += 1
         return self.footprints
 
     def get_zones(self) -> list[kbt.Zone]:
+        self.reads["get_zones"] += 1
         return self.zones
 
     def get_netclass_for_nets(self, nets: Sequence[kbt.Net]) -> dict[str, NetClass]:
+        self.reads["get_netclass_for_nets"] += 1
         default = self.default_netclass()
         return {n.name: self.netclasses.get(n.name, default) for n in nets}
 
@@ -401,6 +416,7 @@ class FakeBoard:
         return netclass("Default", self.default_clearance)
 
     def get_project(self) -> FakeProject:
+        self.reads["get_project"] += 1
         return FakeProject(
             [self.default_netclass(), *self.netclasses.values()], self.project_dir
         )
@@ -443,14 +459,13 @@ class CommitBoard(FakeBoard):
     never call. `short_create` answers CreateItems with one item fewer than
     sent, all reported as created. `refuse_create_nets` refuses only the
     items on those nets. `unanswered_delete` leaves those ids out of the
-    DeleteItems answer. `reads` counts get_items_by_id requests.
+    DeleteItems answer.
     """
 
     calls: list[str] = field(default_factory=list[str])
     deleted: list[str] = field(default_factory=list[str])
     created: list[Wrapper] = field(default_factory=list[Wrapper])
     labels: list[str] = field(default_factory=list[str])
-    reads: int = 0
     refuse_create: bool = False
     refuse_create_nets: frozenset[str] = frozenset()
     short_create: bool = False
@@ -463,7 +478,7 @@ class CommitBoard(FakeBoard):
         self.client = CommitClient(board=self)
 
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
-        self.reads += 1
+        self.reads["get_items_by_id"] += 1
         wanted = {i.value for i in ids}
         return [t for t in self.tracks if t.id.value in wanted]
 
