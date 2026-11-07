@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 from typing import cast
 
 import kipy.board
@@ -11,10 +12,14 @@ from conftest import (
     FakeBoard,
     FakeClient,
     kipy_arc,
+    kipy_bezier,
+    kipy_board_arc,
+    kipy_circle,
     kipy_field,
     kipy_footprint,
     kipy_pad,
     kipy_rect,
+    kipy_rectangle,
     kipy_segment,
     kipy_text,
     kipy_track,
@@ -316,6 +321,38 @@ class TestGraphicsAndText:
             4 * 0.2 + math.pi * 0.01, rel=1e-2
         )
 
+    @pytest.mark.parametrize(
+        ("shape", "centre", "on_outline"),
+        [
+            (lambda filled: kipy_circle((5, 5), 1, filled), (5, 5), (6, 5)),
+            (lambda filled: kipy_rectangle((2, 2), (6, 4), filled), (4, 3), (6, 3)),
+        ],
+        ids=["circle", "rectangle"],
+    )
+    @pytest.mark.parametrize("filled", [True, False], ids=["filled", "unfilled"])
+    def test_closed_copper_shape_covers_its_inside_only_when_filled(
+        self,
+        shape: Callable[[bool], kbt.BoardShape],
+        centre: tuple[float, float],
+        on_outline: tuple[float, float],
+        filled: bool,
+    ) -> None:
+        (graphic,) = snapshot(FakeBoard(shapes=[shape(filled)])).graphics
+
+        assert graphic.geometry.contains(Point(on_outline))
+        assert graphic.geometry.contains(Point(centre)) == filled
+
+    def test_unconvertible_copper_shape_is_skipped_with_a_warning(
+        self, log: list[str]
+    ) -> None:
+        fake = FakeBoard(shapes=[kipy_bezier("bz")])
+
+        assert snapshot(fake).graphics == ()
+        assert any(
+            line.startswith("WARNING") and "Ignoring copper BoardBezier bz" in line
+            for line in log
+        )
+
     def test_board_text_and_visible_footprint_fields_become_polygons(self) -> None:
         fake = FakeBoard(
             texts=[
@@ -403,6 +440,49 @@ class TestKeepoutsAndEdge:
 
         assert edge_paths_closed(snap.edge_paths)
         assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(100)
+
+    def test_edge_rectangle_is_a_closed_outline(self) -> None:
+        fake = FakeBoard(
+            shapes=[kipy_rectangle((0, 0), (10, 6), layer=BL.BL_Edge_Cuts)]
+        )
+
+        snap = snapshot(fake)
+
+        assert edge_paths_closed(snap.edge_paths)
+        assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(60)
+
+    def test_edge_rounded_rectangle_of_segments_and_arcs_closes(self) -> None:
+        # A 10 x 6 mm board with 1 mm corner radii.
+        d = 1 - math.sqrt(0.5)
+
+        def edge(a: tuple[float, float], b: tuple[float, float]) -> kbt.BoardSegment:
+            return kipy_segment(a, b, layer=BL.BL_Edge_Cuts)
+
+        def corner(
+            a: tuple[float, float], mid: tuple[float, float], b: tuple[float, float]
+        ) -> kbt.BoardArc:
+            return kipy_board_arc(a, mid, b, layer=BL.BL_Edge_Cuts)
+
+        fake = FakeBoard(
+            shapes=[
+                edge((1, 0), (9, 0)),
+                corner((9, 0), (10 - d, d), (10, 1)),
+                edge((10, 1), (10, 5)),
+                corner((10, 5), (10 - d, 6 - d), (9, 6)),
+                edge((9, 6), (1, 6)),
+                corner((1, 6), (d, 6 - d), (0, 5)),
+                edge((0, 5), (0, 1)),
+                corner((0, 1), (d, d), (1, 0)),
+            ]
+        )
+
+        snap = snapshot(fake)
+
+        assert edge_paths_closed(snap.edge_paths)
+        # Chords of 5° arcs lose about 1e-3 mm² per corner.
+        assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(
+            60 - (4 - math.pi), abs=1e-2
+        )
 
 
 class TestGeometryHelpers:

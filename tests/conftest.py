@@ -6,6 +6,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 import kipy.board_types as kbt
 import pytest
@@ -34,6 +35,8 @@ from kibends.chain import NM_PER_MM
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
+
+ShapeT = TypeVar("ShapeT", bound=kbt.BoardShape)
 
 
 @pytest.fixture
@@ -149,6 +152,22 @@ def kipy_footprint(
     return f
 
 
+def _drawn(
+    shape: ShapeT,
+    layer: int,
+    width: float,
+    net: str,
+    shape_id: str,
+    filled: bool = False,
+) -> ShapeT:
+    shape.proto.id.value = shape_id
+    shape.layer = layer
+    shape.attributes.stroke.width = nm(width)
+    shape.attributes.fill.filled = filled
+    shape.net = kbt.Net(name=net)
+    return shape
+
+
 def kipy_segment(
     start: tuple[float, float],
     end: tuple[float, float],
@@ -158,13 +177,61 @@ def kipy_segment(
     shape_id: str = "shape",
 ) -> kbt.BoardSegment:
     s = kbt.BoardSegment()
-    s.proto.id.value = shape_id
     s.start = vec(*start)
     s.end = vec(*end)
-    s.layer = layer
-    s.attributes.stroke.width = nm(width)
-    s.net = kbt.Net(name=net)
-    return s
+    return _drawn(s, layer, width, net, shape_id)
+
+
+def kipy_board_arc(
+    start: tuple[float, float],
+    mid: tuple[float, float],
+    end: tuple[float, float],
+    layer: int = BL.BL_F_Cu,
+    width: float = 0.1,
+    shape_id: str = "arc",
+) -> kbt.BoardArc:
+    a = kbt.BoardArc()
+    a.start = vec(*start)
+    a.mid = vec(*mid)
+    a.end = vec(*end)
+    return _drawn(a, layer, width, "", shape_id)
+
+
+def kipy_circle(
+    centre: tuple[float, float],
+    radius: float,
+    filled: bool = False,
+    layer: int = BL.BL_F_Cu,
+    width: float = 0.1,
+    shape_id: str = "circle",
+) -> kbt.BoardCircle:
+    c = kbt.BoardCircle()
+    c.center = vec(*centre)
+    c.radius_point = vec(centre[0] + radius, centre[1])
+    return _drawn(c, layer, width, "", shape_id, filled)
+
+
+def kipy_rectangle(
+    top_left: tuple[float, float],
+    bottom_right: tuple[float, float],
+    filled: bool = False,
+    layer: int = BL.BL_F_Cu,
+    width: float = 0.1,
+    shape_id: str = "rect",
+) -> kbt.BoardRectangle:
+    r = kbt.BoardRectangle()
+    r.top_left = vec(*top_left)
+    r.bottom_right = vec(*bottom_right)
+    return _drawn(r, layer, width, "", shape_id, filled)
+
+
+def kipy_bezier(shape_id: str = "bezier") -> kbt.BoardBezier:
+    b = kbt.BoardBezier()
+    b.start = vec(0, 0)
+    b.control1 = vec(1, 1)
+    b.control2 = vec(2, 1)
+    b.end = vec(3, 0)
+    return _drawn(b, BL.BL_F_Cu, 0.1, "", shape_id)
 
 
 def kipy_text(value: str, x: float, y: float, layer: int = BL.BL_F_Cu) -> kbt.BoardText:
