@@ -441,7 +441,8 @@ class CommitBoard(FakeBoard):
     `calls` lists the commit lifecycle in order: begin_commit, delete,
     create, push_commit, drop_commit, and refill_zones, which kibends must
     never call. `short_create` answers CreateItems with one item fewer than
-    sent, all reported as created.
+    sent, all reported as created. `unanswered_delete` leaves those ids out
+    of the DeleteItems answer.
     """
 
     calls: list[str] = field(default_factory=list[str])
@@ -451,6 +452,7 @@ class CommitBoard(FakeBoard):
     refuse_create: bool = False
     short_create: bool = False
     refuse_delete: frozenset[str] = frozenset()
+    unanswered_delete: frozenset[str] = frozenset()
     push_error: Exception | None = None
     document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
 
@@ -497,6 +499,8 @@ class CommitBoard(FakeBoard):
         self.calls.append("delete")
         response = DeleteItemsResponse()
         for kiid in command.item_ids:
+            if kiid.value in self.unanswered_delete:
+                continue
             refused = kiid.value in self.refuse_delete
             response.deleted_items.add(
                 id=kiid,

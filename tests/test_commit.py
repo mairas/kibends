@@ -31,6 +31,7 @@ def setup(
     refuse_create: bool = False,
     short_create: bool = False,
     refuse_delete: frozenset[str] = frozenset(),
+    unanswered_delete: frozenset[str] = frozenset(),
     push_error: Exception | None = None,
 ) -> tuple[CommitBoard, Chain, list[Segment]]:
     tracks = l_tracks()
@@ -40,6 +41,7 @@ def setup(
         refuse_create=refuse_create,
         short_create=short_create,
         refuse_delete=refuse_delete,
+        unanswered_delete=unanswered_delete,
         push_error=push_error,
     )
     selected = [segment_from_track(t) for t in tracks]
@@ -153,7 +155,17 @@ class TestRefusals:
     def test_refused_delete_drops_the_commit(self) -> None:
         board, chain, selected = setup(refuse_delete=frozenset({"b"}))
 
-        with pytest.raises(commit.DeleteItemsError, match="b"):
+        with pytest.raises(
+            commit.DeleteItemsError, match=r"tracks: b \(IDS_IMMUTABLE\)$"
+        ):
+            run_commit(board, chain, selected)
+
+        assert board.calls == ["begin_commit", "delete", "drop_commit"]
+
+    def test_unanswered_delete_drops_the_commit(self) -> None:
+        board, chain, selected = setup(unanswered_delete=frozenset({"b"}))
+
+        with pytest.raises(commit.DeleteItemsError, match=r"tracks: b \(no answer\)$"):
             run_commit(board, chain, selected)
 
         assert board.calls == ["begin_commit", "delete", "drop_commit"]
