@@ -329,9 +329,11 @@ def test_abnormal_lbfgsb_termination_is_reported() -> None:
 
 STALL_FIXTURE = Path(__file__).parent / "fixtures" / "stall" / "vin_sense_chain.json"
 STALL_ITERATION_LIMIT = 30
+# Coarser than the defaults so the test runs in under a second; with the stall
+# stop disabled these settings still run into the iteration limit.
+STALL_COARSE = {"spacing": 0.3, "burst_maxiter": 30}
 
 
-@pytest.mark.slow
 def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
     # A real chain whose free stretch sits at the fringe of the repulsion
     # range: the shape keeps wandering by tens of µm while the energy no
@@ -350,7 +352,7 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
         np.array(data["pinned"]),
         field,
         params,
-        OptimizerSettings(max_iterations=STALL_ITERATION_LIMIT),
+        replace(SETTINGS, max_iterations=STALL_ITERATION_LIMIT, **STALL_COARSE),
     )
 
     assert result.termination is Termination.CONVERGED
