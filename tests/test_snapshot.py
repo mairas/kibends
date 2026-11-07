@@ -342,6 +342,18 @@ class TestGraphicsAndText:
         assert graphic.geometry.contains(Point(on_outline))
         assert graphic.geometry.contains(Point(centre)) == filled
 
+    @pytest.mark.parametrize("filled", [True, False], ids=["filled", "unfilled"])
+    def test_copper_rounded_rectangle_follows_its_rounded_corners(
+        self, filled: bool
+    ) -> None:
+        d = 1 - math.sqrt(0.5)
+        rect = kipy_rectangle((2, 2), (6, 4), filled, corner_radius=1)
+
+        (graphic,) = snapshot(FakeBoard(shapes=[rect])).graphics
+
+        assert graphic.geometry.contains(Point(2 + d, 2 + d))
+        assert not graphic.geometry.contains(Point(2.1, 2.1))
+
     def test_unconvertible_copper_shape_is_skipped_with_a_warning(
         self, log: list[str]
     ) -> None:
@@ -450,6 +462,17 @@ class TestKeepoutsAndEdge:
 
         assert edge_paths_closed(snap.edge_paths)
         assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(60)
+
+    def test_edge_rectangle_with_corner_radius_has_arc_corners(self) -> None:
+        rect = kipy_rectangle((0, 0), (10, 6), layer=BL.BL_Edge_Cuts, corner_radius=1)
+
+        snap = snapshot(FakeBoard(shapes=[rect]))
+
+        assert edge_paths_closed(snap.edge_paths)
+        # Chords of 5° arcs lose about 1e-3 mm² per corner.
+        assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(
+            60 - (4 - math.pi), abs=1e-2
+        )
 
     def test_edge_rounded_rectangle_of_segments_and_arcs_closes(self) -> None:
         # A 10 x 6 mm board with 1 mm corner radii.

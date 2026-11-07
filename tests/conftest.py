@@ -218,10 +218,12 @@ def kipy_rectangle(
     layer: int = BL.BL_F_Cu,
     width: float = 0.1,
     shape_id: str = "rect",
+    corner_radius: float = 0.0,
 ) -> kbt.BoardRectangle:
     r = kbt.BoardRectangle()
     r.top_left = vec(*top_left)
     r.bottom_right = vec(*bottom_right)
+    r.proto.shape.rectangle.corner_radius.value_nm = nm(corner_radius)
     return _drawn(r, layer, width, "", shape_id, filled)
 
 

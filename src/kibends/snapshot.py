@@ -30,7 +30,7 @@ from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.util.board_layer import canonical_name, layer_from_canonical_name
 from loguru import logger
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize, unary_union
 
@@ -433,6 +433,25 @@ def _read_via(v: kbt.Via) -> Via:
     )
 
 
+def _rectangle_ring(shape: common_types.Rectangle) -> list[Point2]:
+    """The closed outline of a rectangle, with arcs at rounded corners."""
+    (ax, ay), (bx, by) = _mm(shape.top_left), _mm(shape.bottom_right)
+    x0, x1, y0, y1 = min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)
+    # kipy has no accessor for the corner radius KiCad 10 added.
+    r = shape._graphic_proto.rectangle.corner_radius.value_nm / NM_PER_MM
+    if r <= 0:
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+    d = r * (1 - math.sqrt(0.5))
+    corners = [
+        ((x1 - r, y0), (x1 - d, y0 + d), (x1, y0 + r)),
+        ((x1, y1 - r), (x1 - d, y1 - d), (x1 - r, y1)),
+        ((x0 + r, y1), (x0 + d, y1 - d), (x0, y1 - r)),
+        ((x0, y0 + r), (x0 + d, y0 + d), (x0 + r, y0)),
+    ]
+    ring = [p for start, mid, end in corners for p in arc_points(start, mid, end)]
+    return [*ring, ring[0]]
+
+
 def _shape_geometry(
     shape: common_types.GraphicShape | kbt.BoardShape, min_stroke: float = 0.0
 ) -> BaseGeometry | None:
@@ -452,8 +471,7 @@ def _shape_geometry(
         case common_types.Circle():
             area = Point(_mm(shape.center)).buffer(shape.radius() / NM_PER_MM)
         case common_types.Rectangle():
-            (x0, y0), (x1, y1) = _mm(shape.top_left), _mm(shape.bottom_right)
-            area = box(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+            area = Polygon(_rectangle_ring(shape))
         case common_types.Polygon():
             area = unary_union([_polygon(p) for p in shape.polygons])
         case _:
@@ -586,8 +604,7 @@ def _edge_paths(shape: kbt.BoardShape) -> list[list[Point2]]:
         case kbt.BoardCircle():
             return [circle_points(_mm(shape.center), shape.radius() / NM_PER_MM)]
         case kbt.BoardRectangle():
-            (x0, y0), (x1, y1) = _mm(shape.top_left), _mm(shape.bottom_right)
-            return [[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]]
+            return [_rectangle_ring(shape)]
         case kbt.BoardPolygon():
             return [
                 [*ring, ring[0]]
