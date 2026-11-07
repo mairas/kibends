@@ -162,11 +162,31 @@ def test_vertex_deep_inside_obstacle_is_frozen_and_kept() -> None:
     assert result.after.length < result.before.length
 
 
+# Enough outer iterations for the detour to reach the pocket's corners, where
+# edges cut across them and are rejected.
+DETOUR_REJECTING_ITERATIONS = 6
+
+
+def test_edges_cutting_a_corner_are_rejected() -> None:
+    scenario = scenarios.detour()
+
+    result = run(
+        scenario, replace(SETTINGS, max_iterations=DETOUR_REJECTING_ITERATIONS)
+    )
+
+    assert result.rejected_edges > 0
+    assert all_edges_clear(result.polyline, scenario.field)
+
+
 @pytest.mark.slow
 def test_detour_in_narrow_channel_is_pulled_tight() -> None:
-    result = run(scenarios.detour())
+    scenario = scenarios.detour()
+
+    result = run(scenario)
 
     assert result.termination is Termination.CONVERGED
+    assert result.rejected_edges > 0
+    assert all_edges_clear(result.polyline, scenario.field)
     assert result.before.length == pytest.approx(scenarios.DETOUR_LENGTH + 5.0)
     assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-3)
     # Bubble-limited: about 62 outer iterations with the default settings.
