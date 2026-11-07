@@ -11,7 +11,6 @@ import stat
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 from kipy.errors import ApiError
@@ -60,6 +59,8 @@ def tracks(*points: tuple[float, float], net: str = "SIG") -> drc.NewTracks:
 
 # ---- minimal s-expression reader for checking injector output -------------
 
+type Sexpr = str | list[Sexpr]
+
 
 def tokenize(text: str) -> Iterator[str | tuple[str, str]]:
     i, n = 0, len(text)
@@ -88,8 +89,8 @@ def tokenize(text: str) -> Iterator[str | tuple[str, str]]:
             i = j
 
 
-def parse_sexpr(text: str) -> list[Any]:
-    stack: list[list[Any]] = [[]]
+def parse_sexpr(text: str) -> list[Sexpr]:
+    stack: list[list[Sexpr]] = [[]]
     for tok in tokenize(text):
         if tok == "(":
             stack.append([])
@@ -100,16 +101,17 @@ def parse_sexpr(text: str) -> list[Any]:
             stack[-1].append(tok[1] if isinstance(tok, tuple) else tok)
     assert len(stack) == 1, "unbalanced parentheses"
     (root,) = stack[0]
-    return root  # type: ignore[no-any-return]
+    assert isinstance(root, list), "the text is not one list"
+    return root
 
 
-def children(node: list[Any], name: str) -> list[list[Any]]:
+def children(node: list[Sexpr], name: str) -> list[list[Sexpr]]:
     return [c for c in node if isinstance(c, list) and c and c[0] == name]
 
 
-def field(node: list[Any], name: str) -> list[Any]:
+def field(node: list[Sexpr], name: str) -> list[Sexpr]:
     (f,) = children(node, name)
-    return f[1:]  # type: ignore[no-any-return]
+    return f[1:]
 
 
 # ---- removing the old chain --------------------------------------------------
