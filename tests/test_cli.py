@@ -676,6 +676,16 @@ class TestErrors:
         assert "KiCad created 0 of" in exit_message(log)
         assert board.calls[-1] == "drop_commit"
 
+    def test_push_refused_by_kicad_exits_with_the_reason(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(l_board(push_error=ApiError("nope")))
+
+        message = exit_message(log, "--no-drc")
+
+        assert "KiCad refused the request" in message and "nope" in message
+        assert board.calls[-1] == "drop_commit"
+
     def test_lost_connection_on_push_exits_with_a_warning(
         self, connect: Connector, log: list[str]
     ) -> None:
