@@ -42,7 +42,8 @@ def simplify(
 def _mergeable(
     polyline: FloatArray, start: int, end: int, field: ObstacleField, tolerance: float
 ) -> bool:
-    a, b = polyline[start], polyline[end]
+    a: FloatArray = polyline[start]
+    b: FloatArray = polyline[end]
     chord = b - a
     squared = max(float(chord @ chord), np.finfo(float).tiny)
     inner = polyline[start + 1 : end]

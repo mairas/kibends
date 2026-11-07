@@ -237,7 +237,10 @@ def _falloff(falloff_range: float) -> Integrand:
 
 
 def _hinge(standoff: float) -> Integrand:
-    """CHOMP clearance hinge: 0 beyond standoff ε, (ε-d)²/(2ε) on [0, ε), ε/2 - d inside."""
+    """CHOMP clearance hinge with standoff ε.
+
+    0 beyond ε, (ε-d)²/(2ε) on [0, ε), ε/2 - d inside.
+    """
 
     def hinge(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
         depth = standoff - np.minimum(distance, standoff)

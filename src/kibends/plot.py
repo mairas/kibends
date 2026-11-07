@@ -1,5 +1,9 @@
 """Draw a smoothing run for review; needs the `plot` extra (matplotlib)."""
 
+# matplotlib's stubs leave **kwargs untyped on its drawing methods, which
+# pyright strict reports at every call; this module only draws.
+# pyright: reportUnknownMemberType=false
+
 from collections.abc import Sequence
 from pathlib import Path
 

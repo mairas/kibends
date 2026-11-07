@@ -1,5 +1,6 @@
 import math
 from collections.abc import Callable
+from functools import partial
 from typing import cast
 
 import kipy.board
@@ -324,8 +325,8 @@ class TestGraphicsAndText:
     @pytest.mark.parametrize(
         ("shape", "centre", "on_outline"),
         [
-            (lambda filled: kipy_circle((5, 5), 1, filled), (5, 5), (6, 5)),
-            (lambda filled: kipy_rectangle((2, 2), (6, 4), filled), (4, 3), (6, 3)),
+            (partial(kipy_circle, (5, 5), 1), (5, 5), (6, 5)),
+            (partial(kipy_rectangle, (2, 2), (6, 4)), (4, 3), (6, 3)),
         ],
         ids=["circle", "rectangle"],
     )

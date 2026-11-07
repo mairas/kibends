@@ -3,9 +3,11 @@ import re
 import stat
 import sys
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import NoReturn, cast
 
 import kipy.board_types as kbt
 import pytest
@@ -24,7 +26,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from shapely.geometry import LineString, box
 
 from kibends import cli, drc
-from kibends.energy import EnergyParams
+from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import Obstacles
 from kibends.optimize import OptimizeResult, OptimizerSettings, Termination, optimize
 
@@ -47,13 +49,16 @@ def l_chain() -> list[kbt.Track]:
     ]
 
 
-def l_board(**options: object) -> CommitBoard:
+def l_board(
+    *, refuse_create: bool = False, push_error: Exception | None = None
+) -> CommitBoard:
     chain = l_chain()
     return CommitBoard(
         selection=list(chain),
         tracks=list(chain),
         pads=[kipy_pad("pad", "GND", *PAD)],
-        **options,  # type: ignore[arg-type]
+        refuse_create=refuse_create,
+        push_error=push_error,
     )
 
 
@@ -112,7 +117,11 @@ def write_kicad_cli(directory: Path) -> Path:
 @pytest.fixture(autouse=True)
 def kicad_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = write_kicad_cli(tmp_path / "bin")
-    monkeypatch.setattr(drc.shutil, "which", lambda name: str(path))
+
+    def which(name: str) -> str:
+        return str(path)
+
+    monkeypatch.setattr(drc.shutil, "which", which)
     monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", ())
     return path
 
@@ -134,14 +143,14 @@ def checked_segments(kicad_cli: Path, stem: str) -> list[tuple[int, int, int, in
     ]
 
 
-def report_on(kicad_cli: Path, **reports: list[dict[str, Any]]) -> None:
+def report_on(kicad_cli: Path, **reports: list[drc.ReportViolation]) -> None:
     """Make the fake kicad-cli report `reports[stem]` as violations."""
     (kicad_cli.parent / "reports.json").write_text(
         json.dumps({stem: {"violations": vs} for stem, vs in reports.items()})
     )
 
 
-PAD_CLEARANCE = {
+PAD_CLEARANCE: drc.ReportViolation = {
     "type": "clearance",
     "description": "Clearance violation (rule 'pad_clearance' clearance 0.1700 mm; "
     "actual 0.1670 mm)",
@@ -153,7 +162,7 @@ PAD_CLEARANCE = {
 
 
 @pytest.fixture
-def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> "Connector":
+def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Connector:
     return Connector(monkeypatch, tmp_path / "project")
 
 
@@ -327,13 +336,13 @@ class TestSmooth:
     ) -> None:
         connect.to(straight_board())
         seen: dict[str, object] = {}
-        real_build = cli.build_obstacles
+        real_build: Callable[..., Obstacles] = cli.build_obstacles
 
-        def build_spy(*args: Any, **kwargs: Any) -> Obstacles:
+        def build_spy(*args: object, **kwargs: object) -> Obstacles:
             seen.update(kwargs)
             return real_build(*args, **kwargs)
 
-        def optimize_spy(*args: Any, **kwargs: Any) -> OptimizeResult:
+        def optimize_spy(*args: object, **kwargs: object) -> NoReturn:
             seen["params"] = args[3]
             raise SystemExit(0)
 
@@ -370,9 +379,9 @@ class TestSmooth:
     ) -> None:
         connect.to(l_board())
         seen: dict[str, object] = {}
-        real_simplify = cli.simplify
+        real_simplify: Callable[..., FloatArray] = cli.simplify
 
-        def simplify_spy(*a: Any, **kwargs: Any) -> Any:
+        def simplify_spy(*a: object, **kwargs: object) -> FloatArray:
             seen.update(kwargs)
             return real_simplify(*a, **kwargs)
 
@@ -396,13 +405,10 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real = cli.optimize
+        real: Callable[..., OptimizeResult] = cli.optimize
 
         def abnormal(*args: object, **kwargs: object) -> OptimizeResult:
-            result = real(*args, **kwargs)  # type: ignore[arg-type]
-            return OptimizeResult(
-                **{**result.__dict__, "termination": Termination.ABNORMAL}
-            )
+            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
         monkeypatch.setattr(cli, "optimize", abnormal)
 
@@ -418,13 +424,10 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real = cli.optimize
+        real: Callable[..., OptimizeResult] = cli.optimize
 
         def capped(*args: object, **kwargs: object) -> OptimizeResult:
-            result = real(*args, **kwargs)  # type: ignore[arg-type]
-            return OptimizeResult(
-                **{**result.__dict__, "termination": Termination.ITERATION_CAP}
-            )
+            return replace(real(*args, **kwargs), termination=Termination.ITERATION_CAP)
 
         monkeypatch.setattr(cli, "optimize", capped)
 
@@ -504,7 +507,7 @@ class TestDrc:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         connect.to(l_board())
-        unconnected = {
+        unconnected: drc.ReportViolation = {
             "type": "unconnected_items",
             "description": "Missing connection between items",
             "severity": "error",
@@ -552,7 +555,11 @@ class TestDrc:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(l_board(), saved=False)
-        monkeypatch.setattr(cli, "optimize", lambda *a, **k: pytest.fail("optimized"))
+
+        def never(*args: object, **kwargs: object) -> NoReturn:
+            pytest.fail("optimized")
+
+        monkeypatch.setattr(cli, "optimize", never)
 
         message = exit_message(log)
 
@@ -692,7 +699,7 @@ class TestErrors:
             kipy_track("a", "SIG", (0, 0), (5, 0)),
             kipy_track("b", "SIG", (7, 0), (9, 0)),
         ]
-        connect.to(CommitBoard(selection=tracks, tracks=tracks))
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
 
         message = exit_message(log)
 
@@ -738,7 +745,7 @@ class TestErrors:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        board.get_items_by_id = lambda ids: []  # type: ignore[method-assign]
+        board.get_items_by_id = lambda ids: []
 
         assert "changed in KiCad" in exit_message(log)
         assert board.calls == []

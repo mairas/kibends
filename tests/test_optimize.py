@@ -45,7 +45,8 @@ def distance_to_line(
 ) -> FloatArray:
     direction = (end - start) / np.linalg.norm(end - start)
     offset = points - start
-    return np.asarray(np.abs(offset[:, 0] * direction[1] - offset[:, 1] * direction[0]))
+    cross: FloatArray = offset[:, 0] * direction[1] - offset[:, 1] * direction[0]
+    return np.abs(cross)
 
 
 def y_at(points: FloatArray, x: float) -> float:
@@ -218,6 +219,7 @@ FROZEN_DISC_RADIUS = 0.3
 @pytest.mark.parametrize("x", [3.0, 9.0, 16.0])
 def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
     detour = scenarios.detour()
+    assert isinstance(detour.field, Union)
     field = Union([*detour.field.shapes, Disc(x, 0.0, FROZEN_DISC_RADIUS)])
     polyline = np.insert(detour.polyline, 1 if x < 9.85 else 5, [x, 0.0], axis=0)
 
@@ -377,13 +379,13 @@ class TestStalled:
     SETTINGS = OptimizerSettings(stall_tolerance=0.5, stall_window=3)
 
     def test_needs_a_full_window_of_history(self) -> None:
-        assert not optimize_module._stalled([5.0, 5.0, 5.0], self.SETTINGS)
+        assert not optimize_module.stalled([5.0, 5.0, 5.0], self.SETTINGS)
 
     def test_improvement_of_exactly_the_tolerance_is_a_stall(self) -> None:
-        assert optimize_module._stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
+        assert optimize_module.stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
 
     def test_larger_improvement_over_the_window_keeps_going(self) -> None:
-        assert not optimize_module._stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
+        assert not optimize_module.stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
 
 
 class ReachIgnored:

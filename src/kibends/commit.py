@@ -4,8 +4,6 @@
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from datetime import datetime
 from itertools import pairwise
@@ -116,7 +114,7 @@ def track_items(
     polyline: FloatArray, width: float, model: kbt.Track
 ) -> list[kbt.Track]:
     """Straight tracks along `polyline`, on the layer and net of `model`."""
-    tracks = []
+    tracks: list[kbt.Track] = []
     for start, end in pairwise(snapped_points(polyline)):
         track = kbt.Track()
         track.start = Vector2.from_xy(_nm(start[0]), _nm(start[1]))
@@ -156,8 +154,9 @@ def delete_checked(board: kipy.board.Board, ids: Sequence[str]) -> None:
     command.item_ids.extend(KIID(value=i) for i in ids)
     response = board.client.send(command, DeleteItemsResponse)
     statuses = {r.id.value: r.status for r in response.deleted_items}
+    names = {i: ItemDeletionStatus.Name(s) for i, s in statuses.items()}
     failed = [
-        f"{i} ({ItemDeletionStatus.Name(statuses[i]) if i in statuses else 'no answer'})"
+        f"{i} ({names.get(i, 'no answer')})"
         for i in ids
         if statuses.get(i) != ItemDeletionStatus.IDS_OK
     ]

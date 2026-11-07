@@ -8,11 +8,11 @@ import argparse
 import os
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, Protocol
+from typing import NoReturn, Protocol, assert_never
 
 import kipy
 import kipy.board
@@ -146,7 +146,7 @@ def _fail(message: str) -> NoReturn:
 
 
 @contextmanager
-def _exit_on_failure() -> Iterator[None]:
+def _exit_on_failure() -> Generator[None]:
     """Report an expected failure as one log line and exit 1."""
     try:
         yield
@@ -414,8 +414,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Smooth the track chain selected in the PCB editor",
         description="Replace the selected chain of tracks with a short, smooth "
         "path of straight tracks that keeps clearance to other copper. The "
-        "result minimises length + stiffness² × bending + repulsion from "
-        "nearby copper.",
+        "result minimises length + bending weighted by stiffness squared + "
+        "repulsion from nearby copper.",
     )
     smooth_parser.add_argument(
         "--stiffness",
@@ -463,7 +463,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_CHORD_TOLERANCE,
         metavar="MM",
         help="How far the committed tracks may depart from the optimised curve; "
-        f"larger values give fewer, longer tracks (default: {DEFAULT_CHORD_TOLERANCE:g})",
+        "larger values give fewer, longer tracks "
+        f"(default: {DEFAULT_CHORD_TOLERANCE:g})",
     )
     smooth_parser.add_argument(
         "--dry-run",
@@ -529,3 +530,5 @@ def main(argv: Sequence[str] | None = None) -> None:
     match args.command:
         case "smooth":
             execute_smooth(args)
+        case _:
+            assert_never(args.command)

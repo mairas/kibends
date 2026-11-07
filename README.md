@@ -25,7 +25,7 @@ Status: early development. One chain per run.
 
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
-- Python 3.11 or later.
+- Python 3.14 or later.
 - `kicad-cli`, which comes with KiCad, for the DRC check.
 
 ## Installation

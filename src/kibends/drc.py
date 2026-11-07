@@ -11,8 +11,6 @@ are copied and adapted from kistitch's drc.py (MIT, Copyright (c) 2025
 Hat Labs Oy).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -203,7 +201,7 @@ def remove_segments(board_text: str, ids: Collection[str]) -> str:
     Everything else is left byte for byte, so that DRC sees no other change.
     """
     spans: set[tuple[int, int]] = set()
-    missing = []
+    missing: list[str] = []
     for i in ids:
         span = _segment_span(board_text, i)
         if span is None:
@@ -292,28 +290,28 @@ def inject(board_text: str, tracks: NewTracks) -> tuple[str, tuple[str, ...]]:
 # ---- reports -------------------------------------------------------------------
 
 
-class _Position(TypedDict):
+class ReportPosition(TypedDict):
     x: float
     y: float
 
 
-class _ReportItem(TypedDict):
+class ReportItem(TypedDict):
     description: str
-    pos: _Position
+    pos: ReportPosition
     uuid: NotRequired[str]
 
 
-class _ReportViolation(TypedDict, total=False):
+class ReportViolation(TypedDict, total=False):
     type: str
     description: str
     severity: str
-    items: list[_ReportItem]
+    items: list[ReportItem]
     excluded: bool
 
 
 class Report(TypedDict, total=False):
-    violations: list[_ReportViolation]
-    unconnected_items: list[_ReportViolation]
+    violations: list[ReportViolation]
+    unconnected_items: list[ReportViolation]
 
 
 @dataclass(frozen=True)
@@ -339,7 +337,7 @@ class Violation:
 
 
 def parse_report(report: Report) -> list[Violation]:
-    out = []
+    out: list[Violation] = []
     for v in report.get("violations", []) + report.get("unconnected_items", []):
         if v.get("excluded"):
             continue
@@ -463,7 +461,7 @@ def introduced(
     remaining = Counter(
         _key(v, old_ids) for v in baseline if v.type not in CONNECTIVITY_TYPES
     )
-    added = []
+    added: list[Violation] = []
     for v in candidate:
         if v.type in CONNECTIVITY_TYPES:
             continue
