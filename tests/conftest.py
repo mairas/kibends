@@ -29,17 +29,11 @@ from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
 from kipy.wrapper import Wrapper
 from loguru import logger
 
-import kibends.commit
 from kibends.chain import NM_PER_MM
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
-
-
-@pytest.fixture(autouse=True)
-def no_refill_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(kibends.commit, "REFILL_POLL_S", 0.0)
 
 
 @pytest.fixture
@@ -350,7 +344,8 @@ class CommitBoard(FakeBoard):
     """A FakeBoard that also records commits, deletions and creations.
 
     `calls` lists the commit lifecycle in order: begin_commit, delete,
-    create, push_commit, drop_commit, refill_zones.
+    create, push_commit, drop_commit, and refill_zones, which kibends must
+    never call.
     """
 
     calls: list[str] = field(default_factory=list)
@@ -422,6 +417,3 @@ class FakeKiCad:
 
     def get_board(self) -> FakeBoard:
         return self.board
-
-    def ping(self) -> None:
-        pass

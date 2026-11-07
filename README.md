@@ -55,8 +55,8 @@ kibends smooth                              # then commit
 The command prints the length, track count, tightest bend radius and
 clearance margins before and after, and the optimizer's outcome. Without
 `--dry-run`, the selected tracks are replaced in one commit, which one undo
-in KiCad reverts. Zones are refilled afterwards; KiCad records the refill as
-a separate undo step.
+in KiCad reverts. kibends does not refill zones: refill them yourself (B)
+or let KiCad's DRC refill them.
 
 Locked tracks in the selection are left untouched. The chain's two ends
 stay where they are, as does every point where unselected copper of the same

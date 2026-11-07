@@ -4,7 +4,7 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
-from conftest import CommitBoard, FakeKiCad, kipy_track, nm
+from conftest import CommitBoard, kipy_track, nm
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -42,7 +42,6 @@ def run_commit(
     polyline: FloatArray = NEW_PATH,
 ) -> None:
     commit.commit_chain(
-        FakeKiCad(board),
         cast(kipy.board.Board, board),
         chain,
         selected,
@@ -61,7 +60,6 @@ class TestCommitChain:
             "delete",
             "create",
             "push_commit",
-            "refill_zones",
         ]
         assert sorted(board.deleted) == ["a", "b"]
         assert board.labels[0].startswith("kibends smooth ")
@@ -147,7 +145,6 @@ class TestRefusals:
             run_commit(board, chain, selected)
 
         assert board.calls[-1] == "drop_commit"
-        assert "refill_zones" not in board.calls
 
     def test_push_timeout_keeps_the_commit_and_warns(self, log: list[str]) -> None:
         # The commit may have landed: dropping it then would be wrong.
@@ -157,35 +154,3 @@ class TestRefusals:
 
         assert "drop_commit" not in board.calls
         assert any("may have landed" in line for line in log)
-
-
-def test_refill_is_reported_as_a_separate_undo_step(log: list[str]) -> None:
-    board, chain, selected = setup()
-
-    run_commit(board, chain, selected)
-
-    assert any("separate undo step" in line for line in log)
-
-
-class RefillBoard:
-    def __init__(self, errors: list[Exception]) -> None:
-        self.errors = errors
-        self.refills = 0
-
-    def refill_zones(self, block: bool = True) -> None:
-        self.refills += 1
-        if self.errors:
-            raise self.errors.pop(0)
-
-
-def test_refill_refused_as_busy_is_retried() -> None:
-    board = RefillBoard([ApiError("busy", code=ApiStatusCode.AS_BUSY)] * 2)
-
-    refilled = commit.refill_tolerant(
-        FakeKiCad(CommitBoard()),
-        cast(kipy.board.Board, board),
-        sleep=lambda s: None,
-    )
-
-    assert refilled
-    assert board.refills == 3

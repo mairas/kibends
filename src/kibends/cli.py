@@ -214,7 +214,7 @@ def smooth(options: SmoothOptions) -> None:
     if options.dry_run:
         logger.info("Dry run: nothing committed")
         return
-    commit_chain(kicad, board, chain, selected, simplified)
+    commit_chain(board, chain, selected, simplified)
 
 
 def _plot_renderer() -> Renderer:
