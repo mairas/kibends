@@ -430,7 +430,8 @@ class CommitBoard(FakeBoard):
 
     `calls` lists the commit lifecycle in order: begin_commit, delete,
     create, push_commit, drop_commit, and refill_zones, which kibends must
-    never call.
+    never call. `short_create` answers CreateItems with one item fewer than
+    sent, all reported as created.
     """
 
     calls: list[str] = field(default_factory=list)
@@ -438,6 +439,7 @@ class CommitBoard(FakeBoard):
     created: list[Wrapper] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
     refuse_create: bool = False
+    short_create: bool = False
     refuse_delete: frozenset[str] = frozenset()
     push_error: Exception | None = None
     document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
@@ -468,7 +470,8 @@ class CommitBoard(FakeBoard):
     def answer_create(self, command: CreateItems) -> CreateItemsResponse:
         self.calls.append("create")
         response = CreateItemsResponse()
-        for packed in command.items:
+        answered = command.items[:-1] if self.short_create else command.items
+        for packed in answered:
             result = response.created_items.add()
             result.item.CopyFrom(packed)
             result.status.code = (

@@ -128,6 +128,15 @@ class TestRefusals:
         assert board.calls[-1] == "drop_commit"
         assert "push_commit" not in board.calls
 
+    def test_short_create_reply_drops_the_commit(self) -> None:
+        board, chain, selected = setup(short_create=True)
+
+        with pytest.raises(commit.CreateItemsError, match="created 2 of 3"):
+            run_commit(board, chain, selected)
+
+        assert board.calls[-1] == "drop_commit"
+        assert "push_commit" not in board.calls
+
     def test_refused_delete_drops_the_commit(self) -> None:
         board, chain, selected = setup(refuse_delete=frozenset({"b"}))
 
