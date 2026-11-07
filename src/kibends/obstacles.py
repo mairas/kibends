@@ -8,8 +8,6 @@ distance to the inflated shape without buffering it. The board edge is the
 outside of the Edge.Cuts outline, inflated the same way.
 """
 
-from __future__ import annotations
-
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
