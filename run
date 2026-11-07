@@ -26,7 +26,13 @@ function sync {
 }
 
 function test {
-  #@ Run the test suite (extra arguments go to pytest)
+  #@ Run the fast tests (extra arguments go to pytest)
+  #@ Category: Development
+  .venv/bin/python -m pytest -m "not slow" "$@"
+}
+
+function test-all {
+  #@ Run every test, including slow and kicad-cli ones (before committing)
   #@ Category: Development
   .venv/bin/python -m pytest "$@"
 }

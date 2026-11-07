@@ -33,6 +33,7 @@ dev = [
     "types-protobuf>=7.35.1.20260906",
     "types-shapely>=2.1.0.20261030",
     "scipy-stubs>=1.17.1.5",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -41,6 +42,8 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Parallel by default; pass `-n 0` to run serially (e.g. for pdb).
+addopts = "-n auto"
 markers = [
     "slow: takes several seconds; deselect with -m 'not slow'",
     "kicad_cli: runs the real kicad-cli; skipped when it is not installed",

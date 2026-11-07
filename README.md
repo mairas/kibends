@@ -119,5 +119,6 @@ only slightly, but still replaces its tracks.
 
 ```sh
 ./run sync
-./run test
+./run test       # fast tests, in parallel
+./run test-all   # also the slow and kicad-cli tests; run before committing
 ```
