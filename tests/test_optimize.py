@@ -134,7 +134,7 @@ class TestWrap:
 
 class TestChannel:
     def test_repulsion_centres_the_track(self) -> None:
-        result = run(scenarios.channel(repulsion=1.0))
+        result = run(scenarios.channel(repulsion=1.0), COARSE)
 
         assert result.termination is Termination.CONVERGED
         middle = result.polyline[
