@@ -56,6 +56,10 @@ CLEARANCE_WEIGHT = 50.0
 STANDOFF = 0.02
 POINTS_PER_EDGE = 3
 
+# kipy's 2 s default is too short for reading a large board as text and for
+# deleting or creating items on one.
+KICAD_TIMEOUT_MS = 30_000
+
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
 )
@@ -156,15 +160,16 @@ def _exit_on_failure() -> Iterator[None]:
         )
     except KiCadConnectionError as e:
         _fail(
-            f"Cannot reach KiCad ({e}); start KiCad 10 or later with the API "
-            "server enabled (Preferences > Plugins)"
+            f"Cannot reach KiCad ({e}): either it is not running — start KiCad "
+            "10 or later with the API server enabled (Preferences > Plugins) — "
+            f"or a request timed out after {KICAD_TIMEOUT_MS / 1000:g} s"
         )
 
 
 def smooth(options: SmoothOptions) -> None:
     """Smooth the chain selected in KiCad and, unless dry-running, commit it."""
     render = _plot_renderer() if options.plot is not None else None
-    kicad = kipy.KiCad()
+    kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
     gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
     if gate is None:

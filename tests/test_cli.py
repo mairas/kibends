@@ -134,6 +134,7 @@ class Connector:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
         self.monkeypatch = monkeypatch
         self.directory = directory
+        self.client_options: dict[str, object] = {}
 
     def to(self, board: CommitBoard, saved: bool = True) -> CommitBoard:
         if saved:
@@ -142,11 +143,19 @@ class Connector:
             pcb.write_text(board.get_as_string())
             pcb.with_suffix(".kicad_pro").write_text("{}")
             board.project_dir = str(self.directory)
-        self.monkeypatch.setattr(cli.kipy, "KiCad", lambda: FakeKiCad(board))
+
+        def kicad(**options: object) -> FakeKiCad:
+            self.client_options = options
+            return FakeKiCad(board)
+
+        self.monkeypatch.setattr(cli.kipy, "KiCad", kicad)
         return board
 
     def failing(self, error: Exception) -> None:
         class Failing:
+            def __init__(self, **options: object) -> None:
+                pass
+
             def get_board(self) -> None:
                 raise error
 
@@ -529,7 +538,20 @@ class TestErrors:
     def test_kicad_not_running(self, connect: Connector, log: list[str]) -> None:
         connect.failing(KiCadConnectionError("Failed to connect"))
 
-        assert "Cannot reach KiCad" in exit_message(log)
+        message = exit_message(log)
+
+        assert "Cannot reach KiCad" in message
+        assert "not running" in message and "timed out" in message
+
+    def test_kicad_client_waits_longer_than_kipys_default(
+        self, connect: Connector
+    ) -> None:
+        connect.to(l_board())
+
+        run("--dry-run")
+
+        assert connect.client_options == {"timeout_ms": cli.KICAD_TIMEOUT_MS}
+        assert cli.KICAD_TIMEOUT_MS > 2000
 
     def test_no_board_open(self, connect: Connector, log: list[str]) -> None:
         connect.failing(ApiError("Expected to be able to retrieve at least one board"))
