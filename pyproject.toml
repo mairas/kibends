@@ -29,6 +29,7 @@ dev = [
     "pytest>=8.3.4",
     "types-protobuf>=7.35.1.20260906",
     "types-shapely>=2.1.0.20261030",
+    "scipy-stubs>=1.17.1.5",
 ]
 
 [build-system]
@@ -37,3 +38,4 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: takes several seconds; deselect with -m 'not slow'"]
