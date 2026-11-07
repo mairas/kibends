@@ -53,10 +53,15 @@ def y_at(points: FloatArray, x: float) -> float:
     return float(np.interp(x, points[:, 0], points[:, 1]))
 
 
+# Stops on a residual bow of about 15 µm, as the defaults do, four times
+# faster.
+L_PATH_SETTINGS = replace(SETTINGS, spacing=0.2, burst_maxiter=100)
+
+
 def test_l_path_in_free_space_becomes_straight() -> None:
     polyline, fixed = chain((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
 
-    result = optimize(polyline, fixed, FreeSpace(), PARAMS, SETTINGS)
+    result = optimize(polyline, fixed, FreeSpace(), PARAMS, L_PATH_SETTINGS)
 
     assert result.termination is Termination.CONVERGED
     start, end = polyline[0], polyline[-1]
