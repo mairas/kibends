@@ -78,8 +78,11 @@ class Obstacles:
         self._inflations: FloatArray = np.array(
             [o.inflation for o in self.items], dtype=float
         )
+        # types-shapely leaves **kwargs untyped on the vectorised functions
+        # used below, which pyright strict reports wherever they are named.
         self._is_area: BoolArray = (
-            shapely.get_dimensions(self._geometries) == AREA_DIMENSION
+            shapely.get_dimensions(self._geometries)  # pyright: ignore[reportUnknownMemberType]
+            == AREA_DIMENSION
         )
         # Inside a polygon, the depth is the distance to its boundary.
         self._targets: ObjectArray = np.where(
@@ -108,7 +111,7 @@ class Obstacles:
             near = np.ones(len(coords), dtype=bool)
             if math.isfinite(reach):
                 outside = ~shapely.covered_by(query, self.board_outline)
-                to_edge = shapely.distance(query, self.board_outline.boundary)
+                to_edge = self.board_outline.boundary.distance(query)
                 near = outside | (to_edge - self.edge_inflation <= reach)
             inside_board, toward_inside = _signed_to(
                 coords[near],
@@ -143,15 +146,15 @@ class Obstacles:
             segment_index, item_index = self._tree.query(
                 segments, predicate="dwithin", distance=self._max_inflation
             )
-            gaps = shapely.distance(
+            # Untyped **kwargs in types-shapely, as in __init__.
+            gaps = shapely.distance(  # pyright: ignore[reportUnknownMemberType]
                 segments[segment_index], self._geometries[item_index]
             )
             clear[segment_index[gaps < self._inflations[item_index]]] = False
         if self.board_outline is not None:
             clear &= shapely.covered_by(segments, self.board_outline)
             clear &= (
-                shapely.distance(segments, self.board_outline.boundary)
-                >= self.edge_inflation
+                self.board_outline.boundary.distance(segments) >= self.edge_inflation
             )
         return clear
 
@@ -203,7 +206,8 @@ def _signed_to(
     """Signed distance from each point to its geometry, negative inside an
     area, and the unit gradient, pairing coords[i] with geometries[i]."""
     inside = is_area & shapely.intersects(geometries, query)
-    lines = shapely.shortest_line(query, targets)
+    # Untyped **kwargs in types-shapely, as in Obstacles.__init__.
+    lines = shapely.shortest_line(query, targets)  # pyright: ignore[reportUnknownMemberType]
     nearest = shapely.get_coordinates(lines).reshape(-1, 2, 2)[:, 1]
     offset = coords - nearest
     length = np.linalg.norm(offset, axis=1)
@@ -224,9 +228,9 @@ def _outward_normal(
     """The unit normal of `target` at a point lying on it, outward for areas."""
     if not isinstance(target, LineString | MultiLineString):
         return FALLBACK_DIRECTION
-    along = shapely.line_locate_point(target, Point(point))
-    before = shapely.line_interpolate_point(target, max(along - NORMAL_PROBE, 0.0))
-    after = shapely.line_interpolate_point(target, along + NORMAL_PROBE)
+    along = target.project(Point(point))
+    before = target.interpolate(max(along - NORMAL_PROBE, 0.0))
+    after = target.interpolate(along + NORMAL_PROBE)
     tx, ty = after.x - before.x, after.y - before.y
     norm = float(np.hypot(tx, ty))
     if norm == 0.0:
