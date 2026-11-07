@@ -5,19 +5,24 @@ from pathlib import Path
 import numpy as np
 import pytest
 import scenarios
+import shapely
 from distance_fields import Box, Disc, FloatArray, FreeSpace, Union, Walls
-from scenarios import PARAMS, Field, Scenario, chain, path
+from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
 import kibends.optimize as optimize_module
 from kibends.energy import BoolArray, total_energy
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
+    INSIDE_TOLERANCE,
+    ObstacleField,
     OptimizeResult,
     OptimizerSettings,
     Termination,
     measure,
     optimize,
+    resample,
+    violations,
 )
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 
@@ -36,7 +41,7 @@ def run(scenario: Scenario, settings: OptimizerSettings = SETTINGS) -> OptimizeR
     )
 
 
-def all_edges_clear(points: FloatArray, field: Field) -> bool:
+def all_edges_clear(points: FloatArray, field: ObstacleField) -> bool:
     return bool(field.segments_clear(points[:-1], points[1:]).all())
 
 
@@ -300,6 +305,32 @@ def test_inside_run_holding_anchors_may_split() -> None:
     assert y_at(result.polyline, 8.0) > SHALLOW_DEPTH
 
 
+# A pad off the origin, so its clearance boundary is not binary-exact and a
+# track routed along it resamples to vertices a few 1e-15 mm inside.
+PAD_TOP = 45.35
+PAD_INFLATION = 0.327
+EXACT_PAD = Obstacles(
+    [Obstacle("pad", shapely.box(11.9, PAD_TOP, 12.7, 45.85), PAD_INFLATION)]
+)
+EXACT_PAD_CAP = 2
+
+
+def test_track_at_exact_clearance_starts_with_no_violation() -> None:
+    at_clearance = PAD_TOP - PAD_INFLATION
+    polyline, fixed = chain(
+        (10.3, 45.6), (11.3, at_clearance), (13.3, at_clearance), (14.3, 45.6)
+    )
+    settings = replace(SETTINGS, max_iterations=EXACT_PAD_CAP)
+    resampled, mask = resample(polyline, fixed, settings.spacing)
+
+    result = optimize(polyline, fixed, EXACT_PAD, PARAMS, settings)
+
+    assert violations(resampled, mask, EXACT_PAD) == 0
+    distance, _ = EXACT_PAD.signed_distance(result.polyline)
+    assert distance.min() >= -INSIDE_TOLERANCE
+    assert all_edges_clear(result.polyline, EXACT_PAD)
+
+
 def test_detour_in_narrow_channel_is_pulled_tight() -> None:
     scenario = scenarios.detour()
 
@@ -467,8 +498,10 @@ class ReachIgnored:
     ) -> tuple[FloatArray, FloatArray]:
         return self.field.signed_distance(points)
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
-        return self.field.segments_clear(starts, ends)
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        return self.field.segments_clear(starts, ends, tolerance)
 
 
 def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
