@@ -159,7 +159,7 @@ def test_path_left_of_disc_stays_left() -> None:
 def test_path_at_exact_clearance_is_not_frozen_and_moves() -> None:
     scenario = scenarios.pad_row()
 
-    result = run(scenario)
+    result = run(scenario, COARSE)
 
     assert result.frozen == ()
     assert result.termination is Termination.CONVERGED
