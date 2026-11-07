@@ -52,8 +52,8 @@ class CommitUncertainError(RuntimeError):
     """The push timed out or lost the connection; the commit may have landed."""
 
 
-def commit_label(command: str, now: datetime | None = None) -> str:
-    stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+def commit_label(command: str) -> str:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"{COMMIT_PREFIX} {command} {stamp}"
 
 
@@ -168,7 +168,7 @@ def delete_checked(board: kipy.board.Board, ids: Sequence[str]) -> None:
         )
 
 
-def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[Wrapper]:
+def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
     """Create items and raise if KiCad refuses any of them.
 
     KiCad reports refusals per item, and kipy's create_items discards those
@@ -188,7 +188,6 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[Wr
             f"KiCad created {len(response.created_items) - len(refused)} of "
             f"{len(items)} tracks: {'; '.join(sorted(set(refused)))}"
         )
-    return [kbt.unwrap(r.item) for r in response.created_items]
 
 
 def push_checked(board: kipy.board.Board, commit: Commit, label: str) -> None:
