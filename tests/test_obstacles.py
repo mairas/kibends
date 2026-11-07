@@ -357,6 +357,44 @@ class TestSignedDistance:
         assert g[:3] == pytest.approx(np.array([(1, 0), (1, 0), (1, 0)]))
         assert g[4] == pytest.approx((-1, 0))
 
+    REACH = 1.0
+    MIXED = Obstacles(
+        [
+            Obstacle("square", box(0, 0, 2, 2), 0.5),
+            Obstacle("via", Point(6, 1), 0.3),
+            Obstacle("track", LineString([(0, 5), (6, 5)]), 0.2),
+        ],
+        Polygon([(-3, -3), (9, -3), (9, 8), (-3, 8)]),
+        edge_inflation=0.3,
+    )
+
+    def test_within_reach_matches_the_exact_distance(self) -> None:
+        rng = np.random.default_rng(1)
+        probe = rng.uniform((-4, -4), (10, 9), size=(400, 2))
+        exact_d, exact_g = self.MIXED.signed_distance(probe)
+        near = exact_d <= self.REACH
+
+        d, g = self.MIXED.signed_distance(probe, reach=self.REACH)
+
+        assert near.sum() > 50
+        assert d[near] == pytest.approx(exact_d[near], abs=NM_TOLERANCE)
+        assert g[near] == pytest.approx(exact_g[near], abs=NM_TOLERANCE)
+
+    def test_beyond_reach_may_be_infinite_with_no_gradient(self) -> None:
+        far = points((4, 2.8), (3, 6.6))
+        exact_d, _ = self.MIXED.signed_distance(far)
+
+        d, g = self.MIXED.signed_distance(far, reach=self.REACH)
+
+        assert np.all(exact_d > self.REACH)
+        assert np.all(np.isposinf(d) | (d == pytest.approx(exact_d)))
+        assert np.all(g[np.isposinf(d)] == 0)
+
+    def test_outside_the_board_is_reported_whatever_the_reach(self) -> None:
+        d, _ = self.MIXED.signed_distance(points((20, 20)), reach=self.REACH)
+
+        assert d[0] < 0
+
     def test_gradient_matches_finite_differences(self) -> None:
         field = Obstacles(
             [

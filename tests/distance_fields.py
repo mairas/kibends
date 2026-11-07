@@ -1,5 +1,6 @@
 """Analytic DistanceField and ObstacleField implementations for tests."""
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -25,7 +26,9 @@ def _point_segment_distance(
 
 @dataclass(frozen=True)
 class FreeSpace:
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         return np.full(len(points), FAR), np.zeros_like(points)
 
     def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
@@ -38,7 +41,9 @@ class Disc:
     cy: float
     radius: float
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         offset = points - np.array([self.cx, self.cy])
         norm = np.linalg.norm(offset, axis=1)
         safe = np.where(norm > 0.0, norm, 1.0)
@@ -67,7 +72,9 @@ class Box:
     def _core(self) -> FloatArray:
         return np.array([self.half_x, self.half_y]) - self.corner_radius
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         offset = points - np.array([self.cx, self.cy])
         sign = np.where(offset >= 0.0, 1.0, -1.0)
         q = np.abs(offset) - self._core()
@@ -145,7 +152,9 @@ class Walls:
 
     half_gap: float
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         y = points[:, 1]
         toward_centre = np.where(y >= 0.0, -1.0, 1.0)
         gradient = np.stack([np.zeros_like(y), toward_centre], axis=1)
@@ -162,7 +171,9 @@ class Union:
 
     shapes: Sequence[Disc | Box | Walls]
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         results = [shape.signed_distance(points) for shape in self.shapes]
         distances = np.stack([distance for distance, _ in results])
         gradients = np.stack([gradient for _, gradient in results])

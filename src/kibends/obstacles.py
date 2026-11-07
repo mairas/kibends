@@ -10,6 +10,7 @@ outside of the Edge.Cuts outline, inflated the same way.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -89,30 +90,42 @@ class Obstacles:
         self._tree = STRtree(self._geometries)
         self._max_inflation = float(self._inflations.max(initial=0.0))
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         """Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
 
         With no obstacles and no board outline the distance is +inf and the
-        gradient zero.
+        gradient zero. Points farther than `reach` from every inflated
+        obstacle and from the inflated board edge get +inf and a zero
+        gradient; points outside the board are always reported.
         """
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
         query: ObjectArray = np.asarray(shapely.points(coords), dtype=object)
         distance = np.full(len(coords), np.inf)
         gradient = np.zeros((len(coords), 2))
         if self.items:
-            distance, gradient = self._obstacle_distance(coords, query)
+            distance, gradient = self._obstacle_distance(coords, query, reach)
         if self.board_outline is not None:
+            near = np.ones(len(coords), dtype=bool)
+            if math.isfinite(reach):
+                outside = ~shapely.covered_by(query, self.board_outline)
+                to_edge = shapely.distance(query, self.board_outline.boundary)
+                near = outside | (to_edge - self.edge_inflation <= reach)
             inside_board, toward_inside = _signed_to(
-                coords,
-                query,
-                np.full(len(coords), self.board_outline, dtype=object),
-                np.full(len(coords), self.board_outline.boundary, dtype=object),
-                np.ones(len(coords), dtype=bool),
+                coords[near],
+                query[near],
+                np.full(near.sum(), self.board_outline, dtype=object),
+                np.full(near.sum(), self.board_outline.boundary, dtype=object),
+                np.ones(near.sum(), dtype=bool),
             )
-            edge = -inside_board - self.edge_inflation
+            edge = np.full(len(coords), np.inf)
+            edge[near] = -inside_board - self.edge_inflation
+            edge_gradient = np.zeros((len(coords), 2))
+            edge_gradient[near] = -toward_inside
             nearer = edge < distance
             distance = np.where(nearer, edge, distance)
-            gradient = np.where(nearer[:, None], -toward_inside, gradient)
+            gradient = np.where(nearer[:, None], edge_gradient, gradient)
         return distance, gradient
 
     def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
@@ -145,19 +158,24 @@ class Obstacles:
         return clear
 
     def _obstacle_distance(
-        self, coords: FloatArray, query: ObjectArray
+        self, coords: FloatArray, query: ObjectArray, reach: float
     ) -> tuple[FloatArray, FloatArray]:
-        (point_index, nearest_index), nearest = self._tree.query_nearest(
-            query, return_distance=True, all_matches=False
-        )
-        # An item farther than the nearest raw geometry can still be nearer
-        # once inflated, by at most the spread of the inflations.
-        reach = np.empty(len(coords))
-        reach[point_index] = (
-            nearest - self._inflations[nearest_index] + self._max_inflation
-        )
+        if math.isfinite(reach):
+            # An item is within reach once inflated only if its raw geometry
+            # is within reach plus the largest inflation.
+            search = np.full(len(coords), reach + self._max_inflation)
+        else:
+            (point_index, nearest_index), nearest = self._tree.query_nearest(
+                query, return_distance=True, all_matches=False
+            )
+            # An item farther than the nearest raw geometry can still be nearer
+            # once inflated, by at most the spread of the inflations.
+            search = np.empty(len(coords))
+            search[point_index] = (
+                nearest - self._inflations[nearest_index] + self._max_inflation
+            )
         pairs_point, pairs_item = self._tree.query(
-            query, predicate="dwithin", distance=reach + DEGENERATE_DISTANCE
+            query, predicate="dwithin", distance=search + DEGENERATE_DISTANCE
         )
         raw, raw_gradient = _signed_to(
             coords[pairs_point],

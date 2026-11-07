@@ -278,7 +278,7 @@ class TestTotal:
     def test_non_finite_energy_is_an_error(self) -> None:
         class NanField:
             def signed_distance(
-                self, points: FloatArray
+                self, points: FloatArray, reach: float = np.inf
             ) -> tuple[FloatArray, FloatArray]:
                 return np.full(len(points), np.nan), np.zeros_like(points)
 

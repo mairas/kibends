@@ -5,6 +5,7 @@ respect to all vertex coordinates as an (n, 2) array, with the rows of fixed
 vertices zeroed.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -28,11 +29,14 @@ MAX_SMOOTH_TURN = 0.95 * np.pi
 class DistanceField(Protocol):
     """Signed distance to the nearest inflated obstacle boundary."""
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
         """Return the distance (n,) and its unit gradient (n, 2) at (n, 2) points.
 
         The distance is positive in free space and negative inside an inflated
-        obstacle; the gradient points toward increasing distance.
+        obstacle; the gradient points toward increasing distance. Distances
+        beyond `reach` may be returned as +inf with a zero gradient.
         """
         ...
 
@@ -73,7 +77,7 @@ def repulsion_energy(
 ) -> TermValue:
     """∫ g(d(s)) ds with g = (1 - d/range)³ in [0, range), 0 beyond."""
     value, gradient = _edge_integral(
-        points, field, _falloff(falloff_range), points_per_edge
+        points, field, _falloff(falloff_range), points_per_edge, falloff_range
     )
     return value, _zero_fixed(gradient, fixed)
 
@@ -86,7 +90,9 @@ def clearance_energy(
     points_per_edge: int,
 ) -> TermValue:
     """∫ c(d(s)) ds with the CHOMP hinge c of the given standoff."""
-    value, gradient = _edge_integral(points, field, _hinge(standoff), points_per_edge)
+    value, gradient = _edge_integral(
+        points, field, _hinge(standoff), points_per_edge, standoff
+    )
     return value, _zero_fixed(gradient, fixed)
 
 
@@ -107,8 +113,11 @@ def total_energy(
 
     length_value, length_gradient = _length(points)
     bending_value, bending_gradient = _bending(points)
+    # Both integrands are exactly zero beyond this, so farther copper need
+    # not be looked up.
+    reach = max(params.standoff, params.falloff_range if params.repulsion else 0.0)
     obstacle_value, obstacle_gradient = _edge_integral(
-        points, field, obstacle_integrand, params.points_per_edge
+        points, field, obstacle_integrand, params.points_per_edge, reach
     )
     bending_weight = params.stiffness**2
     value = length_value + bending_weight * bending_value + obstacle_value
@@ -241,7 +250,11 @@ def _hinge(standoff: float) -> Integrand:
 
 
 def _edge_integral(
-    points: FloatArray, field: DistanceField, integrand: Integrand, points_per_edge: int
+    points: FloatArray,
+    field: DistanceField,
+    integrand: Integrand,
+    points_per_edge: int,
+    reach: float,
 ) -> TermValue:
     """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge.
 
@@ -256,7 +269,7 @@ def _edge_integral(
         + points[1:, None, :] * interior_t[None, :, None]
     )
     distance, distance_gradient = field.signed_distance(
-        np.concatenate([points, interior.reshape(-1, 2)])
+        np.concatenate([points, interior.reshape(-1, 2)]), reach=reach
     )
     vertex_distance, interior_distance = distance[:n], distance[n:].reshape(n - 1, -1)
     vertex_gradient = distance_gradient[:n]

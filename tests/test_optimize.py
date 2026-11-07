@@ -10,6 +10,7 @@ from scenarios import PARAMS, Field, Scenario, chain, path
 from shapely import wkt
 
 import kibends.optimize as optimize_module
+from kibends.energy import BoolArray, total_energy
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     OptimizeResult,
@@ -309,7 +310,9 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 class MisleadingWalls(Walls):
     """Walls whose distance gradient points the wrong way."""
 
-    def signed_distance(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def signed_distance(
+        self, points: FloatArray, reach: float = np.inf
+    ) -> tuple[FloatArray, FloatArray]:
         distance, gradient = super().signed_distance(points)
         return distance, -gradient
 
@@ -367,3 +370,39 @@ class TestStalled:
 
     def test_larger_improvement_over_the_window_keeps_going(self) -> None:
         assert not optimize_module._stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
+
+
+class ReachIgnored:
+    """The stall fixture's obstacles, always answering exactly."""
+
+    def __init__(self, field: Obstacles) -> None:
+        self.field = field
+
+    def signed_distance(
+        self, points: FloatArray, reach: float = np.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        return self.field.signed_distance(points)
+
+    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
+        return self.field.segments_clear(starts, ends)
+
+
+def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
+    data = json.loads(STALL_FIXTURE.read_text())
+    field = Obstacles(
+        [
+            Obstacle("fixture", wkt.loads(o["geometry"]), o["inflation"])
+            for o in data["obstacles"]
+        ]
+    )
+    params = replace(PARAMS, repulsion=0.5, falloff_range=1.0)
+    points = np.array(data["points"])
+    fixed = np.array(data["pinned"])
+
+    value, gradient = total_energy(points, fixed, field, params)
+    exact_value, exact_gradient = total_energy(
+        points, fixed, ReachIgnored(field), params
+    )
+
+    assert value == pytest.approx(exact_value, rel=1e-12)
+    assert gradient == pytest.approx(exact_gradient, abs=1e-12)
