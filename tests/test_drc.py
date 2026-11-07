@@ -298,6 +298,33 @@ class TestIntroduced:
         assert result.violations == tuple(parsed(added))
         assert result
 
+    @pytest.mark.parametrize(
+        "vtype",
+        [
+            "skew_out_of_range",
+            "length_out_of_range",
+            "too_many_vias",
+            "diff_pair_uncoupled_length_too_long",
+        ],
+    )
+    def test_net_wide_violation_on_another_anchor_is_not_introduced(
+        self, vtype: str
+    ) -> None:
+        base = parsed(violation(vtype, item("Pad 1 [/USB_D+] of TP5", 153.2, 73.9)))
+        candidate = parsed(
+            violation(vtype, item("Pad 14 [/USB_D+] of U2 on F.Cu", 153.8, 87.0))
+        )
+
+        assert not introduced(base, candidate)
+
+    def test_net_wide_violation_with_new_values_is_introduced(self) -> None:
+        base = violation("skew_out_of_range", item("Pad 1 [/USB_D+] of TP5", 1, 1))
+        changed = dict(base, description="Skew out of range (actual -3.9 mm)")
+
+        result = introduced(parsed(base), parsed(changed))
+
+        assert result.violations == tuple(parsed(changed))
+
     def test_violations_are_compared_as_multisets(self) -> None:
         v = violation("copper_sliver", item("Zone [GND]", 1, 1))
 

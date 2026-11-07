@@ -49,6 +49,17 @@ COORD_DECIMALS = 6
 # Zone refill moves the anchors these report, so they are counted per net
 # instead of compared by position.
 CONNECTIVITY_TYPES = frozenset({"unconnected_items", "isolated_copper"})
+# Net-wide checks attach the violation to an arbitrary item of the net, which
+# changes between runs, so they are compared by description (which carries
+# the measured values) and nets instead of by item.
+NET_WIDE_TYPES = frozenset(
+    {
+        "length_out_of_range",
+        "skew_out_of_range",
+        "too_many_vias",
+        "diff_pair_uncoupled_length_too_long",
+    }
+)
 # DRC item descriptions name the item's net in brackets: "Pad 1 [GND] of J1".
 NET_TAG = re.compile(r"\[(.*)\]")
 # Connectivity violations naming no net are counted together under this.
@@ -358,6 +369,14 @@ ViolationKey = tuple[str, tuple[tuple[str, float, float], ...]]
 
 
 def _key(v: Violation, chain_ids: Collection[str]) -> ViolationKey:
+    if v.type in NET_WIDE_TYPES:
+        return (
+            v.type,
+            tuple(
+                (f"{v.description} {net}", 0.0, 0.0)
+                for net in sorted(violation_nets(v))
+            ),
+        )
     return (
         v.type,
         tuple(
