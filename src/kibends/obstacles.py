@@ -25,7 +25,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
 from kibends.chain import Point2
-from kibends.energy import BoolArray, FloatArray, ObstacleField
+from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField
 from kibends.snapshot import (
     LayerSnapshot,
     Pad,
@@ -36,7 +36,6 @@ from kibends.snapshot import (
 )
 
 ObjectArray = NDArray[np.object_]
-IntArray = NDArray[np.intp]
 ComplexArray = NDArray[np.complex128]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.

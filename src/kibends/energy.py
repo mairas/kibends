@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 FloatArray = NDArray[np.float64]
 BoolArray = NDArray[np.bool_]
+IntArray = NDArray[np.intp]
 TermValue = tuple[float, FloatArray]
 Integrand = Callable[[FloatArray], tuple[FloatArray, FloatArray]]
 
@@ -70,6 +71,26 @@ class EnergyParams:
     """Distance from the clearance boundary at which the hinge starts, mm."""
     points_per_edge: int
     """Interior quadrature points per edge, in addition to its endpoints."""
+
+
+def edge_bend_radii(
+    lengths: FloatArray, half_turns: FloatArray
+) -> tuple[FloatArray, FloatArray]:
+    """Each edge's bend radius, from the edges' `lengths` and tan(φ/2) of the
+    turn φ at each interior vertex, and the signed sum of those tangents at
+    each edge's two ends.
+
+    The bend radius of an edge is the largest offset at which its mitred
+    offset still has positive length: its length over the absolute sum,
+    infinite where the sum is 0.
+    """
+    half_turn = np.concatenate([[0.0], half_turns, [0.0]])
+    spread = half_turn[:-1] + half_turn[1:]
+    size = np.abs(spread)
+    radii = np.divide(
+        lengths, size, out=np.full_like(lengths, math.inf), where=size > 0.0
+    )
+    return radii, spread
 
 
 def arc_lengths(points: FloatArray) -> FloatArray:
