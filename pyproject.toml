@@ -27,6 +27,8 @@ plot = [
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
+    "types-protobuf>=7.35.1.20260906",
+    "types-shapely>=2.1.0.20261030",
 ]
 
 [build-system]
