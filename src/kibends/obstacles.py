@@ -11,6 +11,7 @@ outside of the Edge.Cuts outline, inflated the same way.
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import shapely
@@ -28,6 +29,10 @@ from kibends.snapshot import (
     outline_from_edge_paths,
 )
 
+if TYPE_CHECKING:
+    # optimize will import this module; a runtime import would be a cycle.
+    from kibends.optimize import ObstacleField
+
 ObjectArray = NDArray[np.object_]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.
@@ -44,6 +49,13 @@ DEGENERATE_DISTANCE = 1e-9
 NORMAL_PROBE = 1e-4
 FALLBACK_DIRECTION = (1.0, 0.0)
 AREA_DIMENSION = 2
+# Another chain enters the tree in pieces of this many edges. Measuring a
+# point against a whole resampled chain walks all its vertices; single edges
+# flood the tree query with neighbours. 16 edges at the default 0.1 mm
+# `OptimizerSettings.spacing` span about 1.6 mm, close to the query radius of
+# `EnergyParams.falloff_range` (1.0 mm from the CLI's default `--range`) plus
+# the inflation; retune if either default changes.
+EDGES_PER_PIECE = 16
 
 
 @dataclass(frozen=True)
@@ -102,9 +114,11 @@ class Obstacles:
         gradient; points outside the board are always reported.
         """
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
-        query: ObjectArray = np.asarray(shapely.points(coords), dtype=object)
         distance = np.full(len(coords), np.inf)
         gradient = np.zeros((len(coords), 2))
+        if not self.items and self.board_outline is None:
+            return distance, gradient
+        query: ObjectArray = np.asarray(shapely.points(coords), dtype=object)
         if self.items:
             distance, gradient = self._obstacle_distance(coords, query, reach)
         if self.board_outline is not None:
@@ -203,6 +217,43 @@ class Obstacles:
         return distance, gradient
 
 
+class CompositeField:
+    """The union of several fields: the nearest of them answers each point.
+
+    A point beyond `reach` of every field is +inf with a zero gradient. A
+    segment is clear only if it is clear in every field.
+    """
+
+    def __init__(self, fields: Sequence[ObstacleField]) -> None:
+        self.fields = tuple(fields)
+
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        """Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm."""
+        if not self.fields:
+            n = len(np.asarray(points).reshape(-1, 2))
+            return np.full(n, np.inf), np.zeros((n, 2))
+        distance, gradient = self.fields[0].signed_distance(points, reach)
+        for field in self.fields[1:]:
+            d, g = field.signed_distance(points, reach)
+            nearer = d < distance
+            if nearer.any():
+                distance = np.where(nearer, d, distance)
+                gradient = np.where(nearer[:, None], g, gradient)
+        return distance, gradient
+
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        """Whether each segment from starts[i] to ends[i] is clear in every
+        field, each allowing `tolerance` inside its clearance."""
+        clear = np.ones(len(np.asarray(starts).reshape(-1, 2)), dtype=np.bool_)
+        for field in self.fields:
+            clear &= field.segments_clear(starts, ends, tolerance)
+        return clear
+
+
 def _signed_to(
     coords: FloatArray,
     query: ObjectArray,
@@ -247,6 +298,49 @@ def _outward_normal(
     if is_area and geometry.contains(probe):
         return -nx, -ny
     return nx, ny
+
+
+@dataclass(frozen=True, eq=False)
+class ChainCentreline:
+    """Another selected chain's current shape, as an obstacle to this one."""
+
+    description: str
+    net: str
+    width: float
+    clearance: float
+    """Its net's netclass clearance in mm."""
+    points: FloatArray
+    """Its current polyline, (n, 2) in mm."""
+
+
+def chain_obstacles(
+    net: str, width: float, clearance: float, others: Sequence[ChainCentreline]
+) -> Obstacles:
+    """Obstacles for a track of `net`, `width` and netclass `clearance` (mm)
+    made of other chains' centrelines.
+
+    Another net's chain is kept at the larger of both clearances. A chain of
+    the same net may touch this one but not overlap it, since DRC does not
+    flag same-net overlap and both would otherwise be pulled onto each other.
+    """
+    half_width = width / 2
+    items: list[Obstacle] = []
+    for o in others:
+        inflation = (
+            half_width
+            + o.width / 2
+            + (max(clearance, o.clearance) if o.net != net else 0.0)
+        )
+        vertices = np.asarray(o.points, dtype=float)
+        items.extend(
+            Obstacle(
+                o.description,
+                LineString(vertices[start : start + EDGES_PER_PIECE + 1]),
+                inflation,
+            )
+            for start in range(0, len(vertices) - 1, EDGES_PER_PIECE)
+        )
+    return Obstacles(items)
 
 
 def build_obstacles(

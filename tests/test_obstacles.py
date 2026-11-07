@@ -33,10 +33,14 @@ from kibends.energy import (
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
+    ChainCentreline,
+    CompositeField,
     Obstacle,
     Obstacles,
     build_obstacles,
+    chain_obstacles,
 )
+from kibends.optimize import ObstacleField
 from kibends.snapshot import LayerSnapshot
 
 LAYER = "F.Cu"
@@ -509,3 +513,176 @@ class TestAsDistanceField:
 
         assert np.isfinite(value)
         assert np.all(np.isfinite(gradient))
+
+
+OTHER_NET = "OTHER"
+OTHER_WIDTH = 0.3
+OTHER_CLEARANCE = 0.3
+PAIR_HALF_WIDTHS = HALF + OTHER_WIDTH / 2
+OTHER_NET_INFLATION = OTHER_CLEARANCE + PAIR_HALF_WIDTHS
+
+
+def other_chain(net: str, *xy: tuple[float, float]) -> ChainCentreline:
+    return ChainCentreline(
+        f"chain {net}", net, OTHER_WIDTH, OTHER_CLEARANCE, points(*xy)
+    )
+
+
+def neighbours(*others: ChainCentreline) -> Obstacles:
+    return chain_obstacles(NET, WIDTH, DEFAULT_CLEARANCE, others)
+
+
+BELOW = other_chain(OTHER_NET, (0, 0), (10, 0))
+ABOVE = other_chain("THIRD", (0, 2), (10, 2))
+
+
+class TestChainObstacles:
+    def test_a_point_between_two_chains_sees_the_nearer_one(self) -> None:
+        d, g = neighbours(BELOW, ABOVE).signed_distance(points((5, 0.8), (5, 1.5)))
+
+        assert d == pytest.approx(
+            [0.8 - OTHER_NET_INFLATION, 0.5 - OTHER_NET_INFLATION], abs=NM_TOLERANCE
+        )
+        assert g[0] == pytest.approx((0, 1), abs=1e-9)
+        assert g[1] == pytest.approx((0, -1), abs=1e-9)
+
+    def test_chains_of_different_vertex_counts(self) -> None:
+        bent = other_chain("THIRD", (0, 2), (5, 2), (10, 2))
+
+        d, _ = neighbours(BELOW, bent).signed_distance(points((5, 0.8)))
+
+        assert d[0] == pytest.approx(0.8 - OTHER_NET_INFLATION, abs=NM_TOLERANCE)
+
+    def test_a_long_chain_has_no_gap_between_its_pieces(self) -> None:
+        # At 1 mm spacing a missing edge leaves its midpoint 0.5 mm from the
+        # nearest vertex, beyond the same-net band of both half widths.
+        xs = np.arange(41.0)
+        long_chain = ChainCentreline(
+            "long",
+            NET,
+            OTHER_WIDTH,
+            OTHER_CLEARANCE,
+            np.column_stack([xs, np.zeros_like(xs)]),
+        )
+        midpoints = xs[:-1] + 0.5
+        height = PAIR_HALF_WIDTHS / 2
+        field = neighbours(long_chain)
+
+        d, _ = field.signed_distance(
+            np.column_stack([midpoints, np.full_like(midpoints, height)])
+        )
+        clear = field.segments_clear(
+            np.column_stack([midpoints, np.ones_like(midpoints)]),
+            np.column_stack([midpoints, -np.ones_like(midpoints)]),
+        )
+
+        assert d == pytest.approx(
+            np.full(len(midpoints), height - PAIR_HALF_WIDTHS), abs=NM_TOLERANCE
+        )
+        assert not clear.any()
+
+    def test_the_larger_clearance_of_the_pair_wins(self) -> None:
+        field = chain_obstacles(NET, WIDTH, 0.5, [BELOW])
+
+        d, _ = field.signed_distance(points((5, 1)))
+
+        assert d[0] == pytest.approx(1 - 0.5 - PAIR_HALF_WIDTHS, abs=NM_TOLERANCE)
+
+    def test_a_same_net_chain_is_inflated_by_both_half_widths_only(self) -> None:
+        between = PAIR_HALF_WIDTHS + OTHER_CLEARANCE / 2
+        probe = points((5, between))
+        same = neighbours(other_chain(NET, (0, 0), (10, 0)))
+
+        d_same, _ = same.signed_distance(probe)
+        d_other, _ = neighbours(BELOW).signed_distance(probe)
+
+        assert d_same[0] == pytest.approx(between - PAIR_HALF_WIDTHS, abs=NM_TOLERANCE)
+        assert d_same[0] > 0
+        assert d_other[0] < 0
+
+    def test_gradient_points_away_from_the_nearest_chain(self) -> None:
+        diagonal = neighbours(other_chain(OTHER_NET, (0, 0), (4, 4)))
+
+        _, g = diagonal.signed_distance(points((1, 3)))
+
+        assert g[0] == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)), abs=1e-9)
+
+    def test_segments_crossing_the_band_are_not_clear(self) -> None:
+        inside = OTHER_NET_INFLATION / 2
+        outside = OTHER_NET_INFLATION * 2
+
+        clear = neighbours(BELOW).segments_clear(
+            points((5, 1), (1, outside), (1, 1)),
+            points((5, -1), (9, outside), (3, inside)),
+        )
+
+        assert clear.tolist() == [False, True, False]
+
+    def test_no_other_chains_is_free_everywhere(self) -> None:
+        empty = neighbours()
+
+        d, g = empty.signed_distance(points((0, 0), (5, 5)))
+
+        assert np.all(np.isinf(d))
+        assert np.all(g == 0)
+        assert empty.segments_clear(points((0, 0)), points((5, 5))).tolist() == [True]
+
+
+SPREAD = points((4, 1), (0.5, 1), (1, 5), (2.5, 1), (0, 0), (-3, 2), (12, 0.1))
+
+
+class TestCompositeField:
+    def test_satisfies_the_optimizer_protocol(self) -> None:
+        field: ObstacleField = CompositeField([SQUARE])
+
+        assert field.segments_clear(points((4, 4)), points((4, 4))).tolist() == [True]
+
+    @pytest.mark.parametrize("reach", [math.inf, 1.0])
+    def test_composite_of_one_field_is_that_field(self, reach: float) -> None:
+        d, g = CompositeField([SQUARE]).signed_distance(SPREAD, reach)
+        d_square, g_square = SQUARE.signed_distance(SPREAD, reach)
+
+        np.testing.assert_array_equal(d, d_square)
+        np.testing.assert_array_equal(g, g_square)
+
+    @pytest.mark.parametrize("reach", [math.inf, 1.0])
+    def test_an_empty_dynamic_field_adds_nothing(self, reach: float) -> None:
+        d, g = CompositeField([SQUARE, neighbours()]).signed_distance(SPREAD, reach)
+        d_square, g_square = SQUARE.signed_distance(SPREAD, reach)
+
+        np.testing.assert_array_equal(d, d_square)
+        np.testing.assert_array_equal(g, g_square)
+
+    def test_takes_the_smallest_distance_with_its_gradient(self) -> None:
+        composite = CompositeField(
+            [SQUARE, neighbours(other_chain(OTHER_NET, (8, -5), (8, 5)))]
+        )
+
+        d, g = composite.signed_distance(points((4, 1), (7, 1)))
+
+        assert d == pytest.approx([1.5, 1 - OTHER_NET_INFLATION], abs=NM_TOLERANCE)
+        assert g[0] == pytest.approx((1, 0), abs=1e-9)
+        assert g[1] == pytest.approx((-1, 0), abs=1e-9)
+
+    def test_beyond_reach_of_every_field_is_infinite(self) -> None:
+        composite = CompositeField([SQUARE, neighbours(BELOW)])
+
+        d, g = composite.signed_distance(points((5, 30)), reach=1.0)
+
+        assert np.isinf(d[0])
+        assert g[0] == pytest.approx((0, 0))
+
+    def test_no_fields_is_free_everywhere(self) -> None:
+        d, g = CompositeField([]).signed_distance(SPREAD)
+
+        assert np.all(np.isinf(d))
+        assert np.all(g == 0)
+
+    def test_a_segment_is_clear_only_if_clear_in_every_field(self) -> None:
+        composite = CompositeField([SQUARE, neighbours(BELOW)])
+
+        clear = composite.segments_clear(
+            points((-1, 1), (5, 1), (4, 4)), points((3, 1), (5, -1), (6, 4))
+        )
+
+        assert clear.tolist() == [False, False, True]
