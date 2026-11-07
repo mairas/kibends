@@ -22,6 +22,9 @@ from kibends.optimize import (
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 
 SETTINGS = OptimizerSettings()
+# For long runs: about 20x faster than the defaults and, on the detour and
+# stall scenarios, still converging within 1 µm of the default result's length.
+COARSE = replace(SETTINGS, spacing=0.3, burst_maxiter=30)
 # Positions of a straight result within this of the ideal line, mm: the
 # energy cannot resolve smaller bows, and simplify flattens them anyway.
 STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
@@ -199,7 +202,6 @@ def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
 FROZEN_DISC_RADIUS = 0.3
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("x", [3.0, 9.0, 16.0])
 def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
     detour = scenarios.detour()
@@ -207,7 +209,7 @@ def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
     polyline = np.insert(detour.polyline, 1 if x < 9.85 else 5, [x, 0.0], axis=0)
 
     result = optimize(
-        polyline, scenarios.endpoints_fixed(polyline), field, detour.params, SETTINGS
+        polyline, scenarios.endpoints_fixed(polyline), field, detour.params, COARSE
     )
 
     assert result.termination is Termination.CONVERGED
@@ -215,19 +217,18 @@ def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
     assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-2)
 
 
-@pytest.mark.slow
 def test_detour_in_narrow_channel_is_pulled_tight() -> None:
     scenario = scenarios.detour()
 
-    result = run(scenario)
+    result = run(scenario, COARSE)
 
     assert result.termination is Termination.CONVERGED
     assert result.rejected_edges > 0
     assert all_edges_clear(result.polyline, scenario.field)
     assert result.before.length == pytest.approx(scenarios.DETOUR_LENGTH + 5.0)
     assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-3)
-    # Bubble-limited: about 62 outer iterations with the default settings.
-    assert result.iterations <= 70
+    # Bubble-limited: about 31 outer iterations at these settings.
+    assert result.iterations <= 40
 
 
 class TestNothingToDo:
@@ -329,9 +330,6 @@ def test_abnormal_lbfgsb_termination_is_reported() -> None:
 
 STALL_FIXTURE = Path(__file__).parent / "fixtures" / "stall" / "vin_sense_chain.json"
 STALL_ITERATION_LIMIT = 30
-# Coarser than the defaults so the test runs in under a second; with the stall
-# stop disabled these settings still run into the iteration limit.
-STALL_COARSE = {"spacing": 0.3, "burst_maxiter": 30}
 
 
 def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
@@ -352,7 +350,8 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
         np.array(data["pinned"]),
         field,
         params,
-        replace(SETTINGS, max_iterations=STALL_ITERATION_LIMIT, **STALL_COARSE),
+        # With the stall stop disabled these settings run into the limit.
+        replace(COARSE, max_iterations=STALL_ITERATION_LIMIT),
     )
 
     assert result.termination is Termination.CONVERGED
