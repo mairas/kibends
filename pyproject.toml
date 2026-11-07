@@ -10,10 +10,19 @@ license-files = ["LICENSE"]
 keywords = ["KiCad", "EDA", "PCB", "tracks", "rounding"]
 dependencies = [
     "kicad-python >= 0.8.0",
+    "loguru>=0.7.3",
+    "numpy>=2.4.6",
+    "scipy>=1.17.1",
+    "shapely>=2.2.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/mairas/kibends"
+
+[project.optional-dependencies]
+plot = [
+    "matplotlib>=3.11.2",
+]
 
 [dependency-groups]
 dev = [
