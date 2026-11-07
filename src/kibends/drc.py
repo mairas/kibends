@@ -11,8 +11,6 @@ are copied and adapted from kistitch's drc.py (MIT, Copyright (c) 2025
 Hat Labs Oy).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -203,7 +201,7 @@ def remove_segments(board_text: str, ids: Collection[str]) -> str:
     Everything else is left byte for byte, so that DRC sees no other change.
     """
     spans: set[tuple[int, int]] = set()
-    missing = []
+    missing: list[str] = []
     for i in ids:
         span = _segment_span(board_text, i)
         if span is None:
@@ -339,7 +337,7 @@ class Violation:
 
 
 def parse_report(report: Report) -> list[Violation]:
-    out = []
+    out: list[Violation] = []
     for v in report.get("violations", []) + report.get("unconnected_items", []):
         if v.get("excluded"):
             continue
@@ -463,7 +461,7 @@ def introduced(
     remaining = Counter(
         _key(v, old_ids) for v in baseline if v.type not in CONNECTIVITY_TYPES
     )
-    added = []
+    added: list[Violation] = []
     for v in candidate:
         if v.type in CONNECTIVITY_TYPES:
             continue
