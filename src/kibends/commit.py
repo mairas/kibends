@@ -1,4 +1,4 @@
-"""Replace the chain's tracks in KiCad as one undoable commit.
+"""Replace the tracks of one or more chains in KiCad as one undoable commit.
 
 `commit_label`, `create_checked` and `push_checked` are copied and
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
@@ -61,19 +61,38 @@ def commit_chain(
     selected: Sequence[Segment],
     polyline: FloatArray,
 ) -> None:
-    """Replace the chain's tracks with straight tracks along `polyline` (mm).
+    """Replace the chain's tracks with straight tracks along `polyline` (mm)."""
+    commit_chains(board, [(chain, polyline)], selected)
 
-    The tracks are re-read first, so a track edited since the selection was
-    read aborts the run instead of being overwritten. Zones are not
-    refilled: a refill would be a second undo step.
+
+def commit_chains(
+    board: kipy.board.Board,
+    chains: Sequence[tuple[Chain, FloatArray]],
+    selected: Sequence[Segment],
+) -> None:
+    """Replace each chain's tracks with straight tracks along its polyline (mm).
+
+    All chains go into one KiCad commit, so the run is one undo step, and
+    each IPC step is one request for all chains. The tracks are re-read
+    first, so a track edited since the selection was read aborts the run
+    instead of being overwritten. Zones are not refilled: a refill would be
+    a second undo step. An empty `chains` raises ValueError, since it would
+    push an empty undo step.
     """
-    current = _unchanged_tracks(board, chain, selected)
-    new_tracks = track_items(polyline, chain.width, current[0])
+    if not chains:
+        raise ValueError("No chains to commit")
+    ids = [i for chain, _ in chains for i in chain.segment_ids]
+    current = _unchanged_tracks(board, ids, selected)
+    new_tracks = [
+        track
+        for chain, polyline in chains
+        for track in track_items(polyline, chain.width, current[chain.segment_ids[0]])
+    ]
     label = commit_label("smooth")
 
     commit = board.begin_commit()
     try:
-        delete_checked(board, chain.segment_ids)
+        delete_checked(board, ids)
         create_checked(board, new_tracks)
     except BaseException:
         board.drop_commit(commit)
@@ -82,24 +101,24 @@ def commit_chain(
     # Outside the try above: once pushed, the commit can't be dropped.
     push_checked(board, commit, label)
     logger.info(
-        f"Committed '{label}': replaced {len(chain.segment_ids)} tracks "
-        f"with {len(new_tracks)}"
+        f"Committed '{label}': replaced {len(ids)} tracks with {len(new_tracks)}"
     )
 
 
 def _unchanged_tracks(
-    board: kipy.board.Board, chain: Chain, selected: Sequence[Segment]
-) -> list[kbt.Track]:
-    """The chain's tracks as KiCad has them now; raise if any changed."""
-    expected = {s.id: s for s in selected if s.id in set(chain.segment_ids)}
+    board: kipy.board.Board, ids: Sequence[str], selected: Sequence[Segment]
+) -> dict[str, kbt.Track]:
+    """The tracks `ids` as KiCad has them now, by id; raise if any changed."""
+    wanted = set(ids)
+    expected = {s.id: s for s in selected if s.id in wanted}
     fetched = {
         item.id.value: item
-        for item in board.get_items_by_id([KIID(value=i) for i in chain.segment_ids])
+        for item in board.get_items_by_id([KIID(value=i) for i in ids])
         if isinstance(item, kbt.Track)
     }
     changed = [
         i
-        for i in chain.segment_ids
+        for i in ids
         if i not in fetched or segment_from_track(fetched[i]) != expected[i]
     ]
     if changed:
@@ -107,7 +126,7 @@ def _unchanged_tracks(
             "Selected tracks changed in KiCad since they were read: "
             f"{', '.join(changed)}; select the chain again and rerun"
         )
-    return [fetched[i] for i in chain.segment_ids]
+    return fetched
 
 
 def track_items(
