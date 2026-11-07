@@ -93,8 +93,9 @@ class TestOrdering:
     def test_chain_is_frozen(self) -> None:
         chain = extract_chain(l_z_segments())
 
+        # The write pyright rejects statically is the one under test.
         with pytest.raises(AttributeError):
-            chain.layer = "B.Cu"  # type: ignore[misc]
+            chain.layer = "B.Cu"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 class TestDedupe:
