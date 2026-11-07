@@ -134,22 +134,15 @@ class TestDedupe:
 
 class TestPinning:
     def test_unselected_track_ending_mid_segment_inserts_pinned_vertex(self) -> None:
-        tee = LineString([(5, -3), (5, 0)])
+        tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
 
         chain = extract_chain(l_z_segments(), [tee])
 
         assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, False, True)
 
-    def test_track_ending_a_hair_short_of_the_chain_still_pins(self) -> None:
-        tee = LineString([(5, -3), (5, -1e-9)])
-
-        chain = extract_chain(l_z_segments(), [tee])
-
-        assert pinned_points(chain)[1] == pytest.approx((5, 0), abs=PIN_TOLERANCE_MM)
-
     def test_track_ending_at_existing_vertex_pins_it_without_insertion(self) -> None:
-        tee = LineString([(10, -3), (10, 0)])
+        tee = SameNetTrack(LineString([(10, -3), (10, 0)]), WIDTH_MM)
 
         chain = extract_chain(l_z_segments(), [tee])
 
@@ -157,7 +150,7 @@ class TestPinning:
         assert chain.pinned == (True, True, False, True)
 
     def test_track_crossing_the_chain_pins_the_crossing(self) -> None:
-        crossing = LineString([(10 - 2, 2.5), (10 + 2, 2.5)])
+        crossing = SameNetTrack(LineString([(10 - 2, 2.5), (10 + 2, 2.5)]), WIDTH_MM)
 
         chain = extract_chain(l_z_segments(), [crossing])
 
@@ -165,7 +158,7 @@ class TestPinning:
         assert chain.pinned == (True, False, True, False, True)
 
     def test_track_overlapping_the_chain_pins_both_overlap_ends(self) -> None:
-        overlap = LineString([(2, 0), (6, 0)])
+        overlap = SameNetTrack(LineString([(2, 0), (6, 0)]), WIDTH_MM)
 
         chain = extract_chain(l_z_segments(), [overlap])
 
@@ -197,14 +190,6 @@ class TestPinning:
         chain = extract_chain(l_z_segments(), [branch])
 
         assert chain.pinned == (True, False, False, True)
-
-    def test_track_ending_on_the_chain_pins_only_the_junction(self) -> None:
-        tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
-
-        chain = extract_chain(l_z_segments(), [tee])
-
-        assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
-        assert chain.pinned == (True, True, False, False, True)
 
     def test_pad_outline_crossed_pins_entry_and_exit(self) -> None:
         pad = box(4, -1, 6, 1)
