@@ -265,6 +265,7 @@ class TestSmooth:
             (nm(4), nm(4)),
         ]
         assert ends[nm(STUB_TOUCH[0]), nm(STUB_TOUCH[1])] == 2
+        assert (nm(4), 0) not in ends
 
     def test_prints_statistics(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
