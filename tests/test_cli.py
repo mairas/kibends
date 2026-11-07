@@ -2,6 +2,7 @@ import json
 import re
 import stat
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +33,8 @@ PAD = (3.2, 0.8)
 """Other-net pad inside the L's inner corner, between the L and its chord."""
 LOCKED_ACROSS_CHORD = ((1.5, 2.5), (2.5, 1.5))
 """Other-net track across the chord the L would otherwise be pulled to."""
+STUB_TOUCH = (2, 0)
+"""Where a same-net stub ends, mid-way along the L's first leg."""
 # Rounding the created tracks to whole nanometres may cost this much clearance.
 NM_ROUNDING = 2e-6
 
@@ -235,6 +238,33 @@ class TestSmooth:
                 [(t.start.x / 1e6, t.start.y / 1e6), (t.end.x / 1e6, t.end.y / 1e6)]
             )
             assert segment.distance(obstacle) >= required - NM_ROUNDING
+
+    def test_same_net_stub_on_the_chain_keeps_its_touch_point(
+        self, connect: Connector
+    ) -> None:
+        chain = l_chain()
+        stub = kipy_track("stub", "SIG", (2, -3), STUB_TOUCH, width=WIDTH)
+        board = connect.to(
+            CommitBoard(
+                selection=list(chain),
+                tracks=[*chain, stub],
+                pads=[kipy_pad("pad", "GND", *PAD)],
+            )
+        )
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == ["a", "b"]
+        ends = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        assert sorted(p for p, n in ends.items() if n == 1) == [
+            (0, 0),
+            (nm(4), nm(4)),
+        ]
+        assert ends[nm(STUB_TOUCH[0]), nm(STUB_TOUCH[1])] == 2
 
     def test_prints_statistics(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
