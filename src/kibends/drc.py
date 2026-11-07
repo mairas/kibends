@@ -3,7 +3,7 @@
 kicad-cli checks the board's own rules, which KiCad's API does not expose:
 custom rules, board minimums, edge and hole clearances. It runs twice on
 copies in a scratch directory: once on the board as it is, once with the old
-chain removed and the new tracks added, and the reports are compared.
+chains removed and the new tracks added, and the reports are compared.
 
 `locate_kicad_cli`, `kicad_cli_version`, `project_files`, the DRC run,
 `parse_report`, `violation_nets`, `rising_connectivity_nets` and `inject`
@@ -19,7 +19,7 @@ import subprocess
 import time
 import uuid
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -64,6 +64,7 @@ NET_TAG = re.compile(r"\[(.*)\]")
 UNNAMED_NET = "(unnamed)"
 
 SEGMENT_OPEN = "\n\t(segment"
+UUID_TAG = re.compile(r'\(uuid "([^"]*)"\)')
 FONTS_MARKER = "\n\t(embedded_fonts"
 DRC_TIMEOUT_S = 900
 VERSION_TIMEOUT_S = 30
@@ -199,31 +200,33 @@ def remove_segments(board_text: str, ids: Collection[str]) -> str:
     """Board text without the segments whose uuids are `ids`.
 
     Everything else is left byte for byte, so that DRC sees no other change.
+    Each id is looked up at its first uuid tag, all in one pass over the text.
     """
-    spans: set[tuple[int, int]] = set()
-    missing: list[str] = []
-    for i in ids:
-        span = _segment_span(board_text, i)
-        if span is None:
-            missing.append(i)
-        else:
-            spans.add(span)
+    wanted = set(ids)
+    found: dict[str, tuple[int, int] | None] = {}
+    for m in UUID_TAG.finditer(board_text):
+        i = m.group(1)
+        if i in wanted and i not in found:
+            found[i] = _segment_span(board_text, m.start())
+    spans = sorted({span for span in found.values() if span is not None})
+    missing = [i for i in ids if found.get(i) is None]
     if missing:
         raise BoardTextError(
             f"Tracks not found in the board text: {', '.join(missing)}; "
             "select the chain again and rerun"
         )
-    out = board_text
-    for start, end in sorted(spans, reverse=True):
-        out = out[:start] + out[end:]
-    return out
+    pieces: list[str] = []
+    kept_from = 0
+    for start, end in spans:
+        pieces.append(board_text[kept_from:start])
+        kept_from = end
+    pieces.append(board_text[kept_from:])
+    return "".join(pieces)
 
 
-def _segment_span(text: str, item_id: str) -> tuple[int, int] | None:
-    """Start and end of the top-level segment with this uuid, with its newline."""
-    at = text.find(f'(uuid "{item_id}")')
-    if at < 0:
-        return None
+def _segment_span(text: str, at: int) -> tuple[int, int] | None:
+    """Start and end of the top-level segment whose uuid tag is at `at`, with
+    its newline."""
     opening = text.rfind(SEGMENT_OPEN, 0, at)
     if opening < 0:
         return None
@@ -267,17 +270,13 @@ def _quote(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def inject(board_text: str, tracks: NewTracks) -> tuple[str, tuple[str, ...]]:
-    """Board text with `tracks` added as segments, and the segments' uuids."""
-    ids = tuple(str(uuid.uuid4()) for _ in tracks.points[1:])
-    items = "".join(
-        f"\t(segment\n\t\t(start {_num(start[0])} {_num(start[1])})\n"
-        f"\t\t(end {_num(end[0])} {_num(end[1])})\n"
-        f"\t\t(width {_num(tracks.width)})\n\t\t(layer {_quote(tracks.layer)})\n"
-        f"\t\t(net {_quote(tracks.net)})\n"
-        f'\t\t(uuid "{item_id}")\n\t)\n'
-        for (start, end), item_id in zip(pairwise(tracks.points), ids, strict=True)
-    )
+def inject(
+    board_text: str, chains: Sequence[NewTracks]
+) -> tuple[str, tuple[tuple[str, ...], ...]]:
+    """Board text with every chain's tracks added as segments in one insertion,
+    and the segments' uuids per chain."""
+    texts, ids = zip(*(_segments(tracks) for tracks in chains), strict=True)
+    items = "".join(texts)
     if FONTS_MARKER in board_text:
         at = board_text.rindex(FONTS_MARKER) + 1
     else:
@@ -285,6 +284,19 @@ def inject(board_text: str, tracks: NewTracks) -> tuple[str, tuple[str, ...]]:
         if board_text[at - 1] != "\n":
             items = "\n" + items
     return board_text[:at] + items + board_text[at:], ids
+
+
+def _segments(tracks: NewTracks) -> tuple[str, tuple[str, ...]]:
+    ids = tuple(str(uuid.uuid4()) for _ in tracks.points[1:])
+    text = "".join(
+        f"\t(segment\n\t\t(start {_num(start[0])} {_num(start[1])})\n"
+        f"\t\t(end {_num(end[0])} {_num(end[1])})\n"
+        f"\t\t(width {_num(tracks.width)})\n\t\t(layer {_quote(tracks.layer)})\n"
+        f"\t\t(net {_quote(tracks.net)})\n"
+        f'\t\t(uuid "{item_id}")\n\t)\n'
+        for (start, end), item_id in zip(pairwise(tracks.points), ids, strict=True)
+    )
+    return text, ids
 
 
 # ---- reports -------------------------------------------------------------------
@@ -363,14 +375,14 @@ def parse_report(report: Report) -> list[Violation]:
 class _ItemsKey:
     """A violation identified by its items' descriptions and positions.
 
-    Chain tracks are only counted: a track's description includes its length
-    and its position is its start, so neither survives the chain being
-    replaced.
+    Chain tracks are only counted, per chain: a track's description includes
+    its length and its position is its start, so neither survives the chain
+    being replaced. `chain_items` pairs chain indices with their item counts.
     """
 
     type: str
     items: tuple[tuple[str, float, float], ...]
-    chain_items: int
+    chain_items: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -385,9 +397,14 @@ class _NetWideKey:
 ViolationKey = _ItemsKey | _NetWideKey
 
 
-def _key(v: Violation, chain_ids: Collection[str]) -> ViolationKey:
+def _chain_of(groups: Sequence[Collection[str]]) -> dict[str, int]:
+    return {i: chain for chain, ids in enumerate(groups) for i in ids}
+
+
+def _key(v: Violation, chain_of: Mapping[str, int]) -> ViolationKey:
     if v.type in NET_WIDE_TYPES:
         return _NetWideKey(v.type, v.description, violation_nets(v))
+    chains = Counter(chain_of[i.uuid] for i in v.items if i.uuid in chain_of)
     return _ItemsKey(
         v.type,
         tuple(
@@ -398,10 +415,10 @@ def _key(v: Violation, chain_ids: Collection[str]) -> ViolationKey:
                     round(i.position[1], POSITION_DECIMALS),
                 )
                 for i in v.items
-                if i.uuid not in chain_ids
+                if i.uuid not in chain_of
             )
         ),
-        sum(i.uuid in chain_ids for i in v.items),
+        tuple(sorted(chains.items())),
     )
 
 
@@ -447,25 +464,29 @@ class Introduced:
 def introduced(
     baseline: Sequence[Violation],
     candidate: Sequence[Violation],
-    old_ids: Collection[str],
-    new_ids: Collection[str],
+    old_ids: Sequence[Collection[str]],
+    new_ids: Sequence[Collection[str]],
 ) -> Introduced:
     """The violations in `candidate` that `baseline` does not have.
 
     Violations other than connectivity ones are compared as multisets of
-    (type, items), items by description and position. An item on the old
-    chain in the baseline and one on the new chain in the candidate both
-    stand for the chain, so a violation the chain already had against some
-    item is not new. Connectivity violations count per net.
+    (type, items), items by description and position. `old_ids` and
+    `new_ids` group the ids per chain, in the same chain order. An item of
+    chain k's old tracks in the baseline and one of its new tracks in the
+    candidate both stand for chain k, so a violation the chain already had
+    against some item is not new, while another chain's old violation does
+    not excuse it. Connectivity violations count per net.
     """
+    old_chain_of = _chain_of(old_ids)
+    new_chain_of = _chain_of(new_ids)
     remaining = Counter(
-        _key(v, old_ids) for v in baseline if v.type not in CONNECTIVITY_TYPES
+        _key(v, old_chain_of) for v in baseline if v.type not in CONNECTIVITY_TYPES
     )
     added: list[Violation] = []
     for v in candidate:
         if v.type in CONNECTIVITY_TYPES:
             continue
-        k = _key(v, new_ids)
+        k = _key(v, new_chain_of)
         if remaining[k] > 0:
             remaining[k] -= 1
         else:
@@ -486,16 +507,28 @@ def check(
     kicad_cli: Path,
     project: ProjectFiles,
     board_text: str,
-    removed_ids: Collection[str],
-    tracks: NewTracks,
+    removed_ids: Sequence[Collection[str]],
+    tracks: Sequence[NewTracks],
     workdir: Path,
 ) -> Introduced:
-    """Violations that replacing `removed_ids` with `tracks` would add.
+    """Violations that replacing each chain's `removed_ids` with its `tracks`
+    would add; the two sequences are in the same chain order.
 
-    The candidate text is built first, so a missing track fails before any
-    DRC run.
+    Every chain goes into one candidate board, so the check is two kicad-cli
+    runs however many chains there are. The candidate text is built first,
+    so a missing track fails before any DRC run. An empty `tracks` raises
+    ValueError: it would check a board with the chains only removed.
     """
-    candidate_text, new_ids = inject(remove_segments(board_text, removed_ids), tracks)
+    if not tracks:
+        raise ValueError("No chains to check")
+    if len(removed_ids) != len(tracks):
+        raise ValueError(
+            f"{len(removed_ids)} groups of removed tracks for {len(tracks)} chains"
+        )
+    candidate_text = remove_segments(
+        board_text, [i for ids in removed_ids for i in ids]
+    )
+    candidate_text, new_ids = inject(candidate_text, tracks)
     baseline = _timed_run(kicad_cli, project, workdir, "baseline", board_text)
     candidate = _timed_run(kicad_cli, project, workdir, "candidate", candidate_text)
     return introduced(baseline, candidate, removed_ids, new_ids)

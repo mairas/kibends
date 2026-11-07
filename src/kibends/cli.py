@@ -289,8 +289,8 @@ def _check_drc(
             gate.kicad_cli,
             gate.project,
             board.get_as_string(),
-            chain.segment_ids,
-            tracks,
+            [chain.segment_ids],
+            [tracks],
             Path(tmp),
         )
     print(_verdict(found))
