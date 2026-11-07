@@ -7,10 +7,13 @@ The repository is public. Never write host names, addresses or other details of 
 ## Commands
 
 - `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs. Run it in every fresh worktree before testing.
-- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` and real kicad-cli tests. Run `test-all` before committing.
+- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` and real kicad-cli tests.
+- `./run lint` runs `ruff check` and `ruff format --check`; `./run format` formats and applies ruff's fixes.
+- `./run typecheck` runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
+- `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing. CI has no kicad-cli, so the real-KiCad DRC tests run only locally: a change to `drc.py` needs a local `./run check` with KiCad installed.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
 
-No linter or type checker is configured. Keep code fully annotated and never use `Any`.
+Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests`; kicad-cli tests skip there.
 
 ## Pipeline
 
