@@ -67,7 +67,7 @@ def kipy_track(
     start: tuple[float, float],
     end: tuple[float, float],
     width: float = 0.25,
-    layer: int = BL.BL_F_Cu,
+    layer: BL.ValueType = BL.BL_F_Cu,
     locked: bool = False,
 ) -> kbt.Track:
     t = kbt.Track()
@@ -152,7 +152,7 @@ def kipy_footprint(
 
 def _drawn[ShapeT: kbt.BoardShape](
     shape: ShapeT,
-    layer: int,
+    layer: BL.ValueType,
     width: float,
     net: str,
     shape_id: str,
@@ -169,7 +169,7 @@ def _drawn[ShapeT: kbt.BoardShape](
 def kipy_segment(
     start: tuple[float, float],
     end: tuple[float, float],
-    layer: int = BL.BL_F_Cu,
+    layer: BL.ValueType = BL.BL_F_Cu,
     width: float = 0.1,
     net: str = "",
     shape_id: str = "shape",
@@ -184,7 +184,7 @@ def kipy_board_arc(
     start: tuple[float, float],
     mid: tuple[float, float],
     end: tuple[float, float],
-    layer: int = BL.BL_F_Cu,
+    layer: BL.ValueType = BL.BL_F_Cu,
     width: float = 0.1,
     shape_id: str = "arc",
 ) -> kbt.BoardArc:
@@ -199,7 +199,7 @@ def kipy_circle(
     centre: tuple[float, float],
     radius: float,
     filled: bool = False,
-    layer: int = BL.BL_F_Cu,
+    layer: BL.ValueType = BL.BL_F_Cu,
     width: float = 0.1,
     shape_id: str = "circle",
 ) -> kbt.BoardCircle:
@@ -213,7 +213,7 @@ def kipy_rectangle(
     top_left: tuple[float, float],
     bottom_right: tuple[float, float],
     filled: bool = False,
-    layer: int = BL.BL_F_Cu,
+    layer: BL.ValueType = BL.BL_F_Cu,
     width: float = 0.1,
     shape_id: str = "rect",
     corner_radius: float = 0.0,
@@ -234,7 +234,7 @@ def kipy_bezier(shape_id: str = "bezier") -> kbt.BoardBezier:
     return _drawn(b, BL.BL_F_Cu, 0.1, "", shape_id)
 
 
-def kipy_text(value: str, x: float, y: float, layer: int = BL.BL_F_Cu) -> kbt.BoardText:
+def kipy_text(value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu) -> kbt.BoardText:
     t = kbt.BoardText()
     t.proto.id.value = f"text-{value}"
     t.value = value
@@ -244,7 +244,7 @@ def kipy_text(value: str, x: float, y: float, layer: int = BL.BL_F_Cu) -> kbt.Bo
 
 
 def kipy_field(
-    value: str, x: float, y: float, layer: int = BL.BL_F_Cu, visible: bool = True
+    value: str, x: float, y: float, layer: BL.ValueType = BL.BL_F_Cu, visible: bool = True
 ) -> kbt.Field:
     f = kbt.Field()
     f.name = "Reference"
@@ -329,15 +329,15 @@ class FakeProject:
 class FakeBoard:
     """Answers the reads the snapshot makes."""
 
-    selection: list[Wrapper] = field(default_factory=list)
-    pads: list[kbt.Pad] = field(default_factory=list)
-    vias: list[kbt.Via] = field(default_factory=list)
-    tracks: list[kbt.Track | kbt.ArcTrack] = field(default_factory=list)
-    shapes: list[kbt.BoardShape] = field(default_factory=list)
-    texts: list[kbt.BoardText | kbt.BoardTextBox] = field(default_factory=list)
-    footprints: list[kbt.FootprintInstance] = field(default_factory=list)
-    zones: list[kbt.Zone] = field(default_factory=list)
-    netclasses: dict[str, NetClass] = field(default_factory=dict)
+    selection: list[Wrapper] = field(default_factory=list[Wrapper])
+    pads: list[kbt.Pad] = field(default_factory=list[kbt.Pad])
+    vias: list[kbt.Via] = field(default_factory=list[kbt.Via])
+    tracks: list[kbt.Track | kbt.ArcTrack] = field(default_factory=list[kbt.Track | kbt.ArcTrack])
+    shapes: list[kbt.BoardShape] = field(default_factory=list[kbt.BoardShape])
+    texts: list[kbt.BoardText | kbt.BoardTextBox] = field(default_factory=list[kbt.BoardText | kbt.BoardTextBox])
+    footprints: list[kbt.FootprintInstance] = field(default_factory=list[kbt.FootprintInstance])
+    zones: list[kbt.Zone] = field(default_factory=list[kbt.Zone])
+    netclasses: dict[str, NetClass] = field(default_factory=dict[str, NetClass])
     default_clearance: float | None = 0.2
     name: str = "board.kicad_pcb"
     project_dir: str = ""
@@ -411,7 +411,7 @@ class FakeBoard:
 class CommitClient(FakeClient):
     """Answers the item commands commit.py sends directly, besides text shapes."""
 
-    board: "CommitBoard | None" = None
+    board: CommitBoard | None = None
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
         assert self.board is not None
@@ -432,10 +432,10 @@ class CommitBoard(FakeBoard):
     sent, all reported as created.
     """
 
-    calls: list[str] = field(default_factory=list)
-    deleted: list[str] = field(default_factory=list)
-    created: list[Wrapper] = field(default_factory=list)
-    labels: list[str] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list[str])
+    deleted: list[str] = field(default_factory=list[str])
+    created: list[Wrapper] = field(default_factory=list[Wrapper])
+    labels: list[str] = field(default_factory=list[str])
     refuse_create: bool = False
     short_create: bool = False
     refuse_delete: frozenset[str] = frozenset()
