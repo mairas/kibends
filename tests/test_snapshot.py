@@ -474,6 +474,17 @@ class TestKeepoutsAndEdge:
             60 - (4 - math.pi), abs=1e-2
         )
 
+    def test_edge_corner_radius_over_half_the_short_side_gives_a_stadium(
+        self,
+    ) -> None:
+        rect = kipy_rectangle((0, 0), (4, 2), layer=BL.BL_Edge_Cuts, corner_radius=1.5)
+
+        (path,) = snapshot(FakeBoard(shapes=[rect])).edge_paths
+
+        # The radius clamps to 1 mm, half the 2 mm side.
+        assert Polygon(path).is_valid
+        assert Polygon(path).area == pytest.approx(8 - (4 - math.pi), abs=1e-2)
+
     def test_edge_rounded_rectangle_of_segments_and_arcs_closes(self) -> None:
         # A 10 x 6 mm board with 1 mm corner radii.
         d = 1 - math.sqrt(0.5)

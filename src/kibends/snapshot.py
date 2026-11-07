@@ -439,6 +439,7 @@ def _rectangle_ring(shape: common_types.Rectangle) -> list[Point2]:
     x0, x1, y0, y1 = min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)
     # kipy has no accessor for the corner radius KiCad 10 added.
     r = shape._graphic_proto.rectangle.corner_radius.value_nm / NM_PER_MM
+    r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
     if r <= 0:
         return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
     d = r * (1 - math.sqrt(0.5))
