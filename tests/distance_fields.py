@@ -4,10 +4,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from numpy.typing import NDArray
 
-FloatArray = NDArray[np.float64]
-BoolArray = NDArray[np.bool_]
+from kibends.energy import BoolArray, FloatArray
 
 FAR = 1e3
 """Distance reported by FreeSpace, beyond any falloff range used in tests, mm."""

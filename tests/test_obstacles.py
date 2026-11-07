@@ -21,10 +21,15 @@ from conftest import (
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
-from numpy.typing import NDArray
 from shapely.geometry import LineString, Point, Polygon, box
 
-from kibends.energy import DistanceField, EnergyParams, clearance_energy, total_energy
+from kibends.energy import (
+    DistanceField,
+    EnergyParams,
+    FloatArray,
+    clearance_energy,
+    total_energy,
+)
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
@@ -41,8 +46,6 @@ HALF = WIDTH / 2
 DEFAULT_CLEARANCE = 0.2
 NM_TOLERANCE = 1e-6
 FD_STEP = 1e-6
-
-FloatArray = NDArray[np.float64]
 
 
 def obstacles_of(

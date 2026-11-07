@@ -21,6 +21,7 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
+from kibends.energy import BoolArray, FloatArray
 from kibends.snapshot import (
     LayerSnapshot,
     PadKind,
@@ -28,8 +29,6 @@ from kibends.snapshot import (
     outline_from_edge_paths,
 )
 
-FloatArray = NDArray[np.float64]
-BoolArray = NDArray[np.bool_]
 ObjectArray = NDArray[np.object_]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.

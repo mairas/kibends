@@ -14,6 +14,7 @@ from typing import Protocol
 import numpy as np
 from scipy.optimize import minimize
 
+from kibends.chain import Point2
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
@@ -96,7 +97,7 @@ DEFAULT_SETTINGS = OptimizerSettings()
 class FrozenVertex:
     """A vertex left in place because it starts inside an obstacle."""
 
-    position: tuple[float, float]
+    position: Point2
     distance: float
     """Signed distance to the clearance boundary, negative, mm."""
 

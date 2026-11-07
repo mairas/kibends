@@ -34,9 +34,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize, unary_union
 
-from kibends.chain import NM_PER_MM, Segment
-
-Point2 = tuple[float, float]
+from kibends.chain import NM_PER_MM, Point2, Segment
 
 EDGE_CUTS = "Edge.Cuts"
 DEFAULT_NETCLASS = "Default"
