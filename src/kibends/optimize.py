@@ -254,11 +254,10 @@ def resample(
     masks = [np.ones(1, dtype=bool)]
     for start, end in pairwise(anchor_indices):
         span = points[start : end + 1]
-        arc = np.concatenate(
-            [[0.0], np.cumsum(np.linalg.norm(np.diff(span, axis=0), axis=1))]
-        )
-        count = max(1, int(np.ceil(arc[-1] / spacing - RESAMPLE_SLACK)))
-        targets = np.linspace(0.0, arc[-1], count + 1)[1:-1]
+        arc = _arc_lengths(span)
+        total = float(arc[-1])
+        count = max(1, int(np.ceil(total / spacing - RESAMPLE_SLACK)))
+        targets = np.linspace(0.0, total, count + 1)[1:-1]
         interior = np.stack(
             [np.interp(targets, arc, span[:, 0]), np.interp(targets, arc, span[:, 1])],
             axis=1,
@@ -306,8 +305,8 @@ def _clearance(
     polyline: FloatArray, lengths: FloatArray, field: DistanceField, step: float
 ) -> dict[str, float]:
     counts = np.maximum(1, np.ceil(lengths / step).astype(int))
-    distances = []
-    weights = []
+    distances: list[FloatArray] = []
+    weights: list[FloatArray] = []
     for start, end, count, length in zip(
         polyline[:-1], polyline[1:], counts, lengths, strict=True
     ):
@@ -404,16 +403,20 @@ def _local_distance(points: FloatArray, polyline: FloatArray) -> float:
         t = np.einsum("ij,ij->i", points - start, delta) / np.maximum(
             squared, MIN_EDGE_LENGTH**2
         )
-        closest = start + np.clip(t, 0.0, 1.0)[:, None] * delta
+        closest: FloatArray = start + np.clip(t, 0.0, 1.0)[:, None] * delta
         nearest = np.minimum(nearest, np.linalg.norm(points - closest, axis=1))
     return float(nearest.max())
 
 
 def _arc_fractions(points: FloatArray) -> FloatArray:
-    arc = np.concatenate(
-        [[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
-    )
-    return np.asarray(arc / max(arc[-1], MIN_EDGE_LENGTH))
+    arc = _arc_lengths(points)
+    return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
+
+
+def _arc_lengths(points: FloatArray) -> FloatArray:
+    """Cumulative arc length at each vertex, starting at 0."""
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    return np.concatenate((np.zeros(1), np.cumsum(steps)))
 
 
 def _revert_new_crossings(
