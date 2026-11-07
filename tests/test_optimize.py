@@ -153,7 +153,7 @@ class TestChannel:
 
 
 def test_path_left_of_disc_stays_left() -> None:
-    result = run(scenarios.topology())
+    result = run(scenarios.topology(), COARSE)
 
     assert result.termination is Termination.CONVERGED
     assert all_edges_clear(result.polyline, scenarios.TOPOLOGY_DISC)
