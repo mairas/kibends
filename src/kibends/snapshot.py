@@ -24,9 +24,9 @@ import shapely
 from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
-from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.geometry import PolygonWithHoles, PolyLine, Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ZoneType
+from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.util.board_layer import canonical_name, layer_from_canonical_name
 from loguru import logger
@@ -508,7 +508,11 @@ def _read_copper_text(
             entry.textbox.CopyFrom(t.as_textbox().proto)
     try:
         reply = board.client.send(command, base_commands_pb2.GetTextAsShapesResponse)
-    except (ApiError, KiCadConnectionError) as e:
+    except ApiError as e:
+        # A busy KiCad refuses every later request too, so going on without
+        # the text would only postpone the failure.
+        if e.code == ApiStatusCode.AS_BUSY:
+            raise
         logger.warning(
             f"KiCad could not render the copper text on {layer} ({e}); "
             "only the DRC check covers it"

@@ -231,14 +231,12 @@ def _text_box(x: float, y: float) -> base_types_pb2.GraphicShape:
 class FakeClient:
     """Renders every text as a filled box of 2 x 1 mm around its position."""
 
-    fails: bool = False
+    error: Exception | None = None
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
-        from kipy.errors import ApiError
-
         assert isinstance(command, base_commands_pb2.GetTextAsShapes)
-        if self.fails:
-            raise ApiError("unsupported")
+        if self.error is not None:
+            raise self.error
         response = base_commands_pb2.GetTextAsShapesResponse()
         for entry in command.text:
             text = Text(entry.text) if entry.HasField("text") else None

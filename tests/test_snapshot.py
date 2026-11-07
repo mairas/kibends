@@ -22,8 +22,11 @@ from conftest import (
     kipy_zone,
     netclass,
 )
+from kipy.errors import ApiError
+from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
+from kipy.proto.common import ApiStatusCode
 from shapely.geometry import LineString, Point, Polygon
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
@@ -346,11 +349,28 @@ class TestGraphicsAndText:
         self, log: list[str]
     ) -> None:
         fake = FakeBoard(
-            texts=[kipy_text("TOP", 10, 10)], client=FakeClient(fails=True)
+            texts=[kipy_text("TOP", 10, 10)],
+            client=FakeClient(error=ApiError("unsupported")),
         )
 
         assert snapshot(fake).graphics == ()
         assert any(line.startswith("WARNING") and "text" in line for line in log)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ApiError("busy", code=ApiStatusCode.AS_BUSY),
+            KiCadConnectionError("timed out"),
+        ],
+        ids=["busy", "unreachable"],
+    )
+    def test_busy_or_unreachable_kicad_ends_the_read(self, error: Exception) -> None:
+        fake = FakeBoard(texts=[kipy_text("TOP", 10, 10)], client=FakeClient(error))
+
+        with pytest.raises(type(error)) as raised:
+            snapshot(fake)
+
+        assert raised.value is error
 
 
 class TestKeepoutsAndEdge:
