@@ -16,6 +16,9 @@ dependencies = [
     "shapely>=2.2.0",
 ]
 
+[project.scripts]
+kibends = "kibends.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/mairas/kibends"
 
