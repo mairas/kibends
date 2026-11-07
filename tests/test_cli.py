@@ -29,6 +29,8 @@ WIDTH = 0.25
 CLEARANCE = 0.2
 PAD = (3.2, 0.8)
 """Other-net pad inside the L's inner corner, between the L and its chord."""
+LOCKED_ACROSS_CHORD = ((1.5, 2.5), (2.5, 1.5))
+"""Other-net track across the chord the L would otherwise be pulled to."""
 # Rounding the created tracks to whole nanometres may cost this much clearance.
 NM_ROUNDING = 2e-6
 
@@ -187,6 +189,28 @@ class TestSmooth:
             )
             assert segment.distance(pad) >= required - NM_ROUNDING
         assert len(created) > 2
+
+    def test_locked_other_net_track_in_the_selection_stays_an_obstacle(
+        self, connect: Connector
+    ) -> None:
+        chain = l_chain()
+        locked = kipy_track(
+            "locked", "GND", *LOCKED_ACROSS_CHORD, width=WIDTH, locked=True
+        )
+        board = connect.to(
+            CommitBoard(selection=[*chain, locked], tracks=[*chain, locked])
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        obstacle = LineString(LOCKED_ACROSS_CHORD)
+        required = CLEARANCE + WIDTH
+        for t in cast(list[kbt.Track], board.created):
+            segment = LineString(
+                [(t.start.x / 1e6, t.start.y / 1e6), (t.end.x / 1e6, t.end.y / 1e6)]
+            )
+            assert segment.distance(obstacle) >= required - NM_ROUNDING
 
     def test_prints_statistics(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]

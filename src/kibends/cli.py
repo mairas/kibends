@@ -172,7 +172,10 @@ def smooth(options: SmoothOptions) -> None:
 
     selected = read_selection(board)
     layer, net = _layer_and_net(selected)
-    snapshot = LayerSnapshot.from_board(board, layer, {s.id for s in selected})
+    # Locked tracks stay on the board, so they are obstacles or pins like any
+    # unselected track.
+    replaced = {s.id for s in selected if not s.locked}
+    snapshot = LayerSnapshot.from_board(board, layer, replaced)
     chain = extract_chain(selected, snapshot.same_net_copper(net))
     obstacles = build_obstacles(
         snapshot,
