@@ -50,3 +50,20 @@ markers = [
     "slow: takes several seconds; deselect with -m 'not slow'",
     "kicad_cli: runs the real kicad-cli; skipped when it is not installed",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+# plot_scenarios.py puts tests/ on sys.path; a custom environment also
+# loses pyright's automatic src root.
+executionEnvironments = [{ root = "scripts", extraPaths = ["src", "tests"] }]
