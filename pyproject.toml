@@ -2,7 +2,7 @@
 name = "kibends"
 version = "0.0.1"
 authors = [{ name = "Matti Airas", email = "matti.airas@hatlabs.fi" }]
-description = "Smooth KiCad track corners by subdividing tracks and minimizing their length"
+description = "Smooth KiCad tracks into short, clearance-keeping paths"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
