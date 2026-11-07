@@ -10,9 +10,9 @@ import numpy as np
 from kibends.energy import BoolArray, FloatArray
 from kibends.optimize import ObstacleField
 
-DEFAULT_CHORD_TOLERANCE = 0.005
-"""mm: above the optimiser's residual waviness on straight runs (about 2 µm
-with the default settings), far below fabrication tolerances."""
+DEFAULT_CHORD_TOLERANCE = 0.025
+"""mm: well below fabrication tolerances; at 5 µm a 23 mm chain on a real
+board came out as 63 tracks."""
 
 
 def simplify(

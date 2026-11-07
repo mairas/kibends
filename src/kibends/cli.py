@@ -39,7 +39,7 @@ from kibends.optimize import (
     measure,
     optimize,
 )
-from kibends.simplify import simplify
+from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify
 from kibends.snapshot import LayerSnapshot, SelectionError, read_selection
 
 DEFAULT_STIFFNESS = 0.3
@@ -108,6 +108,7 @@ class SmoothOptions:
     params: EnergyParams
     edge_clearance: float
     hole_clearance: float
+    chord_tolerance: float
     dry_run: bool
     plot: Path | None
 
@@ -161,7 +162,12 @@ def smooth(options: SmoothOptions) -> None:
     simplified = (
         result.polyline
         if nothing_to_do
-        else simplify(result.polyline, result.fixed, obstacles)
+        else simplify(
+            result.polyline,
+            result.fixed,
+            obstacles,
+            tolerance=options.chord_tolerance,
+        )
     )
     after = measure(simplified, obstacles, DEFAULT_SETTINGS.spacing)
     print(
@@ -344,6 +350,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"board's own (default: {HOLE_CLEARANCE:g})",
     )
     smooth_parser.add_argument(
+        "--chord-tolerance",
+        type=_positive,
+        default=DEFAULT_CHORD_TOLERANCE,
+        metavar="MM",
+        help="How far the committed tracks may depart from the optimised curve; "
+        f"larger values give fewer, longer tracks (default: {DEFAULT_CHORD_TOLERANCE:g})",
+    )
+    smooth_parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
@@ -371,6 +385,7 @@ def execute_smooth(args: argparse.Namespace) -> None:
         ),
         edge_clearance=args.edge_clearance,
         hole_clearance=args.hole_clearance,
+        chord_tolerance=args.chord_tolerance,
         dry_run=args.dry_run,
         plot=args.plot,
     )

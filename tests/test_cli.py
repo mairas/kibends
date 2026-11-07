@@ -193,6 +193,30 @@ class TestSmooth:
         )
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
 
+    @pytest.mark.parametrize(
+        ("args", "expected"), [((), 0.025), (("--chord-tolerance=0.01",), 0.01)]
+    )
+    def test_chord_tolerance_reaches_simplify(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        args: tuple[str, ...],
+        expected: float,
+    ) -> None:
+        connect.to(l_board())
+        seen: dict[str, object] = {}
+        real_simplify = cli.simplify
+
+        def simplify_spy(*a: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return real_simplify(*a, **kwargs)
+
+        monkeypatch.setattr(cli, "simplify", simplify_spy)
+
+        run("--dry-run", *args)
+
+        assert seen["tolerance"] == expected
+
     def test_negative_weight_is_rejected(self) -> None:
         with pytest.raises(SystemExit) as raised:
             run("--stiffness=-1")

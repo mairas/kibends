@@ -71,6 +71,7 @@ net (a pad, via or track) touches the chain.
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance to drilled holes. |
+| `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values give fewer, longer tracks. |
 | `--dry-run`, `-n` | | Print the statistics without changing the board. |
 | `--plot FILE` | | Draw the original and smoothed chain over the area its centreline must avoid; the format follows the extension. Works with or without `--dry-run`. |
 
