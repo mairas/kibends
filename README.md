@@ -26,6 +26,7 @@ Status: early development. One chain per run.
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
 - Python 3.11 or later.
+- `kicad-cli`, which comes with KiCad, for the DRC check.
 
 ## Installation
 
@@ -41,7 +42,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 
 ## Usage
 
-1. Open the board in KiCad's PCB editor.
+1. Open the board in KiCad's PCB editor and save it: the DRC check reads
+   the project and rule files from disk.
 2. Select the track segments of one chain: connected end to end, on one
    layer, one net and one width, without branches. Selected vias, pads and
    other items are ignored; arc tracks are refused.
@@ -54,7 +56,8 @@ kibends smooth                              # then commit
 
 The command prints the length, track count, tightest bend radius and
 clearance margins before and after, and the optimizer's outcome. Without
-`--dry-run`, the selected tracks are replaced in one commit, which one undo
+`--dry-run`, and if the DRC check passes, the selected tracks are replaced
+in one commit, which one undo
 in KiCad reverts. kibends does not refill zones: refill them yourself (B)
 or let KiCad's DRC refill them.
 
@@ -72,7 +75,9 @@ net (a pad, via or track) touches the chain.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance to drilled holes. |
 | `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values give fewer, longer tracks. |
-| `--dry-run`, `-n` | | Print the statistics without changing the board. |
+| `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
+| `--no-drc` | | Commit without the DRC check. |
+| `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
 | `--plot FILE` | | Draw the original and smoothed chain over the area its centreline must avoid; the format follows the extension. Works with or without `--dry-run`. |
 
 The defaults give a modest rounding: in the test geometries, a 90° corner
@@ -86,8 +91,23 @@ from their neighbours where space allows.
 Copper clearances come from the board's netclasses, including pad and
 footprint clearance overrides. KiCad's API does not expose the board's edge
 and hole clearances, custom rules or board minimums: the edge and hole
-clearances come from the options above, and custom rules are not honoured.
-Run KiCad's DRC after smoothing.
+clearances come from the options above, and custom rules and board
+minimums are not seen by the optimizer.
+
+The DRC check covers what the optimizer cannot see. Before committing,
+kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch
+directory, with the project's `.kicad_pro` and `.kicad_dru`: once on the
+board as it is, and once with the chain replaced. If the result adds a
+violation, nothing is committed, and each new violation is listed with its
+type, description and position. Violations the board already had do not
+count, including ones the old chain had against the same item. A path that
+splits another net's pour shows up as more unconnected items on that net and
+is refused, naming the net.
+
+Save the board before running: kicad-cli reads the board's project and rule
+files from disk, so rule or netclass edits not yet saved in KiCad are not
+seen. The check takes two full-board DRC runs with zone refill; the log shows
+how long each took.
 
 ### Editing a smoothed track
 
