@@ -345,6 +345,32 @@ class TestSmooth:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
+    def test_iteration_cap_warns_and_still_checks_and_commits(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        board = connect.to(l_board())
+        real = cli.optimize
+
+        def capped(*args: object, **kwargs: object) -> OptimizeResult:
+            result = real(*args, **kwargs)  # type: ignore[arg-type]
+            return OptimizeResult(
+                **{**result.__dict__, "termination": Termination.ITERATION_CAP}
+            )
+
+        monkeypatch.setattr(cli, "optimize", capped)
+
+        run()
+
+        assert any(
+            line.startswith("WARNING") and "without converging" in line for line in log
+        )
+        assert drc_runs(kicad_cli) == 2
+        assert "push_commit" in board.calls
+
 
 class TestDrc:
     def test_clean_result_is_committed_after_both_runs(
