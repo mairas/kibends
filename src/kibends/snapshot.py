@@ -214,10 +214,10 @@ def read_selection(board: kipy.board.Board) -> list[Segment]:
         logger.warning(f"Ignoring selected items that are not tracks: {listing}")
     if not tracks:
         raise SelectionError("selection has no tracks")
-    return [_segment(t) for t in tracks]
+    return [segment_from_track(t) for t in tracks]
 
 
-def _segment(t: kbt.Track) -> Segment:
+def segment_from_track(t: kbt.Track) -> Segment:
     return Segment(
         id=t.id.value,
         start=(t.start.x, t.start.y),

@@ -10,21 +10,36 @@ from dataclasses import dataclass, field
 import kipy.board_types as kbt
 import pytest
 from google.protobuf.message import Message
-from kipy.common_types import Text, TextBox
+from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
 from kipy.project_types import NetClass
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ZoneType
 from kipy.proto.common.commands import base_commands_pb2
+from kipy.proto.common.commands.editor_commands_pb2 import (
+    CreateItems,
+    CreateItemsResponse,
+    DeleteItems,
+    DeleteItemsResponse,
+    ItemDeletionStatus,
+    ItemStatusCode,
+)
 from kipy.proto.common.types import base_types_pb2, project_settings_pb2
+from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
 from kipy.wrapper import Wrapper
 from loguru import logger
 
+import kibends.commit
 from kibends.chain import NM_PER_MM
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
+
+
+@pytest.fixture(autouse=True)
+def no_refill_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kibends.commit, "REFILL_POLL_S", 0.0)
 
 
 @pytest.fixture
@@ -313,3 +328,100 @@ class FakeBoard:
 
     def get_project(self) -> FakeProject:
         return FakeProject([self.default_netclass(), *self.netclasses.values()])
+
+
+@dataclass
+class CommitClient(FakeClient):
+    """Answers the item commands commit.py sends directly, besides text shapes."""
+
+    board: "CommitBoard | None" = None
+
+    def send(self, command: Message, response_type: type[Message]) -> Message:
+        assert self.board is not None
+        if isinstance(command, CreateItems):
+            return self.board.answer_create(command)
+        if isinstance(command, DeleteItems):
+            return self.board.answer_delete(command)
+        return super().send(command, response_type)
+
+
+@dataclass
+class CommitBoard(FakeBoard):
+    """A FakeBoard that also records commits, deletions and creations.
+
+    `calls` lists the commit lifecycle in order: begin_commit, delete,
+    create, push_commit, drop_commit, refill_zones.
+    """
+
+    calls: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    created: list[Wrapper] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    refuse_create: bool = False
+    refuse_delete: frozenset[str] = frozenset()
+    push_error: Exception | None = None
+    document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
+
+    def __post_init__(self) -> None:
+        self.client = CommitClient(board=self)
+
+    def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
+        wanted = {i.value for i in ids}
+        return [t for t in self.tracks if t.id.value in wanted]
+
+    def begin_commit(self) -> Commit:
+        self.calls.append("begin_commit")
+        return Commit(KIID(value="commit"))
+
+    def push_commit(self, commit: Commit, message: str = "") -> None:
+        self.calls.append("push_commit")
+        self.labels.append(message)
+        if self.push_error is not None:
+            raise self.push_error
+
+    def drop_commit(self, commit: Commit) -> None:
+        self.calls.append("drop_commit")
+
+    def refill_zones(self, block: bool = True) -> None:
+        self.calls.append("refill_zones")
+
+    def answer_create(self, command: CreateItems) -> CreateItemsResponse:
+        self.calls.append("create")
+        response = CreateItemsResponse()
+        for packed in command.items:
+            result = response.created_items.add()
+            result.item.CopyFrom(packed)
+            result.status.code = (
+                ItemStatusCode.ISC_INVALID_DATA
+                if self.refuse_create
+                else ItemStatusCode.ISC_OK
+            )
+            if not self.refuse_create:
+                self.created.append(kbt.unwrap(packed))
+        return response
+
+    def answer_delete(self, command: DeleteItems) -> DeleteItemsResponse:
+        self.calls.append("delete")
+        response = DeleteItemsResponse()
+        for kiid in command.item_ids:
+            refused = kiid.value in self.refuse_delete
+            response.deleted_items.add(
+                id=kiid,
+                status=ItemDeletionStatus.IDS_IMMUTABLE
+                if refused
+                else ItemDeletionStatus.IDS_OK,
+            )
+            if not refused:
+                self.deleted.append(kiid.value)
+        return response
+
+
+class FakeKiCad:
+    def __init__(self, board: FakeBoard) -> None:
+        self.board = board
+
+    def get_board(self) -> FakeBoard:
+        return self.board
+
+    def ping(self) -> None:
+        pass
