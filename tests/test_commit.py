@@ -27,10 +27,21 @@ def l_tracks() -> list[kbt.Track]:
 
 
 def setup(
-    **board_options: object,
+    *,
+    refuse_create: bool = False,
+    short_create: bool = False,
+    refuse_delete: frozenset[str] = frozenset(),
+    push_error: Exception | None = None,
 ) -> tuple[CommitBoard, Chain, list[Segment]]:
     tracks = l_tracks()
-    board = CommitBoard(selection=list(tracks), tracks=list(tracks), **board_options)  # type: ignore[arg-type]
+    board = CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        refuse_create=refuse_create,
+        short_create=short_create,
+        refuse_delete=refuse_delete,
+        push_error=push_error,
+    )
     selected = [segment_from_track(t) for t in tracks]
     return board, extract_chain(selected), selected
 
