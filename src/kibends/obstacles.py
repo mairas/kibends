@@ -14,6 +14,7 @@ import itertools
 import math
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
+from functools import cached_property
 from typing import NamedTuple
 
 import numpy as np
@@ -378,7 +379,13 @@ class ChainField:
         self._inflations = inflations
         self._max_inflation = float(inflations.max(initial=0.0))
         self._max_half_length = float(np.abs(self._along).max(initial=0.0)) / 2
-        self._tree = cKDTree((starts + ends) / 2) if len(starts) else None
+        self._middles = (starts + ends) / 2
+
+    @cached_property
+    def _tree(self) -> cKDTree | None:
+        # Built on first use: an evaluation given its pairs (`nearest_among`)
+        # needs none.
+        return cKDTree(self._middles) if len(self._middles) else None
 
     @staticmethod
     def merged(fields: Sequence[ChainField]) -> ChainField:
@@ -433,6 +440,61 @@ class ChainField:
                 self._tree, coords, limits + self._max_half_length + DEGENERATE_DISTANCE
             )
             point_limit = limits[point]
+        return self._nearest_of(query, point, edge, point_limit)
+
+    def nearest_among(
+        self, points: FloatArray, reach: float, pairs: tuple[IntArray, IntArray]
+    ) -> NearestEdge:
+        """`nearest` with a finite `reach`, looking at the (point, edge)
+        `pairs` alone: the same answer when they hold every pair within
+        reach plus the largest inflation of each other, as `candidates`
+        finds them."""
+        coords = np.asarray(points, dtype=float).reshape(-1, 2)
+        point, edge = pairs
+        return self._nearest_of(
+            _complex(coords), point, edge, reach + self._max_inflation
+        )
+
+    def candidates(
+        self, points: FloatArray, reach: float, slack: float
+    ) -> tuple[IntArray, IntArray]:
+        """The (point, edge) pairs that `nearest` with a finite `reach` can
+        answer a point with once the distance from each point to each edge
+        has changed by at most `slack`, mm."""
+        coords = np.asarray(points, dtype=float).reshape(-1, 2)
+        empty = np.empty(0, dtype=np.intp)
+        if self._tree is None or not len(coords):
+            return empty, empty
+        within = reach + self._max_inflation
+        limit = within + slack + 2 * DEGENERATE_DISTANCE
+        point, edge = _pairs_within(self._tree, coords, limit + self._max_half_length)
+        raw = np.abs(
+            _offsets(_complex(coords)[point], self._starts[edge], self._along[edge])
+        )
+        keep = raw <= limit
+        point, edge, raw = point[keep], edge[keep], raw[keep]
+        # Only the nearest edge answers a point. An edge that stays within
+        # reach however its distance changes bounds how far away that is,
+        # and an edge that cannot come nearer than the bound never answers.
+        distance = raw - self._inflations[edge]
+        bound = np.full(len(coords), np.inf)
+        sure = raw + slack <= within
+        np.minimum.at(bound, point[sure], distance[sure] + slack)
+        keep = distance - slack <= bound[point] + 2 * DEGENERATE_DISTANCE
+        return point[keep], edge[keep]
+
+    def _nearest_of(
+        self,
+        query: ComplexArray,
+        point: IntArray,
+        edge: IntArray,
+        point_limit: FloatArray | float,
+    ) -> NearestEdge:
+        """`nearest` at `query` over the (point, edge) pairs given, each
+        looked at within `point_limit` of its point."""
+        distance = np.full(len(query), np.inf)
+        gradient = np.zeros((len(query), 2))
+        edges = np.full(len(query), -1, dtype=np.intp)
         if not len(point):
             return NearestEdge(distance, gradient, edges)
         offset = _offsets(query[point], self._starts[edge], self._along[edge])

@@ -643,6 +643,11 @@ class SelfCheck:
         return back, count, close
 
 
+# How far, mm, the points of a member and the pieces it sees may move before
+# it finds its neighbours again (`NeighbourList`): a wider skin lists more
+# pairs at every evaluation, a narrower one searches more often.
+LIST_SKIN = 0.05
+
 # The share of its free distance to the other chains, which move in the same
 # burst, that a vertex's bubble takes: at 1/2 two vertices closing on each
 # other cover at most half the distance between them.
@@ -1044,17 +1049,19 @@ def members_energy(
     short_edge: float,
     seen: Sequence[SeenParts],
     positions: Sequence[FloatArray],
+    listed: NeighbourList | None = None,
 ) -> tuple[float, list[FloatArray], FloatArray]:
     """`layer_energy` of members on any layers, each seeing the others on its
     own as `seen` shows them, with vias at `positions` among them; and the
-    gradient at each via's centre."""
+    gradient at each via's centre. With `listed`, made for `seen`, each
+    member looks only at the pieces it lists."""
     reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge
     lines = [
         shown(member, points) for member, points in zip(members, polylines, strict=True)
     ]
-    flat = _shown_flat(members, polylines, positions)
+    flat = _flat(lines, positions)
     at_shown = np.zeros_like(flat)
     gradients: list[FloatArray] = []
     value = 0.0
@@ -1062,7 +1069,13 @@ def members_energy(
         queries = quadrature_points(points, k)
         static, static_direction = _body(member).field.signed_distance(queries, reach)
         others = _others(seen[i], flat)
-        near = others.field.nearest(queries, reach)
+        near = (
+            others.field.nearest(queries, reach)
+            if listed is None
+            else others.field.nearest_among(
+                queries, reach, listed.pairs(i, queries, flat, others.field)
+            )
+        )
         nearer = near.distance < static
         distance = np.where(nearer, near.distance, static)
         direction = np.where(nearer[:, None], near.gradient, static_direction)
@@ -1137,13 +1150,20 @@ def _shown_flat(
 ) -> FloatArray:
     """What the others see of every member, polylines one after another,
     then each via's centre twice, an edge of no length."""
+    return _flat(
+        [shown(member, line) for member, line in zip(members, polylines, strict=True)],
+        positions,
+    )
+
+
+def _flat(
+    lines: Sequence[Sequence[tuple[ChainInput, FloatArray]]],
+    positions: Sequence[FloatArray],
+) -> FloatArray:
+    """`_shown_flat` of the members `shown` as `lines`."""
     return np.concatenate(
         [
-            *(
-                points
-                for member, line in zip(members, polylines, strict=True)
-                for _, points in shown(member, line)
-            ),
+            *(points for parts in lines for _, points in parts),
             *(np.array([at, at]) for at in positions),
         ]
     )
@@ -1228,6 +1248,51 @@ def seen_parts(
             )
         )
     return seen
+
+
+class NeighbourList:
+    """A Verlet list: per member, the pairs of its quadrature points and the
+    pieces it sees of the others (`SeenParts`) that can answer each other
+    while every one of them stays within `skin` of where it was when the
+    pairs were found. A member whose points or pieces have moved farther
+    finds its pairs again where they are. Either way the energy is the one a
+    search over every piece gives; the list only spares the search."""
+
+    def __init__(self, seen: Sequence[SeenParts], reach: float, skin: float) -> None:
+        self.seen = seen
+        self.reach = reach
+        self.skin = skin
+        self._found: list[tuple[FloatArray, FloatArray] | None] = [None] * len(seen)
+        self._pairs: list[tuple[IntArray, IntArray]] = [
+            (np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp))
+        ] * len(seen)
+
+    def pairs(
+        self, i: int, queries: FloatArray, flat: FloatArray, field: ChainField
+    ) -> tuple[IntArray, IntArray]:
+        """Member i's pairs with its quadrature points at `queries` and what
+        it sees of the others at `flat`, as `field`."""
+        vertex = self.seen[i].vertex
+        ends = flat[np.concatenate([vertex, vertex + 1])]
+        found = self._found[i]
+        if (
+            found is None
+            or _moved(queries, found[0]) > self.skin
+            or _moved(ends, found[1]) > self.skin
+        ):
+            # A point's distance to a piece changes by at most its own move
+            # plus the larger move of the piece's ends.
+            self._pairs[i] = field.candidates(queries, self.reach, 2 * self.skin)
+            self._found[i] = (queries, ends)
+        return self._pairs[i]
+
+
+def _moved(points: FloatArray, start: FloatArray) -> float:
+    """The largest distance from start[i] to points[i], mm."""
+    if not len(points):
+        return 0.0
+    delta = points - start
+    return math.sqrt(float(np.max(np.einsum("ij,ij->i", delta, delta))))
 
 
 def _subset(seen: SeenParts, keep: BoolArray) -> SeenParts:
@@ -1750,10 +1815,12 @@ class _Problem:
         positions: Sequence[FloatArray],
         masks: Sequence[BoolArray],
         seen: Sequence[SeenParts] | None = None,
+        listed: NeighbourList | None = None,
     ) -> tuple[float, list[FloatArray], FloatArray]:
         """The problem's energy, by default with what each member sees of
         the others as `seen_parts` finds it at `polylines`, and its gradient
-        at every vertex and every via's centre."""
+        at every vertex and every via's centre; `listed` as for
+        `members_energy`."""
         if seen is None:
             seen = seen_parts(self.members, polylines, self.reach, self.rings)
         value, gradients, via_gradients = members_energy(
@@ -1764,6 +1831,7 @@ class _Problem:
             self.settings.short_edge,
             seen,
             positions,
+            listed,
         )
         own, pulls, own_gradients = self.via_energy(polylines, positions)
         for g, pull in zip(gradients, pulls, strict=True):
@@ -1914,19 +1982,23 @@ class _Problem:
         )
 
     def objective(
-        self, layout: _Layout, seen: Sequence[SeenParts] | None = None
+        self,
+        layout: _Layout,
+        seen: Sequence[SeenParts] | None = None,
+        listed: bool = True,
     ) -> Callable[[FloatArray], tuple[float, FloatArray]]:
         """The problem's energy as a function of `layout`'s variables, with
         what each member sees of the others measured at the layout's start
-        unless given."""
+        unless given, through a `NeighbourList` unless not `listed`."""
         if seen is None:
             seen = seen_parts(self.members, layout.starts, self.reach, self.rings)
         masks = self.masks
+        neighbours = NeighbourList(seen, self.reach, LIST_SKIN) if listed else None
 
         def objective(x: FloatArray) -> tuple[float, FloatArray]:
             polylines, positions = layout.unflatten(x)
             value, gradients, via_gradients = self.total(
-                polylines, positions, masks, seen
+                polylines, positions, masks, seen, neighbours
             )
             return value, layout.gradient(gradients, via_gradients)
 
