@@ -432,6 +432,56 @@ def test_abnormal_lbfgsb_termination_is_reported() -> None:
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
+def shortest_edge(points: FloatArray) -> float:
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).min())
+
+
+# Starts at which two neighbouring vertices once collapsed onto each other in a
+# burst, the bending gradient across the vanishing edge between them failed
+# L-BFGS-B's line search, and the run ended abnormally. Starts 1 µm away from
+# these converged, so the shifts matter.
+@pytest.mark.parametrize("y", [0.8 + 1e-6, 0.5 + 2e-6, 0.7])
+def test_channel_starts_that_collapsed_two_vertices_converge(y: float) -> None:
+    channel = scenarios.channel(1.0)
+    polyline, fixed = chain((0.0, y), (20.0, y))
+
+    result = optimize(polyline, fixed, channel.field, channel.params)
+
+    assert result.termination is Termination.CONVERGED
+    assert result.abnormal_bursts == 0
+    assert shortest_edge(result.polyline) > SETTINGS.short_edge
+
+
+CHANNEL_WALL = 1.4
+CHANNEL_WALL_PIECE = 1.0
+CHANNEL_INFLATION = 0.4
+
+
+@pytest.mark.slow
+def test_channel_of_wall_pieces_converges_without_collapsing() -> None:
+    # Slow: only the default settings reproduce the collapse, and the
+    # converged run takes about 8 s.
+    pieces = np.arange(-5.0, 25.0, CHANNEL_WALL_PIECE)
+    field = Obstacles(
+        [
+            Obstacle(
+                "wall",
+                shapely.LineString([(x, wall), (x + CHANNEL_WALL_PIECE, wall)]),
+                CHANNEL_INFLATION,
+            )
+            for wall in (CHANNEL_WALL, -CHANNEL_WALL)
+            for x in pieces
+        ]
+    )
+    polyline, fixed = chain((0.0, 0.8), (20.0, 0.8))
+
+    result = optimize(polyline, fixed, field, scenarios.channel_pair().params)
+
+    assert result.termination is Termination.CONVERGED
+    assert result.abnormal_bursts == 0
+    assert shortest_edge(result.polyline) > SETTINGS.short_edge
+
+
 STALL_FIXTURE = Path(__file__).parent / "fixtures" / "stall" / "vin_sense_chain.json"
 STALL_ITERATION_LIMIT = 30
 

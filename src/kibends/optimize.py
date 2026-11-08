@@ -52,6 +52,10 @@ MAX_BOUND_HALVINGS = 4
 
 LBFGSB_ABNORMAL = 2
 
+# Edges shorter than this fraction of the spacing meet the short-edge barrier.
+# Resampling leaves every edge at a free vertex at least half the spacing.
+SHORT_EDGE_FRACTION = 0.1
+
 # The chain's length term is ill-conditioned (tension spreads one vertex per
 # iteration), so L-BFGS-B's default stopping tolerances end a burst long before
 # the shape settles; with these, burst_maxiter bounds the burst instead.
@@ -108,6 +112,11 @@ class OptimizerSettings:
     def __post_init__(self) -> None:
         if self.spacing <= 0.0:
             raise ValueError(f"spacing must be positive, got {self.spacing}")
+
+    @property
+    def short_edge(self) -> float:
+        """Length below which an edge meets the energy's short-edge barrier, mm."""
+        return SHORT_EDGE_FRACTION * self.spacing
 
 
 DEFAULT_SETTINGS = OptimizerSettings()
@@ -323,7 +332,8 @@ def optimize_chains(
     allowed = [violations(current[i], masks[i], fields[i]) for i in range(count)]
     counts: list[int | None] = list(allowed)
     energies = [
-        total_energy(current[i], masks[i], fields[i], params)[0] for i in range(count)
+        total_energy(current[i], masks[i], fields[i], params, settings.short_edge)[0]
+        for i in range(count)
     ]
     best, best_masks = list(current), list(masks)
     best_energy = sum(energies)
@@ -372,7 +382,9 @@ def optimize_chains(
                 )
                 fields[j] = _compose(statics[j], dynamic[j])
             for j in (i, *neighbours[i]):
-                energies[j] = total_energy(current[j], masks[j], fields[j], params)[0]
+                energies[j] = total_energy(
+                    current[j], masks[j], fields[j], params, settings.short_edge
+                )[0]
                 counts[j] = None
             energy = sum(energies)
             if energy <= best_energy and all(within_allowed(j) for j in range(count)):
@@ -688,7 +700,7 @@ def _burst(
             )
         )
         result = minimize(
-            free_vertex_objective(current, fixed, field, params),
+            free_vertex_objective(current, fixed, field, params, settings.short_edge),
             current[free].ravel(),
             jac=True,
             method="L-BFGS-B",

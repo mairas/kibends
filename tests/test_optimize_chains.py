@@ -207,20 +207,18 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
     assert energies[-1] < energies[0]
 
 
-# At spacings 0.25 and 0.3 the drape's first burst piles two vertices of the
-# long arch onto each other at its bubble bounds, and L-BFGS-B fails on the
-# bending term's gradient across the 17 µm edge between them.
-DRAPE_SETTINGS = replace(COARSE, spacing=0.2)
-
-
+# At spacings 0.25 and 0.3 the drape's first burst once piled two vertices of
+# the long arch onto each other at their bubble bounds, 17 µm apart, and
+# L-BFGS-B failed on the bending gradient across the edge between them.
 @pytest.mark.parametrize(
     ("scenario", "settings"),
     [
-        (scenarios.drape(), DRAPE_SETTINGS),
+        (scenarios.drape(), replace(COARSE, spacing=0.25)),
+        (scenarios.drape(), COARSE),
         (scenarios.squeeze(), COARSE),
         (scenarios.hooks(), COARSE),
     ],
-    ids=["drape", "squeeze", "hooks"],
+    ids=["drape-0.25", "drape-0.3", "squeeze", "hooks"],
 )
 def test_moving_chains_tighten_without_crossing(
     scenario: ChainsScenario, settings: OptimizerSettings
