@@ -271,7 +271,7 @@ def optimize_chains(
     ]
     dynamic = [
         {
-            j: _neighbour_field(chains[i], chains[j], originals[j], reach)
+            j: _neighbour_field(chains[i], originals[i], chains[j], originals[j], reach)
             for j in neighbours[i]
         }
         for i in range(count)
@@ -302,7 +302,9 @@ def optimize_chains(
             field = _compose(
                 statics[i],
                 {
-                    j: _neighbour_field(chains[i], chains[j], polylines[j], reach)
+                    j: _neighbour_field(
+                        chains[i], polylines[i], chains[j], polylines[j], reach
+                    )
                     for j in neighbours[i]
                 },
             )
@@ -399,9 +401,16 @@ def optimize_chains(
             masks[i] = input_masks[i]
             for j in neighbours[i]:
                 dynamic[j][i] = _neighbour_field(
-                    chains[j], chains[i], current[i], reach
+                    chains[j], current[j], chains[i], current[i], reach
                 )
                 fields[j] = _compose(statics[j], dynamic[j])
+                if chains[j].centreline.net == chains[i].centreline.net:
+                    # How much of j is left out at a junction depends on the
+                    # angle i now leaves it at.
+                    dynamic[i][j] = _neighbour_field(
+                        chains[i], current[i], chains[j], current[j], reach
+                    )
+                    fields[i] = _compose(statics[i], dynamic[i])
             for j in (i, *neighbours[i]):
                 energies[j] = total_energy(
                     current[j], masks[j], fields[j], params, settings.short_edge
@@ -504,10 +513,15 @@ def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
 
 
 def _neighbour_field(
-    own: ChainInput, other: ChainInput, points: FloatArray, reach: float
+    own: ChainInput,
+    own_points: FloatArray,
+    other: ChainInput,
+    points: FloatArray,
+    reach: float,
 ) -> ObstacleField | None:
-    """`other` at `points` as an obstacle to `own`, or None if nothing is left."""
-    centreline = neighbour_centreline(own, other, points, reach)
+    """`other` at `points` as an obstacle to `own` at `own_points`, or None if
+    nothing is left."""
+    centreline = neighbour_centreline(own, other, points, reach, own_points)
     if centreline is None:
         return None
     me = own.centreline
@@ -515,30 +529,67 @@ def _neighbour_field(
 
 
 def neighbour_centreline(
-    own: ChainInput, other: ChainInput, points: FloatArray, reach: float
+    own: ChainInput,
+    other: ChainInput,
+    points: FloatArray,
+    reach: float,
+    own_points: FloatArray | None = None,
 ) -> ChainCentreline | None:
     """The part of `other` at `points` that is an obstacle to `own`, or None
     if nothing is left.
 
     A chain of the same net that ends where this one ends continues it, as at
     a neck-down: near that junction both must leave the shared point, so the
-    other is left out within its inflation plus `reach` of it.
+    other is left out as far as it lies within its inflation plus `reach` of
+    `own` at `own_points`, by default its starting polyline.
     """
     me, them = own.centreline, other.centreline
     if them.net == me.net:
-        cut = (me.width + them.width) / 2 + reach
+        mine = me.points if own_points is None else own_points
+        clear = (me.width + them.width) / 2 + reach
         ends = me.points[[0, -1]]
 
         def shared(point: FloatArray) -> bool:
             return bool(np.any(np.all(ends == point, axis=1)))
 
         total = float(_arc_lengths(points)[-1])
-        start = cut if shared(them.points[0]) else 0.0
-        end = total - cut if shared(them.points[-1]) else total
+        start = _junction_cut(mine, points, clear) if shared(them.points[0]) else 0.0
+        end = (
+            total - _junction_cut(mine, points[::-1], clear)
+            if shared(them.points[-1])
+            else total
+        )
         if start >= end:
             return None
         points = _cut(points, start, end)
     return replace(them, points=points)
+
+
+def _junction_cut(own: FloatArray, other: FloatArray, clear: float) -> float:
+    """Length of `other`, which starts at an end of `own`, to leave out there.
+
+    Beyond it `other` lies at least `clear` from `own`'s first stretch: at an
+    angle θ below 90° between the two that takes clear / sin θ, else clear.
+    """
+    if not np.array_equal(own[0], other[0]):
+        own = own[::-1]
+    a, b = _heading(own, clear), _heading(other, clear)
+    if float(a @ b) <= 0.0:
+        return clear
+    sine = abs(float(a[0] * b[1] - a[1] * b[0]))
+    return clear / sine if sine > 0.0 else math.inf
+
+
+def _heading(points: FloatArray, length: float) -> FloatArray:
+    """Unit direction from the first vertex to the point `length` along."""
+    arc = _arc_lengths(points)
+    at = min(length, float(arc[-1]))
+    ahead = np.stack(
+        [np.interp([at], arc, points[:, 0]), np.interp([at], arc, points[:, 1])],
+        axis=1,
+    )
+    step: FloatArray = ahead[0] - points[0]
+    return step / max(float(np.linalg.norm(step)), MIN_EDGE_LENGTH)
 
 
 def _cut(points: FloatArray, start: float, end: float) -> FloatArray:

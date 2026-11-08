@@ -1,4 +1,5 @@
 import copy
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
@@ -225,6 +226,10 @@ def test_moving_chains_tighten_without_crossing(
 
 # The neck-down's lengths alone and together agree to within this, mm.
 JUNCTION_TOLERANCE = 1e-3
+JUNCTION_X = 10.0
+LEG = 10.0
+BOW = 0.5
+JUNCTION_SETTINGS = OptimizerSettings(spacing=0.2, burst_maxiter=60)
 
 
 def test_chains_of_one_net_meeting_end_to_end_leave_the_junction_straight() -> None:
@@ -405,3 +410,26 @@ def test_a_woken_chain_does_not_stall_on_energies_from_before_it_woke(
 
     assert stalled_on
     assert result.termination is Termination.CONVERGED
+
+
+@pytest.mark.parametrize("angle", [30.0, 10.0])
+def test_chains_of_one_net_meeting_at_an_acute_angle_keep_clear(angle: float) -> None:
+    # Near the junction each leaves out the other only as far as the other
+    # lies within its clearance; at an acute angle that is farther than at a
+    # straight neck-down.
+    turn = math.radians(angle)
+    far = (JUNCTION_X - LEG * math.cos(turn), LEG * math.sin(turn))
+    bow = (
+        (JUNCTION_X + far[0]) / 2 + BOW * math.sin(turn),
+        far[1] / 2 + BOW * math.cos(turn),
+    )
+    junction = (JUNCTION_X, 0.0)
+    a = selected("A", "N", FreeSpace(), (0.0, 0.0), (5.0, -BOW), junction)
+    b = selected("B", "N", FreeSpace(), junction, bow, far)
+
+    result = optimize_chains([a, b], scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    assert result.termination is Termination.CONVERGED
+    for chain in result.chains:
+        assert chain.after.min_clearance >= -INSIDE_TOLERANCE
+        assert chain.after.length < chain.before.length
