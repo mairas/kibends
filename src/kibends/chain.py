@@ -325,19 +325,15 @@ def _fmt_width(width_nm: int) -> str:
 
 def _uniform_attributes(segments: Sequence[Segment]) -> tuple[int, str, str]:
     width = _single_value(segments, "widths", lambda s: s.width, _fmt_width)
-    layer = _single_layer(segments)
-    net = _single_value(segments, "nets", lambda s: s.net, str)
-    return width, layer, net
-
-
-def _single_layer(segments: Sequence[Segment]) -> str:
-    return _single_value(
+    layer = _single_value(
         segments,
         "layers",
         lambda s: s.layer,
         str,
         "; tracks on several layers do not form one chain",
     )
+    net = _single_value(segments, "nets", lambda s: s.net, str)
+    return width, layer, net
 
 
 def _single_value[Attribute: (int, str)](
