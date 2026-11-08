@@ -513,9 +513,10 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
 
 
 def offset_pair(
-    centreline: FloatArray, gap: float, width: float
+    centreline: FloatArray, gap: float | FloatArray, width: float
 ) -> tuple[FloatArray, FloatArray]:
-    """The two tracks of a pair at ±(gap + width)/2 from `centreline`.
+    """The two tracks of a pair at ±(gap + width)/2 from `centreline`, with
+    `gap` one for the whole pair or one per vertex.
 
     The first track lies to the right of the direction of travel as seen with
     y down, the second to the left. Vertices are mitred, so every offset
@@ -523,7 +524,8 @@ def offset_pair(
     The centreline must have no repeated points, and neither track folds
     while `check_bend_radius` passes.
     """
-    shift = (gap + width) / 2 * _miters(centreline)
+    half_pitch = np.broadcast_to((gap + width) / 2, len(centreline))
+    shift = half_pitch[:, None] * _miters(centreline)
     return centreline + shift, centreline - shift
 
 

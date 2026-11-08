@@ -614,3 +614,15 @@ def test_gap_range_does_not_count_the_outer_corner_of_a_mitred_turn(
     right, left = offset_pair(centreline, GAP, WIDTH)
 
     assert gap_range(right, left, WIDTH) == pytest.approx((GAP, GAP))
+
+
+def test_offset_pair_takes_a_gap_per_vertex() -> None:
+    centreline = array((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 1.0))
+    gaps = np.array([0.2, 0.2, 0.15, 0.15])
+
+    right, left = offset_pair(centreline, gaps, WIDTH)
+
+    np.testing.assert_allclose(left[:2, 1], -(0.2 + WIDTH) / 2)
+    np.testing.assert_allclose(right[:2, 1], (0.2 + WIDTH) / 2)
+    _, uniform = offset_pair(centreline, 0.15, WIDTH)
+    np.testing.assert_allclose(left[2:], uniform[2:])
