@@ -763,6 +763,63 @@ class TestErrors:
         assert board.calls == []
 
 
+FAILING_DRC = """
+import sys
+if sys.argv[1:] == ["version"]:
+    print("10.0.8")
+    sys.exit(0)
+print("DRC crashed", file=sys.stderr)
+sys.exit(3)
+"""
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestFailureAfterOptimizing:
+    """The statistics and warnings still reach the user before the error."""
+
+    def assert_reported_before(
+        self, error: str, log: list[str], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        out = capsys.readouterr().out
+        assert "2 tracks of SIG on F.Cu, 0.25 mm wide" in out
+        assert re.search(r"^Optimizer: converged after", out, re.MULTILINE)
+        (warning,) = [i for i, line in enumerate(log) if "abnormally" in line]
+        assert warning < log.index(error)
+
+    def test_drc_failure(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        kicad_cli.write_text(f"#!{sys.executable}\n{FAILING_DRC}")
+        with_abnormal_bursts(monkeypatch, [2])
+
+        error = exit_message(log)
+
+        assert "DRC crashed" in error
+        self.assert_reported_before(error, log, capsys)
+        assert board.calls == []
+
+    def test_lost_connection_on_push(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        connect.to(l_board(push_error=KiCadConnectionError("timed out")))
+        with_abnormal_bursts(monkeypatch, [2])
+
+        error = exit_message(log, "--no-drc")
+
+        assert "may have landed" in error
+        self.assert_reported_before(error, log, capsys)
+
+
 INNER_OFFSET = 0.6
 """How far the inner L of `two_l_board` lies inside the outer one, mm: clear
 of it, but their chords would be closer than clearance plus width."""

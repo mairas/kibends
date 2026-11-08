@@ -17,7 +17,7 @@ Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.y
 
 ## Pipeline
 
-`run.run_smooth` runs the stages in this order and returns a `RunReport` (per-chain statistics, frozen vertices, abnormal bursts, unchanged chains, DRC verdict, termination, refusal) without printing; `cli.smooth` formats and prints it, and a GUI is meant to call the same function.
+`run.run_smooth` runs the stages in this order without printing. Before the DRC check and the commit, either of which may raise, it hands an `OptimizerReport` (per-chain statistics, frozen vertices, abnormal bursts, unchanged chains, termination) to its `on_optimized` callback; at the end it returns a `RunReport`, which adds the DRC verdict, whether it committed and any refusal. `cli.smooth` prints the statistics and warnings from the callback and the DRC verdict from the returned report. A GUI is meant to call the same function.
 
 1. `snapshot.read_selection` and `LayerSnapshot.from_board` read the selection and its copper layer once per run. Everything they return is free of kipy.
 2. `chain.extract_chains` splits the selection into chains, one per connected piece of one net and width, and pins each chain's ends and every point where same-net copper (pads, vias, tracks, copper shapes) touches it. Mixed layers are refused.

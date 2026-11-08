@@ -1,12 +1,12 @@
 """One smoothing run, from the KiCad selection to the commit.
 
-The command line and the GUI both call `run_smooth` and present the report it
-returns; it prints nothing.
+The command line and the GUI both call `run_smooth` and present the reports
+it hands over; it prints nothing.
 """
 
 import importlib
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,12 +100,16 @@ class ChainReport:
 
 
 @dataclass(frozen=True)
-class RunReport:
+class OptimizerReport:
     chains: tuple[ChainReport, ...]
     """In the order `extract_chains` gives."""
     termination: Termination
     iterations: int
     """Outer iterations, each giving every chain one burst."""
+
+
+@dataclass(frozen=True)
+class RunReport(OptimizerReport):
     drc: drc.Introduced | None
     """None when the DRC check did not run."""
     committed: bool
@@ -119,12 +123,17 @@ class _DrcSetup:
     project: drc.ProjectFiles
 
 
-def run_smooth(options: SmoothOptions) -> RunReport:
+def run_smooth(
+    options: SmoothOptions,
+    on_optimized: Callable[[OptimizerReport], None] = lambda _report: None,
+) -> RunReport:
     """Smooth the chains selected in KiCad and, unless dry-running, commit them.
 
-    Raises on failures that leave nothing to report (no board, a bad
-    selection, a refused commit); an abnormal optimizer stop or new DRC
-    violations come back as the report's `refusal`, with nothing committed.
+    `on_optimized` gets the optimizer's report before the DRC check and the
+    commit, which may raise. Raises on failures that leave nothing to report
+    (no board, a bad selection, a refused commit); an abnormal optimizer stop
+    or new DRC violations come back as the report's `refusal`, with nothing
+    committed.
     """
     if options.plot is not None:
         _require_plot()
@@ -160,6 +169,7 @@ def run_smooth(options: SmoothOptions) -> RunReport:
 
     if options.plot is not None:
         _draw(options.plot, inputs, run, simplified, reports)
+    on_optimized(OptimizerReport(reports, run.termination, run.iterations))
 
     def report(
         found: drc.Introduced | None = None,

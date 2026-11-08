@@ -33,8 +33,8 @@ from kibends.run import (
     KICAD_TIMEOUT_MS,
     ChainReport,
     NoBoardError,
+    OptimizerReport,
     PlotUnavailableError,
-    RunReport,
     SmoothOptions,
     new_violations,
     run_smooth,
@@ -112,10 +112,15 @@ def _exit_on_failure() -> Generator[None]:
 def smooth(options: SmoothOptions) -> None:
     """Smooth the chains selected in KiCad, print the report and, unless
     dry-running, commit them."""
-    report = run_smooth(options)
-    print(format_report(report))
-    for warning in report_warnings(report):
-        logger.warning(warning)
+
+    def show(optimized: OptimizerReport) -> None:
+        print(format_statistics(optimized))
+        for warning in report_warnings(optimized):
+            logger.warning(warning)
+
+    report = run_smooth(options, show)
+    if report.drc is not None:
+        print(_verdict(report.drc))
     if report.drc and options.dry_run:
         logger.warning("A real run would refuse to commit this result")
     if report.refusal is not None:
@@ -126,9 +131,8 @@ def smooth(options: SmoothOptions) -> None:
         logger.info("Dry run: nothing committed")
 
 
-def format_report(report: RunReport) -> str:
-    """One statistics block per chain, the optimizer's outcome and the DRC
-    verdict."""
+def format_statistics(report: OptimizerReport) -> str:
+    """One statistics block per chain and the optimizer's outcome."""
     some_changed = any(c.changed for c in report.chains)
     blocks = [_chain_block(c, some_changed) for c in report.chains]
     several = len(blocks) > 1
@@ -148,13 +152,10 @@ def format_report(report: RunReport) -> str:
             *abnormal,
         ]
     )
-    text = ("\n\n" if several else "\n").join([*blocks, outcome])
-    if report.drc is not None:
-        text += "\n" + _verdict(report.drc)
-    return text
+    return ("\n\n" if several else "\n").join([*blocks, outcome])
 
 
-def report_warnings(report: RunReport) -> list[str]:
+def report_warnings(report: OptimizerReport) -> list[str]:
     """Frozen vertices, abnormal bursts and an iteration cap, one line each."""
     warnings = [_frozen_warning(v) for c in report.chains for v in c.frozen]
     warnings += [
