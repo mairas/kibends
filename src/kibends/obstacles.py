@@ -924,6 +924,20 @@ def via_obstacles_for_via(
     return _vias_field(keeper, (v for v in others if v.id != via.id), clearance_of)
 
 
+def via_via_inflation(
+    via: Via,
+    other: Via,
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+) -> float | None:
+    """The distance `via`'s centre keeps from `other`'s, as
+    `via_obstacles_for_via` counts it, mm; None if no rule applies."""
+    keeper = _via_keeper(via, clearance_of(via.net), hole_clearance, hole_to_hole)
+    return _via_inflation(keeper, other, clearance_of)
+
+
 def chain_obstacles_for_via(
     via: Via,
     others: Sequence[ChainCentreline],
@@ -991,16 +1005,27 @@ def _vias_field(
     centres: list[Point2] = []
     inflations: list[float] = []
     for v in vias:
-        ring = keeper.copper(v.net, v.diameter / 2, clearance_of(v.net))
-        if touching and v.net == keeper.net:
-            ring = v.diameter / 2 + keeper.radius
-        hole = keeper.hole(v.net, v.drill / 2, plated=True)
-        reach = [i for i in (ring, hole) if i is not None]
-        if reach:
+        inflation = _via_inflation(keeper, v, clearance_of, touching=touching)
+        if inflation is not None:
             centres.append(v.position)
-            inflations.append(max(reach))
+            inflations.append(inflation)
     if not centres:
         return None
     # Zero-length edges: ChainField measures to a point exactly as to an edge.
     at = np.array(centres, dtype=float)
     return ChainField(at, at, np.array(inflations, dtype=float))
+
+
+def _via_inflation(
+    keeper: _Keeper,
+    via: Via,
+    clearance_of: Callable[[str], float],
+    *,
+    touching: bool = False,
+) -> float | None:
+    """How far `keeper` keeps from `via`'s centre, by its ring and hole."""
+    ring = keeper.copper(via.net, via.diameter / 2, clearance_of(via.net))
+    if touching and via.net == keeper.net:
+        ring = via.diameter / 2 + keeper.radius
+    hole = keeper.hole(via.net, via.drill / 2, plated=True)
+    return max((i for i in (ring, hole) if i is not None), default=None)
