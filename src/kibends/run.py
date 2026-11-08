@@ -40,6 +40,7 @@ from kibends.optimize import (
 )
 from kibends.simplify import simplify_chains
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, read_selection
+from kibends.vias import movable_vias
 
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
@@ -151,11 +152,14 @@ def run_smooth(
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}
     layers = {s.layer for s in selected if not s.locked}
-    whole = BoardSnapshot.read(board, layers)
+    whole = BoardSnapshot.read(board, layers, selection.vias)
     snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(layers)}
     chains = extract_chains(
         selected, lambda layer, net: snapshots[layer].same_net_copper(net)
     )
+    # Nothing moves vias yet: movable ones keep pinning their chain ends like
+    # fixed ones, so only the warnings about fixed ones matter here.
+    movable_vias(selection.vias, whole.via_contacts, chains)
     inputs = _chain_inputs(chains, snapshots, options)
 
     run = optimize_chains(inputs, options.params)

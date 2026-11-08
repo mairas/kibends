@@ -1383,6 +1383,49 @@ class TestSeveralLayers:
 
         assert layout(board) == {(BL.BL_B_Cu, 0, 0, nm(4), nm(4))}
 
+    def test_selected_via_leaves_the_commit_as_without_it(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        without = connect.to(via_route_board())
+        run("--no-drc")
+        board = via_route_board()
+        board.selection.append(kipy_via("v", "SIG", *VIA))
+        connect.to(board)
+
+        run("--no-drc")
+
+        assert layout(board) == layout(without)
+        assert board.reads == without.reads
+        assert not [line for line in log if "stays fixed" in line]
+
+    def test_selected_via_that_must_stay_is_named(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = via_route_board()
+        board.vias = [kipy_via("v", "SIG", *VIA, locked=True)]
+        board.selection.append(board.vias[0])
+        connect.to(board)
+
+        run("--no-drc")
+
+        assert "push_commit" in board.calls
+        (warning,) = [line for line in log if "stays fixed" in line]
+        assert warning.startswith("WARNING Via v ") and "locked" in warning
+
+    def test_selected_via_with_an_unselected_track_is_named(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = via_route_board()
+        third = kipy_track("g2", "SIG", VIA, (4, 9), width=WIDTH, layer=BL.BL_In1_Cu)
+        board.tracks.append(third)
+        board.selection.append(board.vias[0])
+        connect.to(board)
+
+        run("--no-drc")
+
+        (warning,) = [line for line in log if "stays fixed" in line]
+        assert warning.startswith("WARNING Via v ") and "track g2 on In1.Cu" in warning
+
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(via_route_board())
 
