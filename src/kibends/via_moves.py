@@ -230,27 +230,16 @@ class MovingVias:
 
         Each would hold the via to a step of half their gap, and itself to
         the same, so that the two creep after each other by the hinge's give
-        in every outer iteration; in one burst they move together. A chain
-        with an edge as long as the ring is wide is left out: the check that
-        neither passed through the other relies on the via not fitting
-        between two of its vertices.
+        in every outer iteration; in one burst they move together
+        (`presses`).
         """
-        at = positions[v][None]
         limit = obstacle_reach(self.params) + settings.bubble_tolerance
-        contacts: list[int] = []
-        for i in self._chains_near[v]:
-            if i not in moving:
-                continue
-            points = polylines[i]
-            ring = self.ring(v, i)
-            if np.linalg.norm(np.diff(points, axis=0), axis=1).max() >= 2 * ring:
-                continue
-            gap = ChainField(
-                points[:-1], points[1:], np.full(len(points) - 1, ring)
-            ).signed_distance(at)[0][0]
-            if 0.0 <= gap < limit:
-                contacts.append(i)
-        return contacts
+        return [
+            i
+            for i in self._chains_near[v]
+            if i in moving
+            and presses(positions[v], polylines[i], self.ring(v, i), limit)
+        ]
 
     def carried(
         self,
@@ -306,6 +295,22 @@ class MovingVias:
             self.params,
             self.vias[v].via.diameter,
         )[0]
+
+
+def presses(
+    position: FloatArray, points: FloatArray, ring: float, limit: float
+) -> bool:
+    """Whether a chain at `points`, its centreline keeping `ring` from the
+    centre of a via at `position`, presses on it: clear of it, yet within
+    `limit`. A chain with an edge as long as the ring is wide does not, as
+    the check that neither passed through the other (`Contact.kept`) relies
+    on the via not fitting between two of its vertices."""
+    if np.linalg.norm(np.diff(points, axis=0), axis=1).max() >= 2 * ring:
+        return False
+    gap = ChainField(
+        points[:-1], points[1:], np.full(len(points) - 1, ring)
+    ).signed_distance(position[None])[0][0]
+    return 0.0 <= gap < limit
 
 
 @dataclass(frozen=True)
