@@ -174,7 +174,7 @@ into coupling.
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
-| `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
+| `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification, the DRC check and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each chain's or via's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
 | `--settled-change MM` | 0.001 | A chain settles when a burst moves its shape by less than this. Raising it alone saves little time and can leave visibly different tracks. |
 | `--stall-tolerance MM` | 0.001 | A chain also settles when its energy, in mm of track length, improves by less than this over `--stall-window` iterations. Raising it saves little time and lets some tracks end slightly longer. |

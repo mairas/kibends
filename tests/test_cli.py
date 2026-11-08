@@ -473,7 +473,7 @@ class TestSmooth:
 
     @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize(
-        ("args", "expected"), [((), 0.025), (("--chord-tolerance=0.01",), 0.01)]
+        ("args", "expected"), [((), 0.01), (("--chord-tolerance=0.025",), 0.025)]
     )
     def test_chord_tolerance_reaches_simplify(
         self,
@@ -2618,9 +2618,9 @@ class TestPairs:
 ROUND_OFF = 1e-12
 
 
-PAIR_BOARD_TRACKS = 6
-"""Per net on `pair_board`, as measured at default and coarse settings: its
-fan-out and five through the S-bend."""
+PAIR_BOARD_TRACKS = 9
+"""Per net on `pair_board`, as measured at default and coarse settings: two
+in its fan-out and seven through the S-bend."""
 
 
 def pair_tracks_at(
