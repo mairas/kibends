@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn, assert_never
 
@@ -203,6 +204,11 @@ def report_warnings(report: OptimizerReport) -> list[str]:
             f"The optimizer stopped at its cap of {DEFAULT_SETTINGS.max_iterations} "
             "outer iterations without converging; using the best result found"
         )
+    if report.termination is Termination.TIME_LIMIT:
+        warnings.append(
+            "The optimizer stopped at its time limit without converging; "
+            "using the best result found"
+        )
     return warnings
 
 
@@ -317,15 +323,22 @@ def _radius(r: float) -> str:
     return "straight" if np.isinf(r) else f"{r:.3f}"
 
 
-def _non_negative(text: str) -> float:
+def _finite(text: str) -> float:
     value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {text}")
+    return value
+
+
+def _non_negative(text: str) -> float:
+    value = _finite(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"must not be negative, got {text}")
     return value
 
 
 def _positive(text: str) -> float:
-    value = float(text)
+    value = _finite(text)
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be positive, got {text}")
     return value
@@ -394,6 +407,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"(default: {DEFAULT_CHORD_TOLERANCE:g})",
     )
     smooth_parser.add_argument(
+        "--time-limit",
+        type=_positive,
+        metavar="SECONDS",
+        help="Stop optimizing after this long and go on with the best result "
+        "found so far (default: no limit)",
+    )
+    smooth_parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
@@ -446,6 +466,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         drc=not args.no_drc,
         kicad_cli=args.kicad_cli,
         allow_via_in_pad=args.allow_via_in_pad,
+        settings=replace(DEFAULT_SETTINGS, time_limit=args.time_limit),
     )
 
 

@@ -14,9 +14,11 @@ blocks of their own (`kibends.via_moves`).
 """
 
 import math
-from collections.abc import Collection, Sequence
+import time
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import partial
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -89,6 +91,7 @@ class Termination(Enum):
     CONVERGED = "converged"
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
+    TIME_LIMIT = "time limit reached"
     ABNORMAL = "L-BFGS-B terminated abnormally"
     """Some chain stopped after MAX_ABNORMAL_BURSTS abnormal bursts in a row
     and no burst of the run lowered the energy: nothing usable was found."""
@@ -239,6 +242,9 @@ def optimize_chains(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     pairs: Sequence[PairInput] = (),
+    clock: Callable[[], float] = time.monotonic,
+    started: float | None = None,
+    start: RunResult | None = None,
 ) -> RunResult:
     """Minimise the chains' summed energy by alternating bursts, in the given order.
 
@@ -277,6 +283,18 @@ def optimize_chains(
     cut a corner into a bend below the limit, which the copper around the
     section may keep it from rounding, so a centreline may end too tight:
     its result's `bend` says so. A via's burst never carries one.
+
+    With a time limit in `settings`, the run stops after the first burst,
+    of a chain or a via, that ends when `clock` reads the limit or more past
+    `started` (by default when the run starts), and returns its best state.
+
+    A run given the result of an earlier one on the same inputs as `start`
+    starts from its best state, the chains, the coupled sections not held
+    in this run and the vias where it left them, unless that leaves some
+    chain with more violations than its input or a via newly inside its
+    clearance; then it starts from the inputs. Either way it completes its
+    first outer iteration before it looks at the time limit, so that every
+    chain has a burst against what changed since.
     """
     for chain in chains:
         if not (chain.fixed[0] and chain.fixed[-1]):
@@ -289,24 +307,34 @@ def optimize_chains(
         settings,
         MovingVias(everything, vias, params, hole_clearance, hole_to_hole),
         blocks,
+        start,
+    )
+    deadline = (
+        None
+        if settings.time_limit is None
+        else (clock() if started is None else started) + settings.time_limit
     )
     if not run.moving and not run.free_vias:
         return run.result(Termination.NOTHING_TO_DO, 0)
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
-        for i in run.moving:
-            if not run.resting(i):
-                run.chain_step(i)
-        for v in run.free_vias:
-            if not run.via_resting(v):
-                run.via_step(v)
+        timed = deadline is not None and (start is None or iteration > 1)
+        out_of_time = False
+        for step in run.steps():
+            step()
+            if timed and deadline is not None and clock() >= deadline:
+                out_of_time = True
+                break
         if all(run.resting(i) for i in run.moving) and all(
             run.via_resting(v) for v in run.free_vias
         ):
             if iteration == 1 and not run.moved:
                 return run.result(Termination.NOTHING_TO_DO, 1)
             termination = Termination.CONVERGED
+            break
+        if out_of_time:
+            termination = Termination.TIME_LIMIT
             break
     gave_up = tuple(
         (everything[i].centreline.description, streak)
@@ -379,6 +407,7 @@ class _Run:
         settings: OptimizerSettings,
         vias: MovingVias,
         pairs: Sequence[PairBlock] = (),
+        start: RunResult | None = None,
     ) -> None:
         self.chains = chains
         self.params = params
@@ -410,7 +439,7 @@ class _Run:
             _Remembered(chain.field) if self.neighbours[i] or vias.vias else chain.field
             for i, chain in enumerate(chains)
         ]
-        self.dynamic = [
+        self.dynamic: list[dict[int, ObstacleField | None]] = [
             {
                 j: self.neighbour_field(
                     i, self.shown(j, self.originals[j]), self.originals[i]
@@ -419,10 +448,10 @@ class _Run:
             }
             for i in range(self.count)
         ]
-        self.via_parts = [
+        self.via_parts: list[ObstacleField | None] = [
             vias.via_obstacles_for_chain(i, self.positions) for i in range(self.count)
         ]
-        self.fields = [self.field_of(i) for i in range(self.count)]
+        self.fields: list[ObstacleField] = [self.field_of(i) for i in range(self.count)]
         self.anchors: list[BoolArray] = []
         self.frozen: list[tuple[FrozenVertex, ...]] = []
         for i, chain in enumerate(chains):
@@ -487,6 +516,8 @@ class _Run:
             for i, s in enumerate(self.states)
         ]
         self.counts: list[int | None] = list(self.allowed)
+        if start is not None and self.resume(start):
+            self.counts = [None] * self.count
         self.energies = [self.chain_energy(i) for i in range(self.count)]
         self.via_energies = [
             vias.energy(v, self.positions, self.current) for v in range(self.via_count)
@@ -503,6 +534,59 @@ class _Run:
             _Rest(energy, [energy])
             for energy in (self.via_block_energy(v) for v in range(self.via_count))
         ]
+
+    def resume(self, start: RunResult) -> bool:
+        """Take `start`'s best state as the current one, but the sections
+        held in this run, unless that leaves some chain with more violations
+        than `allowed` or a via newly inside its clearance. Returns whether
+        it did."""
+        settings = self.settings
+        inside = [
+            self.vias.distance(v, self.positions, self.current)
+            for v in range(self.via_count)
+        ]
+        saved = (self.states, self.positions, self.dynamic, self.via_parts, self.fields)
+        states = list(self.states)
+        for i in self.moving:
+            block = self.pairs.get(i)
+            if block is None:
+                result = start.chains[i]
+                points, mask = result.polyline, result.fixed
+            elif block.held:
+                continue
+            else:
+                section = start.pairs[i - self.first_pair]
+                points = section.centreline
+                mask = section.fixed | block.direction_pins(points)
+            states[i] = _Shape(points, mask, *resample(points, mask, settings.spacing))
+        self.states = states
+        self.positions = [np.array(v.position, dtype=float) for v in start.vias]
+        current = self.current
+        self.dynamic = [
+            {
+                j: self.neighbour_field(i, self.shown(j, current[j]), current[i])
+                for j in self.neighbours[i]
+            }
+            for i in range(self.count)
+        ]
+        self.via_parts = [
+            self.vias.via_obstacles_for_chain(i, self.positions)
+            for i in range(self.count)
+        ]
+        self.fields = [self.field_of(i) for i in range(self.count)]
+        if all(
+            violations(s.points, s.anchors, self.fields[i]) <= self.allowed[i]
+            for i, s in enumerate(self.states)
+        ) and all(
+            self.vias.distance(v, self.positions, current)
+            >= min(inside[v], -INSIDE_TOLERANCE)
+            for v in range(self.via_count)
+        ):
+            self.shapes = list(current)
+            self.moved = True
+            return True
+        self.states, self.positions, self.dynamic, self.via_parts, self.fields = saved
+        return False
 
     @property
     def current(self) -> list[FloatArray]:
@@ -656,6 +740,16 @@ class _Run:
 
     def resting(self, i: int) -> bool:
         return self.rests[i].resting(self.energies[i], self.settings)
+
+    def steps(self) -> Iterator[Callable[[], None]]:
+        """One outer iteration's steps: each chain's burst, then each via's,
+        of those not resting when their turn comes."""
+        for i in self.moving:
+            if not self.resting(i):
+                yield partial(self.chain_step, i)
+        for v in self.free_vias:
+            if not self.via_resting(v):
+                yield partial(self.via_step, v)
 
     def via_block_energy(self, v: int) -> float:
         """Via v's energy and that of the chains its last burst moved."""

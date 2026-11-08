@@ -56,6 +56,9 @@ class OptimizerSettings:
     stall_window: int = 3
     burst_maxiter: int = 300
     """L-BFGS-B iterations per burst."""
+    time_limit: float | None = None
+    """Seconds after which the run stops at the next burst's end and keeps
+    its best state, as at the iteration cap; None for no limit."""
 
     def __post_init__(self) -> None:
         if self.spacing <= 0.0:

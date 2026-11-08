@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import BurstClock, Ticking
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
@@ -541,3 +542,66 @@ def test_chains_of_one_net_touching_mid_chain_do_not_repel() -> None:
         assert stats.min_clearance >= -INSIDE_TOLERANCE
         assert stats.length < chain.before.length
     assert np.all(result.chains[0].polyline == TOUCH, axis=1).sum() == 1
+
+
+def test_time_limit_stops_after_the_burst_that_passes_it() -> None:
+    scenario = scenarios.channel_pair()
+    limited = replace(COARSE, time_limit=0.5)
+
+    result = optimize_chains(scenario.chains, scenario.params, limited, clock=Ticking())
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert result.iterations == 1
+    first, second = (
+        LineString(c.polyline).hausdorff_distance(LineString(given.centreline.points))
+        for c, given in zip(result.chains, scenario.chains, strict=True)
+    )
+    assert first > COARSE.settled_change
+    # Only the first chain had its burst; the second keeps its shape.
+    assert second < INSIDE_TOLERANCE
+
+
+def test_time_limit_counts_from_when_the_stage_started() -> None:
+    scenario = scenarios.uneven_channel_pair()
+    # Standing still past the limit: only a deadline counted from `started`
+    # has passed.
+    clock = Ticking(now=10.0, step=0.0)
+    limited = replace(COARSE, time_limit=5.0)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=clock, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert result.iterations == 1
+
+
+def test_without_a_time_limit_the_clock_changes_nothing() -> None:
+    scenario = scenarios.uneven_channel_pair()
+
+    timed = optimize_chains(scenario.chains, scenario.params, COARSE, clock=Ticking())
+    plain = run(scenario)
+
+    assert timed.termination is plain.termination is Termination.CONVERGED
+    assert timed.iterations == plain.iterations
+    for a, b in zip(timed.chains, plain.chains, strict=True):
+        np.testing.assert_array_equal(a.polyline, b.polyline)
+
+
+def test_a_run_that_settles_on_the_burst_past_the_limit_has_converged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.uneven_channel_pair()
+    clock = BurstClock(monkeypatch)
+    plain = optimize_chains(scenario.chains, scenario.params, COARSE, clock=clock)
+    bursts = clock.bursts
+    clock.bursts = 0
+    # The limit passes during the last burst, after which every chain rests.
+    limited = replace(COARSE, time_limit=bursts - 0.5)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=clock, started=0.0
+    )
+
+    assert plain.termination is result.termination is Termination.CONVERGED
+    assert result.iterations == plain.iterations
