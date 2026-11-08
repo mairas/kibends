@@ -195,6 +195,20 @@ def test_vertices_inside_a_neighbours_clearance_are_frozen_and_named() -> None:
     assert np.all(b.polyline == scenarios.CROWDED_NEIGHBOUR_VERTEX, axis=1).sum() == 1
 
 
+def test_chains_inside_each_others_clearance_throughout_stay_put() -> None:
+    # Every vertex resampling adds lies deeper than δ inside the other
+    # chain's clearance, so every bound of a burst is zero.
+    apart = scenarios.PAIR_INFLATION - 2 * COARSE.bubble_tolerance
+    a = selected("A", "A", FreeSpace(), (0.0, 0.0), (5.0, 0.0))
+    b = selected("B", "B", FreeSpace(), (0.0, apart), (5.0, apart))
+
+    result = optimize_chains([a, b], scenarios.PARAMS, COARSE)
+
+    for given, chain in zip((a, b), result.chains, strict=True):
+        assert LineString(chain.polyline).equals(LineString(given.centreline.points))
+        assert chain.abnormal_bursts == 0
+
+
 def test_a_chain_whose_bursts_all_fail_does_not_fail_the_run(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:

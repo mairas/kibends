@@ -141,7 +141,9 @@ def bounded_burst(
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns which it moved and how many edges crossed. A
-    run L-BFGS-B ends abnormally is taken as its check leaves it.
+    run L-BFGS-B ends abnormally is taken as its check leaves it. Where every
+    coordinate's bounds coincide in floating point, nothing can move, and
+    the burst ends where it is.
     """
     scale = np.ones(len(start))
     current = start.copy()
@@ -149,12 +151,16 @@ def bounded_burst(
     abnormal = False
     for _ in range(MAX_BOUND_HALVINGS + 1):
         reach = half_sides * scale
+        lower, upper = start - reach, start + reach
+        if np.array_equal(lower, upper):
+            # L-BFGS-B would return a result without a status.
+            break
         result = minimize(
             objective,
             current,
             jac=True,
             method="L-BFGS-B",
-            bounds=list(zip(start - reach, start + reach, strict=True)),
+            bounds=list(zip(lower, upper, strict=True)),
             options={
                 "maxiter": settings.burst_maxiter,
                 "ftol": LBFGSB_FTOL,
