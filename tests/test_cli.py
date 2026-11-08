@@ -1232,25 +1232,28 @@ BOARD_WIDE_READS = (
 )
 
 
-def back_l() -> list[kbt.Track]:
-    """An L on B.Cu leaving the via at `VIA`."""
+def back_l(layer: BL.ValueType = BL.BL_B_Cu) -> list[kbt.Track]:
+    """An L on `layer` leaving the via at `VIA`."""
     return [
-        kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=BL.BL_B_Cu),
-        kipy_track("f", "SIG", (8, 4), (8, 8), width=WIDTH, layer=BL.BL_B_Cu),
+        kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=layer),
+        kipy_track("f", "SIG", (8, 4), (8, 8), width=WIDTH, layer=layer),
     ]
 
 
 def via_route_board(
     pad: tuple[float, float] = PAD,
     pad_layers: Sequence[int] = (BL.BL_F_Cu, BL.BL_B_Cu),
+    back_layer: BL.ValueType = BL.BL_B_Cu,
+    unselected: Sequence[kbt.Track] = (),
 ) -> CommitBoard:
-    """SIG along `l_chain` on F.Cu, down an unselected via, on along `back_l`,
-    with a GND pad at `pad` and an unselected GND track on B.Cu."""
-    route = [*l_chain(), *back_l()]
-    unselected = kipy_track("g", "GND", (0, 10), (8, 10), width=WIDTH, layer=BL.BL_B_Cu)
+    """SIG along `l_chain` on F.Cu, down an unselected via, on along `back_l`
+    on `back_layer`, with a GND pad at `pad`, an unselected GND track on B.Cu
+    and the `unselected` tracks."""
+    route = [*l_chain(), *back_l(back_layer)]
+    gnd = kipy_track("g", "GND", (0, 10), (8, 10), width=WIDTH, layer=BL.BL_B_Cu)
     return CommitBoard(
         selection=list(route),
-        tracks=[*route, unselected],
+        tracks=[*route, gnd, *unselected],
         vias=[kipy_via("v", "SIG", *VIA)],
         pads=[kipy_pad("pad", "GND", *pad, layers=pad_layers)],
     )
@@ -1298,6 +1301,27 @@ class TestSeveralLayers:
         assert {layer for layer, _ in segments} == {"F.Cu", "B.Cu"}
         assert not {"a", "b", "e", "f"} & {uuid for _, uuid in segments}
         assert ("B.Cu", "g") in segments
+
+    def test_each_chain_keeps_touches_of_its_own_layers_copper(
+        self, connect: Connector
+    ) -> None:
+        # Mid-leg on each side, where the smoothed L would otherwise leave.
+        front_touch, back_touch = STUB_TOUCH, (8.0, 6.0)
+        stubs = [
+            kipy_track("fs", "SIG", (2, -3), front_touch, width=WIDTH),
+            kipy_track("bs", "SIG", (11, 6), back_touch, width=WIDTH, layer=BL.BL_B_Cu),
+        ]
+        board = connect.to(via_route_board(unselected=stubs))
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == ["a", "b", "e", "f"]
+        assert (nm(front_touch[0]), nm(front_touch[1])) in ends(
+            created_on(board, BL.BL_F_Cu)
+        )
+        assert (nm(back_touch[0]), nm(back_touch[1])) in ends(
+            created_on(board, BL.BL_B_Cu)
+        )
 
     def test_each_layer_avoids_its_own_obstacles(self, connect: Connector) -> None:
         # On F.Cu only, on the chord the front L would otherwise be pulled to.
