@@ -64,6 +64,10 @@ ROUND_OFF = 1e-9
 # edge is also near its midpoint, where the k-d tree finds it. Chains resampled
 # at the default 0.1 mm `OptimizerSettings.spacing` are never split.
 MAX_EDGE_LENGTH = 0.5
+# Points this much deeper than the reach inside the inflated board edge skip
+# its exact distance; far more than a buffer's chord error at 16 segments per
+# quarter circle on any realistic reach.
+DEEP_MARGIN = 0.01
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,7 @@ class Obstacles:
         )
         self._tree = STRtree(self._geometries)
         self._max_inflation = float(self._inflations.max(initial=0.0))
+        self._deep: dict[float, BaseGeometry] = {}
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -132,9 +137,15 @@ class Obstacles:
         if self.board_outline is not None:
             near = np.ones(len(coords), dtype=bool)
             if math.isfinite(reach):
-                outside = ~shapely.covered_by(query, self.board_outline)
-                to_edge = self.board_outline.boundary.distance(query)
-                near = outside | (to_edge - self.edge_inflation <= reach)
+                near = ~shapely.contains_xy(
+                    self._deep_inside(reach), coords[:, 0], coords[:, 1]
+                )
+                if near.any():
+                    outside = ~shapely.covered_by(query[near], self.board_outline)
+                    to_edge = self.board_outline.boundary.distance(query[near])
+                    near[near] = outside | (to_edge - self.edge_inflation <= reach)
+            if not near.any():
+                return distance, gradient
             inside_board, toward_inside = _signed_to(
                 coords[near],
                 query[near],
@@ -150,6 +161,17 @@ class Obstacles:
             distance = np.where(nearer, edge, distance)
             gradient = np.where(nearer[:, None], edge_gradient, gradient)
         return distance, gradient
+
+    def _deep_inside(self, reach: float) -> BaseGeometry:
+        """The part of the board farther than `reach` from the inflated
+        edge, prepared, with a margin for the buffer's arc approximation."""
+        deep = self._deep.get(reach)
+        if deep is None:
+            assert self.board_outline is not None
+            margin = self.edge_inflation + reach + DEEP_MARGIN
+            deep = self._deep[reach] = self.board_outline.buffer(-margin)
+            shapely.prepare(deep)
+        return deep
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
