@@ -19,6 +19,7 @@ import numpy as np
 from loguru import logger
 
 from kibends.chain import Chain
+from kibends.coords import UserFrame
 from kibends.energy import FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
@@ -45,19 +46,21 @@ class ChainPair:
     pair: Pair
 
 
-def find_pairs(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPair]:
+def find_pairs(
+    chains: Sequence[Chain], chord_tolerance: float, *, frame: UserFrame
+) -> list[ChainPair]:
     """The differential pairs among `chains`, each chain in at most one.
 
     Warns about two chains whose nets pair but that cannot be smoothed as a
     pair, and about a chain that runs coupled with a chain its net pairs
-    with but that pairs with another chain of its net; both are smoothed as
-    chains.
+    with but that pairs with another chain of its net, at its start in
+    `frame`; both are smoothed as chains.
     """
     found, taken, missed, skipped = _pair_up(chains, chord_tolerance)
     for k, m, message in missed:
         if not {k, m} & taken:
             logger.warning(message)
-    _warn_partners_taken(chains, skipped, taken, chord_tolerance)
+    _warn_partners_taken(chains, skipped, taken, chord_tolerance, frame)
     return found
 
 
@@ -112,6 +115,7 @@ def _warn_partners_taken(
     skipped: Sequence[tuple[int, int]],
     taken: Collection[int],
     chord_tolerance: float,
+    frame: UserFrame,
 ) -> None:
     """Warn about each chain of `skipped` left unpaired that runs coupled
     with a chain of its pair net that pairs with another chain."""
@@ -124,9 +128,8 @@ def _warn_partners_taken(
         if alone in warned or not runs_coupled(a, b, chord_tolerance):
             continue
         warned.add(alone)
-        x, y = a.points[0]
         logger.warning(
-            f"{a.net} on {a.layer} from ({x:.3f}, {y:.3f}) runs coupled with "
+            f"{a.net} on {a.layer} from {frame.point(a.points[0])} runs coupled with "
             f"{b.net}, which pairs with another chain of {a.net}; smoothing it "
             "on its own"
         )

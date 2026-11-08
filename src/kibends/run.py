@@ -30,7 +30,7 @@ from kibends.chain import (
     split_locked,
 )
 from kibends.commit import ViaMove, commit_chains, snapped_path, snapped_points
-from kibends.coords import BOARD_FRAME
+from kibends.coords import UserFrame
 from kibends.energy import (
     EnergyParams,
     FloatArray,
@@ -72,7 +72,12 @@ from kibends.pair_layout import (
 )
 from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
 from kibends.simplify import simplify_chains
-from kibends.snapshot import BoardSnapshot, LayerSnapshot, read_selection
+from kibends.snapshot import (
+    BoardSnapshot,
+    LayerSnapshot,
+    read_selection,
+    read_user_frame,
+)
 from kibends.via_moves import MovingVias
 from kibends.vias import MovableVia, ViaInput, carried_copper, may_move, movable_vias
 
@@ -193,6 +198,10 @@ class OptimizerReport:
     the runs."""
     elapsed: float
     """Wall time of the optimize stage, re-runs included, s."""
+    frame: UserFrame
+    """The frame to print positions in. The report's positions stay in the
+    board frame; its descriptions are text already formatted in this
+    frame."""
 
 
 @dataclass(frozen=True)
@@ -218,6 +227,8 @@ class _Read:
     chains: list[Chain]
     snapshots: dict[str, LayerSnapshot]
     movable: list[MovableVia]
+    frame: UserFrame
+    """The frame warnings and descriptions give positions in."""
 
 
 @dataclass(frozen=True)
@@ -291,7 +302,7 @@ def run_smooth(
             "Skipping the DRC check (--no-drc): custom rules, board minimums "
             "and edge and hole clearances are not checked"
         )
-    read = _read(board, options.chord_tolerance)
+    read = _read(board, options.chord_tolerance, read_user_frame(board))
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
@@ -305,14 +316,15 @@ def run_smooth(
             run.termination,
             run.iterations,
             optimized.elapsed,
+            read.frame,
         )
     )
     return _check_and_commit(board, gate, read, optimized, outcome, options)
 
 
-def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
+def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
-    judge which selected vias move."""
+    judge which selected vias move, giving positions in `frame`."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
@@ -324,9 +336,7 @@ def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
     carried = (
-        carried_copper(
-            may, split_chains(kept, locked, lambda _l, _n: (), frame=BOARD_FRAME)
-        )
+        carried_copper(may, split_chains(kept, locked, lambda _l, _n: (), frame=frame))
         if may
         else {}
     )
@@ -342,24 +352,24 @@ def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
     snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
     # A moving via's copper must not pin the chains it carries where they
     # leave it.
-    chains = _extract_chains(kept, locked, snapshots, candidates)
-    movable = movable_vias(
-        selection.vias, whole.via_contacts, chains, frame=BOARD_FRAME
-    )
+    chains = _extract_chains(kept, locked, snapshots, candidates, frame)
+    movable = movable_vias(selection.vias, whole.via_contacts, chains, frame=frame)
     if movable:
         # Pairing depends on the chains' shapes, not their pins, so the
         # chains extracted again below pair alike.
-        movable = _off_pairs(movable, chains, pairs_among(chains, chord_tolerance))
+        movable = _off_pairs(
+            movable, chains, pairs_among(chains, chord_tolerance), frame
+        )
     moving = {m.via.id for m in movable}
     if moving != candidates:
-        chains = _extract_chains(kept, locked, snapshots, moving)
-    return _Read(selected, chains, snapshots, movable)
+        chains = _extract_chains(kept, locked, snapshots, moving, frame)
+    return _Read(selected, chains, snapshots, movable, frame)
 
 
 def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     moving = {m.via.id for m in read.movable}
-    whole = _chain_inputs(read.chains, read.snapshots, options, moving)
-    pairs = find_pairs(read.chains, options.chord_tolerance)
+    whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
+    pairs = find_pairs(read.chains, options.chord_tolerance, frame=read.frame)
 
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float
@@ -539,6 +549,7 @@ def _check_and_commit(
             run.termination,
             run.iterations,
             optimized.elapsed,
+            read.frame,
             found,
             committed,
             refusal,
@@ -586,7 +597,10 @@ def _optimizing(chains: int, pairs: int, vias: int) -> str:
 
 
 def _off_pairs(
-    movable: Sequence[MovableVia], chains: Sequence[Chain], pairs: Sequence[ChainPair]
+    movable: Sequence[MovableVia],
+    chains: Sequence[Chain],
+    pairs: Sequence[ChainPair],
+    frame: UserFrame,
 ) -> list[MovableVia]:
     """`movable` but the vias that join a chain of one of `pairs`, which stay
     fixed, with a warning each."""
@@ -597,9 +611,8 @@ def _off_pairs(
         if joined is None:
             kept.append(m)
             continue
-        x, y = m.via.position
         logger.warning(
-            f"Via {m.via.id} at ({x:.3f}, {y:.3f}) stays fixed: it joins a "
+            f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: it joins a "
             f"track of the differential pair {joined[0]} and {joined[1]}, and "
             "pairs do not move vias"
         )
@@ -611,6 +624,7 @@ def _extract_chains(
     locked: Sequence[Segment],
     snapshots: Mapping[str, LayerSnapshot],
     unpinning: Collection[str],
+    frame: UserFrame,
 ) -> list[Chain]:
     """The chains of the selection split into `kept` and `locked`, pinned by
     the same-net copper of their layers but the vias `unpinning`."""
@@ -622,7 +636,7 @@ def _extract_chains(
             snapshot = replace(snapshot, vias=pinning)
         return snapshot.same_net_copper(net)
 
-    return split_chains(kept, locked, copper, frame=BOARD_FRAME)
+    return split_chains(kept, locked, copper, frame=frame)
 
 
 def _chain_inputs(
@@ -630,10 +644,12 @@ def _chain_inputs(
     snapshots: Mapping[str, LayerSnapshot],
     options: SmoothOptions,
     moving: Collection[str],
+    frame: UserFrame,
 ) -> list[ChainInput]:
     """One optimizer input per chain, over its layer's snapshot without the
     `moving` vias, which the optimizer adds where they are; chains of one
-    layer, net and width share a field."""
+    layer, net and width share a field. Descriptions give positions in
+    `frame`."""
     fields: dict[tuple[str, str, float], Obstacles] = {}
     inputs: list[ChainInput] = []
     for chain in chains:
@@ -648,9 +664,8 @@ def _chain_inputs(
                 edge_clearance=options.edge_clearance,
                 hole_clearance=options.hole_clearance,
             )
-        x, y = chain.points[0]
         centreline = ChainCentreline(
-            f"{chain.net} on {chain.layer} from ({x:.3f}, {y:.3f})",
+            f"{chain.net} on {chain.layer} from {frame.point(chain.points[0])}",
             chain.net,
             chain.width,
             snapshot.clearance(chain.net),
