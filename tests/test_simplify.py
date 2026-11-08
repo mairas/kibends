@@ -101,7 +101,7 @@ class TestWrapAroundDisc:
 def test_optimized_straight_line_simplifies_to_one_segment() -> None:
     polyline, fixed = chain((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
     # Leaves a bow of about 15 µm for simplify to flatten, as the defaults do.
-    settings = OptimizerSettings(spacing=0.2, burst_maxiter=100)
+    settings = OptimizerSettings(spacing=0.2, settled_change=0.002, burst_maxiter=100)
     optimized = optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
 
     result = simplify(optimized.polyline, optimized.fixed, FreeSpace())
@@ -109,10 +109,10 @@ def test_optimized_straight_line_simplifies_to_one_segment() -> None:
     assert np.array_equal(result, polyline[[0, -1]])
 
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 # At spacing 0.3 the drape's first burst piles vertices up; see
 # test_optimize_chains.
-DRAPE_SETTINGS = replace(COARSE, spacing=0.2)
+DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002)
 # Wide enough that the drape's arch, simplified alone, cuts into the chain
 # below it.
 DRAPE_TOLERANCE = 0.1

@@ -32,7 +32,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
 def run(scenario: ChainsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
@@ -259,7 +259,7 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
 @pytest.mark.parametrize(
     ("scenario", "settings"),
     [
-        (scenarios.drape(), replace(COARSE, spacing=0.25)),
+        (scenarios.drape(), replace(COARSE, spacing=0.25, settled_change=0.0025)),
         (scenarios.drape(), COARSE),
         (scenarios.squeeze(), COARSE),
         (scenarios.hooks(), COARSE),
@@ -289,7 +289,9 @@ JUNCTION_TOLERANCE = 1e-3
 JUNCTION_X = 10.0
 LEG = 10.0
 BOW = 0.5
-JUNCTION_SETTINGS = OptimizerSettings(spacing=0.2, burst_maxiter=60)
+JUNCTION_SETTINGS = OptimizerSettings(
+    spacing=0.2, settled_change=0.002, burst_maxiter=60
+)
 
 
 def test_chains_of_one_net_meeting_end_to_end_leave_the_junction_straight() -> None:
@@ -468,7 +470,9 @@ def test_a_woken_chain_does_not_stall_on_energies_from_before_it_woke(
     monkeypatch.setattr(optimize_module, "stalled", watched)
     pair = scenarios.uneven_channel_pair()
 
-    result = run(pair, OptimizerSettings(spacing=0.2, burst_maxiter=60))
+    result = run(
+        pair, OptimizerSettings(spacing=0.2, settled_change=0.002, burst_maxiter=60)
+    )
 
     assert stalled_on
     assert result.termination is Termination.CONVERGED

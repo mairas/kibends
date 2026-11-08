@@ -40,7 +40,7 @@ from kibends.pairs import (
     gap_range,
 )
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 GAP_SLACK = GAP_TOLERANCE * DP_GAP
 """How far the tracks' gap may stray from the pair's, as pair detection

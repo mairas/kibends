@@ -82,6 +82,10 @@ STRETCHED = 2.0
 # within this many edges of the same index.
 SHAPE_WINDOW = 3
 
+# A run whose steps change no shape by more than this, KiCad's 1 nm grid,
+# mm, has nothing to do, however its stop rules are set.
+NOTHING_MOVED = 1e-6
+
 # Offsets from edge k of the vertices its bend radius depends on: the turns
 # at both its ends take the vertices on either side.
 BEND_REACH = np.arange(-1, 3)
@@ -503,7 +507,7 @@ class _Run:
         ]
         self.moving_chains = [i for i in self.moving if i < self.first_pair]
         self.shapes = list(self.originals)
-        # Whether any step changed a shape by the settled change or more.
+        # Whether any step changed a shape by more than KiCad's grid.
         self.moved = False
 
         # Resampling can lay a chord across an obstacle corner or put a vertex
@@ -806,7 +810,7 @@ class _Run:
         self.rejected_edges[i] += burst.rejected_edges
         self.too_close[i] += burst.too_close
         shape_change = _shape_change(self.shapes[i], burst.points)
-        self.moved |= shape_change >= settings.settled_change
+        self.moved |= shape_change > NOTHING_MOVED
         self.shapes[i] = burst.points
         self.states[i] = _Shape(
             burst.points,
@@ -937,7 +941,7 @@ class _Run:
                 self.states[i] = shape
             self.via_moved(v, burst.polylines)
             return 0.0
-        self.moved |= change >= settings.settled_change
+        self.moved |= change > NOTHING_MOVED
         held = {
             *vias.incident[v],
             *vias.contacts(

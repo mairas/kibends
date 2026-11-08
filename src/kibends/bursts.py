@@ -32,7 +32,7 @@ SHORT_EDGE_FRACTION = 0.1
 
 # The chain's length term is ill-conditioned (tension spreads one vertex per
 # iteration), so L-BFGS-B's default stopping tolerances end a burst long before
-# the shape settles; with these, burst_maxiter bounds the burst instead.
+# the shape settles; with these defaults, burst_maxiter bounds the burst instead.
 LBFGSB_FTOL = 1e-15
 LBFGSB_GTOL = 1e-10
 
@@ -44,9 +44,9 @@ class OptimizerSettings:
     bubble_tolerance: float = 0.01
     """δ, mm: bubbles are measured to obstacles inflated by δ less than the
     clearance, and vertices deeper than δ inside an obstacle are frozen."""
-    displacement_tolerance: float = 1e-2
-    """Convergence threshold on a burst's largest shape change, as a
-    fraction of the spacing."""
+    settled_change: float = 1e-3
+    """A chain or via whose burst changes its shape by less than this, mm,
+    settles."""
     max_iterations: int = 200
     stall_tolerance: float = 1e-3
     """Converged when the best energy improved by less than this over
@@ -56,6 +56,10 @@ class OptimizerSettings:
     stall_window: int = 3
     burst_maxiter: int = 300
     """L-BFGS-B iterations per burst."""
+    lbfgs_ftol: float = LBFGSB_FTOL
+    """L-BFGS-B's relative energy reduction below which a burst ends."""
+    lbfgs_gtol: float = LBFGSB_GTOL
+    """L-BFGS-B's projected gradient below which a burst ends."""
     time_limit: float | None = None
     """Seconds after which the run stops at the next burst's end and keeps
     its best state, as at the iteration cap; None for no limit."""
@@ -68,11 +72,6 @@ class OptimizerSettings:
     def short_edge(self) -> float:
         """Length below which an edge meets the energy's short-edge barrier, mm."""
         return SHORT_EDGE_FRACTION * self.spacing
-
-    @property
-    def settled_change(self) -> float:
-        """A burst whose largest shape change is below this, mm, settles."""
-        return self.displacement_tolerance * self.spacing
 
 
 DEFAULT_SETTINGS = OptimizerSettings()
@@ -166,8 +165,8 @@ def bounded_burst(
             bounds=list(zip(lower, upper, strict=True)),
             options={
                 "maxiter": settings.burst_maxiter,
-                "ftol": LBFGSB_FTOL,
-                "gtol": LBFGSB_GTOL,
+                "ftol": settings.lbfgs_ftol,
+                "gtol": settings.lbfgs_gtol,
             },
         )
         abnormal = result.status == LBFGSB_ABNORMAL

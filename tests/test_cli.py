@@ -108,7 +108,7 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
 KEPT = 1e-3
@@ -587,12 +587,60 @@ class TestSmooth:
 
         assert report.elapsed == optimized[0].elapsed == 10.0
 
-    @pytest.mark.parametrize("limit", ["0", "-1", "nan", "inf"])
-    def test_time_limit_must_be_positive(self, limit: str) -> None:
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "--time-limit=0",
+            "--time-limit=-1",
+            "--time-limit=nan",
+            "--time-limit=inf",
+            "--stall-tolerance=nan",
+            "--settled-change=0",
+            "--stall-tolerance=-0.001",
+            "--stall-window=0",
+            "--stall-window=1.5",
+            "--max-iterations=0",
+            "--burst-iterations=-3",
+            "--lbfgs-ftol=0",
+            "--lbfgs-gtol=-1e-6",
+        ],
+    )
+    def test_stop_rules_must_be_positive(
+        self, option: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with pytest.raises(SystemExit) as raised:
-            run(f"--time-limit={limit}")
+            run(option)
 
         assert raised.value.code == 2
+        assert f"argument {option.split('=')[0]}:" in capsys.readouterr().err
+
+    def test_stop_rules_reach_the_settings(self) -> None:
+        options = cli.smooth_options(
+            cli.parse_args(
+                [
+                    "smooth",
+                    "--settled-change=0.005",
+                    "--stall-tolerance=0.01",
+                    "--stall-window=5",
+                    "--max-iterations=50",
+                    "--burst-iterations=100",
+                    "--lbfgs-ftol=1e-9",
+                    "--lbfgs-gtol=1e-6",
+                    "--time-limit=60",
+                ]
+            )
+        )
+
+        s = options.settings
+        assert s.settled_change == 0.005
+        assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
+        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 100, 60.0)
+        assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
+
+    def test_stop_rules_default_to_the_optimizers(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+
+        assert options.settings == DEFAULT_SETTINGS
 
 
 class TestDrc:
@@ -2875,7 +2923,9 @@ SIDE_CHAIN = ((0.6, 0.0), (3.0, 0.0), (4.8, 1.8), (7.2, 1.8))
 SIDE_OFFSET = 0.62
 """Of the selected SIG chain beside the S-bend, outside the bend."""
 CROWDED_FAN = 0.6
-FINE = OptimizerSettings(spacing=0.15, burst_maxiter=30, max_iterations=30)
+FINE = OptimizerSettings(
+    spacing=0.15, settled_change=0.0015, burst_maxiter=30, max_iterations=30
+)
 """Coarser settings round the corner cleanly."""
 
 

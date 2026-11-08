@@ -17,7 +17,7 @@ from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.optimize import INSIDE_TOLERANCE, RunResult, Termination, optimize_chains
 from kibends.via_moves import Carried, MovingVias, ViaBurst
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
 def run(scenario: ViasScenario, settings: OptimizerSettings = COARSE) -> RunResult:
@@ -81,8 +81,7 @@ def test_a_via_at_its_optimum_stays() -> None:
     result = run(scenarios.via_detour(scenarios.STRAIGHT_VIA))
 
     (via,) = result.vias
-    tolerance = COARSE.displacement_tolerance * COARSE.spacing
-    assert math.dist(via.position, scenarios.STRAIGHT_VIA) < tolerance
+    assert math.dist(via.position, scenarios.STRAIGHT_VIA) < COARSE.settled_change
 
 
 @pytest.mark.parametrize(
@@ -392,7 +391,7 @@ def test_chains_straightened_in_one_burst_are_kept() -> None:
     # Two free vertices a chain: its first burst straightens it, and the
     # via's moves it less than the tolerance, so every block rests after the
     # first iteration with the chains far from where they started.
-    few = OptimizerSettings(spacing=2.5, burst_maxiter=30)
+    few = OptimizerSettings(spacing=2.5, settled_change=0.025, burst_maxiter=30)
 
     result = run(scenarios.via_slack(FreeSpace(), (5.0, 0.01)), few)
 
