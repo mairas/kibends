@@ -12,14 +12,22 @@ from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
 from kibends.energy import EnergyParams, ObstacleField, total_energy
-from kibends.neighbours import ChainInput
+from kibends.neighbours import (
+    ChainInput,
+    chain_field,
+    neighbour_field,
+    obstacle_reach,
+    same_layer_neighbours,
+)
 from kibends.obstacles import CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     OptimizerSettings,
+    PolylineStats,
     RunResult,
     Termination,
+    measure,
     optimize,
     optimize_chains,
 )
@@ -38,6 +46,32 @@ def gap(a: FloatArray, b: FloatArray) -> float:
 
 def y_at(points: FloatArray, x: float) -> float:
     return float(np.interp(x, points[:, 0], points[:, 1]))
+
+
+def after(
+    chains: Sequence[ChainInput],
+    result: RunResult,
+    params: EnergyParams,
+    settings: OptimizerSettings = COARSE,
+) -> list[PolylineStats]:
+    """Each chain's statistics with the other chains at their returned shapes."""
+    polylines = [c.polyline for c in result.chains]
+    reach = obstacle_reach(params)
+    neighbours = same_layer_neighbours(chains)
+    return [
+        measure(
+            polylines[i],
+            chain_field(
+                chain.field,
+                (
+                    neighbour_field(chain, chains[j], polylines[j], reach, polylines[i])
+                    for j in neighbours[i]
+                ),
+            ),
+            settings.spacing,
+        )
+        for i, chain in enumerate(chains)
+    ]
 
 
 def run_energy(
@@ -100,8 +134,12 @@ def test_visiting_order_barely_changes_the_result() -> None:
 
     lengths = [
         sum(
-            c.after.length
-            for c in optimize_chains(chains, scenario.params, COARSE).chains
+            stats.length
+            for stats in after(
+                chains,
+                optimize_chains(chains, scenario.params, COARSE),
+                scenario.params,
+            )
         )
         for chains in (scenario.chains, scenario.chains[::-1])
     ]
@@ -110,13 +148,15 @@ def test_visiting_order_barely_changes_the_result() -> None:
 
 
 def test_arch_stays_above_the_bar_it_cannot_cross() -> None:
-    result = run(scenarios.tent())
+    scenario = scenarios.tent()
+    result = run(scenario)
 
     arch, bar = (c.polyline for c in result.chains)
     assert result.termination is Termination.CONVERGED
     assert gap(arch, bar) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
     assert y_at(arch, 5.0) > y_at(bar, 5.0)
-    assert result.chains[0].after.length < result.chains[0].before.length
+    arch_after = after(scenario.chains, result, scenario.params)[0]
+    assert arch_after.length < result.chains[0].before.length
 
 
 def test_chains_of_one_net_are_pulled_together_without_overlapping() -> None:
@@ -139,7 +179,7 @@ def test_one_chain_gives_the_single_chain_result() -> None:
     assert np.array_equal(only.fixed, alone.fixed)
     assert result.termination is alone.termination
     assert result.iterations == alone.iterations
-    assert only.after == alone.after
+    assert only.before == alone.before
 
 
 def test_vertices_inside_a_neighbours_clearance_are_frozen_and_named() -> None:
@@ -174,7 +214,8 @@ def test_a_chain_whose_bursts_all_fail_does_not_fail_the_run(
     calm_after, misled_after = result.chains
     assert result.termination is Termination.CONVERGED
     assert calm_after.abnormal_bursts == 0
-    assert calm_after.after.length < calm_after.before.length
+    calm_stats = after((calm, misled), result, params)[0]
+    assert calm_stats.length < calm_after.before.length
     assert misled_after.abnormal_bursts >= MAX_ABNORMAL_BURSTS
     assert any("Gave up on misled" in line for line in log)
 
@@ -218,8 +259,12 @@ def test_moving_chains_tighten_without_crossing(
     assert result.termination is Termination.CONVERGED
     assert not LineString(a).intersects(LineString(b))
     assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
-    for chain in result.chains:
-        assert chain.after.length < chain.before.length
+    for chain, stats in zip(
+        result.chains,
+        after(scenario.chains, result, scenario.params, settings),
+        strict=True,
+    ):
+        assert stats.length < chain.before.length
         assert chain.abnormal_bursts == 0
 
 
@@ -236,14 +281,13 @@ def test_chains_of_one_net_meeting_end_to_end_leave_the_junction_straight() -> N
 
     result = run(scenario)
 
-    for chain, given in zip(result.chains, scenario.chains, strict=True):
+    stats = after(scenario.chains, result, scenario.params)
+    for chain, given in zip(stats, scenario.chains, strict=True):
         alone = optimize(
             given.centreline.points, given.fixed, given.field, scenario.params, COARSE
         )
-        assert chain.after.length == pytest.approx(
-            alone.after.length, abs=JUNCTION_TOLERANCE
-        )
-        assert chain.after.min_clearance >= 0.0
+        assert chain.length == pytest.approx(alone.after.length, abs=JUNCTION_TOLERANCE)
+        assert chain.min_clearance >= 0.0
 
 
 def test_chains_on_different_layers_do_not_interact() -> None:
@@ -429,6 +473,10 @@ def test_chains_of_one_net_meeting_at_an_acute_angle_keep_clear(angle: float) ->
     result = optimize_chains([a, b], scenarios.PARAMS, JUNCTION_SETTINGS)
 
     assert result.termination is Termination.CONVERGED
-    for chain in result.chains:
-        assert chain.after.min_clearance >= -INSIDE_TOLERANCE
-        assert chain.after.length < chain.before.length
+    for chain, stats in zip(
+        result.chains,
+        after([a, b], result, scenarios.PARAMS, JUNCTION_SETTINGS),
+        strict=True,
+    ):
+        assert stats.min_clearance >= -INSIDE_TOLERANCE
+        assert stats.length < chain.before.length

@@ -173,8 +173,6 @@ class ChainResult:
     """Bursts L-BFGS-B ended abnormally; each was taken like any other."""
     frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
-    after: PolylineStats
-    """Measured with the other chains at their returned shapes."""
 
 
 @dataclass(frozen=True)
@@ -206,6 +204,11 @@ def optimize(
     )
     run = optimize_chains([alone], params, settings)
     (chain,) = run.chains
+    after = (
+        chain.before
+        if run.termination is Termination.NOTHING_TO_DO
+        else measure(chain.polyline, field, settings.spacing)
+    )
     return OptimizeResult(
         polyline=chain.polyline,
         fixed=chain.fixed,
@@ -215,7 +218,7 @@ def optimize(
         abnormal_bursts=chain.abnormal_bursts,
         frozen=chain.frozen,
         before=chain.before,
-        after=chain.after,
+        after=after,
     )
 
 
@@ -276,20 +279,6 @@ def optimize_chains(
         termination: Termination,
         iterations: int,
     ) -> RunResult:
-        unchanged = termination is Termination.NOTHING_TO_DO
-
-        def after(i: int) -> PolylineStats:
-            field = chain_field(
-                statics[i],
-                (
-                    neighbour_field(
-                        chains[i], chains[j], polylines[j], reach, polylines[i]
-                    )
-                    for j in neighbours[i]
-                ),
-            )
-            return measure(polylines[i], field, settings.spacing)
-
         return RunResult(
             tuple(
                 ChainResult(
@@ -299,7 +288,6 @@ def optimize_chains(
                     abnormal_bursts=abnormal_bursts[i],
                     frozen=frozen[i],
                     before=before[i],
-                    after=before[i] if unchanged else after(i),
                 )
                 for i in range(count)
             ),
