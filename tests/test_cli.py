@@ -914,9 +914,19 @@ class TestSeveralChains:
         assert frozen[0].startswith("WARNING")
         assert "selected chain SIG2 on F.Cu from (4.300, -1.000)" in frozen[0]
 
-    def test_run_function_reports_each_chain(self, connect: Connector) -> None:
+    def test_run_function_reports_each_chain(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         board = connect.to(two_l_board())
         options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        simplified: list[FloatArray] = []
+        real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
+
+        def spy(*args: object, **kwargs: object) -> list[FloatArray]:
+            simplified.extend(real(*args, **kwargs))
+            return simplified
+
+        monkeypatch.setattr(pipeline, "simplify_chains", spy)
 
         report = pipeline.run_smooth(options)
 
@@ -933,6 +943,12 @@ class TestSeveralChains:
         assert report.iterations > 0
         assert (report.drc, report.committed, report.refusal) == (None, False, None)
         assert board.calls == []
+        # Nothing else is near: only the other chain sets the clearance margin.
+        gap = LineString(simplified[0]).distance(LineString(simplified[1]))
+        for c in report.chains:
+            assert c.after.min_clearance == pytest.approx(
+                gap - (CLEARANCE + WIDTH), abs=1e-3
+            )
 
     def test_plot_draws_both_chains(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
