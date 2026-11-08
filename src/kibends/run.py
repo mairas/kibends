@@ -190,6 +190,8 @@ class OptimizerReport:
     iterations: int
     """Outer iterations, each giving every chain one burst, summed over
     the runs."""
+    elapsed: float
+    """Wall time of the optimize stage, re-runs included, s."""
 
 
 @dataclass(frozen=True)
@@ -226,6 +228,8 @@ class _Optimized:
     via_inputs: list[ViaInput]
     """With the selected chains' ends."""
     run: RunResult
+    elapsed: float
+    """Wall time of the optimize stage, s."""
 
 
 @dataclass(frozen=True)
@@ -299,9 +303,10 @@ def run_smooth(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            optimized.elapsed,
         )
     )
-    return _check_and_commit(board, gate, read, run, outcome, options)
+    return _check_and_commit(board, gate, read, optimized, outcome, options)
 
 
 def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
@@ -389,7 +394,8 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             # Only the last run's: a first one was repeated.
             _warn_gave_up(run)
             run = replace(run, iterations=iterations)
-            return _Optimized(whole, pairs, layout, via_inputs, run)
+            elapsed = monotonic() - started
+            return _Optimized(whole, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
         # the sections cannot simply keep their own tracks; the run goes on
         # from where this one left them, with these sections held.
@@ -507,12 +513,13 @@ def _check_and_commit(
     board: kipy.board.Board,
     gate: _DrcSetup | None,
     read: _Read,
-    run: RunResult,
+    optimized: _Optimized,
     outcome: _Outcome,
     options: SmoothOptions,
 ) -> RunReport:
     """Check the changed chains and moved vias against the DRC and, unless
     dry-running or refused, commit them."""
+    run = optimized.run
 
     def report(
         found: drc.Introduced | None = None,
@@ -526,6 +533,7 @@ def _check_and_commit(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            optimized.elapsed,
             found,
             committed,
             refusal,

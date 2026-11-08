@@ -555,7 +555,11 @@ class TestSmooth:
         run("--time-limit=0.5")
 
         out = capsys.readouterr().out
-        assert "Optimizer: time limit reached after 1 iterations" in out
+        assert re.search(
+            r"^Optimizer: time limit reached after 1 iterations in \d+\.\d s,",
+            out,
+            re.MULTILINE,
+        )
         assert any(line.startswith("WARNING") and "time limit" in line for line in log)
         assert drc_runs(kicad_cli) == 2
         assert "push_commit" in board.calls
@@ -563,6 +567,25 @@ class TestSmooth:
         assert [segment(t) for t in cast(list[kbt.Track], board.created)] == [
             segment(t) for t in cast(list[kbt.Track], capped.created)
         ]
+
+    def test_reports_the_optimize_stages_wall_time(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(l_board())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        clock = Ticking(step=0.0)
+        monkeypatch.setattr(pipeline, "monotonic", clock)
+
+        def optimizing(*args: object, **kwargs: object) -> RunResult:
+            clock.now += 10.0
+            return at(COARSE)(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", optimizing)
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(options, optimized.append)
+
+        assert report.elapsed == optimized[0].elapsed == 10.0
 
     @pytest.mark.parametrize("limit", ["0", "-1", "nan", "inf"])
     def test_time_limit_must_be_positive(self, limit: str) -> None:
@@ -1270,8 +1293,8 @@ class TestAbnormalBursts:
         run("--dry-run", "--no-drc")
 
         assert re.search(
-            r"^Optimizer: converged after \d+ iterations, \d+ rejected edge "
-            r"moves, 3 abnormal bursts$",
+            r"^Optimizer: converged after \d+ iterations in \d+\.\d s, "
+            r"\d+ rejected edge moves, 3 abnormal bursts$",
             capsys.readouterr().out,
             re.MULTILINE,
         )
@@ -1320,7 +1343,8 @@ def test_single_chain_report_keeps_its_layout(
     ]
     assert lines[7] == "Frozen vertices: 0"
     assert re.fullmatch(
-        r"Optimizer: converged after \d+ iterations, \d+ rejected edge moves",
+        r"Optimizer: converged after \d+ iterations in \d+\.\d s, "
+        r"\d+ rejected edge moves",
         lines[8],
     )
     assert lines[9:] == ["DRC: no new violations"]
@@ -1993,11 +2017,15 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
         "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, 0, True
     )
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
-    report = pipeline.OptimizerReport((chain,), (via,), (), Termination.CONVERGED, 7)
+    report = pipeline.OptimizerReport(
+        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42
+    )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
 
-    assert outcome == "Optimizer: converged after 7 iterations, 5 rejected edge moves"
+    assert outcome == (
+        "Optimizer: converged after 7 iterations in 3.4 s, 5 rejected edge moves"
+    )
 
 
 def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() -> None:
@@ -2019,13 +2047,15 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
         rejected_edges=3,
         abnormal_bursts=2,
     )
-    report = pipeline.OptimizerReport((chain,), (), (pair,), Termination.CONVERGED, 7)
+    report = pipeline.OptimizerReport(
+        (chain,), (), (pair,), Termination.CONVERGED, 7, 0.04
+    )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
     warnings = cli.report_warnings(report)
 
     assert outcome == (
-        "Optimizer: converged after 7 iterations, 4 rejected edge moves, "
+        "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves, "
         "2 abnormal bursts"
     )
     assert any("(1.000, 2.000)" in w and "0.050 mm inside" in w for w in warnings)

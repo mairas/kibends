@@ -162,7 +162,7 @@ def format_statistics(report: OptimizerReport) -> str:
     outcome = ", ".join(
         [
             f"Optimizer: {report.termination.value} after {report.iterations} "
-            f"iterations",
+            f"iterations in {report.elapsed:.1f} s",
             f"{rejected} rejected edge moves",
             *abnormal,
         ]
