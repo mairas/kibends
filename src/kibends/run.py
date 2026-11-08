@@ -145,7 +145,8 @@ def run_smooth(
             "and edge and hole clearances are not checked"
         )
 
-    selected = read_selection(board)
+    selection = read_selection(board)
+    selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}

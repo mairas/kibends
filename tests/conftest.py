@@ -5,7 +5,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -17,7 +17,7 @@ from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
 from kipy.project_types import NetClass
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import PadType, ZoneType
+from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.proto.common.commands.editor_commands_pb2 import (
     CreateItems,
@@ -126,7 +126,16 @@ def kipy_pad(
 
 
 def kipy_via(
-    via_id: str, net: str, x: float, y: float, diameter: float = 0.6, drill: float = 0.3
+    via_id: str,
+    net: str,
+    x: float,
+    y: float,
+    diameter: float = 0.6,
+    drill: float = 0.3,
+    *,
+    locked: bool = False,
+    via_type: ViaType.ValueType = ViaType.VT_THROUGH,
+    span: tuple[BL.ValueType, BL.ValueType] = (BL.BL_F_Cu, BL.BL_B_Cu),
 ) -> kbt.Via:
     v = kbt.Via()
     v.proto.id.value = via_id
@@ -135,6 +144,9 @@ def kipy_via(
     v.padstack.proto.copper_layers.add()
     v.diameter = nm(diameter)
     v.drill_diameter = nm(drill)
+    v.locked = locked
+    v.type = via_type
+    v.padstack.drill.start_layer, v.padstack.drill.end_layer = span
     return v
 
 
@@ -271,6 +283,7 @@ def kipy_zone(
     keepout_tracks: bool = True,
     rule_area: bool = True,
     zone_id: str = "zone",
+    net: str = "GND",
 ) -> kbt.Zone:
     z = kbt.Zone()
     z.proto.id.value = zone_id
@@ -280,7 +293,25 @@ def kipy_zone(
     if rule_area:
         z.proto.rule_area_settings.keepout_tracks = keepout_tracks
     else:
-        z.proto.copper_settings.net.name = "GND"
+        z.proto.copper_settings.net.name = net
+    return z
+
+
+def kipy_filled_zone(
+    zone_id: str,
+    net: str,
+    fills: Mapping[BL.ValueType, PolygonWithHoles],
+    zone_type: ZoneType.ValueType = ZoneType.ZT_COPPER,
+) -> kbt.Zone:
+    """A copper zone of `net` filled with one polygon on each of its layers."""
+    outline = next(iter(fills.values()))
+    z = kipy_zone(outline, list(fills), rule_area=False, zone_id=zone_id, net=net)
+    z.proto.type = zone_type
+    z.proto.filled = True
+    for layer, polygon in fills.items():
+        filled = z.proto.filled_polygons.add()
+        filled.layer = layer
+        filled.shapes.polygons.add().CopyFrom(polygon.proto)
     return z
 
 

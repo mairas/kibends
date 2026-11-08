@@ -33,7 +33,7 @@ from conftest import (
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import PadType
+from kipy.proto.board.board_types_pb2 import PadType, ViaType
 from kipy.proto.common import ApiStatusCode
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
@@ -44,6 +44,8 @@ from kibends.snapshot import (
     LayerSnapshot,
     PadKind,
     SelectionError,
+    Via,
+    ViaKind,
     arc_points,
     edge_paths_closed,
     outline_from_edge_paths,
@@ -70,7 +72,7 @@ class TestReadSelection:
             ]
         )
 
-        segments = read_selection(board(fake))
+        segments = read_selection(board(fake)).segments
 
         assert segments == [
             Segment(
@@ -97,25 +99,66 @@ class TestReadSelection:
             selection=[kipy_track("a", "SIG", (0, 0), (1, 0), layer=BL.BL_In1_Cu)]
         )
 
-        assert read_selection(board(fake))[0].layer == "In1.Cu"
+        assert read_selection(board(fake)).segments[0].layer == "In1.Cu"
 
     def test_other_selected_items_are_ignored_with_a_warning(
         self, log: list[str]
     ) -> None:
         fake = FakeBoard(
             selection=[
-                kipy_via("v", "SIG", 0, 0),
-                kipy_track("a", "SIG", (0, 0), (1, 0)),
                 kipy_footprint("fp"),
+                kipy_track("a", "SIG", (0, 0), (1, 0)),
+                kipy_footprint("fp2"),
             ]
         )
 
-        segments = read_selection(board(fake))
+        selection = read_selection(board(fake))
 
-        assert [s.id for s in segments] == ["a"]
+        assert [s.id for s in selection.segments] == ["a"]
+        assert selection.vias == ()
         warnings = [line for line in log if line.startswith("WARNING")]
         assert len(warnings) == 1
-        assert "Via" in warnings[0] and "FootprintInstance" in warnings[0]
+        assert "2 FootprintInstance" in warnings[0]
+
+    def test_selected_vias_are_kept_with_type_span_and_lock(
+        self, log: list[str]
+    ) -> None:
+        fake = FakeBoard(
+            selection=[
+                kipy_via("v", "SIG", 1, 2, diameter=0.5, drill=0.25),
+                kipy_track("a", "SIG", (0, 0), (1, 0)),
+                kipy_via(
+                    "w",
+                    "SIG",
+                    3,
+                    0,
+                    locked=True,
+                    via_type=ViaType.VT_BLIND,
+                    span=(BL.BL_F_Cu, BL.BL_In2_Cu),
+                ),
+            ]
+        )
+
+        selection = read_selection(board(fake))
+
+        assert plain(selection.vias) == plain(
+            (
+                Via(
+                    "v", "SIG", (1.0, 2.0), 0.5, 0.25, ViaKind.THROUGH, ("F.Cu", "B.Cu")
+                ),
+                Via(
+                    "w",
+                    "SIG",
+                    (3.0, 0.0),
+                    0.6,
+                    0.3,
+                    ViaKind.BLIND,
+                    ("F.Cu", "In2.Cu"),
+                    locked=True,
+                ),
+            )
+        )
+        assert not [line for line in log if line.startswith("WARNING")]
 
     def test_arc_track_is_an_error_naming_it(self) -> None:
         fake = FakeBoard(

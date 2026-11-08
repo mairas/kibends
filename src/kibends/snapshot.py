@@ -23,7 +23,7 @@ from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
 from kipy.geometry import PolygonWithHoles, PolyLine, Vector2
-from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ZoneType
+from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.util.board_layer import canonical_name, layer_from_canonical_name
@@ -80,15 +80,35 @@ class Track:
     centreline: LineString
 
 
+class ViaKind(enum.Enum):
+    THROUGH = "through"
+    BLIND_BURIED = "blind/buried"
+    BLIND = "blind"
+    BURIED = "buried"
+    MICRO = "micro"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, eq=False)
 class Via:
-    """A via, taken to have copper on every layer."""
+    """A via; obstacles take it to have copper on every layer."""
 
     id: str
     net: str
     position: Point2
     diameter: float
     drill: float
+    kind: ViaKind
+    span: tuple[str, str]
+    """The copper layers its drill starts and ends on."""
+    locked: bool = False
+
+
+@dataclass(frozen=True)
+class Selection:
+    segments: list[Segment]
+    """The selected straight tracks."""
+    vias: tuple[Via, ...]
 
 
 @dataclass(frozen=True, eq=False)
@@ -239,8 +259,9 @@ class BoardSnapshot:
         return snap
 
 
-def read_selection(board: kipy.board.Board) -> list[Segment]:
-    """The selected straight tracks; arcs are refused, anything else ignored."""
+def read_selection(board: kipy.board.Board) -> Selection:
+    """The selected straight tracks and vias; arcs are refused, anything else
+    ignored."""
     items = board.get_selection()
     arcs = [i for i in items if isinstance(i, kbt.ArcTrack)]
     if arcs:
@@ -249,13 +270,20 @@ def read_selection(board: kipy.board.Board) -> list[Segment]:
             f"selection contains arc tracks, which kibends does not modify: {ids}"
         )
     tracks = [i for i in items if isinstance(i, kbt.Track)]
-    others = Counter(type(i).__name__ for i in items if not isinstance(i, kbt.Track))
+    vias = [i for i in items if isinstance(i, kbt.Via)]
+    others = Counter(
+        type(i).__name__ for i in items if not isinstance(i, kbt.Track | kbt.Via)
+    )
     if others:
         listing = ", ".join(f"{n} {name}" for name, n in sorted(others.items()))
-        logger.warning(f"Ignoring selected items that are not tracks: {listing}")
+        logger.warning(
+            f"Ignoring selected items that are not tracks or vias: {listing}"
+        )
     if not tracks:
         raise SelectionError("selection has no tracks")
-    return [segment_from_track(t) for t in tracks]
+    return Selection(
+        [segment_from_track(t) for t in tracks], tuple(map(_read_via, vias))
+    )
 
 
 def segment_from_track(t: kbt.Track) -> Segment:
@@ -462,13 +490,26 @@ def _read_track(t: kbt.Track | kbt.ArcTrack) -> Track:
     )
 
 
+_VIA_KINDS = {
+    ViaType.VT_THROUGH: ViaKind.THROUGH,
+    ViaType.VT_BLIND_BURIED: ViaKind.BLIND_BURIED,
+    ViaType.VT_BLIND: ViaKind.BLIND,
+    ViaType.VT_BURIED: ViaKind.BURIED,
+    ViaType.VT_MICRO: ViaKind.MICRO,
+}
+
+
 def _read_via(v: kbt.Via) -> Via:
+    drill = v.padstack.drill
     return Via(
         id=v.id.value,
         net=v.net.name,
         position=_mm(v.position),
         diameter=v.diameter / NM_PER_MM,
         drill=v.drill_diameter / NM_PER_MM,
+        kind=_VIA_KINDS.get(v.type, ViaKind.UNKNOWN),
+        span=(canonical_name(drill.start_layer), canonical_name(drill.end_layer)),
+        locked=v.locked,
     )
 
 
