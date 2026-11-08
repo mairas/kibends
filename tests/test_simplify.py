@@ -15,9 +15,9 @@ from scenarios import (
 )
 from shapely.geometry import LineString
 
+from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
-    ChainInput,
     OptimizerSettings,
     RunResult,
     measure,

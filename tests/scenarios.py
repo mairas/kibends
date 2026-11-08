@@ -10,8 +10,8 @@ import numpy as np
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Union, Walls
 
 from kibends.energy import EnergyParams
+from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.optimize import ChainInput
 
 ENVELOPE = 0.35
 """Clearance plus half track width, mm: the corner radius of inflated boxes."""

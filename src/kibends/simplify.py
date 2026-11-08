@@ -14,14 +14,15 @@ import numpy as np
 from loguru import logger
 
 from kibends.energy import BoolArray, EnergyParams, FloatArray, ObstacleField
-from kibends.obstacles import CompositeField, chain_obstacles
-from kibends.optimize import (
+from kibends.neighbours import (
     ChainInput,
-    RunResult,
-    neighbour_centreline,
+    chain_field,
+    neighbour_fields,
     obstacle_reach,
     same_layer_neighbours,
 )
+from kibends.obstacles import CompositeField
+from kibends.optimize import RunResult
 
 DEFAULT_CHORD_TOLERANCE = 0.025
 """mm: well below fabrication tolerances; at 5 µm a 23 mm chain on a real
@@ -64,13 +65,9 @@ def simplify_chains(
     current = list(optimised)
     kept: list[list[int]] = []
     for i, result in enumerate(run.chains):
-        static = chains[i].field
-        field = (
-            CompositeField(
-                [static, neighbour_field(chains, current, i, neighbours[i], reach)]
-            )
-            if neighbours[i]
-            else static
+        field = chain_field(
+            chains[i].field,
+            neighbour_fields(chains, i, neighbours[i], current, reach),
         )
         kept.append(_kept(result.polyline, result.fixed, field, tolerance))
         current[i] = result.polyline[kept[i]]
@@ -82,25 +79,6 @@ def simplify_chains(
         )
         current[i] = optimised[i]
     return current
-
-
-def neighbour_field(
-    chains: Sequence[ChainInput],
-    polylines: Sequence[FloatArray],
-    i: int,
-    others: Sequence[int],
-    reach: float,
-) -> ObstacleField:
-    """The chains `others`, at `polylines`, as obstacles to chain i."""
-    own = chains[i]
-    parts = [
-        part
-        for j in others
-        if (part := neighbour_centreline(own, chains[j], polylines[j], reach))
-        is not None
-    ]
-    c = own.centreline
-    return chain_obstacles(c.net, c.width, c.clearance, parts)
 
 
 def cutting_chains(
@@ -120,7 +98,9 @@ def cutting_chains(
             continue
         starts = optimised[i][indices[:-1][merged]]
         ends = optimised[i][indices[1:][merged]]
-        field = neighbour_field(chains, simplified, i, neighbours[i], reach)
+        field = CompositeField(
+            neighbour_fields(chains, i, neighbours[i], simplified, reach)
+        )
         if not field.segments_clear(starts, ends).all():
             cutting.append(i)
     return cutting

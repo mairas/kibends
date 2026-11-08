@@ -12,11 +12,11 @@ from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
 from kibends.energy import EnergyParams, ObstacleField, total_energy
+from kibends.neighbours import ChainInput
 from kibends.obstacles import CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
-    ChainInput,
     OptimizerSettings,
     RunResult,
     Termination,

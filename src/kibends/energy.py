@@ -72,6 +72,12 @@ class EnergyParams:
     """Interior quadrature points per edge, in addition to its endpoints."""
 
 
+def arc_lengths(points: FloatArray) -> FloatArray:
+    """Cumulative arc length at each vertex, starting at 0."""
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    return np.concatenate((np.zeros(1), np.cumsum(steps)))
+
+
 def length_energy(points: FloatArray, fixed: BoolArray) -> TermValue:
     value, gradient = _length(points, fixed, 0.0)
     return value, _zero_fixed(gradient, fixed)

@@ -20,26 +20,25 @@ from loguru import logger
 from kibends import drc
 from kibends.chain import Chain, extract_chains
 from kibends.commit import commit_chains, snapped_path, snapped_points
-from kibends.energy import EnergyParams, FloatArray, ObstacleField
-from kibends.obstacles import (
-    ChainCentreline,
-    CompositeField,
-    Obstacles,
-    build_obstacles,
+from kibends.energy import EnergyParams, FloatArray
+from kibends.neighbours import (
+    ChainInput,
+    chain_field,
+    neighbour_fields,
+    obstacle_reach,
+    same_layer_neighbours,
 )
+from kibends.obstacles import ChainCentreline, Obstacles, build_obstacles
 from kibends.optimize import (
     DEFAULT_SETTINGS,
-    ChainInput,
     FrozenVertex,
     PolylineStats,
     RunResult,
     Termination,
     measure,
-    obstacle_reach,
     optimize_chains,
-    same_layer_neighbours,
 )
-from kibends.simplify import neighbour_field, simplify_chains
+from kibends.simplify import simplify_chains
 from kibends.snapshot import LayerSnapshot, read_selection
 
 # kipy's 2 s default is too short for reading a large board as text and for
@@ -244,13 +243,8 @@ def _chain_reports(
     for i, (chain, given, result) in enumerate(
         zip(chains, inputs, run.chains, strict=True)
     ):
-        others = neighbours[i]
-        field: ObstacleField = (
-            CompositeField(
-                [given.field, neighbour_field(inputs, simplified, i, others, reach)]
-            )
-            if others
-            else given.field
+        field = chain_field(
+            given.field, neighbour_fields(inputs, i, neighbours[i], simplified, reach)
         )
         given_points = given.centreline.points
         changed = snapped_path(simplified[i]) != snapped_path(given_points)

@@ -12,7 +12,7 @@ as obstacles, so the same-side guarantee holds between chains too.
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from itertools import pairwise
 
@@ -28,10 +28,18 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     ObstacleField,
+    arc_lengths,
     free_vertex_objective,
     total_energy,
 )
-from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
+from kibends.neighbours import (
+    ChainInput,
+    chain_field,
+    neighbour_field,
+    obstacle_reach,
+    same_layer_neighbours,
+)
+from kibends.obstacles import ChainCentreline
 
 # A span only slightly longer than a multiple of the spacing gets no extra
 # vertex, so float noise in re-measured lengths does not change the count.
@@ -154,19 +162,6 @@ class OptimizeResult:
     after: PolylineStats
 
 
-@dataclass(frozen=True, eq=False)
-class ChainInput:
-    """One chain of a run, with the field of everything but the selected chains."""
-
-    centreline: ChainCentreline
-    """Its description, net, width, clearance and starting polyline."""
-    layer: str
-    """Only chains on the same layer see each other."""
-    fixed: BoolArray
-    field: ObstacleField
-    """Obstacles for its net and width, without any selected chain."""
-
-
 @dataclass(frozen=True)
 class ChainResult:
     polyline: FloatArray
@@ -256,12 +251,12 @@ def optimize_chains(
     ]
     dynamic = [
         {
-            j: _neighbour_field(chains[i], originals[i], chains[j], originals[j], reach)
+            j: neighbour_field(chains[i], chains[j], originals[j], reach, originals[i])
             for j in neighbours[i]
         }
         for i in range(count)
     ]
-    fields = [_compose(statics[i], dynamic[i]) for i in range(count)]
+    fields = [chain_field(statics[i], dynamic[i].values()) for i in range(count)]
     anchors: list[BoolArray] = []
     frozen: list[tuple[FrozenVertex, ...]] = []
     for i, chain in enumerate(chains):
@@ -284,14 +279,14 @@ def optimize_chains(
         unchanged = termination is Termination.NOTHING_TO_DO
 
         def after(i: int) -> PolylineStats:
-            field = _compose(
+            field = chain_field(
                 statics[i],
-                {
-                    j: _neighbour_field(
-                        chains[i], polylines[i], chains[j], polylines[j], reach
+                (
+                    neighbour_field(
+                        chains[i], chains[j], polylines[j], reach, polylines[i]
                     )
                     for j in neighbours[i]
-                },
+                ),
             )
             return measure(polylines[i], field, settings.spacing)
 
@@ -385,17 +380,17 @@ def optimize_chains(
             shapes[i] = current[i] = burst.points
             masks[i] = input_masks[i]
             for j in neighbours[i]:
-                dynamic[j][i] = _neighbour_field(
-                    chains[j], current[j], chains[i], current[i], reach
+                dynamic[j][i] = neighbour_field(
+                    chains[j], chains[i], current[i], reach, current[j]
                 )
-                fields[j] = _compose(statics[j], dynamic[j])
+                fields[j] = chain_field(statics[j], dynamic[j].values())
                 if chains[j].centreline.net == chains[i].centreline.net:
                     # How much of j is left out at a junction depends on the
                     # angle i now leaves it at.
-                    dynamic[i][j] = _neighbour_field(
-                        chains[i], current[i], chains[j], current[j], reach
+                    dynamic[i][j] = neighbour_field(
+                        chains[i], chains[j], current[j], reach, current[i]
                     )
-                    fields[i] = _compose(statics[i], dynamic[i])
+                    fields[i] = chain_field(statics[i], dynamic[i].values())
             for j in (i, *neighbours[i]):
                 energies[j] = total_energy(
                     current[j], masks[j], fields[j], params, settings.short_edge
@@ -474,121 +469,6 @@ class _Remembered:
         answer = self.field.segments_clear(starts, ends, tolerance)
         self._clear[tolerance] = (starts.copy(), ends.copy(), answer)
         return answer
-
-
-def _compose(
-    static: ObstacleField, dynamic: dict[int, ObstacleField | None]
-) -> ObstacleField:
-    others = [field for field in dynamic.values() if field is not None]
-    return CompositeField([static, *others]) if others else static
-
-
-def obstacle_reach(params: EnergyParams) -> float:
-    """Distance from an obstacle beyond which both obstacle terms of the
-    energy are zero, mm."""
-    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
-
-
-def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
-    """For each chain, the indices of the other chains on its layer."""
-    return [
-        [j for j, other in enumerate(chains) if j != i and other.layer == chain.layer]
-        for i, chain in enumerate(chains)
-    ]
-
-
-def _neighbour_field(
-    own: ChainInput,
-    own_points: FloatArray,
-    other: ChainInput,
-    points: FloatArray,
-    reach: float,
-) -> ObstacleField | None:
-    """`other` at `points` as an obstacle to `own` at `own_points`, or None if
-    nothing is left."""
-    centreline = neighbour_centreline(own, other, points, reach, own_points)
-    if centreline is None:
-        return None
-    me = own.centreline
-    return chain_obstacles(me.net, me.width, me.clearance, [centreline])
-
-
-def neighbour_centreline(
-    own: ChainInput,
-    other: ChainInput,
-    points: FloatArray,
-    reach: float,
-    own_points: FloatArray | None = None,
-) -> ChainCentreline | None:
-    """The part of `other` at `points` that is an obstacle to `own`, or None
-    if nothing is left.
-
-    A chain of the same net that ends where this one ends continues it, as at
-    a neck-down: near that junction both must leave the shared point, so the
-    other is left out as far as it lies within its inflation plus `reach` of
-    `own` at `own_points`, by default its starting polyline.
-    """
-    me, them = own.centreline, other.centreline
-    if them.net == me.net:
-        mine = me.points if own_points is None else own_points
-        clear = (me.width + them.width) / 2 + reach
-        ends = me.points[[0, -1]]
-
-        def shared(point: FloatArray) -> bool:
-            return bool(np.any(np.all(ends == point, axis=1)))
-
-        total = float(_arc_lengths(points)[-1])
-        start = _junction_cut(mine, points, clear) if shared(them.points[0]) else 0.0
-        end = (
-            total - _junction_cut(mine, points[::-1], clear)
-            if shared(them.points[-1])
-            else total
-        )
-        if start >= end:
-            return None
-        points = _cut(points, start, end)
-    return replace(them, points=points)
-
-
-def _junction_cut(own: FloatArray, other: FloatArray, clear: float) -> float:
-    """Length of `other`, which starts at an end of `own`, to leave out there.
-
-    Beyond it `other` lies at least `clear` from `own`'s first stretch: at an
-    angle θ below 90° between the two that takes clear / sin θ, else clear.
-    """
-    if not np.array_equal(own[0], other[0]):
-        own = own[::-1]
-    a, b = _heading(own, clear), _heading(other, clear)
-    if float(a @ b) <= 0.0:
-        return clear
-    sine = abs(float(a[0] * b[1] - a[1] * b[0]))
-    return clear / sine if sine > 0.0 else math.inf
-
-
-def _heading(points: FloatArray, length: float) -> FloatArray:
-    """Unit direction from the first vertex to the point `length` along."""
-    arc = _arc_lengths(points)
-    at = min(length, float(arc[-1]))
-    ahead = np.stack(
-        [np.interp([at], arc, points[:, 0]), np.interp([at], arc, points[:, 1])],
-        axis=1,
-    )
-    step: FloatArray = ahead[0] - points[0]
-    return step / max(float(np.linalg.norm(step)), MIN_EDGE_LENGTH)
-
-
-def _cut(points: FloatArray, start: float, end: float) -> FloatArray:
-    """The part of a polyline between two arc lengths from its first vertex."""
-    arc = _arc_lengths(points)
-    inside = (arc > start) & (arc < end)
-    ends = np.stack(
-        [
-            np.interp([start, end], arc, points[:, 0]),
-            np.interp([start, end], arc, points[:, 1]),
-        ],
-        axis=1,
-    )
-    return np.concatenate([ends[:1], points[inside], ends[1:]])
 
 
 def _frozen(
@@ -670,7 +550,7 @@ def resample(
     masks = [np.ones(1, dtype=bool)]
     for start, end in pairwise(anchor_indices):
         span = points[start : end + 1]
-        arc = _arc_lengths(span)
+        arc = arc_lengths(span)
         total = float(arc[-1])
         count = max(1, int(np.ceil(total / spacing - RESAMPLE_SLACK)))
         targets = np.linspace(0.0, total, count + 1)[1:-1]
@@ -825,14 +705,8 @@ def _local_distance(points: FloatArray, polyline: FloatArray) -> float:
 
 
 def _arc_fractions(points: FloatArray) -> FloatArray:
-    arc = _arc_lengths(points)
+    arc = arc_lengths(points)
     return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
-
-
-def _arc_lengths(points: FloatArray) -> FloatArray:
-    """Cumulative arc length at each vertex, starting at 0."""
-    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    return np.concatenate((np.zeros(1), np.cumsum(steps)))
 
 
 def _revert_new_crossings(
