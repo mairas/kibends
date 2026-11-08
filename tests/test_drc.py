@@ -16,6 +16,7 @@ import pytest
 from kipy.errors import ApiError
 
 from kibends import drc
+from kibends.coords import UserFrame
 
 FIXTURES = Path(__file__).parent / "fixtures" / "gate"
 GATE_BOARD = FIXTURES / "gate.kicad_pcb"
@@ -356,9 +357,10 @@ class TestParseReport:
 
         (v,) = drc.parse_report(report)
 
-        assert str(v) == (
+        # kicad-cli reports positions in the board frame, whatever the origins.
+        assert v.describe(UserFrame((10.0, 2.0))) == (
             "clearance: Clearance violation "
-            "[Pad 3 [GND] of J1 on F.Cu @ (15.000, 6.000)]"
+            "[Pad 3 [GND] of J1 on F.Cu @ (5.000, 4.000)]"
         )
 
 

@@ -31,6 +31,7 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from loguru import logger
 
 from kibends.chain import Point2
+from kibends.coords import UserFrame
 
 KICAD_CLI = "kicad-cli"
 KNOWN_KICAD_CLI_PATHS: tuple[str, ...] = (
@@ -410,10 +411,10 @@ class Violation:
     severity: str
     items: tuple[ViolationItem, ...]
 
-    def __str__(self) -> str:
+    def describe(self, frame: UserFrame) -> str:
+        """One line, with the items' positions in `frame`."""
         where = ", ".join(
-            f"{i.description} @ ({i.position[0]:.3f}, {i.position[1]:.3f})"
-            for i in self.items
+            f"{i.description} @ {frame.point(i.position)}" for i in self.items
         )
         return f"{self.type}: {self.description} [{where}]"
 

@@ -48,6 +48,7 @@ from kibends.bursts import (
     Crossings,
     OptimizerSettings,
 )
+from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import BoolArray, EnergyParams, FloatArray, IntArray
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
@@ -216,6 +217,17 @@ PAD_CLEARANCE: drc.ReportViolation = {
         {"description": "Pad 3 [GND] of J1 on F.Cu", "pos": {"x": 3.2, "y": 0.8}}
     ],
 }
+
+
+GRID_ORIGIN = (1.0, 2.0)
+"""A grid origin away from the page origin, in mm, which every printed
+position is relative to."""
+
+
+def off_grid(board: CommitBoard) -> CommitBoard:
+    """`board` with its grid origin at GRID_ORIGIN."""
+    board.grid_origin = GRID_ORIGIN
+    return board
 
 
 @pytest.fixture
@@ -679,7 +691,7 @@ class TestDrc:
         log: list[str],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        board = connect.to(l_board())
+        board = connect.to(off_grid(l_board()))
         report_on(kicad_cli, candidate=[PAD_CLEARANCE])
 
         message = exit_message(log)
@@ -687,7 +699,8 @@ class TestDrc:
         assert "1 new violation" in message and "nothing committed" in message
         out = capsys.readouterr().out
         assert "clearance: Clearance violation (rule 'pad_clearance'" in out
-        assert "Pad 3 [GND] of J1 on F.Cu @ (3.200, 0.800)" in out
+        # kicad-cli's (3.2, 0.8) relative to the grid origin.
+        assert "Pad 3 [GND] of J1 on F.Cu @ (2.200, -1.200)" in out
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -907,19 +920,29 @@ class TestErrors:
         assert "no tracks that can be modified" in exit_message(log)
         assert board.calls == []
 
+    # A selected via that may move makes the run extract the chains once
+    # without pins first, to find the copper the via carries.
+    @pytest.mark.parametrize("with_via", [False, True], ids=["tracks", "via"])
     def test_selection_that_is_no_chain(
-        self, connect: Connector, log: list[str]
+        self, connect: Connector, log: list[str], with_via: bool
     ) -> None:
         tracks = [
             kipy_track("a", "SIG", (0, 0), (5, 0)),
             kipy_track("b", "SIG", (5, 0), (9, 0)),
             kipy_track("c", "SIG", (5, 0), (5, 3)),
         ]
-        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+        vias = [kipy_via("v", "SIG", 9, 0)] if with_via else []
+        board = CommitBoard(
+            selection=[*tracks, *vias],
+            tracks=list(tracks),
+            vias=vias,
+            grid_origin=GRID_ORIGIN,
+        )
+        connect.to(board)
 
         message = exit_message(log)
 
-        assert "selected tracks branch at" in message
+        assert "selected tracks branch at (4.000, -2.000) mm" in message
         assert "ChainError" not in message
 
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -1216,14 +1239,15 @@ class TestSeveralChains:
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
-        connect.to(two_l_board(inner=across))
+        connect.to(off_grid(two_l_board(inner=across)))
 
         run("--dry-run", "--no-drc")
 
-        frozen = [line for line in log if "Left the vertex at (4.000, 0.000)" in line]
+        # (4, 0) and (4.3, -1) relative to the grid origin.
+        frozen = [line for line in log if "Left the vertex at (3.000, -2.000)" in line]
         assert len(frozen) == 1
         assert frozen[0].startswith("WARNING")
-        assert "selected chain SIG2 on F.Cu from (4.300, -1.000)" in frozen[0]
+        assert "selected chain SIG2 on F.Cu from (3.300, -3.000)" in frozen[0]
 
     def test_run_function_reports_each_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -1611,7 +1635,7 @@ class TestSeveralLayers:
     def test_selected_via_that_must_stay_is_named(
         self, connect: Connector, log: list[str]
     ) -> None:
-        board = via_route_board()
+        board = off_grid(via_route_board())
         board.vias = [kipy_via("v", "SIG", *VIA, locked=True)]
         board.selection.append(board.vias[0])
         connect.to(board)
@@ -1620,7 +1644,8 @@ class TestSeveralLayers:
 
         assert "push_commit" in board.calls
         (warning,) = [line for line in log if "stays fixed" in line]
-        assert warning.startswith("WARNING Via v ") and "locked" in warning
+        assert warning.startswith("WARNING Via v at (3.000, 2.000) ")
+        assert "locked" in warning
 
     def test_selected_via_with_an_unselected_track_is_named(
         self, connect: Connector, log: list[str]
@@ -1877,7 +1902,7 @@ class TestMovingVias:
     ) -> None:
         # The pad's edge is 0.1 mm from the via's ring, inside its clearance,
         # and clear of both chains.
-        board = moving_via_board()
+        board = off_grid(moving_via_board())
         board.pads = [kipy_pad("p", "GND", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
@@ -1886,8 +1911,8 @@ class TestMovingVias:
         assert "push_commit" in board.calls
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         assert created_vias(board) == []
-        assert "WARNING Left via v at (4.000, 4.000) in place" in "".join(log)
-        assert "Via v stays at (4.000, 4.000)" in capsys.readouterr().out.splitlines()
+        assert "WARNING Left via v at (3.000, 2.000) in place" in "".join(log)
+        assert "Via v stays at (3.000, 2.000)" in capsys.readouterr().out.splitlines()
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
@@ -1919,7 +1944,7 @@ class TestMovingVias:
     def test_reports_the_move(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        board = connect.to(moving_via_board())
+        board = connect.to(off_grid(moving_via_board()))
         options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
 
         report = pipeline.run_smooth(options)
@@ -1932,9 +1957,10 @@ class TestMovingVias:
         out = capsys.readouterr().out
         x, y = via.end
         distance = np.hypot(x - VIA[0], y - VIA[1])
+        gx, gy = GRID_ORIGIN
         assert (
-            f"Via v moved {distance:.3f} mm, from (4.000, 4.000) to ({x:.3f}, {y:.3f})"
-            in out.splitlines()
+            f"Via v moved {distance:.3f} mm, "
+            f"from (3.000, 2.000) to ({x - gx:.3f}, {y - gy:.3f})" in out.splitlines()
         )
 
     def test_a_refused_via_create_drops_the_whole_commit(
@@ -2066,7 +2092,7 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
     )
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
     report = pipeline.OptimizerReport(
-        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42
+        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, BOARD_FRAME
     )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
@@ -2096,7 +2122,7 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
         abnormal_bursts=2,
     )
     report = pipeline.OptimizerReport(
-        (chain,), (), (pair,), Termination.CONVERGED, 7, 0.04
+        (chain,), (), (pair,), Termination.CONVERGED, 7, 0.04, UserFrame((0.5, 3.0))
     )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
@@ -2106,7 +2132,8 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
         "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves, "
         "2 abnormal bursts"
     )
-    assert any("(1.000, 2.000)" in w and "0.050 mm inside" in w for w in warnings)
+    # The frozen vertex at (1, 2) relative to the frame's origin.
+    assert any("(0.500, -1.000)" in w and "0.050 mm inside" in w for w in warnings)
     assert any("2 bursts of the pair USB_D+ and USB_D-" in w for w in warnings)
 
 
@@ -2410,13 +2437,15 @@ class TestPairs:
     def test_via_on_a_pair_track_stays_fixed(
         self, connect: Connector, log: list[str]
     ) -> None:
-        board = connect.to(with_via_at_the_fan_out(pair_board()))
+        board = connect.to(off_grid(with_via_at_the_fan_out(pair_board())))
 
         run()
 
         assert created_vias(board) == []
         assert "v" not in board.deleted
         (warning,) = [w for w in log if "Via v" in w]
+        x, y = PAIR_FAN[0] - GRID_ORIGIN[0], PAIR_FAN[1] - GRID_ORIGIN[1]
+        assert f"Via v at ({x:.3f}, {y:.3f}) stays fixed" in warning
         assert "differential pair USB_D+ and USB_D-" in warning
         assert all(by_net(board).values())
 

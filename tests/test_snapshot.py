@@ -41,6 +41,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
+from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import (
     BoardSnapshot,
     Disc,
@@ -54,6 +55,7 @@ from kibends.snapshot import (
     edge_paths_closed,
     outline_from_edge_paths,
     read_selection,
+    read_user_frame,
 )
 
 LAYER = "F.Cu"
@@ -181,6 +183,12 @@ class TestReadSelection:
     def test_empty_selection_is_an_error(self) -> None:
         with pytest.raises(SelectionError, match="no tracks"):
             read_selection(board(FakeBoard()))
+
+
+def test_user_frame_is_at_the_grid_origin() -> None:
+    frame = read_user_frame(board(FakeBoard(grid_origin=(50.0, 40.25))))
+
+    assert frame == UserFrame((50.0, 40.25))
 
 
 class TestCopperOnLayer:
@@ -367,7 +375,9 @@ class TestSameNetCopper:
         )
         chain_segment = Segment("a", (0, 0), (10 * NM_PER_MM, 0), 250_000, LAYER, "SIG")
 
-        chain = extract_chain([chain_segment], snapshot(fake).same_net_copper("SIG"))
+        chain = extract_chain(
+            [chain_segment], snapshot(fake).same_net_copper("SIG"), frame=BOARD_FRAME
+        )
 
         assert chain.points == ((0, 0), (4.5, 0), (5.5, 0), (10, 0))
         assert chain.pinned == (True, True, True, True)

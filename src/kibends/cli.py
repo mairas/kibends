@@ -22,13 +22,14 @@ from loguru import logger
 
 from kibends import drc
 from kibends.bursts import DEFAULT_SETTINGS
-from kibends.chain import ChainError, Point2
+from kibends.chain import ChainError
 from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
 )
+from kibends.coords import UserFrame
 from kibends.energy import EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
 from kibends.optimize import FrozenVertex, Termination
@@ -128,7 +129,7 @@ def smooth(options: SmoothOptions) -> None:
 
     report = run_smooth(options, show)
     if report.drc is not None:
-        print(_verdict(report.drc))
+        print(_verdict(report.drc, report.frame))
     if report.drc and options.dry_run:
         logger.warning("A real run would refuse to commit this result")
     if report.refusal is not None:
@@ -141,12 +142,12 @@ def smooth(options: SmoothOptions) -> None:
 
 def format_statistics(report: OptimizerReport) -> str:
     """One statistics block per chain and per differential pair, a line per
-    movable via and the optimizer's outcome."""
+    movable via and the optimizer's outcome, positions in the report's frame."""
     some_changed = any(c.changed for c in report.chains)
     blocks = [_chain_block(c, some_changed) for c in report.chains]
     blocks += [_pair_block(p) for p in report.pairs]
     if report.vias:
-        blocks.append("\n".join(_via_line(v) for v in report.vias))
+        blocks.append("\n".join(_via_line(v, report.frame) for v in report.vias))
     several = len(report.chains) > 1
     rejected = (
         sum(c.rejected_edges for c in report.chains)
@@ -170,30 +171,28 @@ def format_statistics(report: OptimizerReport) -> str:
     return ("\n\n" if several else "\n").join([*blocks, outcome])
 
 
-def _via_line(v: ViaReport) -> str:
+def _via_line(v: ViaReport, frame: UserFrame) -> str:
     if not v.moved:
-        return f"Via {v.id} stays at {_point(v.start)}"
+        return f"Via {v.id} stays at {frame.point(v.start)}"
     distance = math.dist(v.start, v.end)
     return (
-        f"Via {v.id} moved {distance:.3f} mm, from {_point(v.start)} to {_point(v.end)}"
+        f"Via {v.id} moved {distance:.3f} mm, "
+        f"from {frame.point(v.start)} to {frame.point(v.end)}"
     )
-
-
-def _point(p: Point2) -> str:
-    return f"({p[0]:.3f}, {p[1]:.3f})"
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
     """Frozen vertices and vias, abnormal bursts and an iteration cap, one
-    line each."""
-    warnings = [_frozen_warning(v) for c in report.chains for v in c.frozen]
+    line each, positions in the report's frame."""
+    frame = report.frame
+    warnings = [_frozen_warning(v, frame) for c in report.chains for v in c.frozen]
     warnings += [
-        f"Left via {v.id} at {_point(v.start)} in place: it starts inside "
+        f"Left via {v.id} at {frame.point(v.start)} in place: it starts inside "
         "another item's clearance"
         for v in report.vias
         if v.frozen
     ]
-    warnings += [_frozen_warning(v) for p in report.pairs for v in p.frozen]
+    warnings += [_frozen_warning(v, frame) for p in report.pairs for v in p.frozen]
     warnings += [
         f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of {description} "
         "abnormally; the run judged each like any other burst"
@@ -227,9 +226,9 @@ def _abnormal(report: OptimizerReport) -> list[tuple[str, int]]:
     ]
 
 
-def _frozen_warning(v: FrozenVertex) -> str:
+def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
     message = (
-        f"Left the vertex at ({v.position[0]:.3f}, {v.position[1]:.3f}) in "
+        f"Left the vertex at {frame.point(v.position)} in "
         f"place: it starts {-v.distance:.3f} mm inside another item's clearance"
     )
     if v.neighbours:
@@ -303,13 +302,13 @@ def _table(rows: Sequence[tuple[str, str, str]]) -> list[str]:
     ]
 
 
-def _verdict(found: drc.Introduced) -> str:
+def _verdict(found: drc.Introduced, frame: UserFrame) -> str:
     if not found:
         return "DRC: no new violations"
     return "\n".join(
         [
             f"DRC: {new_violations(len(found.violations))}",
-            *(f"  {v}" for v in found.violations),
+            *(f"  {v.describe(frame)}" for v in found.violations),
             *(
                 f"  More connectivity violations on {net}: the new path may "
                 f"split a pour of {net}"

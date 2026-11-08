@@ -17,6 +17,7 @@ from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
 from kipy.wrapper import Wrapper
 
 from kibends.chain import Chain, extract_chains
+from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import BoardSnapshot, read_selection
 from kibends.vias import ChainEnd, MovableVia, carried_copper, movable_vias
 
@@ -44,6 +45,7 @@ def judge(
     *,
     pads: Sequence[kbt.Pad] = (),
     zones: Sequence[kbt.Zone] = (),
+    frame: UserFrame = BOARD_FRAME,
 ) -> tuple[list[MovableVia], list[Chain]]:
     """The selection's chains and movable vias, read as a run reads them."""
     fake = cast(
@@ -59,15 +61,18 @@ def judge(
     chosen = read_selection(fake)
     replaced = {s.id for s in chosen.segments if not s.locked}
     layers = {s.layer for s in chosen.segments if not s.locked}
-    bare = extract_chains(chosen.segments, lambda layer, net: ())
+    bare = extract_chains(chosen.segments, lambda layer, net: (), frame=BOARD_FRAME)
     whole = BoardSnapshot.read(
         fake, layers, chosen.vias, carried=carried_copper(chosen.vias, bare)
     )
     snapshots = {layer: whole.slice(layer, replaced) for layer in layers}
     chains = extract_chains(
-        chosen.segments, lambda layer, net: snapshots[layer].same_net_copper(net)
+        chosen.segments,
+        lambda layer, net: snapshots[layer].same_net_copper(net),
+        frame=BOARD_FRAME,
     )
-    return movable_vias(chosen.vias, whole.via_contacts, chains), chains
+    movable = movable_vias(chosen.vias, whole.via_contacts, chains, frame=frame)
+    return movable, chains
 
 
 def warnings(log: list[str]) -> list[str]:
@@ -121,6 +126,19 @@ class TestMovableVias:
 
     def test_locked_via_stays_fixed(self, log: list[str]) -> None:
         assert "it is locked" in fixed(log, kipy_via("v", "SIG", *VIA, locked=True))
+
+    def test_warning_gives_the_position_in_the_frame(self, log: list[str]) -> None:
+        v = kipy_via("v", "SIG", *VIA, locked=True)
+
+        judge(
+            [*front(), *back(), v],
+            [*front(), *back()],
+            [v],
+            frame=UserFrame((1.0, 5.0)),
+        )
+
+        (warning,) = warnings(log)
+        assert "Via v at (3.000, -1.000) stays fixed" in warning
 
     def test_blind_via_stays_fixed(self, log: list[str]) -> None:
         blind = kipy_via(

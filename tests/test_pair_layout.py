@@ -3,6 +3,7 @@ import pytest
 from distance_fields import FreeSpace
 
 from kibends.chain import Chain, Point2
+from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
@@ -58,7 +59,7 @@ def far(net: str) -> Chain:
 def test_pairs_two_coupled_chains_of_a_pair_of_nets() -> None:
     chains = [far("GND"), fanned("USB_D+", -1), fanned("USB_D-", 1)]
 
-    found = find_pairs(chains, CHORD)
+    found = find_pairs(chains, CHORD, frame=BOARD_FRAME)
 
     assert [(p.a, p.b) for p in found] == [(1, 2)]
     assert found[0].pair.gap == pytest.approx(GAP)
@@ -67,14 +68,14 @@ def test_pairs_two_coupled_chains_of_a_pair_of_nets() -> None:
 def test_chains_of_a_pair_on_two_layers_do_not_pair(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), fanned("USB_D-", 1, layer="B.Cu")]
 
-    assert find_pairs(chains, CHORD) == []
+    assert find_pairs(chains, CHORD, frame=BOARD_FRAME) == []
     assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_nets_that_pair_but_do_not_run_coupled_warn(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), far("USB_D-")]
 
-    assert find_pairs(chains, CHORD) == []
+    assert find_pairs(chains, CHORD, frame=BOARD_FRAME) == []
     (warning,) = [line for line in log if line.startswith("WARNING")]
     assert "USB_D+" in warning and "USB_D-" in warning
     assert "do not run coupled" in warning
@@ -83,7 +84,7 @@ def test_nets_that_pair_but_do_not_run_coupled_warn(log: list[str]) -> None:
 def test_pair_of_two_widths_warns_and_stays_two_chains(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), fanned("USB_D-", 1, width=0.25)]
 
-    assert find_pairs(chains, CHORD) == []
+    assert find_pairs(chains, CHORD, frame=BOARD_FRAME) == []
     (warning,) = [line for line in log if line.startswith("WARNING")]
     assert "two track widths" in warning and "two chains" in warning
 
@@ -97,9 +98,11 @@ def beyond(net: str) -> Chain:
 def test_a_chain_pairs_only_once_and_its_other_partner_warns(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), beyond("USB_D+")]
 
-    assert [(p.a, p.b) for p in find_pairs(chains, CHORD)] == [(0, 1)]
+    found = find_pairs(chains, CHORD, frame=UserFrame((1.0, 2.0)))
+
+    assert [(p.a, p.b) for p in found] == [(0, 1)]
     (warning,) = [line for line in log if line.startswith("WARNING")]
-    assert f"USB_D+ on F.Cu from (0.000, {3 * HALF_PITCH + 1.0:.3f})" in warning
+    assert f"USB_D+ on F.Cu from (-1.000, {3 * HALF_PITCH - 1.0:.3f})" in warning
     assert "pairs with another chain of USB_D+" in warning
 
 
@@ -108,14 +111,16 @@ def test_coupled_chains_of_nets_that_do_not_pair_do_not_warn(
 ) -> None:
     chains = [fanned("DATA_A", -1), fanned("DATA_B", 1)]
 
-    assert find_pairs(chains, CHORD) == []
+    assert find_pairs(chains, CHORD, frame=BOARD_FRAME) == []
     assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_a_chain_far_from_a_paired_partner_does_not_warn(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), far("USB_D+")]
 
-    assert [(p.a, p.b) for p in find_pairs(chains, CHORD)] == [(0, 1)]
+    assert [(p.a, p.b) for p in find_pairs(chains, CHORD, frame=BOARD_FRAME)] == [
+        (0, 1)
+    ]
     assert not any(line.startswith("WARNING") for line in log)
 
 
@@ -128,14 +133,19 @@ def test_two_pairs_of_the_same_nets_side_by_side_do_not_warn(log: list[str]) -> 
         fanned("USB_D-", 1, at=4 * HALF_PITCH),
     ]
 
-    assert [(p.a, p.b) for p in find_pairs(chains, CHORD)] == [(0, 1), (2, 3)]
+    assert [(p.a, p.b) for p in find_pairs(chains, CHORD, frame=BOARD_FRAME)] == [
+        (0, 1),
+        (2, 3),
+    ]
     assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_a_chain_pairing_later_leaves_no_warning_from_before(log: list[str]) -> None:
     chains = [far("USB_D+"), fanned("USB_D-", 1), fanned("USB_D+", -1)]
 
-    assert [(p.a, p.b) for p in find_pairs(chains, CHORD)] == [(1, 2)]
+    assert [(p.a, p.b) for p in find_pairs(chains, CHORD, frame=BOARD_FRAME)] == [
+        (1, 2)
+    ]
     assert not any(line.startswith("WARNING") for line in log)
 
 
@@ -160,7 +170,7 @@ def free(
 
 
 def laid_out(chains: list[Chain]) -> tuple[list[ChainPair], list[ChainInput]]:
-    return find_pairs(chains, CHORD), [given(c) for c in chains]
+    return find_pairs(chains, CHORD, frame=BOARD_FRAME), [given(c) for c in chains]
 
 
 @pytest.mark.parametrize("reverse", [False, True])

@@ -15,6 +15,7 @@ from typing import NamedTuple
 from loguru import logger
 
 from kibends.chain import Chain
+from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.snapshot import Disc, Via, ViaContact, ViaKind
 
@@ -84,8 +85,11 @@ def movable_vias(
     vias: Sequence[Via],
     contacts: Mapping[str, Sequence[ViaContact]],
     chains: Sequence[Chain],
+    *,
+    frame: UserFrame,
 ) -> list[MovableVia]:
-    """The vias among `vias` that may move, warning once about each other one.
+    """The vias among `vias` that may move, warning once about each other one,
+    at its position in `frame`.
 
     `contacts` gives the same-net copper touching each via or the chain ends
     it carries, as `BoardSnapshot.read` finds it from `carried_copper`.
@@ -104,8 +108,9 @@ def movable_vias(
         if reason is None:
             movable.append(MovableVia(via, ends))
         else:
-            x, y = via.position
-            logger.warning(f"Via {via.id} at ({x:.3f}, {y:.3f}) stays fixed: {reason}")
+            logger.warning(
+                f"Via {via.id} at {frame.point(via.position)} stays fixed: {reason}"
+            )
     return movable
 
 

@@ -24,6 +24,7 @@ from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
 from kipy.geometry import Box2, PolygonWithHoles, PolyLine, Vector2
+from kipy.proto.board.board_commands_pb2 import BoardOriginType
 from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
@@ -38,6 +39,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize, unary_union
 
 from kibends.chain import NM_PER_MM, Point2, SameNetCopper, SameNetTrack, Segment
+from kibends.coords import UserFrame
 
 EDGE_CUTS = "Edge.Cuts"
 DEFAULT_NETCLASS = "Default"
@@ -356,6 +358,11 @@ def read_selection(board: kipy.board.Board) -> Selection:
     return Selection(
         [segment_from_track(t) for t in tracks], tuple(map(via_from_kipy, vias))
     )
+
+
+def read_user_frame(board: kipy.board.Board) -> UserFrame:
+    """The frame kibends prints coordinates in, at the board's grid origin."""
+    return UserFrame(_mm(board.get_origin(BoardOriginType.BOT_GRID)))
 
 
 def segment_from_track(t: kbt.Track) -> Segment:

@@ -39,7 +39,7 @@ Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.y
 
 ## Units and coordinates
 
-Segment endpoints and widths from KiCad are integer nanometres, so endpoint matching is exact. Everything after the snapshot is millimetre floats and shapely geometry. All coordinates are in KiCad's board frame, with y pointing down.
+Segment endpoints and widths from KiCad are integer nanometres, so endpoint matching is exact. Everything after the snapshot is millimetre floats and shapely geometry. All coordinates are in KiCad's board frame, with y pointing down. Printed positions are relative to the board's grid origin instead: `snapshot.read_user_frame` reads it once per run, `run_smooth` passes the `coords.UserFrame` to whatever writes a message and puts it in its report, and every printed point goes through `UserFrame.point`. Reports keep their positions in the board frame and carry the frame; their descriptions, such as a chain's, are text already formatted in it. kicad-cli's DRC report positions are in the board frame too.
 
 ## KiCad API limits
 
