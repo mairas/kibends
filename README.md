@@ -82,8 +82,9 @@ including layers no selected chain is on, and the chains it joins move with
 it.
 
 The command prints, for each chain, the length, track count, tightest bend
-radius and clearance margins before and after, then for each selected via
-that may move how far it moved and where to, then the optimizer's outcome.
+radius and clearance margins before and after, then for each differential
+pair its gap and skew (see below), then for each selected via that may move
+how far it moved and where to, then the optimizer's outcome.
 A chain the optimizer leaves as it was is marked unchanged and is neither
 checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
 changed chains are replaced and the moved vias moved in one commit, which
@@ -102,6 +103,57 @@ A vertex that starts inside another item's clearance stays where it is,
 with a warning. When that item is another selected chain, the warning names
 it, and a re-run after that chain has moved may free the vertex.
 
+### Differential pairs
+
+Two selected chains on one layer whose nets KiCad pairs by name, a common
+base with a `+`/`-` or `P`/`N` suffix (trailing digits and underscores
+ignored, as KiCad's router does), are smoothed as a pair where they run
+coupled: side by side at a near-constant gap for at least five pitches and
+1 mm. Each such stretch is a coupled section; a pair that splits around a
+pad or via and rejoins has several. The pair's centreline is optimised and
+both tracks follow it at the gap the routing had, measured as the median
+over the coupled sections, so a pair costs about as much as one chain. The
+rest of each chain, such as its fan-outs to pads or vias, is smoothed as an
+ordinary chain, and each section meets it where and in the direction it
+did. A section's centreline never bends tighter than its inner track
+allows, half the pitch plus half the track width. A section whose routing
+already bends tighter keeps its own tracks, with a warning that says so.
+So does one whose corner the copper around it keeps from rounding, such as
+a pad inside a sharp corner, or its own parts beyond the corner: the
+warning says which, and the run is repeated with that section held, so
+that the other chains keep clear of its tracks.
+
+A coupled section is simplified as its centreline, within the chord
+tolerance, and both tracks follow the simplified centreline as they
+followed the optimised one: at the gap, tapering to an end's own gap near
+an end routed at another, segment for segment in parallel outside such a
+taper, and meeting the fan-outs in the direction they did. While
+optimising, a section's parts more than a turn apart along it, such as the
+legs of a U or the laps of a spiral, do not move closer to each other than
+the pair's outer extent plus the larger clearance, and parts that already
+lie closer do not move closer still. The run refuses, naming the pair, to commit
+a section whose tracks come closer to each other than both its nets'
+clearance and its routing kept them, where they run side by side or
+across a turn.
+Both nets' tracks go into the one DRC check and the one commit.
+
+The report adds a block per pair: the measured gap and the range of the
+gap along the result's coupled sections, and the skew, the length
+difference of the two chains, before and after. Bending a pair makes its
+inner track shorter, so the skew changes; kibends reports it but does not
+correct it, which KiCad's length tuner does. A coupled section that
+same-net copper touches between its ends stays as it is, and the report
+counts it as held, as it does a section kept for bending too tightly.
+
+A run warns when two chains whose nets pair do not run coupled or have
+different widths, when a chain runs coupled with one of its pair net that
+pairs with another chain, and when a pair's measured gap differs by more
+than a tenth from its netclass's differential pair gap. Each of these is
+smoothed as separate chains, or, for the last, at its measured gap. A pair
+is paired on each layer separately, and a via that joins a pair's track
+stays fixed, with a warning. kibends does not route uncoupled fan-outs
+into coupling.
+
 ### Options
 
 | Option | Default | Effect |
@@ -111,7 +163,7 @@ it, and a re-run after that chain has moved may free the vertex.
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
-| `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values give fewer, longer tracks. |
+| `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |
