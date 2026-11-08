@@ -208,6 +208,11 @@ class RunResult:
     gave_up: tuple[tuple[str, int], ...] = ()
     """The chains given up on after abnormal bursts in a row, by description,
     and how many there were."""
+    abnormal: tuple[tuple[str, int], ...] = ()
+    """The joint problems, each a layer's chains, whose bursts L-BFGS-B
+    ended abnormally, by description, and how many there were. A joint
+    burst moves every chain of its layer, so it is counted here once rather
+    than in each chain's `abnormal_bursts`."""
 
 
 def optimize(
