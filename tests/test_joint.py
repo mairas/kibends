@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import scenarios
 from conftest import Ticking
-from distance_fields import Disc, FloatArray, FreeSpace
+from distance_fields import BoolArray, Disc, FloatArray, FreeSpace, Union
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point, Polygon
 
@@ -886,3 +886,61 @@ def test_a_junction_cannot_pass_what_lies_between_it_and_its_best_place(
         assert LineString(first).intersection(LineString(second)).equals(junction)
     enclosed = Polygon(np.concatenate([a[::-1], c[1:]]))
     assert enclosed.contains(Point(5.0, BLOCKER_Y))
+
+
+def alone(polyline: FloatArray, fixed: BoolArray, field: ObstacleField) -> ChainInput:
+    return ChainInput(
+        ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, field
+    )
+
+
+def test_a_detour_in_a_narrow_channel_is_pulled_tight() -> None:
+    # Resampling cuts the pocket's corners, which the guard counts against
+    # every state for a while: the run goes on from where its bursts got,
+    # not from its best state alone.
+    detour = scenarios.detour()
+
+    result = optimize_jointly(
+        [alone(detour.polyline, detour.fixed, detour.field)], detour.params, COARSE
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert length(result.chains[0].polyline) == pytest.approx(
+        scenarios.DETOUR_LENGTH, abs=1e-3
+    )
+
+
+def test_a_detour_past_a_frozen_vertex_is_pulled_tight() -> None:
+    # The first burst starts from the shape the guard's allowance was
+    # measured on; resampled again, it cut a corner the guard never forgave.
+    detour = scenarios.detour()
+    assert isinstance(detour.field, Union)
+    field = Union([*detour.field.shapes, Disc(16.0, 0.0, 0.3)])
+    polyline = np.insert(detour.polyline, 5, [16.0, 0.0], axis=0)
+
+    result = optimize_jointly(
+        [alone(polyline, scenarios.endpoints_fixed(polyline), field)],
+        detour.params,
+        COARSE,
+    )
+
+    (chain,) = result.chains
+    assert len(chain.frozen) == 1
+    assert length(chain.polyline) == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-2)
+
+
+def test_a_rerun_on_its_own_result_settles_in_one_burst() -> None:
+    # Resampling the given shape is not a move of it.
+    wrap = scenarios.wrap(stiffness=0.1)
+    settings = replace(COARSE, spacing=0.25, settled_change=0.0025, burst_maxiter=100)
+    first = optimize_jointly(
+        [alone(wrap.polyline, wrap.fixed, wrap.field)], wrap.params, settings
+    )
+    (chain,) = first.chains
+
+    again = optimize_jointly(
+        [alone(chain.polyline, chain.fixed, wrap.field)], wrap.params, settings
+    )
+
+    assert again.termination is Termination.CONVERGED
+    assert again.iterations == 1

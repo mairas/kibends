@@ -265,8 +265,9 @@ def optimize_jointly(
 
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back but for a section's parts that
-    came too close to each other, or when its best energy improved by less
-    than `stall_tolerance` over `stall_window` bursts, or after
+    came too close to each other, or when the lowest energy its bursts
+    reached fell by less than `stall_tolerance` over `stall_window` bursts,
+    whether or not the guard took them as its best state, or after
     MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
     every problem has. With a time limit in `settings`, the run stops after
     the first burst that ends when `clock` reads the limit or more past
@@ -1105,6 +1106,9 @@ class _Problem:
         self.allowed = self.violations(self.points, self.masks, self.positions)
         self.inside = self.via_distances(self.points, self.positions)
         self.moved = False
+        # The first burst starts from the shapes `allowed` was measured on:
+        # resampled again, they would cut corners deeper still.
+        self.resampled = [True] * count
         if resume is not None:
             self.resume(resume)
         self.energy = self.energy_of(self.points, self.positions)
@@ -1112,7 +1116,7 @@ class _Problem:
         self.best = list(self.points)
         self.best_masks = list(self.masks)
         self.best_positions = list(self.positions)
-        self.best_energies = [self.best_energy]
+        self.lowest = [self.energy]
         self.rejected_edges = [0] * count
         self.too_close = [0] * count
         self.via_rejected = [0] * len(vias)
@@ -1136,6 +1140,10 @@ class _Problem:
         ]
         if self.guard(points, masks, positions):
             self.points, self.masks, self.positions = points, masks, positions
+            self.resampled = [
+                done and given is None
+                for done, given in zip(self.resampled, state.members, strict=True)
+            ]
             self.moved = True
 
     def guard(
@@ -1398,18 +1406,27 @@ class _Problem:
         """One burst of every member and via together; returns its largest
         change of a shape or a via's centre."""
         settings = self.settings
+        # The change counts from the shapes as given, so that resampling the
+        # inputs does not count as moving them.
+        before = [
+            original if resampled else points
+            for original, points, resampled in zip(
+                self.originals, self.points, self.resampled, strict=True
+            )
+        ]
         starts: list[FloatArray] = []
         masks: list[BoolArray] = []
         for i, (points, mask) in enumerate(zip(self.points, self.masks, strict=True)):
-            if i in self.free:
+            if i in self.free and not self.resampled[i]:
                 points, mask = _resample(points, mask, self.loose[i], settings.spacing)
             starts.append(points)
             masks.append(mask)
         self.masks = masks
+        self.resampled = [False] * len(starts)
         burst = self.burst(starts)
         change = max(
             [
-                *(shape_change(self.points[i], burst.polylines[i]) for i in self.free),
+                *(shape_change(before[i], burst.polylines[i]) for i in self.free),
                 *(
                     float(np.linalg.norm(burst.positions[k] - self.positions[k]))
                     for k in self.free_vias
@@ -1432,7 +1449,7 @@ class _Problem:
             self.best, self.best_masks = list(self.points), list(self.masks)
             self.best_positions = list(self.positions)
             self.best_energy = self.energy
-        self.best_energies.append(self.best_energy)
+        self.lowest.append(min(self.lowest[-1], self.energy))
         if burst.abnormal:
             self.abnormal_bursts += 1
             self.abnormal_streak += 1
@@ -1455,7 +1472,7 @@ class _Problem:
             not burst.abnormal
             and (
                 (not cut_short and change < settings.settled_change)
-                or stalled(self.best_energies, settings)
+                or stalled(self.lowest, settings)
             )
         )
         return change
