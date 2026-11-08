@@ -42,6 +42,14 @@ SECOND_SEGMENT = """\t(segment
 \t)
 """
 
+VIAS_BOARD = Path(__file__).parent / "fixtures" / "vias" / "vias.kicad_pcb"
+SIG_VIA = "00000000-0000-0000-0000-0000000000e1"
+"""The SIG via at (10, 10) joining the F.Cu and B.Cu halves of the route."""
+VIA_ROUTE = (
+    ("00000000-0000-0000-0000-000000000011",),
+    ("00000000-0000-0000-0000-000000000012",),
+)
+
 BOARD_WITHOUT_FONTS = """(kicad_pcb
 \t(version 20260206)
 \t(generator "pcbnew")
@@ -51,6 +59,53 @@ BOARD_WITHOUT_FONTS = """(kicad_pcb
 
 def gate_text() -> str:
     return GATE_BOARD.read_text(encoding="utf-8")
+
+
+def vias_text() -> str:
+    return VIAS_BOARD.read_text(encoding="utf-8")
+
+
+# A teardrop where the gate's two segments meet, as KiCad 10 writes one.
+TEARDROP = """\t(zone
+\t\t(net "SIG")
+\t\t(layer "F.Cu")
+\t\t(uuid "00000000-0000-0000-0000-0000000000e1")
+\t\t(hatch none 0.1)
+\t\t(priority 30000)
+\t\t(attr
+\t\t\t(teardrop
+\t\t\t\t(type track_end)
+\t\t\t)
+\t\t)
+\t\t(connect_pads yes
+\t\t\t(clearance 0)
+\t\t)
+\t\t(min_thickness 0.0254)
+\t\t(filled_areas_thickness no)
+\t\t(fill yes
+\t\t\t(thermal_gap 0.5)
+\t\t\t(thermal_bridge_width 0.5)
+\t\t\t(island_removal_mode 1)
+\t\t\t(island_area_min 10)
+\t\t)
+\t\t(polygon
+\t\t\t(pts
+\t\t\t\t(xy 14 9.875) (xy 15 9.6) (xy 15 10.4) (xy 14 10.125)
+\t\t\t)
+\t\t)
+\t\t(filled_polygon
+\t\t\t(layer "F.Cu")
+\t\t\t(pts
+\t\t\t\t(xy 14 9.875) (xy 15 9.6) (xy 15 10.4) (xy 14 10.125)
+\t\t\t)
+\t\t)
+\t)
+"""
+
+
+def with_teardrop(text: str) -> str:
+    fonts = text.index(drc.FONTS_MARKER) + 1
+    return text[:fonts] + TEARDROP + text[fonts:]
 
 
 def tracks(*points: tuple[float, float], net: str = "SIG") -> drc.NewTracks:
@@ -152,6 +207,24 @@ class TestRemoveSegments:
             drc.remove_segments(gate_text(), (pad,))
 
 
+class TestRemoveTeardrops:
+    def test_removes_only_teardrop_zones_byte_for_byte(self) -> None:
+        text = gate_text()
+        assert "(zone" in text
+
+        assert drc.remove_teardrops(with_teardrop(text)) == text
+
+    def test_a_zone_without_an_outline_before_a_teardrop_is_kept(self) -> None:
+        bare = '\t(zone\n\t\t(net "GND")\n\t\t(layer "B.Cu")\n\t)\n'
+        fonts = gate_text().index(drc.FONTS_MARKER) + 1
+        text = gate_text()[:fonts] + bare + gate_text()[fonts:]
+
+        assert drc.remove_teardrops(with_teardrop(text)) == text
+
+    def test_a_board_without_teardrops_is_unchanged(self) -> None:
+        assert drc.remove_teardrops(gate_text()) == gate_text()
+
+
 # ---- injecting the new chain -------------------------------------------------
 
 
@@ -189,6 +262,38 @@ class TestInject:
         text, _ = drc.inject(gate_text(), [tracks((0, 0), (1, 1))])
 
         assert text.rindex("(segment") < text.rindex("(embedded_fonts")
+
+
+# ---- moving vias ---------------------------------------------------------------
+
+
+class TestMoveVias:
+    def test_moves_the_via_under_a_new_uuid_leaving_the_rest(self) -> None:
+        board = vias_text()
+
+        text, (new_id,) = drc.move_vias(
+            board, [drc.MovedVia(SIG_VIA, (10.5, 11.123456))]
+        )
+
+        (moved, fixed) = children(parse_sexpr(text), "via")
+        assert field(moved, "at") == ["10.5", "11.123456"]
+        assert field(moved, "uuid") == [new_id]
+        assert field(fixed, "at") == ["10", "9.4"]
+        assert SIG_VIA not in text and len(new_id) == 36
+        restored = text.replace(new_id, SIG_VIA).replace(
+            "(at 10.5 11.123456)", "(at 10 10)"
+        )
+        assert restored == board
+
+    def test_missing_via_is_an_error_naming_it(self) -> None:
+        with pytest.raises(drc.BoardTextError, match="gone"):
+            drc.move_vias(vias_text(), [drc.MovedVia("gone", (0, 0))])
+
+    def test_uuid_of_a_track_is_no_via(self) -> None:
+        (track,) = VIA_ROUTE[0]
+
+        with pytest.raises(drc.BoardTextError, match=track):
+            drc.move_vias(vias_text(), [drc.MovedVia(track, (0, 0))])
 
 
 # ---- report parsing ----------------------------------------------------------
@@ -606,6 +711,16 @@ violations = [
 out.write_text(json.dumps({"violations": violations, "unconnected_items": []}))
 """
 
+# Reports nothing, keeping a copy of each board it checks next to it.
+COPYING_FAKE_CLI = """
+import json, pathlib, sys
+args = sys.argv[1:]
+pcb = pathlib.Path(args[-1])
+(pathlib.Path(sys.argv[0]).parent / pcb.name).write_text(pcb.read_text())
+out = pathlib.Path(args[args.index("-o") + 1])
+out.write_text(json.dumps({"violations": [], "unconnected_items": []}))
+"""
+
 # Reports a clearance violation on every segment of the net "BAD", naming
 # the net in the segment's description as kicad-cli does.
 NET_FAKE_CLI = """
@@ -622,6 +737,39 @@ violations = [
         "items": [{"description": "Track [BAD]", "pos": {"x": 0, "y": 0}, "uuid": u}],
     }
     for u in bad
+]
+out.write_text(json.dumps({"violations": violations, "unconnected_items": []}))
+"""
+
+
+# Reports a hole-to-hole violation between every SIG via and the GND via at
+# (10, 9.4), as kicad-cli names a via.
+VIA_FAKE_CLI = """
+import json, pathlib, re, sys
+args = sys.argv[1:]
+pcb = pathlib.Path(args[-1])
+out = pathlib.Path(args[args.index("-o") + 1])
+blocks = re.findall(r'\\(via\\s+((?:\\([^()]*\\)\\s*)+)\\)', pcb.read_text())
+sig = [b for b in blocks if '(net "SIG")' in b]
+vias = [
+    (
+        re.search(r'\\(uuid "([^"]+)"\\)', b).group(1),
+        [float(c) for c in re.search(r"\\(at (\\S+) (\\S+)\\)", b).groups()],
+    )
+    for b in sig
+]
+gnd = {"description": "Via [GND]", "pos": {"x": 10, "y": 9.4}, "uuid": "g"}
+violations = [
+    {
+        "type": "hole_to_hole",
+        "description": "h",
+        "severity": "error",
+        "items": [
+            {"description": "Via [SIG]", "pos": {"x": x, "y": y}, "uuid": u},
+            gnd,
+        ],
+    }
+    for u, (x, y) in vias
 ]
 out.write_text(json.dumps({"violations": violations, "unconnected_items": []}))
 """
@@ -665,6 +813,23 @@ class TestCheck:
         assert len(calls) == 2
         assert all(c[:3] == ["pcb", "drc", "--refill-zones"] for c in calls)
         assert not list(files.pro.parent.glob("*.kicad_pcb"))
+
+    def test_checks_both_boards_without_teardrops(self, tmp_path: Path) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", COPYING_FAKE_CLI)
+
+        drc.check(
+            cli,
+            project(tmp_path),
+            with_teardrop(gate_text()),
+            [OLD_CHAIN],
+            [tracks((5, 10), (25, 10))],
+            tmp_path,
+        )
+
+        for stem in ("baseline", "candidate"):
+            checked = (tmp_path / f"{stem}.kicad_pcb").read_text(encoding="utf-8")
+            assert "(teardrop" not in checked
+            assert '(net "GND")' in checked
 
     def test_same_net_candidate_passes(self, tmp_path: Path) -> None:
         cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
@@ -779,6 +944,57 @@ class TestCheck:
         assert result
         assert {n for v in result.violations for n in drc.violation_nets(v)} == {"BAD"}
 
+    def test_moves_vias_in_the_candidate_with_the_tracks(self, tmp_path: Path) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
+
+        drc.check(
+            cli,
+            project(tmp_path),
+            vias_text(),
+            VIA_ROUTE,
+            via_route_to((10, 10.5)),
+            tmp_path,
+            [drc.MovedVia(SIG_VIA, (10, 10.5))],
+        )
+
+        candidate = (tmp_path / "candidate.kicad_pcb").read_text(encoding="utf-8")
+        (moved, _) = children(parse_sexpr(candidate), "via")
+        assert field(moved, "at") == ["10", "10.5"]
+        assert SIG_VIA not in candidate
+
+    def test_a_violation_the_via_had_before_it_moved_is_not_introduced(
+        self, tmp_path: Path
+    ) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", VIA_FAKE_CLI)
+
+        result = drc.check(
+            cli,
+            project(tmp_path),
+            vias_text(),
+            VIA_ROUTE,
+            via_route_to((10, 10.1)),
+            tmp_path,
+            [drc.MovedVia(SIG_VIA, (10, 10.1))],
+        )
+
+        assert not result
+
+    def test_missing_via_fails_before_any_drc_run(self, tmp_path: Path) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
+
+        with pytest.raises(drc.BoardTextError, match="gone"):
+            drc.check(
+                cli,
+                project(tmp_path),
+                vias_text(),
+                VIA_ROUTE,
+                via_route_to((10, 10)),
+                tmp_path,
+                [drc.MovedVia("gone", (10, 10))],
+            )
+
+        assert cli_calls(cli) == []
+
     def test_no_chains_is_an_error(self, tmp_path: Path) -> None:
         cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
 
@@ -786,6 +1002,14 @@ class TestCheck:
             drc.check(cli, project(tmp_path), gate_text(), [], [], tmp_path)
 
         assert cli_calls(cli) == []
+
+
+def via_route_to(at: tuple[float, float]) -> list[drc.NewTracks]:
+    """The vias fixture's SIG route, F.Cu then B.Cu, through a via at `at`."""
+    return [
+        drc.NewTracks(points=((2, 10), at), width=0.25, layer="F.Cu", net="SIG"),
+        drc.NewTracks(points=(at, (18, 10)), width=0.25, layer="B.Cu", net="SIG"),
+    ]
 
 
 def test_kicad_cli_version(tmp_path: Path) -> None:
@@ -850,6 +1074,13 @@ class TestKiCadCli:
     def test_the_same_path_introduces_nothing(self, tmp_path: Path) -> None:
         assert not self.gate(tmp_path, STRAIGHT)
 
+    def test_a_board_with_a_teardrop_loads_and_checks_clean(
+        self, tmp_path: Path
+    ) -> None:
+        board = with_teardrop(gate_text())
+
+        assert not self.gate(tmp_path, STRAIGHT, board_text=board)
+
     def test_a_path_within_the_custom_pad_rule_is_refused(self, tmp_path: Path) -> None:
         result = self.gate(tmp_path, past_the_pad(0.15))
 
@@ -879,3 +1110,48 @@ class TestKiCadCli:
         result = self.gate(tmp_path, past_the_pad(0.14), tight, ids)
 
         assert not result
+
+
+@pytest.mark.slow
+@pytest.mark.kicad_cli
+@pytest.mark.skipif(KICAD_CLI is None, reason="kicad-cli is not installed")
+class TestKiCadCliVias:
+    """The SIG via at (10, 10) on a four-layer board: an OTHER track runs on
+    In1.Cu at y = 12, and a GND via at (10, 9.4) is already too close."""
+
+    def gate(self, tmp_path: Path, at: tuple[float, float]) -> drc.Introduced:
+        assert KICAD_CLI is not None
+        directory = tmp_path / "project"
+        directory.mkdir()
+        pro = directory / "vias.kicad_pro"
+        shutil.copyfile(VIAS_BOARD.with_suffix(".kicad_pro"), pro)
+        return drc.check(
+            KICAD_CLI,
+            drc.ProjectFiles(pro, None),
+            vias_text(),
+            VIA_ROUTE,
+            via_route_to(at),
+            tmp_path,
+            [drc.MovedVia(SIG_VIA, at)],
+        )
+
+    def test_a_via_kept_in_place_introduces_nothing(self, tmp_path: Path) -> None:
+        assert not self.gate(tmp_path, (10, 10))
+
+    def test_a_via_moved_too_near_an_inner_layer_track_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        # Ring 0.3 + clearance 0.127 + half width 0.125 needs 0.552 mm.
+        result = self.gate(tmp_path, (10, 11.5))
+
+        assert [v.type for v in result.violations] == ["clearance"]
+        (v,) = result.violations
+        assert any(
+            i.description == "Track [OTHER] on In1.Cu, length 16.0000 mm"
+            for i in v.items
+        )
+
+    def test_a_clearance_the_via_had_before_it_moved_is_not_introduced(
+        self, tmp_path: Path
+    ) -> None:
+        assert not self.gate(tmp_path, (10, 10.02))
