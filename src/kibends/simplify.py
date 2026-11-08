@@ -49,11 +49,15 @@ def simplify_chains(
     """Simplify the optimised chains of `run`, in the order of `chains`, each
     against its field and the other chains on its layer at their latest shapes.
 
+    Since the pairwise clearance is symmetric, every merged edge keeps
+    clear of the final neighbours; a chain whose merged edges do not is
+    logged as an error and left as optimised.
+
     Neighbours of one net are trimmed near shared ends by the reach of
-    `params`, as the optimizer trims them. Since the pairwise clearance is
-    symmetric, every merged edge then keeps clear of the final neighbours;
-    a chain whose merged edges do not is logged as an error and left as
-    optimised.
+    `params`, measured against each chain's starting polyline, where the
+    optimizer measures against the chain's current one. That is deliberate:
+    trimming against the optimised polyline left more segments at acute
+    junctions when tried (https://github.com/mairas/kibends/issues/17).
     """
     if len(run.chains) != len(chains):
         raise ValueError(
