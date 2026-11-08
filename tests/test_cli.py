@@ -15,6 +15,7 @@ from typing import NoReturn, cast
 import kipy.board_types as kbt
 import numpy as np
 import pytest
+import scenarios
 import shapely
 from conftest import (
     PAD_HALF_SIZE,
@@ -39,17 +40,15 @@ from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, box
 from shapely.ops import linemerge, unary_union
 
-import kibends.optimize as optimize_module
 from kibends import cli, drc, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
-    Crossings,
     OptimizerSettings,
 )
 from kibends.coords import BOARD_FRAME, UserFrame
-from kibends.energy import BoolArray, EnergyParams, FloatArray, IntArray
+from kibends.energy import EnergyParams, FloatArray
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import (
@@ -2819,24 +2818,11 @@ def bus_board(margin: float = BUS_MARGIN) -> CommitBoard:
     )
 
 
-@pytest.mark.parametrize(
-    ("margin", "settings"),
-    [
-        (BUS_MARGIN, COARSE),
-        (0.02, COARSE),
-        # Slow: the default spacing takes about 9 s on this layout.
-        pytest.param(BUS_MARGIN, DEFAULT_SETTINGS, marks=pytest.mark.slow),
-    ],
-    ids=["coarse", "coarse-margin", "default"],
-)
+@pytest.mark.usefixtures("coarse_optimizer")
+@pytest.mark.parametrize("margin", [BUS_MARGIN, 0.02], ids=["at", "beyond"])
 def test_two_pairs_at_clearance_both_smooth_and_simplify(
-    connect: Connector,
-    monkeypatch: pytest.MonkeyPatch,
-    log: list[str],
-    margin: float,
-    settings: OptimizerSettings,
+    connect: Connector, log: list[str], margin: float
 ) -> None:
-    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
     board = connect.to(bus_board(margin))
 
     run("--no-drc")
@@ -3094,18 +3080,14 @@ PAIRED_BOARDS: dict[str, Callable[[], CommitBoard]] = {
 @pytest.mark.parametrize(
     ("layout", "settings"),
     [
-        *((name, COARSE) for name in PAIRED_BOARDS),
+        *(pytest.param(name, COARSE, id=f"{name}-coarse") for name in PAIRED_BOARDS),
+        # The bus at the default spacing takes about 9 s; the coarse bus
+        # and the other layouts at the default spacing cover it.
         *(
-            (name, DEFAULT_SETTINGS)
-            if name != "bus"
-            # Slow: the bus takes about 9 s at the default spacing.
-            else pytest.param(name, DEFAULT_SETTINGS, marks=pytest.mark.slow)
+            pytest.param(name, DEFAULT_SETTINGS, id=f"{name}-default")
             for name in PAIRED_BOARDS
+            if name != "bus"
         ),
-    ],
-    ids=[
-        *(f"{n}-coarse" for n in PAIRED_BOARDS),
-        *(f"{n}-default" for n in PAIRED_BOARDS),
     ],
 )
 def test_coupled_tracks_commit_segment_for_segment_in_parallel(
@@ -3191,19 +3173,13 @@ def test_a_pair_whose_tracks_cross_is_not_committed(
     assert board.calls == []
 
 
-V_LEG = 5.0
-"""mm of the leg the pair turns back along."""
 V_REPULSION = "0.5"
 
 
 def v_board(turn: float) -> CommitBoard:
     """Pair USB_D+/USB_D- turning back by `turn` degrees, with a GND pad
     inside the V halfway along its legs."""
-    apex = np.array([4.0, 0.0])
-    angle = math.radians(turn)
-    back = np.array([math.cos(angle), math.sin(angle)])
-    centre = np.array([(0.0, 0.0), tuple(apex), tuple(apex + V_LEG * back)])
-    pad = apex + V_LEG / 2 * (np.array([-1.0, 0.0]) + back) / 2
+    centre, pad = scenarios.turning_back(turn)
     tracks = [
         kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
         for net, track in zip(
@@ -3215,16 +3191,19 @@ def v_board(turn: float) -> CommitBoard:
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
-        pads=[kipy_pad("pad", "GND", float(pad[0]), float(pad[1]))],
+        pads=[kipy_pad("pad", "GND", *pad)],
         netclasses={"USB_D+": usb, "USB_D-": usb},
     )
 
 
-@pytest.mark.slow
 def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
-    connect: Connector, capsys: pytest.CaptureFixture[str]
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Slow: only the default spacing collapsed the V, in about 4 s.
+    # Simplification and the gap check on a pair whose legs face each other,
+    # end to end; test_optimize_pairs covers the optimizer.
+    monkeypatch.setattr(pipeline, "optimize_chains", at(scenarios.TURNING_BACK))
     board = connect.to(v_board(150.0))
 
     run("--no-drc", f"--repulsion={V_REPULSION}")
@@ -3233,63 +3212,6 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     assert gap_after == f"{PAIR_GAP:.3f}-{PAIR_GAP:.3f}"
     p, n = (unary_union(lines) for lines in by_net(board).values())
     assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
-
-
-@pytest.mark.slow
-def test_a_pair_left_closer_than_it_keeps_is_not_committed(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-) -> None:
-    # Slow: without its self-clearance the V collapses only at the default
-    # spacing, in about 13 s.
-    def unchecked(points: FloatArray, apart: float) -> tuple[IntArray, FloatArray]:
-        return np.empty((0, 2), dtype=np.intp), np.empty(0)
-
-    monkeypatch.setattr(optimize_module, "close_to_itself", unchecked)
-    board = connect.to(v_board(170.0))
-
-    message = exit_message(log, "--no-drc", f"--repulsion={V_REPULSION}")
-
-    assert "USB_D+ and USB_D-" in message and "come within" in message
-    assert board.calls == []
-
-
-@pytest.mark.slow
-def test_a_pair_turning_back_closely_is_left_as_routed(
-    connect: Connector, log: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Slow: about 13 s at the default spacing, where its legs drew together.
-    real: Callable[..., tuple[BoolArray, int]] = optimize_module.revert_until_clear
-    fallbacks: list[int] = []
-
-    def watched(
-        candidate: FloatArray, start: FloatArray, crossings: Crossings
-    ) -> tuple[BoolArray, int]:
-        moved_back = np.zeros(len(candidate), dtype=bool)
-
-        def watching(points: FloatArray) -> tuple[int, BoolArray]:
-            count, back = crossings(points)
-            if count and not (back & ~moved_back).any():
-                fallbacks.append(count)
-            moved_back[:] |= back
-            return count, back
-
-        return real(candidate, start, watching)
-
-    monkeypatch.setattr(optimize_module, "revert_until_clear", watched)
-    board = connect.to(v_board(170.0))
-
-    with contextlib.suppress(SystemExit):
-        run("--no-drc", f"--repulsion={V_REPULSION}")
-
-    # Every pair that comes too close is clear again once moved back, so
-    # no burst is undone whole.
-    assert fallbacks == []
-
-    assert board.calls == []
-    assert any(
-        "USB_D+" in line and ("come within" in line or "as they are" in line)
-        for line in log
-    )
 
 
 SPIRAL_GAP = 0.1
@@ -3449,14 +3371,7 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
     gap: float,
     clearance: float,
 ) -> None:
-    angle = math.radians(turn)
-    centre = np.array(
-        [
-            (0.0, 0.0),
-            (4.0, 0.0),
-            (4.0 + V_LEG * math.cos(angle), V_LEG * math.sin(angle)),
-        ]
-    )
+    centre, _ = scenarios.turning_back(turn)
     p, n = offset_pair(centre, gap, width)
     tracks = [
         kipy_track(f"{net}{k}", net, start, end, width=width)
