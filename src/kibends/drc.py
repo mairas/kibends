@@ -3,7 +3,8 @@
 kicad-cli checks the board's own rules, which KiCad's API does not expose:
 custom rules, board minimums, edge and hole clearances. It runs twice on
 copies in a scratch directory: once on the board as it is, once with the old
-chains removed and the new tracks added, and the reports are compared.
+chains removed, the new tracks added and the moved vias in their new places,
+and the reports are compared.
 
 `locate_kicad_cli`, `kicad_cli_version`, `project_files`, the DRC run,
 `parse_report`, `violation_nets`, `rising_connectivity_nets` and `inject`
@@ -64,7 +65,13 @@ NET_TAG = re.compile(r"\[(.*)\]")
 UNNAMED_NET = "(unnamed)"
 
 SEGMENT_OPEN = "\n\t(segment"
+VIA_OPEN = "\n\t(via"
+ZONE_OPEN = "\n\t(zone"
+# A zone's outline follows its attributes; a teardrop says so before it.
+ZONE_OUTLINE = "(polygon"
+TEARDROP_ATTR = re.compile(r"\(attr\s*\(teardrop\b")
 UUID_TAG = re.compile(r'\(uuid "([^"]*)"\)')
+AT_TAG = re.compile(r"\(at [^)]*\)")
 FONTS_MARKER = "\n\t(embedded_fonts"
 DRC_TIMEOUT_S = 900
 VERSION_TIMEOUT_S = 30
@@ -196,38 +203,101 @@ class NewTracks:
     net: str
 
 
+@dataclass(frozen=True)
+class MovedVia:
+    id: str
+    """The via's uuid on the board."""
+    position: Point2
+    """Where it moves to, mm."""
+
+
 def remove_segments(board_text: str, ids: Collection[str]) -> str:
     """Board text without the segments whose uuids are `ids`.
 
     Everything else is left byte for byte, so that DRC sees no other change.
     Each id is looked up at its first uuid tag, all in one pass over the text.
     """
+    spans = _item_spans(board_text, ids, SEGMENT_OPEN, "Tracks")
+    return _replaced(board_text, {span: "" for span in spans.values()})
+
+
+def remove_teardrops(board_text: str) -> str:
+    """Board text without its teardrop zones.
+
+    KiCad reapplies teardrops on its next refill, so a stale one left at a
+    track's or via's old place would only add or hide violations. Only each
+    zone's attributes, ahead of its outline, are read, as a plane's fill
+    may be megabytes long.
+    """
+    spans: dict[tuple[int, int], str] = {}
+    at = board_text.find(ZONE_OPEN)
+    while at >= 0:
+        start = at + 1
+        following = board_text.find(ZONE_OPEN, start)
+        # A zone without an outline ends before the next one opens.
+        outline = board_text.find(ZONE_OUTLINE, start)
+        bounds = [i for i in (outline, following) if i >= 0]
+        header = board_text[start : min(bounds, default=len(board_text))]
+        if TEARDROP_ATTR.search(header):
+            end = _after_closing_paren(board_text, start)
+            spans[start, end + 1 if board_text.startswith("\n", end) else end] = ""
+        at = following
+    return _replaced(board_text, spans)
+
+
+def move_vias(board_text: str, vias: Sequence[MovedVia]) -> tuple[str, tuple[str, ...]]:
+    """Board text with each via of `vias` removed and added again at its new
+    position under a new uuid, and the new uuids in the same order.
+
+    The moved via keeps every other attribute of its block, and it takes the
+    old block's place, so the rest of the text is left byte for byte.
+    """
+    spans = _item_spans(board_text, [v.id for v in vias], VIA_OPEN, "Vias")
+    new_ids = tuple(str(uuid.uuid4()) for _ in vias)
+    blocks: dict[tuple[int, int], str] = {}
+    for via, new_id in zip(vias, new_ids, strict=True):
+        start, end = spans[via.id]
+        x, y = via.position
+        block = AT_TAG.sub(f"(at {_num(x)} {_num(y)})", board_text[start:end], 1)
+        blocks[start, end] = block.replace(f'(uuid "{via.id}")', f'(uuid "{new_id}")')
+    return _replaced(board_text, blocks), new_ids
+
+
+def _item_spans(
+    text: str, ids: Collection[str], opener: str, kind: str
+) -> dict[str, tuple[int, int]]:
+    """Each id's top-level item opened by `opener`, found at the id's first
+    uuid tag in one pass over the text; raise naming the ids not found."""
     wanted = set(ids)
     found: dict[str, tuple[int, int] | None] = {}
-    for m in UUID_TAG.finditer(board_text):
+    for m in UUID_TAG.finditer(text):
         i = m.group(1)
         if i in wanted and i not in found:
-            found[i] = _segment_span(board_text, m.start())
-    spans = sorted({span for span in found.values() if span is not None})
+            found[i] = _item_span(text, m.start(), opener)
     missing = [i for i in ids if found.get(i) is None]
     if missing:
         raise BoardTextError(
-            f"Tracks not found in the board text: {', '.join(missing)}; "
-            "select the chain again and rerun"
+            f"{kind} not found in the board text: {', '.join(missing)}; "
+            "select them again and rerun"
         )
+    return {i: span for i, span in found.items() if span is not None}
+
+
+def _replaced(text: str, spans: Mapping[tuple[int, int], str]) -> str:
+    """`text` with each of the disjoint `spans` replaced by its new text."""
     pieces: list[str] = []
     kept_from = 0
-    for start, end in spans:
-        pieces.append(board_text[kept_from:start])
+    for (start, end), new in sorted(spans.items()):
+        pieces += [text[kept_from:start], new]
         kept_from = end
-    pieces.append(board_text[kept_from:])
+    pieces.append(text[kept_from:])
     return "".join(pieces)
 
 
-def _segment_span(text: str, at: int) -> tuple[int, int] | None:
-    """Start and end of the top-level segment whose uuid tag is at `at`, with
-    its newline."""
-    opening = text.rfind(SEGMENT_OPEN, 0, at)
+def _item_span(text: str, at: int, opener: str) -> tuple[int, int] | None:
+    """Start and end of the top-level item opened by `opener` whose uuid tag
+    is at `at`, with its newline."""
+    opening = text.rfind(opener, 0, at)
     if opening < 0:
         return None
     start = opening + 1
@@ -510,14 +580,18 @@ def check(
     removed_ids: Sequence[Collection[str]],
     tracks: Sequence[NewTracks],
     workdir: Path,
+    vias: Sequence[MovedVia] = (),
 ) -> Introduced:
     """Violations that replacing each chain's `removed_ids` with its `tracks`
-    would add; the two sequences are in the same chain order.
+    and moving `vias` would add; the first two are in the same chain order.
 
-    Every chain goes into one candidate board, so the check is two kicad-cli
-    runs however many chains there are. The candidate text is built first,
-    so a missing track fails before any DRC run. An empty `tracks` raises
-    ValueError: it would check a board with the chains only removed.
+    Every chain and via goes into one candidate board, so the check is two
+    kicad-cli runs however many there are. A moved via counts as one more
+    chain, so a violation it already had where it was is not new. The
+    candidate text is built first, so a missing track or via fails before
+    any DRC run. Neither board holds teardrops (`remove_teardrops`). An
+    empty `tracks` raises ValueError: it would check a board with the chains
+    only removed.
     """
     if not tracks:
         raise ValueError("No chains to check")
@@ -525,13 +599,20 @@ def check(
         raise ValueError(
             f"{len(removed_ids)} groups of removed tracks for {len(tracks)} chains"
         )
+    board_text = remove_teardrops(board_text)
     candidate_text = remove_segments(
         board_text, [i for ids in removed_ids for i in ids]
     )
     candidate_text, new_ids = inject(candidate_text, tracks)
+    candidate_text, new_via_ids = move_vias(candidate_text, vias)
     baseline = _timed_run(kicad_cli, project, workdir, "baseline", board_text)
     candidate = _timed_run(kicad_cli, project, workdir, "candidate", candidate_text)
-    return introduced(baseline, candidate, removed_ids, new_ids)
+    return introduced(
+        baseline,
+        candidate,
+        [*removed_ids, *((v.id,) for v in vias)],
+        [*new_ids, *((i,) for i in new_via_ids)],
+    )
 
 
 def _timed_run(

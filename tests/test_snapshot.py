@@ -18,6 +18,7 @@ from conftest import (
     kipy_board_arc,
     kipy_circle,
     kipy_field,
+    kipy_filled_zone,
     kipy_footprint,
     kipy_pad,
     kipy_rect,
@@ -33,17 +34,22 @@ from conftest import (
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import PadType
+from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
+from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
 from kibends.snapshot import (
     BoardSnapshot,
+    Disc,
     LayerSnapshot,
     PadKind,
     SelectionError,
+    Via,
+    ViaContact,
+    ViaKind,
     arc_points,
     edge_paths_closed,
     outline_from_edge_paths,
@@ -70,7 +76,7 @@ class TestReadSelection:
             ]
         )
 
-        segments = read_selection(board(fake))
+        segments = read_selection(board(fake)).segments
 
         assert segments == [
             Segment(
@@ -97,25 +103,66 @@ class TestReadSelection:
             selection=[kipy_track("a", "SIG", (0, 0), (1, 0), layer=BL.BL_In1_Cu)]
         )
 
-        assert read_selection(board(fake))[0].layer == "In1.Cu"
+        assert read_selection(board(fake)).segments[0].layer == "In1.Cu"
 
     def test_other_selected_items_are_ignored_with_a_warning(
         self, log: list[str]
     ) -> None:
         fake = FakeBoard(
             selection=[
-                kipy_via("v", "SIG", 0, 0),
-                kipy_track("a", "SIG", (0, 0), (1, 0)),
                 kipy_footprint("fp"),
+                kipy_track("a", "SIG", (0, 0), (1, 0)),
+                kipy_footprint("fp2"),
             ]
         )
 
-        segments = read_selection(board(fake))
+        selection = read_selection(board(fake))
 
-        assert [s.id for s in segments] == ["a"]
+        assert [s.id for s in selection.segments] == ["a"]
+        assert selection.vias == ()
         warnings = [line for line in log if line.startswith("WARNING")]
         assert len(warnings) == 1
-        assert "Via" in warnings[0] and "FootprintInstance" in warnings[0]
+        assert "2 FootprintInstance" in warnings[0]
+
+    def test_selected_vias_are_kept_with_type_span_and_lock(
+        self, log: list[str]
+    ) -> None:
+        fake = FakeBoard(
+            selection=[
+                kipy_via("v", "SIG", 1, 2, diameter=0.5, drill=0.25),
+                kipy_track("a", "SIG", (0, 0), (1, 0)),
+                kipy_via(
+                    "w",
+                    "SIG",
+                    3,
+                    0,
+                    locked=True,
+                    via_type=ViaType.VT_BLIND,
+                    span=(BL.BL_F_Cu, BL.BL_In2_Cu),
+                ),
+            ]
+        )
+
+        selection = read_selection(board(fake))
+
+        assert plain(selection.vias) == plain(
+            (
+                Via(
+                    "v", "SIG", (1.0, 2.0), 0.5, 0.25, ViaKind.THROUGH, ("F.Cu", "B.Cu")
+                ),
+                Via(
+                    "w",
+                    "SIG",
+                    (3.0, 0.0),
+                    0.6,
+                    0.3,
+                    ViaKind.BLIND,
+                    ("F.Cu", "In2.Cu"),
+                    locked=True,
+                ),
+            )
+        )
+        assert not [line for line in log if line.startswith("WARNING")]
 
     def test_arc_track_is_an_error_naming_it(self) -> None:
         fake = FakeBoard(
@@ -639,11 +686,173 @@ class TestBoardSnapshot:
         assert [(p.id, p.shape) for p in inner.pads] == [("p", None)]
         assert inner.clearance("SIG") == pytest.approx(0.2)
 
+    def test_a_via_is_on_the_layers_its_drill_spans(self) -> None:
+        fake = FakeBoard(
+            vias=[
+                kipy_via("through", "SIG", 0, 0),
+                kipy_via(
+                    "blind",
+                    "SIG",
+                    1,
+                    0,
+                    via_type=ViaType.VT_BLIND,
+                    span=(BL.BL_F_Cu, BL.BL_In1_Cu),
+                ),
+                kipy_via(
+                    "buried",
+                    "SIG",
+                    2,
+                    0,
+                    via_type=ViaType.VT_BURIED,
+                    span=(BL.BL_In2_Cu, BL.BL_In1_Cu),
+                ),
+            ]
+        )
+        layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+
+        snap = BoardSnapshot.read(board(fake), layers)
+
+        assert {
+            layer: [v.id for v in snap.slice(layer, ()).vias] for layer in layers
+        } == {
+            "F.Cu": ["through", "blind"],
+            "In1.Cu": ["through", "blind", "buried"],
+            "In2.Cu": ["through", "buried"],
+            "B.Cu": ["through"],
+        }
+
+    @pytest.mark.parametrize(
+        "span",
+        [
+            (BL.BL_UNKNOWN, BL.BL_UNKNOWN),
+            (BL.BL_F_Cu, BL.BL_UNKNOWN),
+            (BL.BL_UNKNOWN, BL.BL_In1_Cu),
+        ],
+    )
+    def test_a_via_with_an_unknown_drill_layer_spans_the_board(
+        self, span: tuple[BL.ValueType, BL.ValueType]
+    ) -> None:
+        fake = FakeBoard(vias=[kipy_via("v", "SIG", 0, 0, span=span)])
+        layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+
+        snap = BoardSnapshot.read(board(fake), layers)
+
+        assert snap.vias[0].span == ("F.Cu", "B.Cu")
+        assert all(snap.slice(layer, ()).vias for layer in layers)
+
     def test_slicing_a_layer_not_read_is_an_error(self) -> None:
         snap = BoardSnapshot.read(board(FakeBoard()), ["F.Cu"])
 
         with pytest.raises(ValueError, match=r"B\.Cu"):
             snap.slice("B.Cu", frozenset())
+
+
+class TestViaContacts:
+    VIA = (5.0, 5.0)
+
+    def contact_board(self) -> FakeBoard:
+        x, y = self.VIA
+        return FakeBoard(
+            selection=[
+                kipy_via("v", "SIG", x, y),
+                kipy_track("front", "SIG", (0, y), self.VIA),
+            ],
+            vias=[
+                kipy_via("v", "SIG", x, y),
+                kipy_via("w", "SIG", x + 0.5, y),
+                kipy_via("far", "SIG", x + 2, y),
+                kipy_via("other", "GND", x, y + 0.5),
+            ],
+            tracks=[
+                kipy_track("front", "SIG", (0, y), self.VIA),
+                kipy_track("inner", "SIG", self.VIA, (x, 9), layer=BL.BL_In1_Cu),
+                kipy_track("far", "SIG", (0, 0), (1, 0)),
+                kipy_track("gnd", "GND", (x, 0), (x, 10)),
+            ],
+            pads=[
+                kipy_pad("back", "SIG", x, y + 0.4, layers=(BL.BL_B_Cu,)),
+                kipy_pad("gnd", "GND", x, y),
+            ],
+            shapes=[kipy_segment(self.VIA, (7, y), BL.BL_B_Cu, net="SIG")],
+            zones=[
+                kipy_filled_zone("fill", "SIG", {BL.BL_In2_Cu: kipy_rect(4, 4, 6, 6)}),
+                kipy_filled_zone("away", "SIG", {BL.BL_In3_Cu: kipy_rect(0, 0, 1, 1)}),
+                kipy_filled_zone("gnd", "GND", {BL.BL_F_Cu: kipy_rect(4, 4, 6, 6)}),
+                kipy_filled_zone(
+                    "drop",
+                    "SIG",
+                    {BL.BL_F_Cu: kipy_rect(4, 4, 6, 6)},
+                    ZoneType.ZT_TEARDROP,
+                ),
+            ],
+        )
+
+    def test_same_net_copper_touching_on_any_layer(self) -> None:
+        fake = self.contact_board()
+        (via,) = read_selection(board(fake)).vias
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via])
+
+        assert snap.via_contacts == {
+            "v": (
+                ViaContact("copper shape shape on B.Cu"),
+                ViaContact("pad back"),
+                ViaContact("track front on F.Cu", "front"),
+                ViaContact("track inner on In1.Cu", "inner"),
+                ViaContact("via w"),
+                ViaContact("zone fill on In2.Cu"),
+            )
+        }
+
+    def test_copper_touching_what_a_via_carries_counts(self) -> None:
+        fake = self.contact_board()
+        (via,) = read_selection(board(fake)).vias
+        # Clear of the via, 0.1 mm from the far track and the far fill.
+        end = Disc((1.1, 0.0), 0.2)
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via], carried={"v": [end]})
+
+        assert {
+            ViaContact("track far on F.Cu", "far"),
+            ViaContact("zone away on In3.Cu"),
+        } <= set(snap.via_contacts["v"])
+
+    def test_pads_on_layers_not_read_cost_one_read_per_layer(self) -> None:
+        fake = self.contact_board()
+        (via,) = read_selection(board(fake)).vias
+
+        BoardSnapshot.read(board(fake), ["F.Cu"], [via])
+
+        assert fake.reads["get_pad_shapes_as_polygons"] == 2
+
+    @pytest.mark.parametrize(
+        ("layers", "shape_reads", "layer_reads"),
+        [(["F.Cu"], 2, 1), (["F.Cu", "B.Cu"], 2, 1)],
+    )
+    def test_pad_layers_the_board_lacks_are_not_read(
+        self, layers: list[str], shape_reads: int, layer_reads: int
+    ) -> None:
+        via = kipy_via("v", "SIG", *self.VIA)
+        pth = kipy_pad("pth", "SIG", 0, 0, layers=list(iter_copper_layers()))
+        fake = FakeBoard(
+            selection=[via, kipy_track("t", "SIG", (0, 0), self.VIA)],
+            vias=[via],
+            pads=[pth],
+        )
+        (selected,) = read_selection(board(fake)).vias
+
+        BoardSnapshot.read(board(fake), layers, [selected])
+
+        assert fake.reads["get_pad_shapes_as_polygons"] == shape_reads
+        assert fake.reads["get_enabled_layers"] == layer_reads
+
+    def test_no_selected_via_reads_nothing_more(self) -> None:
+        fake = self.contact_board()
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"])
+
+        assert snap.via_contacts == {}
+        assert fake.reads["get_pad_shapes_as_polygons"] == 1
 
 
 class TestGeometryHelpers:

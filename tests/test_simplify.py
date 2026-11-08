@@ -15,15 +15,10 @@ from scenarios import (
 )
 from shapely.geometry import LineString
 
+from kibends.bursts import OptimizerSettings
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.optimize import (
-    OptimizerSettings,
-    RunResult,
-    measure,
-    optimize,
-    optimize_chains,
-)
+from kibends.optimize import RunResult, measure, optimize, optimize_chains
 from kibends.simplify import (
     DEFAULT_CHORD_TOLERANCE,
     cutting_chains,

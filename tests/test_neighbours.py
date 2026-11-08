@@ -84,3 +84,25 @@ def test_a_neighbour_touched_twice_is_kept_around_both_touches() -> None:
     assert math.dist(middle[0], tips[0]) == pytest.approx(CLEAR)
     assert math.dist(middle[-1], tips[1]) == pytest.approx(CLEAR)
     assert math.dist(last[0], tips[1]) == pytest.approx(CLEAR)
+
+
+def test_a_junction_carried_away_is_found_at_the_chains_ends() -> None:
+    # Both chains end at a via that started at (1, 0.2) and moved to
+    # (5, 3); the first chain now runs up past where the junction was and
+    # across to it, so one of its middle vertices is nearer that spot than
+    # its end, and leaves it in another direction.
+    junction = np.array([5.0, 3.0])
+    own = chain("own", (1.0, 0.0), (1.0, 0.2))
+    other = chain("other", (1.0, 0.2), (10.0, 0.0))
+    own_now = np.concatenate(
+        [
+            np.linspace((1.0, 0.0), (1.0, 3.0), 7)[:-1],
+            np.linspace((1.0, 3.0), junction, 9),
+        ]
+    )
+    other_now = np.linspace(junction, (10.0, 0.0), 11)
+
+    parts = neighbour_centrelines(own, other, other_now, REACH, own_now)
+
+    kept = np.concatenate([part.points for part in parts])
+    assert np.linalg.norm(kept - junction, axis=1).min() >= CLEAR - 1e-9

@@ -177,6 +177,17 @@ class TestObstacleSet:
         (hole,) = obstacles.items
         assert hole.geometry.equals(Point(5, 5))
 
+    def test_an_unplated_hole_of_its_own_net_is_an_obstacle(self) -> None:
+        fake = FakeBoard(
+            pads=[
+                kipy_pad("np", NET, 5, 5, layers=(), pad_type=PadType.PT_NPTH, drill=1)
+            ]
+        )
+
+        assert by_description(obstacles_of(fake)) == {
+            "hole of pad np": pytest.approx(0.5 + HOLE_CLEARANCE + HALF)
+        }
+
     def test_other_net_tracks_and_vias_but_not_same_net_ones(self) -> None:
         fake = FakeBoard(
             tracks=[

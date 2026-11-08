@@ -133,31 +133,36 @@ def total_energy(
     bound as an edge shrinks, so free vertices never pile up. It is 0 with
     zero slope at s, so it leaves longer edges alone.
     """
-    falloff = _falloff(params.falloff_range)
-    hinge = _hinge(params.standoff)
-
-    def obstacle_integrand(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
-        falloff_value, falloff_slope = falloff(distance)
-        hinge_value, hinge_slope = hinge(distance)
-        return (
-            params.repulsion * falloff_value + params.clearance_weight * hinge_value,
-            params.repulsion * falloff_slope + params.clearance_weight * hinge_slope,
-        )
-
     length_value, length_gradient = _length(points, fixed, short_edge)
     bending_value, bending_gradient = _bending(points)
-    # Both integrands are exactly zero beyond this, so farther copper need
-    # not be looked up.
-    reach = max(params.standoff, params.falloff_range if params.repulsion else 0.0)
-    obstacle_value, obstacle_gradient = _edge_integral(
-        points, field, obstacle_integrand, params.points_per_edge, reach
-    )
+    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
     bending_weight = params.stiffness**2
     value = length_value + bending_weight * bending_value + obstacle_value
     gradient = length_gradient + bending_weight * bending_gradient + obstacle_gradient
     if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
         raise ValueError(f"energy is not finite: {value}")
     return value, _zero_fixed(gradient, fixed)
+
+
+def point_energy(
+    point: FloatArray, field: DistanceField, params: EnergyParams, length: float
+) -> TermValue:
+    """The obstacle terms of `total_energy` for copper at `point` that stands
+    for `length` mm of track, and their gradient (2,) at `point`."""
+    reach = obstacle_reach(params)
+    distance, direction = field.signed_distance(point[None], reach=reach)
+    value, slope = obstacle_integrand(params)(distance)
+    return length * float(value[0]), length * slope[0] * direction[0]
+
+
+def obstacle_energy(
+    points: FloatArray, field: DistanceField, params: EnergyParams
+) -> TermValue:
+    """The obstacle terms of `total_energy` alone, with the gradient of every
+    vertex, fixed ones included."""
+    integrand = obstacle_integrand(params)
+    reach = obstacle_reach(params)
+    return _edge_integral(points, field, integrand, params.points_per_edge, reach)
 
 
 def free_vertex_objective(
@@ -181,6 +186,28 @@ def free_vertex_objective(
         return value, gradient[free].ravel()
 
     return objective
+
+
+def obstacle_integrand(params: EnergyParams) -> Integrand:
+    """Repulsion plus clearance, weighted, and its slope, at given distances."""
+    falloff = _falloff(params.falloff_range)
+    hinge = _hinge(params.standoff)
+
+    def obstacle(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
+        falloff_value, falloff_slope = falloff(distance)
+        hinge_value, hinge_slope = hinge(distance)
+        return (
+            params.repulsion * falloff_value + params.clearance_weight * hinge_value,
+            params.repulsion * falloff_slope + params.clearance_weight * hinge_slope,
+        )
+
+    return obstacle
+
+
+def obstacle_reach(params: EnergyParams) -> float:
+    """Distance from an obstacle beyond which both obstacle terms of the
+    energy are zero, mm, so farther copper need not be looked up."""
+    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
 
 
 def _zero_fixed(gradient: FloatArray, fixed: BoolArray) -> FloatArray:

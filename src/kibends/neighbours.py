@@ -16,7 +16,6 @@ import numpy as np
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
-    EnergyParams,
     FloatArray,
     ObstacleField,
     arc_lengths,
@@ -42,12 +41,6 @@ class ChainInput:
     """Obstacles for its net and width, without any selected chain."""
 
 
-def obstacle_reach(params: EnergyParams) -> float:
-    """Distance from an obstacle beyond which both obstacle terms of the
-    energy are zero, mm."""
-    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
-
-
 def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
     """For each chain, the indices of the other chains on its layer."""
     return [
@@ -71,15 +64,29 @@ def neighbour_fields(
     others: Iterable[int],
     polylines: Sequence[FloatArray],
     reach: float,
+    own_points: FloatArray | None = None,
 ) -> list[ObstacleField]:
-    """The chains `others`, at `polylines`, as obstacles to chain i at its
-    starting polyline; those left out entirely are dropped."""
+    """The chains `others`, at `polylines`, as obstacles to chain i at
+    `own_points`, by default its starting polyline; those left out entirely
+    are dropped."""
     return [
         field
         for j in others
-        if (field := neighbour_field(chains[i], chains[j], polylines[j], reach))
+        if (
+            field := neighbour_field(
+                chains[i], chains[j], polylines[j], reach, own_points
+            )
+        )
         is not None
     ]
+
+
+def with_moved_ends(start: FloatArray, current: FloatArray) -> FloatArray:
+    """`start` with its ends where `current` has them, which differ only
+    where a moving via carried them."""
+    moved = start.copy()
+    moved[0], moved[-1] = current[0], current[-1]
+    return moved
 
 
 def neighbour_field(
@@ -126,8 +133,8 @@ def neighbour_centrelines(
     arc = arc_lengths(points)
     left_out: list[tuple[float, float]] = []
     for at_own, at_other in touches:
-        own_pin = _vertex_at(mine, at_own)
-        other_pin = _vertex_at(points, at_other)
+        own_pin = _vertex_at(me.points, mine, at_own)
+        other_pin = _vertex_at(them.points, points, at_other)
         own_headings = [heading for _, heading in _departures(mine, own_pin, clear)]
         offset: FloatArray = points[other_pin] - mine[own_pin]
         along = float(arc[other_pin])
@@ -152,9 +159,18 @@ def _touches(own: ChainInput, other: ChainInput) -> list[tuple[FloatArray, Float
     return [(mine[a], theirs[b]) for a, b in zip(i, j, strict=True)]
 
 
-def _vertex_at(points: FloatArray, point: FloatArray) -> int:
-    """The vertex nearest `point`; a pinned point stays a vertex throughout."""
-    return int(np.argmin(np.sum((points - point) ** 2, axis=1)))
+def _vertex_at(original: FloatArray, points: FloatArray, pin: FloatArray) -> int:
+    """The vertex of `points` at `pin`, a pinned point of the polyline that
+    started as `original`.
+
+    A pinned point stays a vertex throughout, and stays put, except an end
+    that a moving via carries away: the ends are found by being ends.
+    """
+    if np.array_equal(pin, original[0]):
+        return 0
+    if np.array_equal(pin, original[-1]):
+        return len(points) - 1
+    return int(np.argmin(np.sum((points - pin) ** 2, axis=1)))
 
 
 def _departures(

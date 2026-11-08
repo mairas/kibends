@@ -5,6 +5,7 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 import argparse
+import math
 import os
 import sys
 from collections.abc import Generator, Sequence
@@ -19,7 +20,8 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
-from kibends.chain import ChainError
+from kibends.bursts import DEFAULT_SETTINGS
+from kibends.chain import ChainError, Point2
 from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
@@ -28,7 +30,7 @@ from kibends.commit import (
 )
 from kibends.energy import EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
-from kibends.optimize import DEFAULT_SETTINGS, FrozenVertex, Termination
+from kibends.optimize import FrozenVertex, Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
     ChainReport,
@@ -36,6 +38,7 @@ from kibends.run import (
     OptimizerReport,
     PlotUnavailableError,
     SmoothOptions,
+    ViaReport,
     new_violations,
     run_smooth,
 )
@@ -93,6 +96,9 @@ def _exit_on_failure() -> Generator[None]:
     """Report an expected failure as one log line and exit 1."""
     try:
         yield
+    except KeyboardInterrupt:
+        # The push maps its own interrupt to CommitUncertainError.
+        _fail("Interrupted: nothing committed")
     except EXPECTED_ERRORS as e:
         _fail(str(e))
     except ApiError as e:
@@ -132,11 +138,16 @@ def smooth(options: SmoothOptions) -> None:
 
 
 def format_statistics(report: OptimizerReport) -> str:
-    """One statistics block per chain and the optimizer's outcome."""
+    """One statistics block per chain, a line per movable via and the
+    optimizer's outcome."""
     some_changed = any(c.changed for c in report.chains)
     blocks = [_chain_block(c, some_changed) for c in report.chains]
-    several = len(blocks) > 1
-    rejected = sum(c.rejected_edges for c in report.chains)
+    if report.vias:
+        blocks.append("\n".join(_via_line(v) for v in report.vias))
+    several = len(report.chains) > 1
+    rejected = sum(c.rejected_edges for c in report.chains) + sum(
+        v.rejected_edges for v in report.vias
+    )
     # A run can converge while a chain gave up after abnormal bursts.
     abnormal = [
         f"{c.abnormal_bursts} abnormal burst{'' if c.abnormal_bursts == 1 else 's'}"
@@ -155,9 +166,29 @@ def format_statistics(report: OptimizerReport) -> str:
     return ("\n\n" if several else "\n").join([*blocks, outcome])
 
 
+def _via_line(v: ViaReport) -> str:
+    if not v.moved:
+        return f"Via {v.id} stays at {_point(v.start)}"
+    distance = math.dist(v.start, v.end)
+    return (
+        f"Via {v.id} moved {distance:.3f} mm, from {_point(v.start)} to {_point(v.end)}"
+    )
+
+
+def _point(p: Point2) -> str:
+    return f"({p[0]:.3f}, {p[1]:.3f})"
+
+
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """Frozen vertices, abnormal bursts and an iteration cap, one line each."""
+    """Frozen vertices and vias, abnormal bursts and an iteration cap, one
+    line each."""
     warnings = [_frozen_warning(v) for c in report.chains for v in c.frozen]
+    warnings += [
+        f"Left via {v.id} at {_point(v.start)} in place: it starts inside "
+        "another item's clearance"
+        for v in report.vias
+        if v.frozen
+    ]
     warnings += [
         f"L-BFGS-B ended {c.abnormal_bursts} burst"
         f"{'' if c.abnormal_bursts == 1 else 's'} of {c.description} abnormally; "
@@ -331,6 +362,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "(needs the `plot` extra)",
     )
     smooth_parser.add_argument(
+        "--allow-via-in-pad",
+        action="store_true",
+        help="Let a moving via settle inside a pad of its own net. KiCad's DRC "
+        "does not check via-in-pad; without this option a moving via never "
+        "overlaps a pad",
+    )
+    smooth_parser.add_argument(
         "--no-drc",
         action="store_true",
         help="Commit without the kicad-cli DRC check against the board's rules",
@@ -361,6 +399,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         plot=args.plot,
         drc=not args.no_drc,
         kicad_cli=args.kicad_cli,
+        allow_via_in_pad=args.allow_via_in_pad,
     )
 
 

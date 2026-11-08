@@ -5,7 +5,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -17,7 +17,7 @@ from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
 from kipy.project_types import NetClass
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import PadType, ZoneType
+from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.proto.common.commands.editor_commands_pb2 import (
     CreateItems,
@@ -126,7 +126,16 @@ def kipy_pad(
 
 
 def kipy_via(
-    via_id: str, net: str, x: float, y: float, diameter: float = 0.6, drill: float = 0.3
+    via_id: str,
+    net: str,
+    x: float,
+    y: float,
+    diameter: float = 0.6,
+    drill: float = 0.3,
+    *,
+    locked: bool = False,
+    via_type: ViaType.ValueType = ViaType.VT_THROUGH,
+    span: tuple[BL.ValueType, BL.ValueType] = (BL.BL_F_Cu, BL.BL_B_Cu),
 ) -> kbt.Via:
     v = kbt.Via()
     v.proto.id.value = via_id
@@ -135,6 +144,9 @@ def kipy_via(
     v.padstack.proto.copper_layers.add()
     v.diameter = nm(diameter)
     v.drill_diameter = nm(drill)
+    v.locked = locked
+    v.type = via_type
+    v.padstack.drill.start_layer, v.padstack.drill.end_layer = span
     return v
 
 
@@ -271,6 +283,7 @@ def kipy_zone(
     keepout_tracks: bool = True,
     rule_area: bool = True,
     zone_id: str = "zone",
+    net: str = "GND",
 ) -> kbt.Zone:
     z = kbt.Zone()
     z.proto.id.value = zone_id
@@ -280,7 +293,25 @@ def kipy_zone(
     if rule_area:
         z.proto.rule_area_settings.keepout_tracks = keepout_tracks
     else:
-        z.proto.copper_settings.net.name = "GND"
+        z.proto.copper_settings.net.name = net
+    return z
+
+
+def kipy_filled_zone(
+    zone_id: str,
+    net: str,
+    fills: Mapping[BL.ValueType, PolygonWithHoles],
+    zone_type: ZoneType.ValueType = ZoneType.ZT_COPPER,
+) -> kbt.Zone:
+    """A copper zone of `net` filled with one polygon on each of its layers."""
+    outline = next(iter(fills.values()))
+    z = kipy_zone(outline, list(fills), rule_area=False, zone_id=zone_id, net=net)
+    z.proto.type = zone_type
+    z.proto.filled = True
+    for layer, polygon in fills.items():
+        filled = z.proto.filled_polygons.add()
+        filled.layer = layer
+        filled.shapes.polygons.add().CopyFrom(polygon.proto)
     return z
 
 
@@ -361,6 +392,9 @@ class FakeBoard:
     name: str = "board.kicad_pcb"
     project_dir: str = ""
     drops_pads: bool = False
+    enabled_layers: list[BL.ValueType] = field(
+        default_factory=lambda: [BL.BL_F_Cu, BL.BL_B_Cu]
+    )
     client: FakeClient = field(default_factory=FakeClient)
     reads: Counter[str] = field(default_factory=Counter[str])
 
@@ -390,6 +424,10 @@ class FakeBoard:
         # KiCad silently leaves out pads it has no shape for.
         shapes = [shape(p) for p in pads[: -1 if self.drops_pads else None]]
         return [s for s in shapes if s is not None]
+
+    def get_enabled_layers(self) -> list[BL.ValueType]:
+        self.reads["get_enabled_layers"] += 1
+        return self.enabled_layers
 
     def get_vias(self) -> list[kbt.Via]:
         self.reads["get_vias"] += 1
@@ -430,7 +468,7 @@ class FakeBoard:
         )
 
     def get_as_string(self) -> str:
-        """The board file text, holding only the straight tracks."""
+        """The board file text, holding only the straight tracks and the vias."""
         segments = "".join(
             f"\t(segment\n\t\t(start {t.start.x / NM_PER_MM} {t.start.y / NM_PER_MM})\n"
             f"\t\t(end {t.end.x / NM_PER_MM} {t.end.y / NM_PER_MM})\n"
@@ -440,7 +478,19 @@ class FakeBoard:
             for t in self.tracks
             if type(t) is kbt.Track
         )
-        return f"(kicad_pcb\n\t(version 20260206)\n{segments}\t(embedded_fonts no)\n)\n"
+        vias = "".join(
+            f"\t(via\n\t\t(at {v.position.x / NM_PER_MM} {v.position.y / NM_PER_MM})\n"
+            f"\t\t(size {v.diameter / NM_PER_MM})\n"
+            f"\t\t(drill {v.drill_diameter / NM_PER_MM})\n"
+            f'\t\t(layers "{canonical_name(v.padstack.drill.start_layer)}" '
+            f'"{canonical_name(v.padstack.drill.end_layer)}")\n'
+            f'\t\t(net "{v.net.name}")\n\t\t(uuid "{v.id.value}")\n\t)\n'
+            for v in self.vias
+        )
+        return (
+            f"(kicad_pcb\n\t(version 20260206)\n{segments}{vias}"
+            "\t(embedded_fonts no)\n)\n"
+        )
 
 
 def layer_snapshot(
@@ -475,8 +525,8 @@ class CommitBoard(FakeBoard):
     create, push_commit, drop_commit, and refill_zones, which kibends must
     never call. `short_create` answers CreateItems with one item fewer than
     sent, all reported as created. `refuse_create_nets` refuses only the
-    items on those nets. `unanswered_delete` leaves those ids out of the
-    DeleteItems answer.
+    tracks on those nets, `refuse_create_vias` only the vias.
+    `unanswered_delete` leaves those ids out of the DeleteItems answer.
     """
 
     calls: list[str] = field(default_factory=list[str])
@@ -486,9 +536,10 @@ class CommitBoard(FakeBoard):
     refuse_create: bool = False
     refuse_create_nets: frozenset[str] = frozenset()
     short_create: bool = False
+    refuse_create_vias: bool = False
     refuse_delete: frozenset[str] = frozenset()
     unanswered_delete: frozenset[str] = frozenset()
-    push_error: Exception | None = None
+    push_error: BaseException | None = None
     document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
 
     def __post_init__(self) -> None:
@@ -497,7 +548,7 @@ class CommitBoard(FakeBoard):
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
         self.reads["get_items_by_id"] += 1
         wanted = {i.value for i in ids}
-        return [t for t in self.tracks if t.id.value in wanted]
+        return [i for i in [*self.tracks, *self.vias] if i.id.value in wanted]
 
     def begin_commit(self) -> Commit:
         self.calls.append("begin_commit")
@@ -521,8 +572,13 @@ class CommitBoard(FakeBoard):
         answered = command.items[:-1] if self.short_create else command.items
         for packed in answered:
             item = kbt.unwrap(packed)
-            refused = self.refuse_create or (
-                isinstance(item, kbt.Track) and item.net.name in self.refuse_create_nets
+            refused = (
+                self.refuse_create
+                or (
+                    isinstance(item, kbt.Track)
+                    and item.net.name in self.refuse_create_nets
+                )
+                or (isinstance(item, kbt.Via) and self.refuse_create_vias)
             )
             result = response.created_items.add()
             result.item.CopyFrom(packed)
