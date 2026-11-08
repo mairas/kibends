@@ -52,6 +52,10 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    via is one chain per layer; the via stays where it is and holds the chain
    ends on both sides. Chains on different layers do not affect each other.
    Selected vias, pads and other items are ignored; arc tracks are refused.
+   A box selection catches tracks on every visible layer, and all of them
+   are smoothed. Check what a run would change with `--dry-run` first, or
+   set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
+   the active layer.
 3. Run:
 
 ```sh
