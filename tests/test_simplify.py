@@ -246,7 +246,7 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     fixed = np.zeros(len(line), dtype=bool)
     fixed[[0, -1]] = True
     run = RunResult(
-        (ChainResult(line, fixed, 0, 0, (), measure(line, field, SPACING)),),
+        (ChainResult(line, fixed, 0, (), measure(line, field, SPACING)),),
         Termination.CONVERGED,
         1,
     )

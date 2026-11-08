@@ -215,17 +215,6 @@ def _shape(
     )
 
 
-def point_energy(
-    point: FloatArray, field: DistanceField, params: EnergyParams, length: float
-) -> TermValue:
-    """The obstacle terms of `total_energy` for copper at `point` that stands
-    for `length` mm of track, and their gradient (2,) at `point`."""
-    reach = obstacle_reach(params)
-    distance, direction = field.signed_distance(point[None], reach=reach)
-    value, slope = obstacle_integrand(params)(distance)
-    return length * float(value[0]), length * slope[0] * direction[0]
-
-
 def obstacle_energy(
     points: FloatArray, field: DistanceField, params: EnergyParams
 ) -> TermValue:
@@ -234,32 +223,6 @@ def obstacle_energy(
     integrand = obstacle_integrand(params)
     reach = obstacle_reach(params)
     return _edge_integral(points, field, integrand, params.points_per_edge, reach)
-
-
-def free_vertex_objective(
-    points: FloatArray,
-    fixed: BoolArray,
-    field: DistanceField,
-    params: EnergyParams,
-    short_edge: float = 0.0,
-    bend_limit: float | None = None,
-) -> Callable[[FloatArray], tuple[float, FloatArray]]:
-    """Total energy as a function of the flattened free vertex coordinates.
-
-    The result suits scipy.optimize.minimize(..., jac=True); fixed vertices
-    keep their positions from `points`.
-    """
-    work = points.copy()
-    free = ~fixed
-
-    def objective(free_coordinates: FloatArray) -> tuple[float, FloatArray]:
-        work[free] = free_coordinates.reshape(-1, 2)
-        value, gradient = total_energy(
-            work, fixed, field, params, short_edge, bend_limit
-        )
-        return value, gradient[free].ravel()
-
-    return objective
 
 
 def obstacle_integrand(params: EnergyParams) -> Integrand:

@@ -12,7 +12,6 @@ from kibends.energy import (
     bend_radius_energy,
     bending_energy,
     clearance_energy,
-    free_vertex_objective,
     length_energy,
     repulsion_energy,
     total_energy,
@@ -386,29 +385,6 @@ def test_fixed_vertices_get_zero_gradient(name: str) -> None:
     _, gradient = ALL_TERMS[name](points, fixed)
     np.testing.assert_array_equal(gradient[fixed], 0.0)
     assert np.abs(gradient[~fixed]).max() > 0.0
-
-
-class TestFreeVertexObjective:
-    def test_matches_total_on_free_vertices(self) -> None:
-        points = NEAR_BOX[0]
-        fixed = free(len(points))
-        fixed[[0, -1]] = True
-        objective = free_vertex_objective(points, fixed, BOX, PARAMS)
-        value, flat_gradient = objective(points[~fixed].ravel())
-        expected_value, expected_gradient = total_energy(points, fixed, BOX, PARAMS)
-        assert value == pytest.approx(expected_value)
-        np.testing.assert_allclose(flat_gradient, expected_gradient[~fixed].ravel())
-
-    def test_moves_only_free_vertices(self) -> None:
-        points = NEAR_BOX[1]
-        fixed = free(len(points))
-        fixed[[0, -1]] = True
-        objective = free_vertex_objective(points, fixed, BOX, PARAMS)
-        moved = points.copy()
-        moved[~fixed] += 0.01
-        value, _ = objective(moved[~fixed].ravel())
-        assert value == pytest.approx(total_energy(moved, fixed, BOX, PARAMS)[0])
-        np.testing.assert_array_equal(points, NEAR_BOX[1])
 
 
 SHORT_EDGE = 0.1

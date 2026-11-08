@@ -49,7 +49,6 @@ from kibends.bursts import (
 )
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import EnergyParams, FloatArray
-from kibends.joint import optimize_jointly
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import (
@@ -58,6 +57,7 @@ from kibends.optimize import (
     PolylineStats,
     RunResult,
     Termination,
+    optimize_chains,
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import BendCheck, gap_range, offset_pair
@@ -120,8 +120,8 @@ def path_length(points: FloatArray) -> float:
 
 
 def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
-    """`optimize_jointly` at `settings`, but the time limit the run gives it."""
-    real: Callable[..., RunResult] = optimize_jointly
+    """`optimize_chains` at `settings`, but the time limit the run gives it."""
+    real: Callable[..., RunResult] = optimize_chains
 
     def optimize(
         chains: object, params: object, given: OptimizerSettings, **kwargs: object
@@ -140,7 +140,7 @@ def coarse_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
     For tests of error mapping and commit wiring, which need a real smoothed
     chain but not a finely smoothed one.
     """
-    monkeypatch.setattr(pipeline, "optimize_jointly", at(COARSE))
+    monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
 
 
 # Answers DRC runs with the reports in reports.json next to it, keyed by the
@@ -477,7 +477,7 @@ class TestSmooth:
             raise SystemExit(0)
 
         monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
-        monkeypatch.setattr(pipeline, "optimize_jointly", optimize_spy)
+        monkeypatch.setattr(pipeline, "optimize_chains", optimize_spy)
 
         with pytest.raises(SystemExit):
             run(
@@ -537,12 +537,12 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
         def abnormal(*args: object, **kwargs: object) -> RunResult:
             return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", abnormal)
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
 
         assert "abnormally" in exit_message(log)
         assert board.calls == []
@@ -556,12 +556,12 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
         def capped(*args: object, **kwargs: object) -> RunResult:
             return replace(real(*args, **kwargs), termination=Termination.ITERATION_CAP)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", capped)
+        monkeypatch.setattr(pipeline, "optimize_chains", capped)
 
         run()
 
@@ -582,10 +582,10 @@ class TestSmooth:
     ) -> None:
         capped = connect.to(l_board())
         monkeypatch.setattr(
-            pipeline, "optimize_jointly", at(replace(COARSE, max_iterations=1))
+            pipeline, "optimize_chains", at(replace(COARSE, max_iterations=1))
         )
         run("--no-drc")
-        monkeypatch.setattr(pipeline, "optimize_jointly", at(COARSE))
+        monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
         monkeypatch.setattr(pipeline, "monotonic", Ticking())
         capsys.readouterr()
         board = connect.to(l_board())
@@ -618,7 +618,7 @@ class TestSmooth:
             clock.now += 10.0
             return at(COARSE)(*args, **kwargs)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", optimizing)
+        monkeypatch.setattr(pipeline, "optimize_chains", optimizing)
         optimized: list[pipeline.OptimizerReport] = []
 
         report = pipeline.run_smooth(options, optimized.append)
@@ -801,7 +801,7 @@ class TestDrc:
         def never(*args: object, **kwargs: object) -> NoReturn:
             pytest.fail("optimized")
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", never)
+        monkeypatch.setattr(pipeline, "optimize_chains", never)
 
         message = exit_message(log)
 
@@ -1022,7 +1022,7 @@ class TestErrors:
         def interrupted(*args: object, **kwargs: object) -> NoReturn:
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", interrupted)
+        monkeypatch.setattr(pipeline, "optimize_chains", interrupted)
 
         assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
         assert board.calls == []
@@ -1240,12 +1240,12 @@ class TestSeveralChains:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(two_l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
         def abnormal(*args: object, **kwargs: object) -> RunResult:
             return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", abnormal)
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
 
         assert "abnormally" in exit_message(log)
         assert board.calls == []
@@ -1270,7 +1270,7 @@ class TestSeveralChains:
         # The vertex freezes before the first burst; the chains pressed into
         # each other's clearance take long to settle.
         monkeypatch.setattr(
-            pipeline, "optimize_jointly", at(replace(COARSE, max_iterations=3))
+            pipeline, "optimize_chains", at(replace(COARSE, max_iterations=3))
         )
 
         run("--dry-run", "--no-drc")
@@ -1371,12 +1371,12 @@ def with_abnormal_bursts(
     monkeypatch: pytest.MonkeyPatch, abnormal: Sequence[tuple[str, int]]
 ) -> None:
     """Make the optimizer report `abnormal` bursts per problem."""
-    real: Callable[..., RunResult] = pipeline.optimize_jointly
+    real: Callable[..., RunResult] = pipeline.optimize_chains
 
     def with_them(*args: object, **kwargs: object) -> RunResult:
         return replace(real(*args, **kwargs), abnormal=tuple(abnormal))
 
-    monkeypatch.setattr(pipeline, "optimize_jointly", with_them)
+    monkeypatch.setattr(pipeline, "optimize_chains", with_them)
 
 
 FRONT = "the chains on F.Cu"
@@ -2010,13 +2010,13 @@ class TestMovingVias:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(moving_via_board())
-        optimize: Callable[..., RunResult] = pipeline.optimize_jointly
+        optimize: Callable[..., RunResult] = pipeline.optimize_chains
 
         def edited_meanwhile(*args: object, **kwargs: object) -> RunResult:
             board.vias = [kipy_via("v", "SIG", 4.0, 4.5)]
             return optimize(*args, **kwargs)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", edited_meanwhile)
+        monkeypatch.setattr(pipeline, "optimize_chains", edited_meanwhile)
 
         error = exit_message(log, "--no-drc")
 
@@ -2530,7 +2530,7 @@ class TestPairs:
         too_close: int,
         hold: Hold,
     ) -> None:
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
         held: list[list[Hold | None]] = []
 
         def too_tight(*args: object, **kwargs: object) -> RunResult:
@@ -2549,7 +2549,7 @@ class TestPairs:
             )
             return replace(result, pairs=pairs)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", too_tight)
+        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         board = connect.to(pair_board())
 
         run(f"--chord-tolerance={FAN_OUT_STRAIGHT_TOLERANCE}")
@@ -2568,7 +2568,7 @@ class TestPairs:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
         runs: list[RunResult] = []
 
         def too_tight(*args: object, **kwargs: object) -> RunResult:
@@ -2582,7 +2582,7 @@ class TestPairs:
             )
             return replace(result, pairs=pairs)
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", too_tight)
+        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
         board = pair_board()
         # Two Ls of other nets beside the pair, which the first run shortens.
@@ -2617,7 +2617,7 @@ class TestPairs:
     def test_a_second_run_reports_only_its_own_abandoned_chains(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
-        real: Callable[..., RunResult] = pipeline.optimize_jointly
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
         def gives_up(*args: object, **kwargs: object) -> RunResult:
             result = real(*args, **kwargs)
@@ -2630,7 +2630,7 @@ class TestPairs:
             abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
             return replace(result, pairs=pairs, gave_up=(abandoned,))
 
-        monkeypatch.setattr(pipeline, "optimize_jointly", gives_up)
+        monkeypatch.setattr(pipeline, "optimize_chains", gives_up)
         connect.to(pair_board())
 
         run("--dry-run", "--no-drc")
@@ -2684,7 +2684,7 @@ def pair_tracks_at(
 def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, settings: OptimizerSettings
 ) -> None:
-    monkeypatch.setattr(pipeline, "optimize_jointly", at(settings))
+    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
 
     tracks, calls = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
 
@@ -2995,7 +2995,7 @@ def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
 ) -> None:
     # Slow: only spacings as fine as this cut the corner too tightly, and the
     # run then repeats with the section held, about 2 s in all.
-    monkeypatch.setattr(pipeline, "optimize_jointly", at(FINE))
+    monkeypatch.setattr(pipeline, "optimize_chains", at(FINE))
     p, n = offset_pair(np.array(CROWDED_PAIR), PAIR_GAP, PAIR_WIDTH)
     x, y = CROWDED_PAIR[0]
     fanned = {
@@ -3143,7 +3143,7 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
 ) -> None:
     # As KiCad's router expects of a pair: otherwise a later edit of it in
     # KiCad no longer treats it as coupled.
-    monkeypatch.setattr(pipeline, "optimize_jointly", at(settings))
+    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
     calls = spy_simplify(monkeypatch)
     board = connect.to(PAIRED_BOARDS[layout]())
 
@@ -3248,7 +3248,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
 ) -> None:
     # Simplification and the gap check on a pair whose legs face each other,
     # end to end; test_optimize_pairs covers the optimizer.
-    monkeypatch.setattr(pipeline, "optimize_jointly", at(scenarios.TURNING_BACK))
+    monkeypatch.setattr(pipeline, "optimize_chains", at(scenarios.TURNING_BACK))
     board = connect.to(v_board(150.0))
 
     run("--no-drc", f"--repulsion={V_REPULSION}")

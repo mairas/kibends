@@ -34,7 +34,6 @@ from kipy.util.board_layer import canonical_name
 from kipy.wrapper import Wrapper
 from loguru import logger
 
-import kibends.joint as joint_module
 import kibends.optimize as optimize_module
 from kibends.chain import NM_PER_MM
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
@@ -63,17 +62,13 @@ class BurstClock:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.bursts = 0
-        bursts = ((joint_module, "bounded_burst"), (optimize_module, "_burst"))
-        for module, name in bursts:
-            real = cast(Callable[..., object], getattr(module, name))
+        real = cast(Callable[..., object], optimize_module.bounded_burst)
 
-            def counted(
-                *args: object, real: Callable[..., object] = real, **kwargs: object
-            ) -> object:
-                self.bursts += 1
-                return real(*args, **kwargs)
+        def counted(*args: object, **kwargs: object) -> object:
+            self.bursts += 1
+            return real(*args, **kwargs)
 
-            monkeypatch.setattr(module, name, counted)
+        monkeypatch.setattr(optimize_module, "bounded_burst", counted)
 
     def __call__(self) -> float:
         return float(self.bursts)

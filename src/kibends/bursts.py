@@ -1,5 +1,6 @@
-"""One bounded L-BFGS-B burst, shared by chains and moving vias, and the
-optimizer's settings, which every module importing them takes from here.
+"""One bounded L-BFGS-B burst, which the optimizer runs over every free
+coordinate of a problem at once, and the optimizer's settings, which every
+module importing them takes from here.
 
 Every coordinate moves only inside its bubble's box, so nothing jumps over
 an obstacle; a check after the run moves back whatever newly crosses one,
@@ -45,17 +46,17 @@ class OptimizerSettings:
     """δ, mm: bubbles are measured to obstacles inflated by δ less than the
     clearance, and vertices deeper than δ inside an obstacle are frozen."""
     settled_change: float = 1e-3
-    """A chain or via whose burst changes its shape by less than this, mm,
-    settles."""
+    """A problem whose burst moves no shape and no via's centre by this much,
+    mm, settles."""
     max_iterations: int = 200
     stall_tolerance: float = 1e-3
-    """Converged when the best energy improved by less than this over
-    `stall_window` iterations. The energy is in mm of track length, so this
-    is 1 µm of length: in flat stretches the shape keeps wandering by tens
-    of µm while the energy creeps down by far less."""
+    """A problem settles when its best energy improved by less than this
+    over `stall_window` of its bursts. The energy is in mm of track length,
+    so this is 1 µm of length: in flat stretches the shapes keep wandering
+    by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
     burst_maxiter: int = 300
-    """L-BFGS-B iterations per burst."""
+    """L-BFGS-B iterations per burst of a problem."""
     lbfgs_ftol: float = LBFGSB_FTOL
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
@@ -95,8 +96,7 @@ Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 @dataclass(frozen=True)
 class Burst:
     points: FloatArray
-    """Where the burst left what it moved: `bounded_burst`'s flat
-    coordinates, or a chain's whole polyline."""
+    """Where the burst left its flat coordinates."""
     rejected_edges: int
     abnormal: bool
 

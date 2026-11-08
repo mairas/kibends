@@ -37,7 +37,6 @@ from kibends.energy import (
     ObstacleField,
     obstacle_reach,
 )
-from kibends.joint import optimize_jointly, pinned_at_junctions
 from kibends.neighbours import (
     ChainInput,
     chain_field,
@@ -61,6 +60,8 @@ from kibends.optimize import (
     RunResult,
     Termination,
     measure,
+    optimize_chains,
+    pinned_at_junctions,
 )
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
@@ -398,7 +399,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     iterations = 0
     abnormal: dict[str, int] = {}
     while True:
-        run = optimize_jointly(
+        run = optimize_chains(
             layout.inputs,
             options.params,
             options.settings,
@@ -759,7 +760,7 @@ def _simplify(
     ]
     results = [
         *run.chains,
-        *(ChainResult(r.centreline, r.fixed, 0, 0, (), r.before) for r in run.pairs),
+        *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
     ]
     simplified = simplify_chains(
         pinned_at_junctions(
@@ -805,9 +806,7 @@ def _with_vias(
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(
-        inputs, via_inputs, options.params, options.hole_clearance, HOLE_TO_HOLE
-    )
+    moving = MovingVias(inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE)
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
