@@ -372,6 +372,17 @@ class ChainField:
         self._max_half_length = float(np.abs(self._along).max(initial=0.0)) / 2
         self._tree = cKDTree((starts + ends) / 2) if len(starts) else None
 
+    @staticmethod
+    def merged(fields: Sequence[ChainField]) -> ChainField:
+        """One field answering as the union of `fields` does, with one tree."""
+        starts = np.concatenate([f._starts for f in fields])
+        along = np.concatenate([f._along for f in fields])
+        return ChainField(
+            np.column_stack([starts.real, starts.imag]),
+            np.column_stack([(starts + along).real, (starts + along).imag]),
+            np.concatenate([f._inflations for f in fields]),
+        )
+
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:

@@ -20,7 +20,12 @@ from kibends.energy import (
     ObstacleField,
     arc_lengths,
 )
-from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
+from kibends.obstacles import (
+    ChainCentreline,
+    ChainField,
+    CompositeField,
+    chain_obstacles,
+)
 
 # Pins of two chains of one net up to this much farther apart than their half
 # widths still overlap: touch points are projected in floats. 1 nm, KiCad's
@@ -55,6 +60,10 @@ def chain_field(
     """A chain's field: `static` alone, or with the neighbour fields that are
     not None."""
     others = [field for field in neighbours if field is not None]
+    chains = [field for field in others if isinstance(field, ChainField)]
+    if len(chains) > 1:
+        rest = [field for field in others if not isinstance(field, ChainField)]
+        others = [ChainField.merged(chains), *rest]
     return CompositeField([static, *others]) if others else static
 
 
