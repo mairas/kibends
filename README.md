@@ -47,9 +47,13 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    the project and rule files from disk.
 2. Select the track segments to smooth, on any copper layers. Each
    connected piece of one net and one width on one layer is a chain: its
-   segments join end to end without branches. Two widths of one net may meet
-   only end to end, as at a neck-down. A route that changes layers through a
-   via is one chain per layer. Chains on different layers do not affect
+   segments join end to end. Where three or more selected tracks of one net
+   meet at their ends, the selection branches: it is split there into chains
+   that end at the junction, the junction moves with them unless other
+   copper of the net holds it, and the branches meet at one point again in
+   the result. A track that ends in the middle of another is refused. Two
+   widths of one net otherwise meet only end to end, as at a neck-down. A
+   route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
@@ -81,6 +85,16 @@ vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, and the chains it joins move with
 it.
 
+All the chains of one layer are one problem, which a single optimizer run
+moves at once; a moving via joins every layer it spans, and the chains on
+them, into one problem. The optimizer works in bursts: each burst moves
+every vertex and via of a problem, each only within its own free space and
+a share of its distance to the other chains, so that no chain jumps over
+copper or over another chain, and it undoes any move that would bring an
+edge newly into another item's clearance. An outer iteration gives every
+problem that has not settled one burst. A problem settles when a burst
+barely changes it or its energy stops improving.
+
 The command prints, for each chain, the length, track count, tightest bend
 radius and clearance margins before and after, then for each differential
 pair its gap and skew (see below), then for each selected via that may move
@@ -89,8 +103,9 @@ converged or stopped at its iteration cap or the time limit, after how many
 iterations and how many seconds.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
-length, the energy it minimises and how many chains are still moving. Set
-`LOGURU_LEVEL=DEBUG` to see that line after every iteration.
+length, the energy it minimises and the lowest it has kept, and how far the
+iteration moved any track or via. Set `LOGURU_LEVEL=DEBUG` to see that line
+after every iteration.
 Every position kibends prints, in errors, warnings, statistics and DRC
 lines, is in millimetres relative to the board's grid origin, with y
 pointing down: as the PCB editor shows coordinates with the grid origin
@@ -132,7 +147,9 @@ already bends tighter keeps its own tracks, with a warning that says so.
 So does one whose corner the copper around it keeps from rounding, such as
 a pad inside a sharp corner, or its own parts beyond the corner: the
 warning says which, and the run is repeated with that section held, so
-that the other chains keep clear of its tracks.
+that the other chains keep clear of its tracks. The repeat goes on from
+where the first run left every other chain and via, and `--time-limit`
+covers both runs.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
@@ -175,11 +192,11 @@ into coupling.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification, the DRC check and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each chain's or via's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
-| `--settled-change MM` | 0.001 | A chain settles when a burst moves its shape by less than this. Raising it alone saves little time and can leave visibly different tracks. |
-| `--stall-tolerance MM` | 0.001 | A chain also settles when its energy, in mm of track length, improves by less than this over `--stall-window` iterations. Raising it saves little time and lets some tracks end slightly longer. |
-| `--stall-window N` | 3 | Outer iterations the stall check looks back over. |
-| `--max-iterations N` | 200 | Outer iterations after which the optimizer stops and goes on with the best result found. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification, the DRC check and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
+| `--settled-change MM` | 0.001 | A problem settles when a burst moves none of its tracks or vias by this much. Raising it alone saves little time and can leave visibly different tracks. |
+| `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts. Raising it saves little time and lets some tracks end slightly longer. |
+| `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
+| `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
 | `--burst-iterations N` | 300 | L-BFGS-B iterations per burst. Fewer are the strongest way to shorten a run, but some layouts then settle into a noticeably different shape. |
 | `--lbfgs-ftol TOL` | 1e-15 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this; the default effectively never does, so bursts run to `--burst-iterations`. A larger value, such as 1e-9, shortens runs, most of all on boards with differential pairs, at the cost of small changes in the result; much larger values change it a lot. |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
