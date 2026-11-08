@@ -4,11 +4,13 @@ Distances are to the clearance boundary: a centreline at distance 0 runs at
 exactly the required clearance from the copper.
 """
 
+import math
 from dataclasses import dataclass, replace
 
 import numpy as np
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Union, Walls
 
+from kibends.bursts import OptimizerSettings
 from kibends.chain import Chain
 from kibends.energy import EnergyParams, ObstacleField
 from kibends.neighbours import ChainInput
@@ -808,3 +810,38 @@ def pair_split() -> PairsScenario:
         tuple(sections),
         tuple(piece for _, piece in (*pieces_a, *pieces_b)),
     )
+
+
+TURN_BACK_LEG = 5.0
+"""mm of the leg a pair turns back along."""
+
+
+def turning_back(turn: float) -> tuple[FloatArray, tuple[float, float]]:
+    """The centreline of a pair turning back by `turn` degrees, and the
+    centre of a pad inside the V halfway along its legs."""
+    apex = np.array([4.0, 0.0])
+    angle = math.radians(turn)
+    back = np.array([math.cos(angle), math.sin(angle)])
+    centre = np.stack([np.zeros(2), apex, apex + TURN_BACK_LEG * back])
+    pad = apex + TURN_BACK_LEG / 2 * (np.array([-1.0, 0.0]) + back) / 2
+    return centre, (float(pad[0]), float(pad[1]))
+
+
+def pair_turning_back(turn: float = 150.0) -> PairsScenario:
+    """A pair turning back by `turn` degrees, with a pad inside the V
+    halfway along its legs: pulled taut around the pad, its legs would close
+    on each other beyond the turn."""
+    centre, pad = turning_back(turn)
+    section = coupled(pad_for_pair(*pad), *((float(x), float(y)) for x, y in centre))
+    return PairsScenario(
+        f"pair-turning-back-{turn:g}",
+        (section,),
+        params=replace(PARAMS, repulsion=0.5),
+    )
+
+
+TURNING_BACK = OptimizerSettings(burst_maxiter=30)
+"""The default spacing, at which the legs of `pair_turning_back` close on
+each other unless every burst keeps them apart, with bursts short enough to
+run fast. Through the CLI they close at 15 to 40 iterations, and not
+reliably at a coarser spacing."""
