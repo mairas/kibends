@@ -354,7 +354,7 @@ def via_burst(
         c.field.segments_clear(c.points[:-1], c.points[1:]) for c in carried
     ]
     contacts_before = [
-        None if c.ring is None else _Contact.before(position, c.points, c.ring)
+        None if c.ring is None else Contact.before(position, c.points, c.ring)
         for c in carried
     ]
 
@@ -382,7 +382,7 @@ def _revert_carried_crossings(
     carried: Sequence[Carried],
     slices: Sequence[slice],
     clear_before: Sequence[BoolArray],
-    contacts_before: Sequence[_Contact | None],
+    contacts_before: Sequence[Contact | None],
 ) -> tuple[BoolArray, int]:
     """Move the ends of newly crossing edges back, in place, until none
     cross, as `_revert_new_crossings` does for one chain; the via's
@@ -495,7 +495,7 @@ def _pair_energy(
 
 
 @dataclass(frozen=True)
-class _Contact:
+class Contact:
     """A chain and a via in contact as a burst found them, to tell whether
     either passed through the other."""
 
@@ -508,9 +508,9 @@ class _Contact:
     """Which vertices were clear of it."""
 
     @staticmethod
-    def before(via: FloatArray, points: FloatArray, ring: float) -> _Contact:
+    def before(via: FloatArray, points: FloatArray, ring: float) -> Contact:
         disc = _ring_field(via, ring)
-        return _Contact(
+        return Contact(
             via,
             points,
             ring,

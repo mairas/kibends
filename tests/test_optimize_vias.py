@@ -277,7 +277,7 @@ class TestContactPassage:
     VIA = np.array([5.0, 0.0])
 
     def kept(self, via_step: tuple[float, float], chain_step: float) -> bool:
-        contact = via_moves._Contact.before(self.VIA, self.CHAIN, self.RING)
+        contact = via_moves.Contact.before(self.VIA, self.CHAIN, self.RING)
         moved = self.CHAIN + np.array([0.0, chain_step])
         return contact.kept(self.VIA + np.array(via_step), moved)
 
@@ -294,7 +294,7 @@ class TestContactPassage:
         assert not self.kept((0.0, -1.0), 1.0)
 
     def test_a_chain_stretched_wider_than_the_ring_is_caught(self) -> None:
-        contact = via_moves._Contact.before(self.VIA, self.CHAIN, self.RING)
+        contact = via_moves.Contact.before(self.VIA, self.CHAIN, self.RING)
         stretched = self.CHAIN.copy()
         stretched[2] = (5.0, -3.0)
 
@@ -314,7 +314,7 @@ class TestContactPassage:
             [chain],
             [slice(2, len(start))],
             [np.ones(len(self.CHAIN) - 1, dtype=bool)],
-            [via_moves._Contact.before(self.VIA, self.CHAIN, self.RING)],
+            [via_moves.Contact.before(self.VIA, self.CHAIN, self.RING)],
         )
 
         assert crossings > 0
