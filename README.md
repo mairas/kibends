@@ -49,11 +49,18 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    connected piece of one net and one width on one layer is a chain: its
    segments join end to end without branches. Two widths of one net may meet
    only end to end, as at a neck-down. A route that changes layers through a
-   via is one chain per layer; the via stays where it is and holds the chain
-   ends on both sides. Chains on different layers do not affect each other.
-   A selected via gets a warning naming the reason when it is locked, is
-   not a through via, is touched on any layer by copper other than the ends
-   of selected chains, or joins fewer than two of them. Selected pads and
+   via is one chain per layer. Chains on different layers do not affect
+   each other, except through the vias that move with them.
+   An unselected via stays where it is and holds the chain ends on both
+   sides. Select a via with its tracks to let it move with them: it moves
+   when it is an unlocked through via, at least two selected chain ends meet
+   it, and no other copper touches it or those chain ends on any layer. Any
+   other selected via stays where it is, with a warning naming it and the
+   reason: it is locked, it is not a through via, other copper touches it
+   or a chain end it would carry (an unselected track, a pad, a copper
+   shape, another via or a zone of its net, on any layer), or fewer than
+   two selected chain ends meet it. Teardrops are ignored, here and in the
+   DRC check: KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
@@ -69,20 +76,27 @@ kibends smooth                              # then commit
 The chains are optimised together, so neighbouring chains make room for
 each other: chains of different nets keep their clearance to each other and
 repel each other like other copper, while chains of one net may touch but
-not overlap, except where they already connect. Only selected chains move.
+not overlap, except where they already connect. Only selected chains and
+vias move. A moving via keeps its clearances on every copper layer it spans,
+including layers no selected chain is on, and the chains it joins move with
+it.
 
 The command prints, for each chain, the length, track count, tightest bend
-radius and clearance margins before and after, then the optimizer's outcome.
+radius and clearance margins before and after, then for each selected via
+that may move how far it moved and where to, then the optimizer's outcome.
 A chain the optimizer leaves as it was is marked unchanged and is neither
 checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
-changed chains are replaced in one commit, which one undo in KiCad reverts;
-if any chain fails, nothing is committed. kibends does not refill zones:
-refill them yourself (B) or let KiCad's DRC refill them.
+changed chains are replaced and the moved vias moved in one commit, which
+one undo in KiCad reverts; if any chain or via fails, nothing is committed.
+A track or via edited in KiCad since the run read it stops the commit.
+kibends does not refill zones: refill them yourself (B) or let KiCad's DRC
+refill them.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
-they are, as does every point where other copper of the same net (a pad,
-via, track, copper shape or another selected chain) touches the chain.
+they are, unless it ends at a moving via, as does every point where other
+copper of the same net (a pad, via, track, copper shape or another selected
+chain) touches the chain.
 
 A vertex that starts inside another item's clearance stays where it is,
 with a warning. When that item is another selected chain, the warning names
@@ -96,12 +110,12 @@ it, and a re-run after that chain has moved may free the vertex.
 | `--repulsion WEIGHT` | 0.5 | Weight of keeping away from other copper, relative to length. 0 disables it, so the track pulls tight against obstacles at exactly the clearance. |
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
-| `--hole-clearance MM` | 0.25 | Clearance to drilled holes. |
+| `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values give fewer, longer tracks. |
 | `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
-| `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain; the format follows the extension. Works with or without `--dry-run`. |
+| `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 
 The defaults give a modest rounding: in the test geometries, a 90° corner
 wrapped around a pad gets a bend radius of roughly 0.7 to 1.4 mm. Bending
@@ -115,17 +129,19 @@ Copper clearances come from the board's netclasses, including pad and
 footprint clearance overrides. KiCad's API does not expose the board's edge
 and hole clearances, custom rules or board minimums: the edge and hole
 clearances come from the options above, and custom rules and board
-minimums are not seen by the optimizer.
+minimums are not seen by the optimizer. Neither are copper zones, which
+reflow after an edit, nor rule areas that keep out vias.
 
 The DRC check covers what the optimizer cannot see. Before committing,
 kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch
 directory, with the project's `.kicad_pro` and `.kicad_dru`: once on the
-board as it is, and once with every changed chain replaced. If the result
+board as it is, and once with every changed chain replaced and every moved
+via in its new place. If the result
 adds a violation, nothing is committed: the message names the nets involved,
 and each new violation is listed with its type, description and position.
 Violations the board already had do not count, including ones a chain's old
-tracks had against the same item; another chain's old violation does not
-excuse a new one. A path that
+tracks or a moved via had against the same item; another chain's or via's
+old violation does not excuse a new one. A path that
 splits another net's pour shows up as more unconnected items on that net and
 is refused, naming the net.
 
