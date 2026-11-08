@@ -739,6 +739,18 @@ class TestErrors:
 
         assert "arc" in exit_message(log)
 
+    def test_selection_of_only_locked_tracks(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        tracks = [
+            kipy_track("a", "SIG", (0, 0), (4, 0), locked=True),
+            kipy_track("b", "SIG", (4, 0), (4, 4), locked=True),
+        ]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        assert "no tracks that can be modified" in exit_message(log)
+        assert board.calls == []
+
     def test_selection_that_is_no_chain(
         self, connect: Connector, log: list[str]
     ) -> None:
