@@ -163,10 +163,16 @@ class LayerSnapshot:
     clearances: Mapping[str, float]
     """Netclass clearance per net name, in mm."""
     default_clearance: float
+    diff_pair_gaps: Mapping[str, float]
+    """Netclass differential pair gap per net name, where set, in mm."""
 
     def clearance(self, net: str) -> float:
         """The net's netclass clearance; the Default one for no net."""
         return self.clearances.get(net, self.default_clearance)
+
+    def diff_pair_gap(self, net: str) -> float | None:
+        """The net's netclass differential pair gap, if its netclass sets one."""
+        return self.diff_pair_gaps.get(net)
 
     def same_net_copper(self, net: str) -> list[SameNetCopper]:
         """Pad, via and copper shape outlines and the tracks of `net` on the layer.
@@ -205,6 +211,9 @@ class BoardSnapshot:
     clearances: Mapping[str, float]
     """Netclass clearance of every net on the board, in mm."""
     default_clearance: float
+    diff_pair_gaps: Mapping[str, float]
+    """Netclass differential pair gap of the nets on the board whose
+    netclass sets one, in mm."""
     via_contacts: Mapping[str, tuple[ViaContact, ...]]
     """By via id, for the vias asked for: the same-net copper touching each,
     or the copper it carries, on any copper layer, the via itself left
@@ -261,6 +270,9 @@ class BoardSnapshot:
             *(v.net for v in vias),
             *(g.net for gs in graphics.values() for g in gs),
         } - {""}
+        clearances, diff_pair_gaps = _read_netclasses(
+            board, sorted(nets), default_clearance
+        )
         return cls(
             layers=frozenset(wanted),
             pads=pads_by_layer,
@@ -276,8 +288,9 @@ class BoardSnapshot:
             graphics=graphics,
             keepouts={layer: _read_track_keepouts(zones, layer) for layer in wanted},
             edge_paths=tuple(tuple(path) for path in read_edge_paths(shapes)),
-            clearances=_read_clearances(board, sorted(nets), default_clearance),
+            clearances=clearances,
             default_clearance=default_clearance,
+            diff_pair_gaps=diff_pair_gaps,
             via_contacts=_via_contacts(
                 board,
                 {
@@ -308,6 +321,7 @@ class BoardSnapshot:
             edge_paths=self.edge_paths,
             clearances=self.clearances,
             default_clearance=self.default_clearance,
+            diff_pair_gaps=self.diff_pair_gaps,
         )
         logger.info(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
@@ -854,16 +868,23 @@ def _default_clearance(board: kipy.board.Board) -> float:
     return FALLBACK_CLEARANCE
 
 
-def _read_clearances(
+def _read_netclasses(
     board: kipy.board.Board, nets: Sequence[str], default: float
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Clearance and, where set, differential pair gap of each net, mm."""
     if not nets:
-        return {}
+        return {}, {}
     classes = board.get_netclass_for_nets([kbt.Net(name=n) for n in nets])
-    return {
+    clearances = {
         name: default if nc.clearance is None else nc.clearance / NM_PER_MM
         for name, nc in classes.items()
     }
+    gaps = {
+        name: nc.diff_pair_gap / NM_PER_MM
+        for name, nc in classes.items()
+        if nc.diff_pair_gap is not None
+    }
+    return clearances, gaps
 
 
 def read_edge_paths(shapes: Iterable[kbt.BoardShape]) -> list[list[Point2]]:

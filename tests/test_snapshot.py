@@ -316,6 +316,24 @@ class TestClearances:
         assert snapshot(fake, frozenset({"sel"})).clearance("HV") == pytest.approx(0.5)
 
 
+class TestDiffPairGaps:
+    def test_netclass_diff_pair_gap_is_read_when_set(self) -> None:
+        fake = FakeBoard(
+            tracks=[kipy_track("t", "USB_D+", (0, 0), (1, 0))],
+            netclasses={"USB_D+": netclass("USB", diff_pair_gap=0.15)},
+        )
+
+        assert snapshot(fake).diff_pair_gap("USB_D+") == pytest.approx(0.15)
+
+    def test_unset_netclass_diff_pair_gap_is_unknown(self) -> None:
+        fake = FakeBoard(
+            tracks=[kipy_track("t", "USB_D+", (0, 0), (1, 0))],
+            netclasses={"USB_D+": netclass("Bare")},
+        )
+
+        assert snapshot(fake).diff_pair_gap("USB_D+") is None
+
+
 class TestSameNetCopper:
     def test_same_net_pads_vias_tracks_and_copper_shapes(self) -> None:
         fake = FakeBoard(

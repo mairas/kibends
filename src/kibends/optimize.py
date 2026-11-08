@@ -7,8 +7,10 @@ chain on the same side of every obstacle (topology preservation).
 
 Several chains are optimised by alternating bursts: each outer iteration gives
 every chain one burst in turn while the other chains on its layer stand still
-as obstacles, so the same-side guarantee holds between chains too. Moving
-vias follow as blocks of their own (`kibends.via_moves`).
+as obstacles, so the same-side guarantee holds between chains too. The
+coupled sections of differential pairs take their turns after the chains,
+each as its centreline (`kibends.pair_blocks`), and moving vias follow as
+blocks of their own (`kibends.via_moves`).
 """
 
 import math
@@ -16,9 +18,11 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from itertools import pairwise
+from typing import NamedTuple
 
 import numpy as np
 from loguru import logger
+from scipy.spatial import cKDTree
 
 from kibends.bursts import (
     DEFAULT_SETTINGS,
@@ -36,6 +40,7 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
+    IntArray,
     ObstacleField,
     arc_lengths,
     free_vertex_objective,
@@ -49,6 +54,8 @@ from kibends.neighbours import (
     same_layer_neighbours,
 )
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
+from kibends.pair_blocks import PairBlock, PairInput, pair_block
+from kibends.pairs import BendCheck, bend_radii, check_bend_radius, too_tight
 from kibends.via_moves import MovingVias, ViaBurst, via_burst
 from kibends.vias import ViaInput
 
@@ -72,6 +79,10 @@ STRETCHED = 2.0
 # Shape change is measured from each vertex to the other polyline's edges
 # within this many edges of the same index.
 SHAPE_WINDOW = 3
+
+# Offsets from edge k of the vertices its bend radius depends on: the turns
+# at both its ends take the vertices on either side.
+BEND_REACH = np.arange(-1, 3)
 
 
 class Termination(Enum):
@@ -146,14 +157,46 @@ class ViaResult:
 
 
 @dataclass(frozen=True)
+class PairResult:
+    block: PairBlock
+    """The section as the run took it."""
+    centreline: FloatArray
+    fixed: BoolArray
+    """The vertices of `centreline` that simplification keeps: those the run
+    pinned or froze, but the direction pins of a section it moved, as a
+    merged edge stays within the chord tolerance of them."""
+    a: FloatArray
+    b: FloatArray
+    """The two tracks along `centreline`, b running the same way as a; the
+    section's own tracks when the run did nothing."""
+    rejected_edges: int
+    too_close: int
+    """Of `rejected_edges`, the vertex pairs that came closer than the
+    section keeps its parts beyond a turn (`close_to_itself`)."""
+    abnormal_bursts: int
+    frozen: tuple[FrozenVertex, ...]
+    before: PolylineStats
+    """Of the starting centreline."""
+    bend: BendCheck | None
+    """The centreline's bend radius against the limit of the section's
+    widest gap: its routing's for a section held because that bends too
+    tightly, its result's for one the run moved; else None."""
+
+
+@dataclass(frozen=True)
 class RunResult:
     chains: tuple[ChainResult, ...]
     """In the order the chains were given."""
     termination: Termination
     iterations: int
-    """Outer iterations, each giving every chain and via one burst."""
+    """Outer iterations, each giving every chain, pair and via one burst."""
     vias: tuple[ViaResult, ...] = ()
     """In the order the vias were given."""
+    pairs: tuple[PairResult, ...] = ()
+    """In the order the coupled sections were given."""
+    gave_up: tuple[tuple[str, int], ...] = ()
+    """The chains given up on after abnormal bursts in a row, by description,
+    and how many there were."""
 
 
 def optimize(
@@ -195,6 +238,7 @@ def optimize_chains(
     *,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
+    pairs: Sequence[PairInput] = (),
 ) -> RunResult:
     """Minimise the chains' summed energy by alternating bursts, in the given order.
 
@@ -221,15 +265,30 @@ def optimize_chains(
     obstacle terms. A move is undone if it raises the run energy, adds a
     violation to any chain, or puts the via newly inside its clearance. The
     best state holds the vias' positions too, and a via rests like a chain.
+
+    Each of `pairs`, a coupled section of a differential pair, takes its
+    burst after the chains as a chain of its own, its centreline, with the
+    bend-radius hinge added to its energy (`kibends.pair_blocks`). The
+    other chains see its two tracks, the vias its outer extent widened to
+    cover the outer track's mitred corners. It counts in the run energy,
+    the violations guard, the best state and the rest like any chain. A
+    burst moves back the vertices of edges it newly bends below the limit,
+    as it does those of edges that newly cross an obstacle. Resampling can
+    cut a corner into a bend below the limit, which the copper around the
+    section may keep it from rounding, so a centreline may end too tight:
+    its result's `bend` says so. A via's burst never carries one.
     """
     for chain in chains:
         if not (chain.fixed[0] and chain.fixed[-1]):
             raise ValueError("both endpoints of the chain must be fixed")
+    blocks = [pair_block(pair, settings.spacing) for pair in pairs]
+    everything = [*chains, *(block.chain for block in blocks)]
     run = _Run(
-        chains,
+        everything,
         params,
         settings,
-        MovingVias(chains, vias, params, hole_clearance, hole_to_hole),
+        MovingVias(everything, vias, params, hole_clearance, hole_to_hole),
+        blocks,
     )
     if not run.moving and not run.free_vias:
         return run.result(Termination.NOTHING_TO_DO, 0)
@@ -249,17 +308,14 @@ def optimize_chains(
                 return run.result(Termination.NOTHING_TO_DO, 1)
             termination = Termination.CONVERGED
             break
-    for i, streak in enumerate(run.abnormal_streak):
-        if streak >= MAX_ABNORMAL_BURSTS:
-            logger.warning(
-                f"Gave up on {chains[i].centreline.description} after {streak} "
-                "abnormal optimizer bursts in a row; it keeps its best shape"
-            )
-    if run.best_energy >= run.start_energy and any(
-        streak >= MAX_ABNORMAL_BURSTS for streak in run.abnormal_streak
-    ):
+    gave_up = tuple(
+        (everything[i].centreline.description, streak)
+        for i, streak in enumerate(run.abnormal_streak)
+        if streak >= MAX_ABNORMAL_BURSTS
+    )
+    if gave_up and run.best_energy >= run.start_energy:
         termination = Termination.ABNORMAL
-    return run.result(termination, iteration, best=True)
+    return replace(run.result(termination, iteration, best=True), gave_up=gave_up)
 
 
 @dataclass(frozen=True)
@@ -310,6 +366,7 @@ class _Run:
     """One run of `optimize_chains`: every chain's and via's current shape,
     field, energy and rest, and the best state so far.
 
+    The coupled sections of pairs are the last chains, as their centrelines.
     A chain's burst and a via's burst are its steps. Either leaves the run
     in a state that `accept_if_best` takes as the best one if it lowers the
     run energy without adding violations.
@@ -321,12 +378,29 @@ class _Run:
         params: EnergyParams,
         settings: OptimizerSettings,
         vias: MovingVias,
+        pairs: Sequence[PairBlock] = (),
     ) -> None:
         self.chains = chains
         self.params = params
         self.settings = settings
         self.vias = vias
         self.count = len(chains)
+        self.first_pair = self.count - len(pairs)
+        self.pairs = {self.first_pair + k: block for k, block in enumerate(pairs)}
+        self.nets = [
+            block.nets
+            if (block := self.pairs.get(i)) is not None
+            else frozenset({chain.centreline.net})
+            for i, chain in enumerate(chains)
+        ]
+        self.bend_limits = [
+            block.limit if (block := self.pairs.get(i)) is not None else None
+            for i in range(self.count)
+        ]
+        self.aparts = [
+            block.apart if (block := self.pairs.get(i)) is not None else None
+            for i in range(self.count)
+        ]
         self.neighbours = same_layer_neighbours(chains)
         self.reach = obstacle_reach(params)
         self.originals = [chain.centreline.points for chain in chains]
@@ -338,12 +412,8 @@ class _Run:
         ]
         self.dynamic = [
             {
-                j: neighbour_field(
-                    chains[i],
-                    chains[j],
-                    self.originals[j],
-                    self.reach,
-                    self.originals[i],
+                j: self.neighbour_field(
+                    i, self.shown(j, self.originals[j]), self.originals[i]
                 )
                 for j in self.neighbours[i]
             }
@@ -366,6 +436,7 @@ class _Run:
             for points, field in zip(self.originals, self.fields, strict=True)
         ]
         self.rejected_edges = [0] * self.count
+        self.too_close = [0] * self.count
         self.abnormal_bursts = [0] * self.count
         self.abnormal_streak = [0] * self.count
         self.via_count = len(vias.vias)
@@ -380,11 +451,17 @@ class _Run:
         # A burst starts from its chain's polyline resampled; the polyline as
         # the burst left it is what the energy, the guard, the best state and
         # the other chains see.
-        self.held: list[_Shape] = []
-        for original, anchor in zip(self.originals, self.anchors, strict=True):
-            points, mask = resample(original, anchor, settings.spacing)
+        self.states: list[_Shape] = []
+        for i, (original, anchor) in enumerate(
+            zip(self.originals, self.anchors, strict=True)
+        ):
+            # Resampling would put free vertices between a held pair's pins.
+            if (block := self.pairs.get(i)) is not None and block.held:
+                points, mask = original, anchor
+            else:
+                points, mask = resample(original, anchor, settings.spacing)
             moves = not mask.all()
-            self.held.append(
+            self.states.append(
                 _Shape(
                     points if moves else original,
                     mask if moves else anchor,
@@ -393,8 +470,9 @@ class _Run:
                 )
             )
         self.moving = [
-            i for i in range(self.count) if not self.held[i].resampled_anchors.all()
+            i for i in range(self.count) if not self.states[i].resampled_anchors.all()
         ]
+        self.moving_chains = [i for i in self.moving if i < self.first_pair]
         self.shapes = list(self.originals)
         # Whether any step changed a shape by the settled change or more.
         self.moved = False
@@ -406,7 +484,7 @@ class _Run:
         # input's own violations move as the chain tightens.
         self.allowed = [
             violations(s.points, s.anchors, self.fields[i])
-            for i, s in enumerate(self.held)
+            for i, s in enumerate(self.states)
         ]
         self.counts: list[int | None] = list(self.allowed)
         self.energies = [self.chain_energy(i) for i in range(self.count)]
@@ -428,11 +506,11 @@ class _Run:
 
     @property
     def current(self) -> list[FloatArray]:
-        return [s.points for s in self.held]
+        return [s.points for s in self.states]
 
     @property
     def masks(self) -> list[BoolArray]:
-        return [s.anchors for s in self.held]
+        return [s.anchors for s in self.states]
 
     def result(
         self, termination: Termination, iterations: int, *, best: bool = False
@@ -451,7 +529,7 @@ class _Run:
                     frozen=self.frozen[i],
                     before=self.before[i],
                 )
-                for i in range(self.count)
+                for i in range(self.first_pair)
             ),
             termination,
             iterations,
@@ -463,6 +541,61 @@ class _Run:
                 )
                 for v in range(self.via_count)
             ),
+            tuple(
+                self.pair_result(i, block, polylines[i], masks[i], best=best)
+                for i, block in self.pairs.items()
+            ),
+        )
+
+    def pair_result(
+        self,
+        i: int,
+        block: PairBlock,
+        points: FloatArray,
+        mask: BoolArray,
+        *,
+        best: bool,
+    ) -> PairResult:
+        given = block.given
+        moved = best and not block.held
+        a, b = block.offset(points) if best else (given.a.points, given.b.points)
+        return PairResult(
+            block=block,
+            centreline=points,
+            fixed=mask & ~block.direction_pins(points) if moved else mask,
+            a=a,
+            b=b,
+            rejected_edges=self.rejected_edges[i],
+            too_close=self.too_close[i],
+            abnormal_bursts=self.abnormal_bursts[i],
+            frozen=self.frozen[i],
+            before=self.before[i],
+            bend=(
+                check_bend_radius(points, block.gaps.widest, given.a.width)
+                if moved
+                else block.tight_start
+            ),
+        )
+
+    def shown(self, j: int, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
+        """What the others see of chain j at `points`: a pair's two tracks."""
+        block = self.pairs.get(j)
+        if block is None:
+            return [(self.chains[j], points)]
+        return list(zip(block.tracks, block.offset(points), strict=True))
+
+    def neighbour_field(
+        self,
+        i: int,
+        shown: Sequence[tuple[ChainInput, FloatArray]],
+        own_points: FloatArray,
+    ) -> ObstacleField | None:
+        """`shown` as obstacles to chain i at `own_points`."""
+        block = self.pairs.get(i)
+        if block is None:
+            return neighbour_field(self.chains[i], shown, self.reach, own_points)
+        return neighbour_field(
+            block.facing, shown, self.reach, own_points, as_net=block.as_net
         )
 
     def field_of(
@@ -487,13 +620,14 @@ class _Run:
         )
 
     def chain_energy(self, i: int) -> float:
-        shape = self.held[i]
+        shape = self.states[i]
         return total_energy(
             shape.points,
             shape.anchors,
             self.fields[i],
             self.params,
             self.settings.short_edge,
+            self.bend_limits[i],
         )[0]
 
     def run_energy(self) -> float:
@@ -502,7 +636,7 @@ class _Run:
     def counted(self, i: int) -> int:
         number = self.counts[i]
         if number is None:
-            shape = self.held[i]
+            shape = self.states[i]
             number = self.counts[i] = violations(
                 shape.points, shape.anchors, self.fields[i]
             )
@@ -534,24 +668,15 @@ class _Run:
         """Show chain i at its current shape to the chains and vias that see
         it, and measure their energies again."""
         current = self.current
+        shown = self.shown(i, current[i])
         for j in self.neighbours[i]:
-            self.dynamic[j][i] = neighbour_field(
-                self.chains[j],
-                self.chains[i],
-                current[i],
-                self.reach,
-                current[j],
-            )
+            self.dynamic[j][i] = self.neighbour_field(j, shown, current[j])
             self.fields[j] = self.field_of(j)
-            if self.chains[j].centreline.net == self.chains[i].centreline.net:
+            if self.nets[j] & self.nets[i]:
                 # How much of j is left out at a junction depends on the
                 # angle i now leaves it at.
-                self.dynamic[i][j] = neighbour_field(
-                    self.chains[i],
-                    self.chains[j],
-                    current[j],
-                    self.reach,
-                    current[i],
+                self.dynamic[i][j] = self.neighbour_field(
+                    i, self.shown(j, current[j]), current[i]
                 )
                 self.fields[i] = self.field_of(i)
         for j in (i, *self.neighbours[i]):
@@ -565,13 +690,15 @@ class _Run:
         settings = self.settings
         rest = self.rests[i]
         rest.wake(self.energies[i])
-        shape = self.held[i]
+        shape = self.states[i]
         burst = _burst(
             shape.resampled,
             shape.resampled_anchors,
             self.fields[i],
             self.params,
             settings,
+            self.bend_limits[i],
+            self.aparts[i],
         )
         if burst.abnormal:
             self.abnormal_bursts[i] += 1
@@ -583,10 +710,11 @@ class _Run:
         else:
             self.abnormal_streak[i] = 0
         self.rejected_edges[i] += burst.rejected_edges
+        self.too_close[i] += burst.too_close
         shape_change = _shape_change(self.shapes[i], burst.points)
         self.moved |= shape_change >= settings.settled_change
         self.shapes[i] = burst.points
-        self.held[i] = _Shape(
+        self.states[i] = _Shape(
             burst.points,
             shape.resampled_anchors,
             *resample(burst.points, shape.resampled_anchors, settings.spacing),
@@ -600,7 +728,9 @@ class _Run:
             self.abnormal_streak[i] >= MAX_ABNORMAL_BURSTS
             or (
                 not burst.abnormal
-                and burst.rejected_edges == 0
+                # A section pressed onto its own other parts has moves to
+                # reject in every burst, which no energy term pushes back.
+                and burst.rejected_edges == burst.too_close
                 and (shape_change < settings.settled_change or rest.stalled(settings))
             ),
             self.energies[i],
@@ -611,7 +741,7 @@ class _Run:
         vias = self.vias
         rest = self.via_rests[v]
         contacts = vias.contacts(
-            v, self.positions, self.current, self.moving, self.settings
+            v, self.positions, self.current, self.moving_chains, self.settings
         )
         carried = {*vias.incident[v], *contacts}
         # The block's energy sums the chains it carries: with a chain joining
@@ -628,7 +758,7 @@ class _Run:
         starts, anchors = self.current, self.masks
         for i in (*vias.incident[v], *contacts):
             if i in self.moving and self.rests[i].settled:
-                shape = self.held[i]
+                shape = self.states[i]
                 starts[i], anchors[i] = shape.resampled, shape.resampled_anchors
         # A chain pressing on the via counts the two against each other in
         # the burst itself.
@@ -677,7 +807,7 @@ class _Run:
         settings = self.settings
         old = self.positions[v]
         changes = {
-            i: _shape_change(self.held[i].points, points)
+            i: _shape_change(self.states[i].points, points)
             for i, points in burst.polylines.items()
         }
         change = max(
@@ -685,7 +815,7 @@ class _Run:
         )
         if change == 0.0:
             return 0.0
-        saved = {i: self.held[i] for i in burst.polylines}
+        saved = {i: self.states[i] for i in burst.polylines}
         affected = {j for i in burst.polylines for j in (i, *self.neighbours[i])} | set(
             vias.chains_near(v)
         )
@@ -694,9 +824,9 @@ class _Run:
         inside_before = vias.distance(v, self.positions, self.current)
         self.positions[v] = burst.position
         for i, points in burst.polylines.items():
-            shape = self.held[i]
+            shape = self.states[i]
             mask = burst.anchors[i]
-            self.held[i] = (
+            self.states[i] = (
                 _Shape(points, mask, *resample(points, mask, settings.spacing))
                 if i in self.moving
                 else replace(shape, points=points, anchors=mask)
@@ -710,13 +840,15 @@ class _Run:
         ):
             self.positions[v] = old
             for i, shape in saved.items():
-                self.held[i] = shape
+                self.states[i] = shape
             self.via_moved(v, burst.polylines)
             return 0.0
         self.moved |= change >= settings.settled_change
         held = {
             *vias.incident[v],
-            *vias.contacts(v, self.positions, self.current, self.moving, settings),
+            *vias.contacts(
+                v, self.positions, self.current, self.moving_chains, settings
+            ),
         }
         for i in held.intersection(changes):
             self.rests[i].settle(True, self.energies[i])
@@ -924,29 +1056,44 @@ def _clearance(
     return {"min_clearance": float(distance.min()), "mean_clearance": mean}
 
 
+@dataclass(frozen=True)
+class _ChainBurst(Burst):
+    too_close: int
+    """How many of `rejected_edges` were vertex pairs that came too close to
+    each other (`close_to_itself`), out of a normally ended burst."""
+
+
 def _burst(
     points: FloatArray,
     fixed: BoolArray,
     field: ObstacleField,
     params: EnergyParams,
     settings: OptimizerSettings,
-) -> Burst:
-    """One bounded L-BFGS-B run, retried with halved bounds where edges crossed."""
+    bend_limit: float | None = None,
+    apart: float | None = None,
+) -> _ChainBurst:
+    """One bounded L-BFGS-B run, retried with halved bounds where edges
+    crossed or, with a `bend_limit`, bent below it, or, with `apart`, where
+    the polyline came that close to itself."""
     free = ~fixed
     distance, _ = field.signed_distance(points)
     clear_before = field.segments_clear(points[:-1], points[1:])
+    too_close: list[int] = []
 
     def revert(x: FloatArray) -> tuple[BoolArray, int]:
         candidate = points.copy()
         candidate[free] = x.reshape(-1, 2)
-        reverted, crossings = _revert_new_crossings(
-            candidate, points, free, clear_before, field
+        reverted, rejected = _revert_new_crossings(
+            candidate, points, free, clear_before, field, bend_limit, apart
         )
+        too_close.append(rejected.too_close)
         x[:] = candidate[free].ravel()
-        return np.repeat(reverted[free], 2), crossings
+        return np.repeat(reverted[free], 2), rejected.total
 
     bounded = bounded_burst(
-        free_vertex_objective(points, fixed, field, params, settings.short_edge),
+        free_vertex_objective(
+            points, fixed, field, params, settings.short_edge, bend_limit
+        ),
         points[free].ravel(),
         np.repeat(half_side(distance[free], settings), 2),
         revert,
@@ -954,7 +1101,9 @@ def _burst(
     )
     result = points.copy()
     result[free] = bounded.points.reshape(-1, 2)
-    return replace(bounded, points=result)
+    # An abnormally ended burst stops at its last check without counting it.
+    counted = too_close[:-1] if bounded.abnormal else too_close
+    return _ChainBurst(result, bounded.rejected_edges, bounded.abnormal, sum(counted))
 
 
 def _shape_change(before: FloatArray, after: FloatArray) -> float:
@@ -995,24 +1144,85 @@ def _arc_fractions(points: FloatArray) -> FloatArray:
     return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
 
 
+def close_to_itself(points: FloatArray, apart: float) -> tuple[IntArray, FloatArray]:
+    """The pairs of vertices closer than `apart` that lie more than half a
+    circle `apart` across from each other along the polyline, and their
+    distances: there it comes back onto itself rather than turning, as a
+    turn tighter than that circle would."""
+    pairs = cKDTree(points).query_pairs(apart, output_type="ndarray")
+    if not len(pairs):
+        return pairs, np.empty(0)
+    arc = arc_lengths(points)
+    i, j = pairs[:, 0], pairs[:, 1]
+    beyond = np.abs(arc[i] - arc[j]) > math.pi / 2 * apart
+    pairs = pairs[beyond]
+    i, j = pairs[:, 0], pairs[:, 1]
+    return pairs, np.hypot(*(points[i] - points[j]).T)
+
+
+class _Rejected(NamedTuple):
+    total: int
+    """Edges that newly crossed or bent too tightly, and vertex pairs that
+    came too close."""
+    too_close: int
+
+
 def _revert_new_crossings(
     candidate: FloatArray,
     original: FloatArray,
     free: BoolArray,
     clear_before: BoolArray,
     field: ObstacleField,
-) -> tuple[BoolArray, int]:
-    """Move the free ends of newly crossing edges back, in place, until none cross.
+    bend_limit: float | None = None,
+    apart: float | None = None,
+) -> tuple[BoolArray, _Rejected]:
+    """Move the free ends of newly crossing edges back, in place, until none
+    cross; with a `bend_limit` the vertices that set the radius of edges
+    newly bent below it, until none is; and with `apart` the vertices that
+    came closer than that to the polyline's own parts beyond a turn
+    (`close_to_itself`), or than either started from them where it started
+    closer, but never than the two started: both vertices of such a pair.
 
-    Returns the mask of reverted vertices and the number of edges that crossed
-    in the candidate as given.
+    Returns the mask of reverted vertices and what the candidate as given
+    did.
     """
+    tight_before = (
+        None if bend_limit is None else too_tight(bend_radii(original), bend_limit)
+    )
+    nearest = np.full(len(original), apart or 0.0)
+    if apart is not None:
+        pairs, distance = close_to_itself(original, apart)
+        np.minimum.at(nearest, pairs[:, 0], distance)
+        np.minimum.at(nearest, pairs[:, 1], distance)
+    first: list[_Rejected] = []
 
     def crossings(candidate: FloatArray) -> tuple[int, BoolArray]:
         crossing = clear_before & ~field.segments_clear(candidate[:-1], candidate[1:])
         ends = np.zeros(len(candidate), dtype=bool)
         ends[:-1] |= crossing
         ends[1:] |= crossing
-        return int(crossing.sum()), ends & free
+        count = int(crossing.sum())
+        close = 0
+        if bend_limit is not None and tight_before is not None:
+            tight = too_tight(bend_radii(candidate), bend_limit) & ~tight_before
+            around = np.flatnonzero(tight)[:, None] + BEND_REACH
+            ends[np.clip(around, 0, len(candidate) - 1).ravel()] = True
+            count += int(tight.sum())
+        if apart is not None:
+            pairs, distance = close_to_itself(candidate, apart)
+            i, j = pairs[:, 0], pairs[:, 1]
+            # At most the pair's own starting distance, so a pair moved back
+            # whole is never too close, even one that lies beyond a turn only
+            # along the candidate.
+            started = np.hypot(*(original[i] - original[j]).T)
+            floor = np.minimum(np.maximum(nearest[i], nearest[j]), started)
+            closer = distance < floor - INSIDE_TOLERANCE
+            ends[i[closer]] = ends[j[closer]] = True
+            close = int(closer.sum())
+            count += close
+        if not first:
+            first.append(_Rejected(count, close))
+        return count, ends & free
 
-    return revert_until_clear(candidate, original, crossings)
+    reverted, _ = revert_until_clear(candidate, original, crossings)
+    return reverted, first[0]

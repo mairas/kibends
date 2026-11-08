@@ -36,6 +36,7 @@ from kibends.run import (
     ChainReport,
     NoBoardError,
     OptimizerReport,
+    PairReport,
     PlotUnavailableError,
     SmoothOptions,
     ViaReport,
@@ -138,22 +139,24 @@ def smooth(options: SmoothOptions) -> None:
 
 
 def format_statistics(report: OptimizerReport) -> str:
-    """One statistics block per chain, a line per movable via and the
-    optimizer's outcome."""
+    """One statistics block per chain and per differential pair, a line per
+    movable via and the optimizer's outcome."""
     some_changed = any(c.changed for c in report.chains)
     blocks = [_chain_block(c, some_changed) for c in report.chains]
+    blocks += [_pair_block(p) for p in report.pairs]
     if report.vias:
         blocks.append("\n".join(_via_line(v) for v in report.vias))
     several = len(report.chains) > 1
-    rejected = sum(c.rejected_edges for c in report.chains) + sum(
-        v.rejected_edges for v in report.vias
+    rejected = (
+        sum(c.rejected_edges for c in report.chains)
+        + sum(v.rejected_edges for v in report.vias)
+        + sum(p.rejected_edges for p in report.pairs)
     )
     # A run can converge while a chain gave up after abnormal bursts.
     abnormal = [
-        f"{c.abnormal_bursts} abnormal burst{'' if c.abnormal_bursts == 1 else 's'}"
-        + (f" in {c.description}" if several else "")
-        for c in report.chains
-        if c.abnormal_bursts > 0
+        f"{n} abnormal burst{'' if n == 1 else 's'}"
+        + (f" in {description}" if several else "")
+        for description, n in _abnormal(report)
     ]
     outcome = ", ".join(
         [
@@ -189,12 +192,11 @@ def report_warnings(report: OptimizerReport) -> list[str]:
         for v in report.vias
         if v.frozen
     ]
+    warnings += [_frozen_warning(v) for p in report.pairs for v in p.frozen]
     warnings += [
-        f"L-BFGS-B ended {c.abnormal_bursts} burst"
-        f"{'' if c.abnormal_bursts == 1 else 's'} of {c.description} abnormally; "
-        "the run judged each like any other burst"
-        for c in report.chains
-        if c.abnormal_bursts > 0
+        f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of {description} "
+        "abnormally; the run judged each like any other burst"
+        for description, n in _abnormal(report)
     ]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
@@ -202,6 +204,21 @@ def report_warnings(report: OptimizerReport) -> list[str]:
             "outer iterations without converging; using the best result found"
         )
     return warnings
+
+
+def _abnormal(report: OptimizerReport) -> list[tuple[str, int]]:
+    """What had abnormal bursts, and how many."""
+    return [
+        (description, n)
+        for description, n in (
+            *((c.description, c.abnormal_bursts) for c in report.chains),
+            *(
+                (f"the pair {' and '.join(p.nets)}", p.abnormal_bursts)
+                for p in report.pairs
+            ),
+        )
+        if n > 0
+    ]
 
 
 def _frozen_warning(v: FrozenVertex) -> str:
@@ -238,17 +255,46 @@ def _chain_block(chain: ChainReport, some_changed: bool) -> str:
             f"{after.mean_clearance:.4f}",
         ),
     ]
-    label_width = max(len(r[0]) for r in rows)
     lines = [
         f"{chain.tracks} tracks of {chain.net} on {chain.layer}, "
         f"{chain.width:g} mm wide",
-        f"{'':{label_width}}  {'before':>10}  {'after':>10}",
-        *(f"{name:{label_width}}  {b:>10}  {a:>10}" for name, b, a in rows),
+        *_table(rows),
         f"Frozen vertices: {len(chain.frozen)}",
     ]
     if some_changed and not chain.changed:
         lines.append("Unchanged: left out of the DRC check and the commit")
     return "\n".join(lines)
+
+
+def _pair_block(pair: PairReport) -> str:
+    low, high = pair.gap_after
+    rows = [
+        ("Gap (mm)", f"{pair.gap:.3f}", f"{low:.3f}-{high:.3f}"),
+        ("Skew (mm)", f"{pair.skew_before:.3f}", f"{pair.skew_after:.3f}"),
+    ]
+    sections = f"{pair.sections} coupled section{'' if pair.sections == 1 else 's'}"
+    lines = [
+        f"Differential pair {' and '.join(pair.nets)} on {pair.layer}, {sections}",
+        *_table(rows),
+    ]
+    if pair.held:
+        one = pair.held == 1
+        lines.append(
+            f"{pair.held} coupled section{'' if one else 's'} held as routed, "
+            "for same-net copper between its ends, routing that bends too "
+            "tightly, or copper or its own parts beyond a turn that kept it "
+            "from rounding a corner"
+        )
+    return "\n".join(lines)
+
+
+def _table(rows: Sequence[tuple[str, str, str]]) -> list[str]:
+    """Labelled before and after columns."""
+    label_width = max(len(r[0]) for r in rows)
+    return [
+        f"{'':{label_width}}  {'before':>10}  {'after':>10}",
+        *(f"{name:{label_width}}  {b:>10}  {a:>10}" for name, b, a in rows),
+    ]
 
 
 def _verdict(found: drc.Introduced) -> str:

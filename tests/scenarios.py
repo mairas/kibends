@@ -9,9 +9,13 @@ from dataclasses import dataclass, replace
 import numpy as np
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Union, Walls
 
+from kibends.chain import Chain
 from kibends.energy import EnergyParams, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
+from kibends.pair_blocks import PairInput
+from kibends.pair_layout import split_pair
+from kibends.pairs import find_pair, offset_pair
 from kibends.snapshot import Via, ViaKind
 from kibends.vias import ChainEnd, ViaInput
 
@@ -619,4 +623,188 @@ def via_across_chain(nudge: float = 0.0) -> ViasScenario:
         ),
         (joining(through_via("v", "N", CROSSING_VIA), 0),),
         replace(PARAMS, repulsion=0.5),
+    )
+
+
+DP_GAP = 0.15
+DP_PITCH = PAIR_WIDTH + DP_GAP
+"""Between the two tracks' centrelines."""
+DP_HALF_EXTENT = PAIR_WIDTH + DP_GAP / 2
+"""From a pair's centreline to either track's outer edge."""
+DP_PAD = 0.3
+"""Radius of the round pads pairs pass, mm."""
+DP_CHORD_TOLERANCE = 0.005
+
+
+@dataclass(frozen=True)
+class PairsScenario:
+    """Coupled sections of differential pairs, and chains, on one layer."""
+
+    name: str
+    pairs: tuple[PairInput, ...]
+    chains: tuple[ChainInput, ...] = ()
+    params: EnergyParams = PARAMS
+
+
+def pad_for_pair(x: float, y: float) -> Disc:
+    """A round pad of another net as an obstacle to a pair's centreline."""
+    return Disc(x, y, DP_PAD + PAIR_CLEARANCE + DP_HALF_EXTENT)
+
+
+def pad_for_track(x: float, y: float) -> Disc:
+    """The same pad as an obstacle to one track."""
+    return Disc(x, y, DP_PAD + PAIR_CLEARANCE + PAIR_WIDTH / 2)
+
+
+def tracks(*centreline: tuple[float, float]) -> tuple[FloatArray, FloatArray]:
+    """Tracks P and N of a pair along `centreline`, P on its right."""
+    return offset_pair(path(*centreline), DP_GAP, PAIR_WIDTH)
+
+
+def coupled(field: ObstacleField, *centreline: tuple[float, float]) -> PairInput:
+    """A section of pair P/N along `centreline`, P on its right."""
+    p, n = tracks(*centreline)
+    return PairInput(
+        ChainCentreline("P", "P", PAIR_WIDTH, PAIR_CLEARANCE, p),
+        ChainCentreline("N", "N", PAIR_WIDTH, PAIR_CLEARANCE, n),
+        endpoints_fixed(p),
+        endpoints_fixed(n),
+        DP_GAP,
+        "F.Cu",
+        field,
+    )
+
+
+PAIR_PAD = (5.0, 0.5)
+OVER_PAD = ((0.0, 0.0), (3.0, 0.0), (4.0, 2.0), (6.0, 2.0), (7.0, 0.0), (10.0, 0.0))
+
+
+def pair_over_pad() -> PairsScenario:
+    """A pair detouring high over a pad that sits just above its straight line."""
+    return PairsScenario(
+        "pair-over-pad", (coupled(pad_for_pair(*PAIR_PAD), *OVER_PAD),)
+    )
+
+
+def centreline_over_pad() -> ChainsScenario:
+    """The centreline of `pair_over_pad` as one chain of the pair's extent."""
+    return ChainsScenario(
+        "centreline-over-pad",
+        (
+            ChainInput(
+                ChainCentreline(
+                    "centreline",
+                    "PN",
+                    2 * PAIR_WIDTH + DP_GAP,
+                    PAIR_CLEARANCE,
+                    path(*OVER_PAD),
+                ),
+                "F.Cu",
+                endpoints_fixed(path(*OVER_PAD)),
+                pad_for_pair(*PAIR_PAD),
+            ),
+        ),
+    )
+
+
+PAIR_BAR = ((4.0, 1.0), (5.0, 1.5), (6.0, 1.0))
+
+
+def pair_tent() -> PairsScenario:
+    """A pair arching over a chain of another net that blocks its shortcut,
+    the chain bowed up into the arch."""
+    return PairsScenario(
+        "pair-tent",
+        (coupled(FreeSpace(), (0.0, 0.0), (3.0, 3.0), (7.0, 3.0), (10.0, 0.0)),),
+        (selected("bar", "B", FreeSpace(), *PAIR_BAR),),
+    )
+
+
+def pair_corner(stiffness: float = 0.1) -> PairsScenario:
+    """A pair turning a sharp corner, so soft that its centreline would bend
+    tighter than the inner track allows."""
+    return PairsScenario(
+        f"pair-corner-stiffness-{stiffness}",
+        (coupled(FreeSpace(), (0.0, 0.0), (2.0, 0.0), (2.0, 2.0)),),
+        params=replace(PARAMS, stiffness=stiffness),
+    )
+
+
+UNEVEN_END = 0.012
+"""How much farther out N's last edge runs than the rest of the pair, mm."""
+
+
+def pair_uneven_end() -> PairsScenario:
+    """The pair over the pad with N's last edge moved out: the gap at that
+    end is wider than the pair's median gap."""
+    (section,) = pair_over_pad().pairs
+    n = section.b.points.copy()
+    n[-2:, 1] -= UNEVEN_END
+    return PairsScenario(
+        "pair-uneven-end", (replace(section, b=replace(section.b, points=n)),)
+    )
+
+
+def pair_chamfered() -> PairsScenario:
+    """A pair whose sections start and end in short 45° chamfers."""
+    return PairsScenario(
+        "pair-chamfered",
+        (
+            coupled(
+                FreeSpace(),
+                (0.0, 0.0),
+                (0.05, 0.05),
+                (2.0, 1.0),
+                (4.0, 0.05),
+                (4.05, 0.0),
+            ),
+        ),
+    )
+
+
+SPLIT_PAD = (5.0, 0.0)
+SPLIT_DETOUR = 0.9
+
+
+def pair_split() -> PairsScenario:
+    """A pair of two arched coupled sections, split around a pad between
+    them: P passes it below, N above."""
+    p1, n1 = tracks((0.0, 0.0), (2.0, 0.6), (4.0, 0.0))
+    p2, n2 = tracks((6.0, 0.0), (8.0, 0.6), (10.0, 0.0))
+    detour = SPLIT_DETOUR
+    p = np.concatenate([p1, path((4.5, detour), (5.5, detour)), p2])
+    n = np.concatenate([n1, path((4.5, -detour), (5.5, -detour)), n2])
+
+    def whole(net: str, points: FloatArray) -> Chain:
+        return Chain(
+            tuple((float(x), float(y)) for x, y in points),
+            tuple(i in (0, len(points) - 1) for i in range(len(points))),
+            PAIR_WIDTH,
+            "F.Cu",
+            net,
+            (net,),
+        )
+
+    pair = find_pair(whole("P", p), whole("N", n), DP_CHORD_TOLERANCE)
+    assert pair is not None
+    a, b = (
+        ChainInput(
+            ChainCentreline(net, net, PAIR_WIDTH, PAIR_CLEARANCE, track.points),
+            "F.Cu",
+            track.pinned,
+            pad_for_track(*SPLIT_PAD),
+        )
+        for net, track in (("P", pair.a), ("N", pair.b))
+    )
+
+    def pad(
+        _layer: str, _a: ChainCentreline, _b: ChainCentreline, _gap: float
+    ) -> ObstacleField:
+        return pad_for_pair(*SPLIT_PAD)
+
+    sections, pieces_a, pieces_b = split_pair(pair, a, b, pad)
+    return PairsScenario(
+        "pair-split",
+        tuple(sections),
+        tuple(piece for _, piece in (*pieces_a, *pieces_b)),
     )

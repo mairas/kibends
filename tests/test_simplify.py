@@ -5,6 +5,7 @@ import pytest
 import scenarios
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from scenarios import (
+    DP_HALF_EXTENT,
     PAIR_CLEARANCE,
     PAIR_WIDTH,
     PARAMS,
@@ -15,10 +16,18 @@ from scenarios import (
 )
 from shapely.geometry import LineString
 
-from kibends.bursts import OptimizerSettings
+from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline
-from kibends.optimize import RunResult, measure, optimize, optimize_chains
+from kibends.obstacles import ChainCentreline, chain_obstacles
+from kibends.optimize import (
+    ChainResult,
+    RunResult,
+    Termination,
+    measure,
+    optimize,
+    optimize_chains,
+)
+from kibends.pair_blocks import pair_block
 from kibends.simplify import (
     DEFAULT_CHORD_TOLERANCE,
     cutting_chains,
@@ -206,3 +215,77 @@ def test_merged_edges_cutting_into_a_neighbour_are_found() -> None:
     )
 
     assert cutting == [0]
+
+
+BEND = 1.0
+"""Radius of a coupled section's arc, mm."""
+BEND_STEP = 0.02
+"""rad between the arc's vertices."""
+SECTION_TOLERANCE = 0.05
+ROOM = 3e-3
+"""mm beyond clearance: room for the outer track's corners at a few merged
+vertices, less than the chord tolerance would take."""
+
+
+def arc_section_beside_a_wall() -> tuple[FloatArray, ChainCentreline]:
+    """A coupled section's centreline bending through 90° at `BEND`, and a
+    track of another net beside its outer track at clearance."""
+    angles = np.arange(0.0, np.pi / 2 + BEND_STEP / 2, BEND_STEP)
+    arc = BEND * np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    outside = BEND + DP_HALF_EXTENT + PAIR_CLEARANCE + PAIR_WIDTH / 2 + ROOM
+    wall = ChainCentreline(
+        "wall", "W", PAIR_WIDTH, PAIR_CLEARANCE, arc / BEND * outside
+    )
+    return arc, wall
+
+
+def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> None:
+    arc, wall = arc_section_beside_a_wall()
+    probe = scenarios.coupled(FreeSpace(), *(tuple(p) for p in arc))
+    facing = pair_block(probe, SPACING).facing.centreline
+    field = chain_obstacles(facing.net, facing.width, PAIR_CLEARANCE, [wall])
+    block = pair_block(replace(probe, field=field), SPACING)
+    line = block.chain.centreline.points
+    fixed = np.zeros(len(line), dtype=bool)
+    fixed[[0, -1]] = True
+    run = RunResult(
+        (ChainResult(line, fixed, 0, 0, (), measure(line, field, SPACING)),),
+        Termination.CONVERGED,
+        1,
+    )
+
+    (centreline,) = simplify_chains(
+        [replace(block.facing, field=field)],
+        run,
+        PARAMS,
+        SECTION_TOLERANCE,
+        sections={0: block},
+    )
+
+    assert len(centreline) < len(line)
+    keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
+    for track in block.offset_kept(line, centreline):
+        assert LineString(track).distance(LineString(wall.points)) >= keep
+
+
+def test_only_an_end_routed_at_another_gap_bounds_a_taper() -> None:
+    uneven = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
+    even = pair_block(scenarios.pair_over_pad().pairs[0], SPACING)
+
+    bounds = uneven.taper_bounds(uneven.chain.centreline.points)
+
+    (bound,) = np.flatnonzero(bounds)
+    assert bound > len(bounds) / 2
+    assert not even.taper_bounds(even.chain.centreline.points).any()
+
+
+def test_kept_vertices_offset_at_their_optimised_gaps() -> None:
+    block = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
+    line = block.chain.centreline.points
+    every = block.offset_kept(line, line)
+    kept = line[[0, len(line) // 2, -1]]
+
+    for whole, track in zip(block.offset(line), every, strict=True):
+        np.testing.assert_array_equal(track, whole)
+    for track in block.offset_kept(line, kept):
+        assert len(track) == len(kept)

@@ -8,7 +8,7 @@ neither keeps clear of the copper it connects to.
 """
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -74,7 +74,7 @@ def neighbour_fields(
         for j in others
         if (
             field := neighbour_field(
-                chains[i], chains[j], polylines[j], reach, own_points
+                chains[i], [(chains[j], polylines[j])], reach, own_points
             )
         )
         is not None
@@ -91,17 +91,37 @@ def with_moved_ends(start: FloatArray, current: FloatArray) -> FloatArray:
 
 def neighbour_field(
     own: ChainInput,
-    other: ChainInput,
-    points: FloatArray,
+    shown: Iterable[tuple[ChainInput, FloatArray]],
     reach: float,
     own_points: FloatArray | None = None,
+    *,
+    as_net: Mapping[str, ChainInput] | None = None,
 ) -> ObstacleField | None:
-    """`other` at `points` as an obstacle to `own` at `own_points`, by default
-    its starting polyline, or None if nothing is left."""
-    parts = neighbour_centrelines(own, other, points, reach, own_points)
+    """The chains of `shown`, each at its points, as obstacles to `own` at
+    `own_points`, by default its starting polyline, in one field; None if
+    nothing is left.
+
+    A chain of a net in `as_net`, by default only `own`'s, is left out near
+    where it touches `own` as that net's chain (`neighbour_centrelines`).
+    Where that stands for `own` under another net, as a pair's centreline
+    stands for either track, the chain keeps the larger of the two
+    clearances from the rest of it.
+    """
+    me = own.centreline
+    nets = {me.net: own} if as_net is None else as_net
+    parts: list[ChainCentreline] = []
+    for other, points in shown:
+        them = other.centreline
+        mine = nets.get(them.net)
+        if mine is None:
+            parts.append(replace(them, points=points))
+            continue
+        margin = 0.0 if them.net == me.net else max(me.clearance, them.clearance)
+        parts += neighbour_centrelines(
+            mine, other, points, reach, own_points, margin=margin
+        )
     if not parts:
         return None
-    me = own.centreline
     return chain_obstacles(me.net, me.width, me.clearance, parts)
 
 
@@ -111,6 +131,7 @@ def neighbour_centrelines(
     points: FloatArray,
     reach: float,
     own_points: FloatArray | None = None,
+    margin: float = 0.0,
 ) -> list[ChainCentreline]:
     """The parts of `other` at `points` that are obstacles to `own`.
 
@@ -119,7 +140,8 @@ def neighbour_centrelines(
     the other's copper. Near such a touch both must leave it, so the other
     is left out on each side of its pin as far as it lies within its
     inflation plus `reach` of `own` at `own_points`, by default its starting
-    polyline.
+    polyline. A caller that keeps a clearance from the rest of `other`
+    widens its inflation by that `margin`.
     """
     me, them = own.centreline, other.centreline
     whole = [replace(them, points=points)]
@@ -129,7 +151,7 @@ def neighbour_centrelines(
     if not touches:
         return whole
     mine = me.points if own_points is None else own_points
-    clear = (me.width + them.width) / 2 + reach
+    clear = (me.width + them.width) / 2 + reach + margin
     arc = arc_lengths(points)
     left_out: list[tuple[float, float]] = []
     for at_own, at_other in touches:

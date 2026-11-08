@@ -39,6 +39,7 @@ from kibends.obstacles import (
     Obstacle,
     Obstacles,
     build_obstacles,
+    build_pair_obstacles,
     chain_obstacles,
 )
 
@@ -239,6 +240,95 @@ class TestObstacleSet:
         zone = kipy_zone(kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu], rule_area=False)
 
         assert obstacles_of(FakeBoard(zones=[zone])).items == ()
+
+
+PAIR_GAP = 0.15
+PAIR_HALF_EXTENT = WIDTH + PAIR_GAP / 2
+"""From a pair's centreline to the outer edge of either track."""
+
+
+def pair_track(net: str, y: float) -> ChainCentreline:
+    """A straight section track from x = 0 to 5."""
+    return ChainCentreline(net, net, WIDTH, DEFAULT_CLEARANCE, points((0, y), (5, y)))
+
+
+PAIR_TRACKS: list[kbt.Track | kbt.ArcTrack] = [
+    kipy_track("P", "P", (0, 0), (5, 0)),
+    kipy_track("N", "N", (0, WIDTH + PAIR_GAP), (5, WIDTH + PAIR_GAP)),
+    kipy_track("P fan-out", "P", (5, 0), (6, -1)),
+]
+
+
+def pair_obstacles_of(fake: FakeBoard, **clearances: float) -> Obstacles:
+    snap = layer_snapshot(fake, LAYER, frozenset({"P", "N", "P fan-out"}))
+    pitch = WIDTH + PAIR_GAP
+    return build_pair_obstacles(
+        snap, pair_track("P", 0.0), pair_track("N", pitch), PAIR_GAP, **clearances
+    )
+
+
+class TestPairObstacleSet:
+    def test_other_net_copper_keeps_the_larger_clearance_from_the_outer_edge(
+        self,
+    ) -> None:
+        fake = FakeBoard(
+            pads=[kipy_pad("hv", "HV", 2, 3), kipy_pad("gnd", "GND", 4, 3)],
+            tracks=PAIR_TRACKS,
+            netclasses={"HV": netclass("HighVoltage", 0.5), "N": netclass("DP", 0.3)},
+        )
+
+        assert by_description(pair_obstacles_of(fake)) == {
+            "pad hv": pytest.approx(0.5 + PAIR_HALF_EXTENT),
+            "pad gnd": pytest.approx(0.3 + PAIR_HALF_EXTENT),
+        }
+
+    def test_own_nets_copper_is_an_obstacle_unless_the_pair_connects_to_it(
+        self,
+    ) -> None:
+        fake = FakeBoard(
+            pads=[
+                kipy_pad("p end", "P", 0, 0, pad_type=PadType.PT_PTH, drill=0.3),
+                kipy_pad("n end", "N", 5, WIDTH + PAIR_GAP),
+                kipy_pad("p loose", "P", 2, 2, pad_type=PadType.PT_PTH, drill=0.3),
+            ],
+            tracks=[
+                *PAIR_TRACKS,
+                kipy_track("n stub", "N", (0, WIDTH + PAIR_GAP), (0, 2)),
+                kipy_track("n loose", "N", (3, 2), (4, 2)),
+            ],
+            vias=[kipy_via("p via", "P", 5, 0), kipy_via("n via", "N", 1, -2)],
+        )
+
+        assert by_description(pair_obstacles_of(fake, hole_clearance=0.3)) == {
+            "pad p loose": pytest.approx(DEFAULT_CLEARANCE + PAIR_HALF_EXTENT),
+            "hole of pad p loose": pytest.approx(0.15 + 0.3 + PAIR_HALF_EXTENT),
+            "track n loose": pytest.approx(HALF + DEFAULT_CLEARANCE + PAIR_HALF_EXTENT),
+            "via n via": pytest.approx(0.3 + DEFAULT_CLEARANCE + PAIR_HALF_EXTENT),
+            "hole of via n via": pytest.approx(0.15 + 0.3 + PAIR_HALF_EXTENT),
+        }
+
+    def test_copper_a_fan_out_connects_to_stays_an_obstacle(self) -> None:
+        fake = FakeBoard(pads=[kipy_pad("p fan-out", "P", 6, -1)], tracks=PAIR_TRACKS)
+
+        obstacles = pair_obstacles_of(fake)
+
+        assert by_description(obstacles) == {
+            "pad p fan-out": pytest.approx(DEFAULT_CLEARANCE + PAIR_HALF_EXTENT)
+        }
+
+    def test_board_edge_and_keepouts_keep_from_the_outer_edge(self) -> None:
+        fake = FakeBoard(
+            zones=[kipy_zone(kipy_rect(0, 3, 2, 4), [BL.BL_F_Cu])],
+            shapes=edge_segments([(-10, -10), (10, -10), (10, 10), (-10, 10)]),
+        )
+
+        obstacles = pair_obstacles_of(fake, edge_clearance=0.4)
+
+        assert by_description(obstacles) == {
+            "track keepout": pytest.approx(PAIR_HALF_EXTENT)
+        }
+        inside = np.array([[10.0 - 0.4 - PAIR_HALF_EXTENT, 0.0]])
+        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(0.0, abs=1e-9)
 
 
 class TestBoardEdge:
