@@ -14,6 +14,7 @@ import itertools
 import math
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import numpy as np
 import shapely
@@ -347,6 +348,13 @@ class ChainCentreline:
     """Its polyline, (n, 2) in mm."""
 
 
+class NearestEdge(NamedTuple):
+    distance: FloatArray
+    gradient: FloatArray
+    edge: IntArray
+    """The edge nearest each point once inflated, -1 where none is in reach."""
+
+
 class ChainField:
     """Signed distance to other chains' inflated centrelines, and edge checks.
 
@@ -392,11 +400,18 @@ class ChainField:
         Points farther than `reach` from every inflated edge get +inf and a
         zero gradient.
         """
+        nearest = self.nearest(points, reach)
+        return nearest.distance, nearest.gradient
+
+    def nearest(self, points: FloatArray, reach: float = math.inf) -> NearestEdge:
+        """`signed_distance`, and the index of the edge that answers each
+        point, -1 where none does."""
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
         distance = np.full(len(coords), np.inf)
         gradient = np.zeros((len(coords), 2))
+        edges = np.full(len(coords), -1, dtype=np.intp)
         if self._tree is None or not len(coords):
-            return distance, gradient
+            return NearestEdge(distance, gradient, edges)
         query = _complex(coords)
         if math.isfinite(reach):
             # An edge is within reach once inflated only if it is within reach
@@ -419,7 +434,7 @@ class ChainField:
             )
             point_limit = limits[point]
         if not len(point):
-            return distance, gradient
+            return NearestEdge(distance, gradient, edges)
         offset = _offsets(query[point], self._starts[edge], self._along[edge])
         raw = np.abs(offset)
         candidate = np.where(
@@ -430,7 +445,8 @@ class ChainField:
         np.minimum.at(distance, point, candidate)
         best = np.flatnonzero((candidate == distance[point]) & (candidate < np.inf))
         gradient[point[best]] = self._unit_gradient(offset[best], raw[best], edge[best])
-        return distance, gradient
+        edges[point[best]] = edge[best]
+        return NearestEdge(distance, gradient, edges)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
