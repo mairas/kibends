@@ -18,6 +18,7 @@ from itertools import pairwise
 from typing import Protocol
 
 import numpy as np
+from loguru import logger
 from scipy.optimize import minimize
 
 from kibends.chain import Point2
@@ -51,6 +52,10 @@ INSIDE_TOLERANCE = 1e-7
 MAX_BOUND_HALVINGS = 4
 
 LBFGSB_ABNORMAL = 2
+
+# After this many abnormal L-BFGS-B ends in a row a chain counts as settled
+# and keeps what its bursts reached; a neighbour's move can still wake it.
+MAX_ABNORMAL_BURSTS = 3
 
 # Edges shorter than this fraction of the spacing meet the short-edge barrier.
 # Resampling leaves every edge at a free vertex at least half the spacing.
@@ -87,6 +92,8 @@ class Termination(Enum):
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
     ABNORMAL = "L-BFGS-B terminated abnormally"
+    """Some chain stopped after MAX_ABNORMAL_BURSTS abnormal bursts in a row
+    and no burst of the run lowered the energy: nothing usable was found."""
 
 
 @dataclass(frozen=True)
@@ -155,6 +162,8 @@ class OptimizeResult:
     iterations: int
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
+    abnormal_bursts: int
+    """Bursts L-BFGS-B ended abnormally; each was taken like any other."""
     frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     after: PolylineStats
@@ -180,6 +189,8 @@ class ChainResult:
     """Pinned and frozen vertices of `polyline`; simplification keeps them."""
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
+    abnormal_bursts: int
+    """Bursts L-BFGS-B ended abnormally; each was taken like any other."""
     frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     after: PolylineStats
@@ -221,6 +232,7 @@ def optimize(
         termination=run.termination,
         iterations=run.iterations,
         rejected_edges=chain.rejected_edges,
+        abnormal_bursts=chain.abnormal_bursts,
         frozen=chain.frozen,
         before=chain.before,
         after=chain.after,
@@ -238,7 +250,9 @@ def optimize_chains(
     layer, so every pair counts from both sides. The run keeps one best state,
     all polylines together, replaced only after a burst that does not raise
     the summed energy and leaves no chain with more violations than it started
-    with; a cap or abnormal stop returns that state.
+    with; a cap or abnormal stop returns that state. A burst L-BFGS-B ends
+    abnormally (status 2, a failed line search) still holds the best point it
+    found, so the same guard decides whether it enters the best state.
 
     A chain rests once it has converged or stalled on its own energy, until a
     neighbour's move changes that energy by more than the stall tolerance.
@@ -274,6 +288,7 @@ def optimize_chains(
         for points, field in zip(originals, fields, strict=True)
     ]
     rejected_edges = [0] * count
+    abnormal_bursts = [0] * count
 
     def finish(
         polylines: list[FloatArray],
@@ -299,6 +314,7 @@ def optimize_chains(
                     polyline=polylines[i],
                     fixed=masks[i],
                     rejected_edges=rejected_edges[i],
+                    abnormal_bursts=abnormal_bursts[i],
                     frozen=frozen[i],
                     before=before[i],
                     after=before[i] if unchanged else after(i),
@@ -336,7 +352,7 @@ def optimize_chains(
         for i in range(count)
     ]
     best, best_masks = list(current), list(masks)
-    best_energy = sum(energies)
+    start_energy = best_energy = sum(energies)
 
     def within_allowed(i: int) -> bool:
         counted = counts[i]
@@ -348,8 +364,8 @@ def optimize_chains(
     # accepts, or a briefly cut corner would end the run early.
     lowest_energies = [[energy] for energy in energies]
     settled = [False] * count
-    settled_once = [False] * count
     settled_energy = list(energies)
+    abnormal_streak = [0] * count
 
     def resting(i: int) -> bool:
         return (
@@ -361,17 +377,19 @@ def optimize_chains(
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
-        abnormal = False
         for i in moving:
             if resting(i):
                 continue
             burst = _burst(inputs[i], input_masks[i], fields[i], params, settings)
-            if burst.abnormal and settled_once[i]:
-                # It had already converged; its neighbours' moves leave it
-                # where it was.
-                settled[i] = True
-                settled_energy[i] = energies[i]
-                continue
+            if burst.abnormal:
+                abnormal_bursts[i] += 1
+                abnormal_streak[i] += 1
+                logger.debug(
+                    f"L-BFGS-B ended a burst of {chains[i].centreline.description} "
+                    f"abnormally, {abnormal_streak[i]} in a row"
+                )
+            else:
+                abnormal_streak[i] = 0
             rejected_edges[i] += burst.rejected_edges
             shape_change = _shape_change(shapes[i], burst.points)
             shapes[i] = current[i] = burst.points
@@ -390,26 +408,35 @@ def optimize_chains(
             if energy <= best_energy and all(within_allowed(j) for j in range(count)):
                 best, best_masks, best_energy = list(current), list(masks), energy
             lowest_energies[i].append(min(lowest_energies[i][-1], energies[i]))
-            settled[i] = burst.rejected_edges == 0 and (
-                shape_change < settings.displacement_tolerance * settings.spacing
-                or stalled(lowest_energies[i], settings)
+            # An abnormal burst may have stopped anywhere, so only the streak
+            # settles it, not its shape change or the stall check.
+            settled[i] = abnormal_streak[i] >= MAX_ABNORMAL_BURSTS or (
+                not burst.abnormal
+                and burst.rejected_edges == 0
+                and (
+                    shape_change < settings.displacement_tolerance * settings.spacing
+                    or stalled(lowest_energies[i], settings)
+                )
             )
-            settled_once[i] |= settled[i]
             settled_energy[i] = energies[i]
-            if burst.abnormal:
-                abnormal = True
-                break
             inputs[i], input_masks[i] = resample(
                 burst.points, masks[i], settings.spacing
             )
-        if abnormal:
-            termination = Termination.ABNORMAL
-            break
         if all(resting(i) for i in moving):
             if iteration == 1:
                 return finish(originals, anchors, Termination.NOTHING_TO_DO, 1)
             termination = Termination.CONVERGED
             break
+    for i, streak in enumerate(abnormal_streak):
+        if streak >= MAX_ABNORMAL_BURSTS:
+            logger.warning(
+                f"Gave up on {chains[i].centreline.description} after {streak} "
+                "abnormal optimizer bursts in a row; it keeps its best shape"
+            )
+    if best_energy >= start_energy and any(
+        streak >= MAX_ABNORMAL_BURSTS for streak in abnormal_streak
+    ):
+        termination = Termination.ABNORMAL
     return finish(best, best_masks, termination, iteration)
 
 

@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from distance_fields import BoolArray, FloatArray, FreeSpace, MisleadingWalls
+from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
 
@@ -14,6 +14,7 @@ from kibends.energy import EnergyParams, total_energy
 from kibends.obstacles import CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
+    MAX_ABNORMAL_BURSTS,
     ChainInput,
     ObstacleField,
     OptimizerSettings,
@@ -155,39 +156,27 @@ def test_vertices_inside_a_neighbours_clearance_are_frozen_and_named() -> None:
     assert np.all(b.polyline == scenarios.CROWDED_NEIGHBOUR_VERTEX, axis=1).sum() == 1
 
 
-def test_one_abnormal_chain_ends_the_run_abnormally(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_chain_whose_bursts_all_fail_does_not_fail_the_run(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
-    misled = selected(
-        "misled", "A", MisleadingWalls(1.0), (0.0, 0.0), (5.0, 0.8), (10.0, 0.0)
-    )
+    misled = selected("misled", "A", FreeSpace(), (0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     calm = selected("calm", "B", FreeSpace(), (0.0, 5.0), (5.0, 6.0), (10.0, 5.0))
     params = replace(scenarios.PARAMS, repulsion=5.0)
-    scenario = ChainsScenario("abnormal", (calm, misled), params)
-    outputs: dict[BurstStart, FloatArray] = {}
-
-    def keep(start: BurstStart, burst: object) -> object:
-        outputs[start] = vars(burst)["points"]
-        return burst
-
-    watch_bursts(monkeypatch, keep)
-
-    result = optimize_chains(scenario.chains, params)
-
-    assert result.termination is Termination.ABNORMAL
-    assert result.iterations == 1
-    calm_after, misled_after = (c.polyline for c in result.chains)
-    assert np.array_equal(calm_after, outputs[(0.0, 5.0)])
-    assert result.chains[0].after.length < result.chains[0].before.length
-    # The best state holds the calm chain's burst and either the misled
-    # chain's start or its failed burst, whichever the guard accepted.
-    misled_start = optimize_module.resample(
-        misled.centreline.points, misled.fixed, OptimizerSettings().spacing
-    )[0]
-    assert any(
-        np.array_equal(misled_after, candidate)
-        for candidate in (misled_start, outputs[(0.0, 0.0)])
+    # How often L-BFGS-B ends abnormally on a misleading field depends on the
+    # platform's scipy build, so misled's bursts are failed outright.
+    watch_bursts(
+        monkeypatch,
+        lambda start, burst: abnormal(burst) if start == (0.0, 0.0) else burst,
     )
+
+    result = optimize_chains((calm, misled), params, COARSE)
+
+    calm_after, misled_after = result.chains
+    assert result.termination is Termination.CONVERGED
+    assert calm_after.abnormal_bursts == 0
+    assert calm_after.after.length < calm_after.before.length
+    assert misled_after.abnormal_bursts >= MAX_ABNORMAL_BURSTS
+    assert any("Gave up on misled" in line for line in log)
 
 
 @pytest.mark.parametrize(
@@ -231,6 +220,7 @@ def test_moving_chains_tighten_without_crossing(
     assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
     for chain in result.chains:
         assert chain.after.length < chain.before.length
+        assert chain.abnormal_bursts == 0
 
 
 # The neck-down's lengths alone and together agree to within this, mm.
@@ -316,7 +306,7 @@ def test_a_settled_chain_rests_while_its_neighbours_stand_still(
     assert starts.count((0.0, 10.0)) == alone.iterations
 
 
-def test_an_abnormal_burst_of_a_settled_chain_leaves_it_settled(
+def test_abnormal_bursts_of_a_woken_chain_are_counted_and_taken(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The bar settles in its first burst, before the arch comes near; the
@@ -328,10 +318,7 @@ def test_an_abnormal_burst_of_a_settled_chain_leaves_it_settled(
         if start != bar_start or bar_start not in starts[:-1]:
             return burst
         failed.append(start)
-        # Taken as is, the arch's push would bend the bar.
-        abnormal = copy.copy(burst)
-        object.__setattr__(abnormal, "abnormal", True)
-        return abnormal
+        return abnormal(burst)
 
     failed: list[BurstStart] = []
     starts = watch_bursts(monkeypatch, fail)
@@ -340,7 +327,56 @@ def test_an_abnormal_burst_of_a_settled_chain_leaves_it_settled(
         tent.chains[::-1], replace(tent.params, repulsion=0.5), COARSE
     )
 
-    bar = result.chains[0].polyline
+    bar = result.chains[0]
     assert failed
     assert result.termination is Termination.CONVERGED
-    assert np.abs(bar[:, 1] - scenarios.TENT_HEIGHT).max() < 1e-9
+    assert bar.abnormal_bursts == len(failed)
+    # The arch's push bends the bar: the failed bursts were not discarded.
+    assert np.abs(bar.polyline[:, 1] - scenarios.TENT_HEIGHT).max() > 1e-6
+
+
+def abnormal(burst: object) -> object:
+    """The burst as if L-BFGS-B had ended it abnormally (status 2)."""
+    failed = copy.copy(burst)
+    object.__setattr__(failed, "abnormal", True)
+    return failed
+
+
+def test_an_abnormal_burst_is_taken_like_any_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.wrap()
+    clean = optimize(
+        scenario.polyline, scenario.fixed, scenario.field, scenario.params, COARSE
+    )
+    first: list[bool] = []
+
+    def fail_first(_: BurstStart, burst: object) -> object:
+        first.append(not first)
+        return abnormal(burst) if first[-1] else burst
+
+    watch_bursts(monkeypatch, fail_first)
+
+    result = optimize(
+        scenario.polyline, scenario.fixed, scenario.field, scenario.params, COARSE
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert result.abnormal_bursts == 1
+    assert np.array_equal(result.polyline, clean.polyline)
+
+
+def test_a_chain_stops_after_too_many_abnormal_bursts_in_a_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.wrap()
+    starts = watch_bursts(monkeypatch, lambda _, burst: abnormal(burst))
+
+    result = optimize(
+        scenario.polyline, scenario.fixed, scenario.field, scenario.params, COARSE
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert len(starts) == result.iterations == MAX_ABNORMAL_BURSTS
+    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert result.after.length < result.before.length

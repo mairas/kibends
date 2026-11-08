@@ -237,7 +237,8 @@ def smooth(options: SmoothOptions) -> None:
 
     if result.termination is Termination.ABNORMAL:
         raise OptimizerFailedError(
-            "The optimizer terminated abnormally; nothing committed. "
+            "The optimizer terminated abnormally without improving the track; "
+            "nothing committed. "
             "Try other --stiffness, --repulsion or --range values"
         )
     if nothing_to_do:

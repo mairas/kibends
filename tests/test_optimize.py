@@ -15,6 +15,7 @@ from kibends.energy import BoolArray, total_energy
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
+    MAX_ABNORMAL_BURSTS,
     ObstacleField,
     OptimizeResult,
     OptimizerSettings,
@@ -422,13 +423,14 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
     assert result.after.length < result.before.length
 
 
-def test_abnormal_lbfgsb_termination_is_reported() -> None:
+def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
 
     result = optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
     assert result.termination is Termination.ABNORMAL
+    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
