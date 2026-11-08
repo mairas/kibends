@@ -15,6 +15,7 @@ import math
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import kipy.board
 import kipy.board_types as kbt
@@ -22,11 +23,15 @@ import shapely
 from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
-from kipy.geometry import PolygonWithHoles, PolyLine, Vector2
+from kipy.geometry import Box2, PolygonWithHoles, PolyLine, Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
-from kipy.util.board_layer import canonical_name, layer_from_canonical_name
+from kipy.util.board_layer import (
+    canonical_name,
+    is_copper_layer,
+    layer_from_canonical_name,
+)
 from loguru import logger
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
@@ -102,6 +107,13 @@ class Via:
     span: tuple[str, str]
     """The copper layers its drill starts and ends on."""
     locked: bool = False
+
+
+class ViaContact(NamedTuple):
+    """Same-net copper that touches a via; `track_id` is set for tracks."""
+
+    description: str
+    track_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,10 +193,19 @@ class BoardSnapshot:
     clearances: Mapping[str, float]
     """Netclass clearance of every net on the board, in mm."""
     default_clearance: float
+    via_contacts: Mapping[str, tuple[ViaContact, ...]]
+    """By via id, for the vias asked for: the same-net copper touching each
+    on any copper layer, the via itself left out."""
 
     @classmethod
-    def read(cls, board: kipy.board.Board, layers: Iterable[str]) -> BoardSnapshot:
-        """Read the board once for the copper layers `layers`."""
+    def read(
+        cls,
+        board: kipy.board.Board,
+        layers: Iterable[str],
+        selected_vias: Sequence[Via] = (),
+    ) -> BoardSnapshot:
+        """Read the board once for the copper layers `layers`, and the copper
+        touching `selected_vias`."""
         wanted = sorted(set(layers))
         footprints = board.get_footprints()
         all_tracks = board.get_tracks()
@@ -199,8 +220,10 @@ class BoardSnapshot:
         default_clearance = _default_clearance(board)
         shapeless = _read_pads(kipy_pads, footprints)
         pads_by_layer: dict[str, tuple[Pad, ...]] = {}
+        pad_shapes: dict[str, dict[str, BaseGeometry]] = {}
         for layer in wanted:
             on_layer = _pad_shapes(board, kipy_pads, layer_from_canonical_name(layer))
+            pad_shapes[layer] = on_layer
             pads_by_layer[layer] = tuple(
                 replace(p, shape=on_layer.get(p.id)) for p in shapeless
             )
@@ -234,6 +257,13 @@ class BoardSnapshot:
             edge_paths=tuple(tuple(path) for path in read_edge_paths(shapes)),
             clearances=_read_clearances(board, sorted(nets), default_clearance),
             default_clearance=default_clearance,
+            via_contacts=_via_contacts(
+                board,
+                selected_vias,
+                _BoardCopper(
+                    all_tracks, kipy_pads, shapeless, pad_shapes, vias, shapes, zones
+                ),
+            ),
         )
 
     def slice(self, layer: str, replaced_ids: Collection[str]) -> LayerSnapshot:
@@ -644,6 +674,127 @@ def _read_track_keepouts(
         and z.proto.rule_area_settings.keepout_tracks
         and layer in {canonical_name(L) for L in z.layers}
         for p in z.proto.outline.polygons
+    )
+
+
+@dataclass(frozen=True)
+class _BoardCopper:
+    """What one board read already holds, for finding the copper at a via."""
+
+    tracks: Sequence[kbt.Track | kbt.ArcTrack]
+    kipy_pads: Sequence[kbt.Pad]
+    pads: Sequence[Pad]
+    pad_shapes: Mapping[str, Mapping[str, BaseGeometry]]
+    """Pad copper by layer read, then by pad id."""
+    vias: Sequence[Via]
+    shapes: Sequence[kbt.BoardShape]
+    zones: Sequence[kbt.Zone]
+
+
+class _Copper(NamedTuple):
+    net: str
+    geometry: BaseGeometry
+    reach: float
+    """How far the copper extends beyond `geometry`: a track's half width."""
+    contact: ViaContact
+
+
+def _via_contacts(
+    board: kipy.board.Board, selected: Sequence[Via], copper: _BoardCopper
+) -> dict[str, tuple[ViaContact, ...]]:
+    """The same-net copper touching each of `selected` on any copper layer.
+
+    Pad copper on layers the snapshot did not read costs one request for the
+    board's layers and one per such layer, asked only for pads of the vias'
+    nets.
+    """
+    if not selected:
+        return {}
+    nets = {v.net for v in selected}
+    pad_shapes = dict(copper.pad_shapes)
+    of_nets = [p for p in copper.kipy_pads if p.net.name in nets]
+    unread = {L for p in of_nets for L in p.padstack.layers if is_copper_layer(L)} - {
+        layer_from_canonical_name(layer) for layer in pad_shapes
+    }
+    if unread:
+        # A through-hole pad may list every copper layer KiCad knows of.
+        unread &= set(board.get_enabled_layers())
+    for layer_id in sorted(unread):
+        pad_shapes[canonical_name(layer_id)] = _pad_shapes(board, of_nets, layer_id)
+    names = {p.id: p.name for p in copper.pads}
+    found = [
+        _Copper(
+            t.net.name,
+            track.centreline,
+            track.width / 2,
+            ViaContact(f"track {track.id} on {canonical_name(t.layer)}", track.id),
+        )
+        for t in copper.tracks
+        if t.net.name in nets
+        for track in (_read_track(t),)
+    ]
+    found += [
+        _Copper(p.net.name, shape, 0.0, ViaContact(f"pad {names[p.id.value]}"))
+        for p in of_nets
+        for on_layer in pad_shapes.values()
+        if (shape := on_layer.get(p.id.value)) is not None
+    ]
+    found += [
+        _Copper(
+            s.net.name,
+            geometry,
+            0.0,
+            ViaContact(f"copper shape {s.id.value} on {canonical_name(s.layer)}"),
+        )
+        for s in copper.shapes
+        if s.net.name in nets
+        and is_copper_layer(s.layer)
+        and (geometry := _shape_geometry(s)) is not None
+    ]
+    # A plane's fill is large and mostly far away; converting only the pieces
+    # whose bounding box comes near a via keeps a selected GND via cheap.
+    found += [
+        _Copper(
+            net,
+            _polygon(piece),
+            0.0,
+            ViaContact(f"zone {z.name or z.id.value} on {canonical_name(layer_id)}"),
+        )
+        for z in copper.zones
+        if z.type == ZoneType.ZT_COPPER
+        and z.net is not None
+        and (net := z.net.name) in nets
+        for layer_id, pieces in z.filled_polygons.items()
+        for piece in pieces
+        if _box_near(piece.bounding_box(), net, selected)
+    ]
+
+    def touching(via: Via) -> set[ViaContact]:
+        centre = Point(via.position)
+        radius = via.diameter / 2
+        return {
+            c.contact
+            for c in found
+            if c.net == via.net and c.geometry.distance(centre) <= radius + c.reach
+        } | {
+            ViaContact(f"via {other.id}")
+            for other in copper.vias
+            if other.net == via.net
+            and other.id != via.id
+            and math.dist(other.position, via.position) <= radius + other.diameter / 2
+        }
+
+    return {via.id: tuple(sorted(touching(via))) for via in selected}
+
+
+def _box_near(box: Box2, net: str, vias: Sequence[Via]) -> bool:
+    """Whether copper inside `box` may touch one of `vias` on `net`."""
+    x0, y0 = box.pos.x / NM_PER_MM, box.pos.y / NM_PER_MM
+    x1, y1 = x0 + box.size.x / NM_PER_MM, y0 + box.size.y / NM_PER_MM
+    return any(
+        v.net == net and x0 - r <= x <= x1 + r and y0 - r <= y <= y1 + r
+        for v in vias
+        for (x, y), r in ((v.position, v.diameter / 2),)
     )
 
 

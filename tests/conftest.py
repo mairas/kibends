@@ -392,6 +392,9 @@ class FakeBoard:
     name: str = "board.kicad_pcb"
     project_dir: str = ""
     drops_pads: bool = False
+    enabled_layers: list[BL.ValueType] = field(
+        default_factory=lambda: [BL.BL_F_Cu, BL.BL_B_Cu]
+    )
     client: FakeClient = field(default_factory=FakeClient)
     reads: Counter[str] = field(default_factory=Counter[str])
 
@@ -421,6 +424,10 @@ class FakeBoard:
         # KiCad silently leaves out pads it has no shape for.
         shapes = [shape(p) for p in pads[: -1 if self.drops_pads else None]]
         return [s for s in shapes if s is not None]
+
+    def get_enabled_layers(self) -> list[BL.ValueType]:
+        self.reads["get_enabled_layers"] += 1
+        return self.enabled_layers
 
     def get_vias(self) -> list[kbt.Via]:
         self.reads["get_vias"] += 1
