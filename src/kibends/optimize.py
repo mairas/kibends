@@ -1329,43 +1329,76 @@ def _revert_new_crossings(
     Returns the mask of reverted vertices and what the candidate as given
     did.
     """
-    tight_before = (
-        None if bend_limit is None else too_tight(bend_radii(original), bend_limit)
-    )
-    nearest = np.full(len(original), apart or 0.0)
-    if apart is not None:
-        pairs, distance = close_to_itself(original, apart)
-        np.minimum.at(nearest, pairs[:, 0], distance)
-        np.minimum.at(nearest, pairs[:, 1], distance)
+    check = SelfCheck.of(original, bend_limit, apart)
     first: list[_Rejected] = []
 
     def crossings(candidate: FloatArray) -> tuple[int, BoolArray]:
         crossing = clear_before & ~field.segments_clear(candidate[:-1], candidate[1:])
-        ends = np.zeros(len(candidate), dtype=bool)
+        ends, count, close = check(candidate)
         ends[:-1] |= crossing
         ends[1:] |= crossing
-        count = int(crossing.sum())
-        close = 0
-        if bend_limit is not None and tight_before is not None:
-            tight = too_tight(bend_radii(candidate), bend_limit) & ~tight_before
-            around = np.flatnonzero(tight)[:, None] + BEND_REACH
-            ends[np.clip(around, 0, len(candidate) - 1).ravel()] = True
-            count += int(tight.sum())
-        if apart is not None:
-            pairs, distance = close_to_itself(candidate, apart)
-            i, j = pairs[:, 0], pairs[:, 1]
-            # At most the pair's own starting distance, so a pair moved back
-            # whole is never too close, even one that lies beyond a turn only
-            # along the candidate.
-            started = np.hypot(*(original[i] - original[j]).T)
-            floor = np.minimum(np.maximum(nearest[i], nearest[j]), started)
-            closer = distance < floor - INSIDE_TOLERANCE
-            ends[i[closer]] = ends[j[closer]] = True
-            close = int(closer.sum())
-            count += close
+        count += int(crossing.sum())
         if not first:
             first.append(_Rejected(count, close))
         return count, ends & free
 
     reverted, _ = revert_until_clear(candidate, original, crossings)
     return reverted, first[0]
+
+
+@dataclass(frozen=True)
+class SelfCheck:
+    """What a burst may not do to a coupled section's centreline, measured
+    against `original`, where the burst started: with a `bend_limit`, bend
+    an edge newly below it; with `apart`, bring vertices closer than that
+    to its parts beyond a turn (`close_to_itself`), or than either started
+    from them where it started closer, but never than the two started."""
+
+    original: FloatArray
+    bend_limit: float | None
+    apart: float | None
+    tight_before: BoolArray | None
+    nearest: FloatArray
+    """Per vertex, how close it started to its parts beyond a turn, at most
+    `apart`."""
+
+    @staticmethod
+    def of(
+        original: FloatArray,
+        bend_limit: float | None = None,
+        apart: float | None = None,
+    ) -> SelfCheck:
+        tight_before = (
+            None if bend_limit is None else too_tight(bend_radii(original), bend_limit)
+        )
+        nearest = np.full(len(original), apart or 0.0)
+        if apart is not None:
+            pairs, distance = close_to_itself(original, apart)
+            np.minimum.at(nearest, pairs[:, 0], distance)
+            np.minimum.at(nearest, pairs[:, 1], distance)
+        return SelfCheck(original, bend_limit, apart, tight_before, nearest)
+
+    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int, int]:
+        """The vertices to move back, how many edges newly bent too tightly
+        and vertex pairs came too close, and how many of those were pairs."""
+        back = np.zeros(len(candidate), dtype=bool)
+        count = close = 0
+        if self.bend_limit is not None and self.tight_before is not None:
+            tight = too_tight(bend_radii(candidate), self.bend_limit)
+            tight &= ~self.tight_before
+            around = np.flatnonzero(tight)[:, None] + BEND_REACH
+            back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
+            count += int(tight.sum())
+        if self.apart is not None:
+            pairs, distance = close_to_itself(candidate, self.apart)
+            i, j = pairs[:, 0], pairs[:, 1]
+            # At most the pair's own starting distance, so a pair moved back
+            # whole is never too close, even one that lies beyond a turn only
+            # along the candidate.
+            started = np.hypot(*(self.original[i] - self.original[j]).T)
+            floor = np.minimum(np.maximum(self.nearest[i], self.nearest[j]), started)
+            closer = distance < floor - INSIDE_TOLERANCE
+            back[i[closer]] = back[j[closer]] = True
+            close = int(closer.sum())
+            count += close
+        return back, count, close
