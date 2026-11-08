@@ -38,6 +38,8 @@ from kibends.pairs import (
     bend_radius_limit,
     check_bend_radius,
     gap_range,
+    gaps_across,
+    offset_pair,
 )
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -614,6 +616,61 @@ def test_only_a_normally_ended_burst_counts_its_parts_too_close(
     )
 
     assert burst.too_close == counted
+
+
+BUMP = (11, 15)
+"""Vertices, from and to, lifted off a straight line into a bump."""
+BUMP_HEIGHT = 1.0
+"""mm: tall enough that the vertices either side of the bump lie more than a
+turn apart along it."""
+
+
+def test_a_pair_beyond_a_turn_only_as_moved_may_stay_as_close_as_it_started() -> None:
+    # The vertices either side of the bump do not move, but the bump puts
+    # them more than a turn apart along the line: they may stay as close as
+    # they started, or moving back could never clear them, and the whole
+    # burst would be undone.
+    original = np.stack([np.linspace(0.0, 3.0, 31), np.zeros(31)], axis=1)
+    candidate = original.copy()
+    candidate[slice(*BUMP), 1] = BUMP_HEIGHT
+
+    reverted, too_close = revert(candidate, original)
+
+    assert too_close == 0
+    assert not reverted.any()
+
+
+def test_a_section_s_parts_apart_keep_their_tracks_at_clearance() -> None:
+    # Two parts of one centreline, as across the legs of a U, `apart` from
+    # each other: their tracks keep exactly the clearance.
+    block = pair_block(
+        scenarios.coupled(FreeSpace(), (0.0, 0.0), (5.0, 0.0)), COARSE.spacing
+    )
+    out = np.array([(0.0, 0.0), (5.0, 0.0)])
+    back = out[::-1] + np.array([0.0, block.apart])
+    tracks = [
+        LineString(track)
+        for part in (out, back)
+        for track in offset_pair(part, DP_GAP, PAIR_WIDTH)
+    ]
+
+    across = min(t.distance(u) for t in tracks[:2] for u in tracks[2:]) - PAIR_WIDTH
+
+    assert across == pytest.approx(PAIR_CLEARANCE)
+
+
+def test_a_pair_turning_back_around_a_pad_keeps_its_legs_apart() -> None:
+    scenario = scenarios.pair_turning_back()
+    (given,) = scenario.pairs
+    turn = math.pi / 2 * pair_block(given, scenarios.TURNING_BACK.spacing).apart
+
+    (pair,) = run(scenario, scenarios.TURNING_BACK).pairs
+
+    assert_gap_kept(pair)
+    _, beyond = gaps_across(
+        pair.a, pair.b, PAIR_WIDTH, turn, PAIR_CLEARANCE + PAIR_WIDTH
+    )
+    assert beyond >= PAIR_CLEARANCE - INSIDE_TOLERANCE
 
 
 TILT = 0.3

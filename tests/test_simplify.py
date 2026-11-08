@@ -289,3 +289,31 @@ def test_kept_vertices_offset_at_their_optimised_gaps() -> None:
         np.testing.assert_array_equal(track, whole)
     for track in block.offset_kept(line, kept):
         assert len(track) == len(kept)
+
+
+WAVE_STEP = 0.05
+KEEP_EVERY = 5
+PARALLEL = 5e-13
+"""The most, as 1 - cos of the angle, a segment of one track may turn from
+the other's: 1e-6 rad, as the CLI's check allows."""
+
+
+def test_kept_vertices_offset_into_tracks_parallel_segment_for_segment() -> None:
+    # As KiCad's router expects of a pair: otherwise a later edit of it in
+    # KiCad no longer treats it as coupled. A wave, unlike an arc, bends
+    # unevenly, so tracks offset before merging would not be parallel.
+    x = np.arange(0.0, 4.0 + WAVE_STEP / 2, WAVE_STEP)
+    wave = [(float(u), float(0.5 * np.sin(u))) for u in x]
+    block = pair_block(scenarios.coupled(FreeSpace(), *wave), SPACING)
+    line = block.chain.centreline.points
+    last = len(line) - 1
+    kept = line[sorted({0, 1, *range(1, last, KEEP_EVERY), last - 1, last})]
+
+    a, b = block.offset_kept(line, kept)
+
+    assert len(a) == len(b) == len(kept)
+    along_a, along_b = (np.diff(t, axis=0) for t in (a, b))
+    cosine = np.einsum("ij,ij->i", along_a, along_b) / (
+        np.linalg.norm(along_a, axis=1) * np.linalg.norm(along_b, axis=1)
+    )
+    assert (1.0 - cosine <= PARALLEL).all()

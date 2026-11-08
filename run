@@ -25,16 +25,19 @@ function sync {
   uv sync --extra plot
 }
 
+# On Linux, numpy's OpenBLAS starts a thread per core in every xdist worker,
+# and the workers' threads oversubscribe the cores: the suite ran about 10x slower on 4 cores.
+
 function test {
   #@ Run the fast tests (extra arguments go to pytest)
   #@ Category: Development
-  .venv/bin/python -m pytest -m "not slow" "$@"
+  OPENBLAS_NUM_THREADS=1 .venv/bin/python -m pytest -m "not slow" "$@"
 }
 
 function test-all {
   #@ Run every test, including slow and kicad-cli ones
   #@ Category: Development
-  .venv/bin/python -m pytest "$@"
+  OPENBLAS_NUM_THREADS=1 .venv/bin/python -m pytest "$@"
 }
 
 function lint {
