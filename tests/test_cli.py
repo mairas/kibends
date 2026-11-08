@@ -2161,6 +2161,9 @@ PRINTED = 1e-3
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
+FAN_OUT_STRAIGHT_TOLERANCE = 0.025
+"""mm: above the up to 0.014 mm by which the optimizer bows `pair_board`'s
+straight fan-outs where they meet the coupled section."""
 OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
@@ -2508,10 +2511,11 @@ class TestPairs:
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         board = connect.to(pair_board())
 
-        run()
+        run(f"--chord-tolerance={FAN_OUT_STRAIGHT_TOLERANCE}")
 
         assert held == [[None], [hold]]
-        # Its fan-outs are straight already, so the pair stays as it was.
+        # Its fan-outs merge back into straight tracks, so the pair stays as
+        # it was.
         assert board.calls == []
         (warning,) = [w for w in log if "too tight" in w]
         assert warning.startswith("WARNING")

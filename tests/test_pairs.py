@@ -549,7 +549,9 @@ def test_centreline_of_a_pair_simplified_track_by_track_stays_smooth() -> None:
         middle = centreline(first, second, WIDTH).points
 
         assert not check_bend_radius(middle, GAP, WIDTH).too_tight
-        assert hausdorff(middle, path) <= CHORD
+        # Offset from one track, which strays up to CHORD, by half a pitch
+        # measured to the other, which strays up to CHORD too.
+        assert hausdorff(middle, path) <= 2 * CHORD
 
 
 def test_straight_pair_round_trips_through_centreline_and_offset() -> None:
