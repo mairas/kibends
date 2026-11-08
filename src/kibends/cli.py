@@ -154,11 +154,11 @@ def format_statistics(report: OptimizerReport) -> str:
         + sum(v.rejected_edges for v in report.vias)
         + sum(p.rejected_edges for p in report.pairs)
     )
-    # A run can converge while a chain gave up after abnormal bursts.
+    # A run can converge while a problem gave up after abnormal bursts.
     abnormal = [
         f"{n} abnormal burst{'' if n == 1 else 's'}"
         + (f" in {description}" if several else "")
-        for description, n in _abnormal(report)
+        for description, n in report.abnormal
     ]
     outcome = ", ".join(
         [
@@ -196,7 +196,7 @@ def report_warnings(report: OptimizerReport) -> list[str]:
     warnings += [
         f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of {description} "
         "abnormally; the run judged each like any other burst"
-        for description, n in _abnormal(report)
+        for description, n in report.abnormal
     ]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
@@ -209,21 +209,6 @@ def report_warnings(report: OptimizerReport) -> list[str]:
             "using the best result found"
         )
     return warnings
-
-
-def _abnormal(report: OptimizerReport) -> list[tuple[str, int]]:
-    """What had abnormal bursts, and how many."""
-    return [
-        (description, n)
-        for description, n in (
-            *((c.description, c.abnormal_bursts) for c in report.chains),
-            *(
-                (f"the pair {' and '.join(p.nets)}", p.abnormal_bursts)
-                for p in report.pairs
-            ),
-        )
-        if n > 0
-    ]
 
 
 def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
