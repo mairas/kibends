@@ -90,7 +90,8 @@ class ChainReport:
     """Selected tracks it replaces."""
     before: PolylineStats
     after: PolylineStats
-    """Of the simplified result, with the other chains at theirs."""
+    """Of the simplified result, or of the selection when unchanged, with the
+    other chains at their simplified results."""
     frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
     abnormal_bursts: int
@@ -252,6 +253,10 @@ def _chain_reports(
             if others
             else given.field
         )
+        given_points = given.centreline.points
+        changed = snapped_path(simplified[i]) != snapped_path(given_points)
+        # An unchanged chain stays on the board as it is.
+        after = simplified[i] if changed else given_points
         reports.append(
             ChainReport(
                 net=chain.net,
@@ -260,12 +265,11 @@ def _chain_reports(
                 description=given.centreline.description,
                 tracks=len(chain.segment_ids),
                 before=result.before,
-                after=measure(simplified[i], field, DEFAULT_SETTINGS.spacing),
+                after=measure(after, field, DEFAULT_SETTINGS.spacing),
                 frozen=result.frozen,
                 rejected_edges=result.rejected_edges,
                 abnormal_bursts=result.abnormal_bursts,
-                changed=snapped_path(simplified[i])
-                != snapped_path(given.centreline.points),
+                changed=changed,
             )
         )
     return tuple(reports)

@@ -939,7 +939,10 @@ class TestSeveralChains:
         )
 
     def test_chain_that_only_gains_straight_vertices_stays_unchanged(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         board = connect.to(two_l_board(inner=far_straight()))
         real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
@@ -955,6 +958,8 @@ class TestSeveralChains:
         run("--no-drc")
 
         assert sorted(board.deleted) == list(OUTER)
+        straight = capsys.readouterr().out.split("\n\n")[1]
+        assert re.search(r"^Tracks +1 +1$", straight, re.MULTILINE)
 
     def test_all_unchanged_commits_nothing(
         self, connect: Connector, kicad_cli: Path, log: list[str]
