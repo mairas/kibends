@@ -380,6 +380,9 @@ def optimize_chains(
         for i in moving:
             if resting(i):
                 continue
+            if settled[i]:
+                # Woken by a neighbour: the energies it stalled on are gone.
+                lowest_energies[i] = [energies[i]]
             burst = _burst(inputs[i], input_masks[i], fields[i], params, settings)
             if burst.abnormal:
                 abnormal_bursts[i] += 1

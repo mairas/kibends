@@ -380,3 +380,28 @@ def test_a_chain_stops_after_too_many_abnormal_bursts_in_a_row(
     assert len(starts) == result.iterations == MAX_ABNORMAL_BURSTS
     assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
     assert result.after.length < result.before.length
+
+
+def test_a_woken_chain_does_not_stall_on_energies_from_before_it_woke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One chain stalls, the other's moves wake it, and its next burst used to
+    # stall it again at once: its history still held the lows from before its
+    # energy was raised, so a burst cutting it by 0.2 counted as no progress.
+    real = optimize_module.stalled
+    stalled_on: list[list[float]] = []
+
+    def watched(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
+        assert not any(lowest_energies is history for history in stalled_on)
+        if real(lowest_energies, settings):
+            stalled_on.append(lowest_energies)
+            return True
+        return False
+
+    monkeypatch.setattr(optimize_module, "stalled", watched)
+    pair = scenarios.uneven_channel_pair()
+
+    result = run(pair, OptimizerSettings(spacing=0.2, burst_maxiter=60))
+
+    assert stalled_on
+    assert result.termination is Termination.CONVERGED
