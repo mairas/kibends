@@ -8,9 +8,10 @@ quadrature point of one chain is nearest another chain's edge, the obstacle
 term's gradient also reaches that edge's two vertices. Without moving vias
 the layers do not interact, so each layer is a problem of its own, and an
 outer iteration gives every problem that has not settled one burst:
-resample each chain to the spacing between its fixed vertices, bound each
-free vertex to its bubble, run bounded L-BFGS-B (`bursts.bounded_burst`),
-and move back what the edge check rejects.
+resample each chain to the spacing between its fixed vertices and those
+the others hold still (`_Problem.pressed`), bound each free vertex to its
+box, run bounded L-BFGS-B (`bursts.bounded_burst`), and move back what the
+edge check rejects.
 
 Chains of one net on a layer see each other as `neighbours.neighbour_field`
 shows them: inflated by their half widths alone, as they may touch, and
@@ -1372,14 +1373,22 @@ def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> Flo
 
 
 def _resample(
-    points: FloatArray, mask: BoolArray, loose: Sequence[int], spacing: float
+    points: FloatArray,
+    mask: BoolArray,
+    loose: Sequence[int],
+    spacing: float,
+    kept: BoolArray | None = None,
 ) -> tuple[FloatArray, BoolArray]:
-    """`optimize.resample`, keeping the `loose` ends as loose ends."""
-    held = mask.copy()
-    held[list(loose)] = True
-    points, held = resample(points, held, spacing)
-    held[list(loose)] = False
-    return points, held
+    """`optimize.resample`, keeping the `loose` ends and the `kept` vertices
+    where they are, as free vertices."""
+    anchors = mask.copy()
+    anchors[list(loose)] = True
+    if kept is not None:
+        anchors |= kept
+    points, fixed = resample(points, anchors, spacing)
+    # Resampling keeps the anchors, in order.
+    fixed[np.flatnonzero(fixed)[~mask[anchors]]] = False
+    return points, fixed
 
 
 def _variables(
@@ -1909,9 +1918,12 @@ class _Problem:
         ]
         starts: list[FloatArray] = []
         masks: list[BoolArray] = []
+        pressed = self.pressed(self.points, self.positions)
         for i, (points, mask) in enumerate(zip(self.points, self.masks, strict=True)):
             if i in self.free and not self.resampled[i]:
-                points, mask = _resample(points, mask, self.loose[i], settings.spacing)
+                points, mask = _resample(
+                    points, mask, self.loose[i], settings.spacing, pressed[i]
+                )
             starts.append(points)
             masks.append(mask)
         self.masks = masks
@@ -1969,6 +1981,28 @@ class _Problem:
             )
         )
         return change
+
+    def pressed(
+        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+    ) -> list[BoolArray]:
+        """Per member, its vertices at `polylines` that the other members and
+        vias at `positions`, but its siblings, hold still: so deep inside
+        their clearance that the vertex's box is empty (`half_sides`).
+        Resampling keeps them too: spread along a shape that the free
+        vertices beside them bend, they would creep out of the clearance a
+        little every burst, and the run with them, never settling. Vertices
+        deep inside static copper are left to resampling, which lays them
+        there where a chord cuts a corner and moves them out again."""
+        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        flat = _shown_flat(self.members, polylines, positions)
+        return [
+            CROSS_SHARE
+            * _others(_subset(part, keep), flat).field.signed_distance(points)[0]
+            < -self.settings.bubble_tolerance
+            for points, part, keep in zip(
+                polylines, seen, self.apart(seen, polylines), strict=True
+            )
+        ]
 
     def layout(self, starts: Sequence[FloatArray]) -> _Layout:
         """The variables of a burst from `starts` and the current centres."""

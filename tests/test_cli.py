@@ -1256,20 +1256,33 @@ class TestSeveralChains:
         assert "1 new violation on SIG2; nothing committed" in message
         assert board.calls == []
 
+    # Resampling vertices held deeper than δ inside each other's clearance
+    # let them creep out and kept the run going: 200 iterations, the cap.
+    # Measured: 12.
+    SETTLED_PRESSED = 20
+
     def test_frozen_warning_names_the_other_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
         connect.to(off_grid(two_l_board(inner=across)))
-        # The vertex freezes before the first burst; the chains pressed into
-        # each other's clearance take long to settle.
-        monkeypatch.setattr(
-            pipeline, "optimize_chains", at(replace(COARSE, max_iterations=3))
-        )
+        results: list[RunResult] = []
+        optimize = at(COARSE)
+
+        def kept(*args: object, **kwargs: object) -> RunResult:
+            results.append(optimize(*args, **kwargs))
+            return results[-1]
+
+        monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
         run("--dry-run", "--no-drc")
 
+        # The chains pressed into each other's clearance settle: what lies
+        # deeper than δ inside stays put, resampled or not.
+        (result,) = results
+        assert result.termination is Termination.CONVERGED
+        assert result.iterations <= self.SETTLED_PRESSED
         # (4, 0) and (4.3, -1) relative to the grid origin.
         frozen = [line for line in log if "Left the vertex at (3.000, -2.000)" in line]
         assert len(frozen) == 1
