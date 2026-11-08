@@ -159,6 +159,34 @@ class _DrcSetup:
     project: drc.ProjectFiles
 
 
+@dataclass(frozen=True)
+class _Read:
+    """The selection as the board holds it, and its chains and movable vias."""
+
+    selected: list[Segment]
+    chains: list[Chain]
+    snapshots: dict[str, LayerSnapshot]
+    movable: list[MovableVia]
+
+
+@dataclass(frozen=True)
+class _Optimized:
+    inputs: list[ChainInput]
+    via_inputs: list[ViaInput]
+    run: RunResult
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """The simplified result and its reports."""
+
+    final_inputs: list[ChainInput]
+    """The chains' inputs with the moved vias where they end up."""
+    simplified: list[FloatArray]
+    reports: tuple[ChainReport, ...]
+    via_reports: tuple[ViaReport, ...]
+
+
 def run_smooth(
     options: SmoothOptions,
     on_optimized: Callable[[OptimizerReport], None] = lambda _report: None,
@@ -181,7 +209,23 @@ def run_smooth(
             "Skipping the DRC check (--no-drc): custom rules, board minimums "
             "and edge and hole clearances are not checked"
         )
+    read = _read(board)
+    optimized = _optimize(read, options)
+    outcome = _simplify_and_report(read, optimized, options)
+    run = optimized.run
+    if options.plot is not None:
+        _draw(options.plot, read, optimized, outcome)
+    on_optimized(
+        OptimizerReport(
+            outcome.reports, outcome.via_reports, run.termination, run.iterations
+        )
+    )
+    return _check_and_commit(board, gate, read, run, outcome, options)
 
+
+def _read(board: kipy.board.Board) -> _Read:
+    """Read the selection and the copper it needs, split it into chains and
+    judge which selected vias move."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
@@ -214,32 +258,53 @@ def run_smooth(
     moving = {m.via.id for m in movable}
     if moving != candidates:
         chains = _extract_chains(kept, locked, snapshots, moving)
-    inputs = _chain_inputs(chains, snapshots, options, moving)
+    return _Read(selected, chains, snapshots, movable)
 
-    logger.info(_optimizing(len(chains), len(movable)))
-    via_inputs = _via_inputs(movable, snapshots, options)
+
+def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
+    moving = {m.via.id for m in read.movable}
+    inputs = _chain_inputs(read.chains, read.snapshots, options, moving)
+    logger.info(_optimizing(len(read.chains), len(read.movable)))
+    via_inputs = _via_inputs(read.movable, read.snapshots, options)
     run = optimize_chains(
         inputs,
         options.params,
         vias=via_inputs,
         hole_clearance=options.hole_clearance,
     )
-    vias = _via_reports(movable, run)
+    return _Optimized(inputs, via_inputs, run)
+
+
+def _simplify_and_report(
+    read: _Read, optimized: _Optimized, options: SmoothOptions
+) -> _Outcome:
+    run = optimized.run
+    via_reports = _via_reports(read.movable, run)
     # Simplification and the statistics see the moved vias where they end up.
-    inputs = _with_vias(inputs, via_inputs, vias, options)
-    nothing_to_do = run.termination is Termination.NOTHING_TO_DO
+    final_inputs = _with_vias(
+        optimized.inputs, optimized.via_inputs, via_reports, options
+    )
     simplified = (
         [c.polyline for c in run.chains]
-        if nothing_to_do
+        if run.termination is Termination.NOTHING_TO_DO
         else simplify_chains(
-            inputs, run, options.params, tolerance=options.chord_tolerance
+            final_inputs, run, options.params, tolerance=options.chord_tolerance
         )
     )
-    reports = _chain_reports(chains, inputs, run, simplified, options.params)
+    reports = _chain_reports(read.chains, final_inputs, run, simplified, options.params)
+    return _Outcome(final_inputs, simplified, reports, via_reports)
 
-    if options.plot is not None:
-        _draw(options.plot, inputs, run, simplified, reports, movable, vias)
-    on_optimized(OptimizerReport(reports, vias, run.termination, run.iterations))
+
+def _check_and_commit(
+    board: kipy.board.Board,
+    gate: _DrcSetup | None,
+    read: _Read,
+    run: RunResult,
+    outcome: _Outcome,
+    options: SmoothOptions,
+) -> RunReport:
+    """Check the changed chains and moved vias against the DRC and, unless
+    dry-running or refused, commit them."""
 
     def report(
         found: drc.Introduced | None = None,
@@ -248,20 +313,30 @@ def run_smooth(
         refusal: str | None = None,
     ) -> RunReport:
         return RunReport(
-            reports, vias, run.termination, run.iterations, found, committed, refusal
+            outcome.reports,
+            outcome.via_reports,
+            run.termination,
+            run.iterations,
+            found,
+            committed,
+            refusal,
         )
 
     if run.termination is Termination.ABNORMAL:
         return report(refusal=ABNORMAL_MESSAGE)
     changed = [
         (chain, polyline)
-        for chain, polyline, r in zip(chains, simplified, reports, strict=True)
+        for chain, polyline, r in zip(
+            read.chains, outcome.simplified, outcome.reports, strict=True
+        )
         if r.changed
     ]
     if not changed:
         return report()
     moves = [
-        ViaMove(m.via, r.end) for m, r in zip(movable, vias, strict=True) if r.moved
+        ViaMove(m.via, r.end)
+        for m, r in zip(read.movable, outcome.via_reports, strict=True)
+        if r.moved
     ]
     found = None
     if gate is not None:
@@ -270,7 +345,7 @@ def run_smooth(
             return report(found, refusal=_drc_refusal(found))
     if options.dry_run:
         return report(found)
-    commit_chains(board, changed, selected, moves)
+    commit_chains(board, changed, read.selected, moves)
     return report(found, committed=True)
 
 
@@ -452,19 +527,12 @@ def _require_plot() -> None:
         raise PlotUnavailableError(f"{PLOT_EXTRA_MESSAGE} ({e})") from None
 
 
-def _draw(
-    path: Path,
-    inputs: Sequence[ChainInput],
-    run: RunResult,
-    simplified: Sequence[FloatArray],
-    reports: Sequence[ChainReport],
-    movable: Sequence[MovableVia],
-    vias: Sequence[ViaReport],
-) -> None:
+def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> None:
     """One panel per chain, over its own static field, with the start and end
     of each via it ends at."""
     from kibends.plot import Panel, render
 
+    run = optimized.run
     render(
         path,
         [
@@ -476,7 +544,7 @@ def _draw(
                 frozen=result.frozen,
                 vias=[
                     (v.start, v.end)
-                    for m, v in zip(movable, vias, strict=True)
+                    for m, v in zip(read.movable, outcome.via_reports, strict=True)
                     if any(end.chain == i for end in m.ends)
                 ],
                 title=f"{r.net} on {r.layer}: {run.termination.value}, "
@@ -484,7 +552,13 @@ def _draw(
                 f"min clearance margin {r.after.min_clearance:.4f} mm",
             )
             for i, (given, result, polyline, r) in enumerate(
-                zip(inputs, run.chains, simplified, reports, strict=True)
+                zip(
+                    outcome.final_inputs,
+                    run.chains,
+                    outcome.simplified,
+                    outcome.reports,
+                    strict=True,
+                )
             )
         ],
     )
