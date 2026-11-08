@@ -272,6 +272,11 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         vias=via_inputs,
         hole_clearance=options.hole_clearance,
     )
+    for description, streak in run.gave_up:
+        logger.warning(
+            f"Gave up on {description} after {streak} abnormal optimizer "
+            "bursts in a row; it keeps its best shape"
+        )
     return _Optimized(inputs, via_inputs, run)
 
 

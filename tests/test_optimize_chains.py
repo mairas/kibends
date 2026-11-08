@@ -63,7 +63,9 @@ def after(
             chain_field(
                 chain.field,
                 (
-                    neighbour_field(chain, chains[j], polylines[j], reach, polylines[i])
+                    neighbour_field(
+                        chain, [(chains[j], polylines[j])], reach, polylines[i]
+                    )
                     for j in neighbours[i]
                 ),
             ),
@@ -230,7 +232,7 @@ def test_a_chain_whose_bursts_all_fail_does_not_fail_the_run(
     calm_stats = after((calm, misled), result, params)[0]
     assert calm_stats.length < calm_after.before.length
     assert misled_after.abnormal_bursts >= MAX_ABNORMAL_BURSTS
-    assert any("Gave up on misled" in line for line in log)
+    assert result.gave_up == (("misled", MAX_ABNORMAL_BURSTS),)
 
 
 @pytest.mark.parametrize(
@@ -338,10 +340,13 @@ def watch_bursts(
         field: ObstacleField,
         params: EnergyParams,
         settings: OptimizerSettings,
+        bend_limit: float | None = None,
+        apart: float | None = None,
     ) -> object:
         start = (float(points[0, 0]), float(points[0, 1]))
         starts.append(start)
-        return react(start, real(points, fixed, field, params, settings))
+        burst = real(points, fixed, field, params, settings, bend_limit, apart)
+        return react(start, burst)
 
     monkeypatch.setattr(optimize_module, "_burst", watched)
     return starts
