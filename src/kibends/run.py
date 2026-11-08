@@ -20,12 +20,11 @@ from loguru import logger
 from kibends import drc
 from kibends.chain import Chain, extract_chains
 from kibends.commit import commit_chains, snapped_path, snapped_points
-from kibends.energy import EnergyParams, FloatArray
+from kibends.energy import EnergyParams, FloatArray, obstacle_reach
 from kibends.neighbours import (
     ChainInput,
     chain_field,
     neighbour_fields,
-    obstacle_reach,
     same_layer_neighbours,
 )
 from kibends.obstacles import ChainCentreline, Obstacles, build_obstacles

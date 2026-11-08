@@ -13,12 +13,17 @@ from collections.abc import Sequence
 import numpy as np
 from loguru import logger
 
-from kibends.energy import BoolArray, EnergyParams, FloatArray, ObstacleField
+from kibends.energy import (
+    BoolArray,
+    EnergyParams,
+    FloatArray,
+    ObstacleField,
+    obstacle_reach,
+)
 from kibends.neighbours import (
     ChainInput,
     chain_field,
     neighbour_fields,
-    obstacle_reach,
     same_layer_neighbours,
 )
 from kibends.obstacles import CompositeField

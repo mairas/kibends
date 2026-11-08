@@ -11,12 +11,11 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
-from kibends.energy import EnergyParams, ObstacleField, total_energy
+from kibends.energy import EnergyParams, ObstacleField, obstacle_reach, total_energy
 from kibends.neighbours import (
     ChainInput,
     chain_field,
     neighbour_field,
-    obstacle_reach,
     same_layer_neighbours,
 )
 from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles

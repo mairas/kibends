@@ -30,13 +30,13 @@ from kibends.energy import (
     ObstacleField,
     arc_lengths,
     free_vertex_objective,
+    obstacle_reach,
     total_energy,
 )
 from kibends.neighbours import (
     ChainInput,
     chain_field,
     neighbour_field,
-    obstacle_reach,
     same_layer_neighbours,
 )
 from kibends.obstacles import ChainCentreline

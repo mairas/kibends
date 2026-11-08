@@ -133,24 +133,10 @@ def total_energy(
     bound as an edge shrinks, so free vertices never pile up. It is 0 with
     zero slope at s, so it leaves longer edges alone.
     """
-    falloff = _falloff(params.falloff_range)
-    hinge = _hinge(params.standoff)
-
-    def obstacle_integrand(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
-        falloff_value, falloff_slope = falloff(distance)
-        hinge_value, hinge_slope = hinge(distance)
-        return (
-            params.repulsion * falloff_value + params.clearance_weight * hinge_value,
-            params.repulsion * falloff_slope + params.clearance_weight * hinge_slope,
-        )
-
     length_value, length_gradient = _length(points, fixed, short_edge)
     bending_value, bending_gradient = _bending(points)
-    # Both integrands are exactly zero beyond this, so farther copper need
-    # not be looked up.
-    reach = max(params.standoff, params.falloff_range if params.repulsion else 0.0)
     obstacle_value, obstacle_gradient = _edge_integral(
-        points, field, obstacle_integrand, params.points_per_edge, reach
+        points, field, _obstacle(params), params.points_per_edge, obstacle_reach(params)
     )
     bending_weight = params.stiffness**2
     value = length_value + bending_weight * bending_value + obstacle_value
@@ -181,6 +167,28 @@ def free_vertex_objective(
         return value, gradient[free].ravel()
 
     return objective
+
+
+def _obstacle(params: EnergyParams) -> Integrand:
+    """Repulsion plus clearance, weighted."""
+    falloff = _falloff(params.falloff_range)
+    hinge = _hinge(params.standoff)
+
+    def obstacle(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
+        falloff_value, falloff_slope = falloff(distance)
+        hinge_value, hinge_slope = hinge(distance)
+        return (
+            params.repulsion * falloff_value + params.clearance_weight * hinge_value,
+            params.repulsion * falloff_slope + params.clearance_weight * hinge_slope,
+        )
+
+    return obstacle
+
+
+def obstacle_reach(params: EnergyParams) -> float:
+    """Distance from an obstacle beyond which both obstacle terms of the
+    energy are zero, mm, so farther copper need not be looked up."""
+    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
 
 
 def _zero_fixed(gradient: FloatArray, fixed: BoolArray) -> FloatArray:

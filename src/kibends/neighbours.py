@@ -16,7 +16,6 @@ import numpy as np
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
-    EnergyParams,
     FloatArray,
     ObstacleField,
     arc_lengths,
@@ -40,12 +39,6 @@ class ChainInput:
     fixed: BoolArray
     field: ObstacleField
     """Obstacles for its net and width, without any selected chain."""
-
-
-def obstacle_reach(params: EnergyParams) -> float:
-    """Distance from an obstacle beyond which both obstacle terms of the
-    energy are zero, mm."""
-    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
 
 
 def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
