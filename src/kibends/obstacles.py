@@ -778,11 +778,18 @@ def moving_via_obstacles(
 
     Each counts as `build_obstacles` counts a via on the board: its ring and
     hole, kept at the clearances of both nets, with `clearance_of` giving a
-    via's netclass clearance. Vias of `net` and vias not spanning `layer`
-    are no obstacle.
+    via's netclass clearance. A via of `net` may touch the track but not
+    overlap it, so that it makes no new connection; the vias the track ends
+    at are the caller's to leave out. Vias not spanning `layer` are no
+    obstacle.
     """
     keeper = _Keeper(net, width / 2, clearance, hole_clearance)
-    return _vias_field(keeper, (v for v in vias if v.reaches(layer)), clearance_of)
+    return _vias_field(
+        keeper,
+        (v for v in vias if v.reaches(layer)),
+        clearance_of,
+        touching=True,
+    )
 
 
 def via_obstacles_for_via(
@@ -816,16 +823,34 @@ def chain_obstacles_for_via(
     giving its net's netclass clearance.
 
     Another net's chain keeps the larger of the copper clearance from the
-    via's ring and the hole clearance from its hole. Chains of the via's net
-    are no obstacle, as same-net copper on the board is not.
+    via's ring and the hole clearance from its hole. A chain of the via's
+    net may touch its ring but not overlap it, so that the via makes no new
+    connection; the chains that end at the via are the caller's to leave out.
     """
+    return _chains_field(
+        (o, via_chain_inflation(via, o, clearance_of, hole_clearance=hole_clearance))
+        for o in others
+    )
+
+
+def via_chain_inflation(
+    via: Via,
+    chain: ChainCentreline,
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> float:
+    """The distance `via`'s centre keeps from `chain`'s centreline, as
+    `chain_obstacles_for_via` counts it, mm."""
+    if chain.net == via.net:
+        return chain.width / 2 + via.diameter / 2
     # Chains have no holes, so the keeper's hole-to-hole is never asked.
     keeper = _Keeper(
         via.net, via.diameter / 2, clearance_of(via.net), hole_clearance, via.drill / 2
     )
-    return _chains_field(
-        (o, keeper.copper(o.net, o.width / 2, o.clearance)) for o in others
-    )
+    inflation = keeper.copper(chain.net, chain.width / 2, chain.clearance)
+    assert inflation is not None
+    return inflation
 
 
 def _via_keeper(
@@ -842,14 +867,21 @@ def _via_keeper(
 
 
 def _vias_field(
-    keeper: _Keeper, vias: Iterable[Via], clearance_of: Callable[[str], float]
+    keeper: _Keeper,
+    vias: Iterable[Via],
+    clearance_of: Callable[[str], float],
+    *,
+    touching: bool = False,
 ) -> ChainField | None:
     """The vias' rings and holes as obstacles to `keeper`, or None if none
-    is one."""
+    is one; with `touching`, vias of its net keep their rings from touching
+    distance."""
     centres: list[Point2] = []
     inflations: list[float] = []
     for v in vias:
         ring = keeper.copper(v.net, v.diameter / 2, clearance_of(v.net))
+        if touching and v.net == keeper.net:
+            ring = v.diameter / 2 + keeper.radius
         hole = keeper.hole(v.net, v.drill / 2, plated=True)
         reach = [i for i in (ring, hole) if i is not None]
         if reach:

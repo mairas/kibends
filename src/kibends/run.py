@@ -18,6 +18,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
+from kibends.bursts import DEFAULT_SETTINGS
 from kibends.chain import Chain, extract_chains
 from kibends.commit import commit_chains, snapped_path, snapped_points
 from kibends.energy import EnergyParams, FloatArray, obstacle_reach
@@ -29,7 +30,6 @@ from kibends.neighbours import (
 )
 from kibends.obstacles import ChainCentreline, Obstacles, build_obstacles
 from kibends.optimize import (
-    DEFAULT_SETTINGS,
     FrozenVertex,
     PolylineStats,
     RunResult,

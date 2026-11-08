@@ -19,6 +19,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
+from kibends.bursts import DEFAULT_SETTINGS
 from kibends.chain import ChainError
 from kibends.commit import (
     BoardChangedError,
@@ -28,7 +29,7 @@ from kibends.commit import (
 )
 from kibends.energy import EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
-from kibends.optimize import DEFAULT_SETTINGS, FrozenVertex, Termination
+from kibends.optimize import FrozenVertex, Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
     ChainReport,

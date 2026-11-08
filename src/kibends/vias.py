@@ -14,6 +14,7 @@ from typing import NamedTuple
 from loguru import logger
 
 from kibends.chain import Chain
+from kibends.energy import ObstacleField
 from kibends.snapshot import Via, ViaContact, ViaKind
 
 MIN_JOINED_ENDS = 2
@@ -31,6 +32,20 @@ class MovableVia:
     via: Via
     ends: tuple[ChainEnd, ...]
     """The chain ends whose copper overlaps the via, in chain order."""
+
+
+@dataclass(frozen=True, eq=False)
+class ViaInput:
+    """A moving via of a run, with the field of everything that stands still."""
+
+    via: Via
+    ends: tuple[ChainEnd, ...]
+    """The chain ends that move with it, each keeping its offset from the
+    via's centre."""
+    field: ObstacleField
+    """Obstacles for the via over every layer it spans, as
+    `build_via_obstacles` gives them: without the selected chains and the
+    moving vias, which the optimizer adds at their current shapes."""
 
 
 def movable_vias(

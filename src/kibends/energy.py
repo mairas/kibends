@@ -135,15 +135,34 @@ def total_energy(
     """
     length_value, length_gradient = _length(points, fixed, short_edge)
     bending_value, bending_gradient = _bending(points)
-    obstacle_value, obstacle_gradient = _edge_integral(
-        points, field, _obstacle(params), params.points_per_edge, obstacle_reach(params)
-    )
+    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
     bending_weight = params.stiffness**2
     value = length_value + bending_weight * bending_value + obstacle_value
     gradient = length_gradient + bending_weight * bending_gradient + obstacle_gradient
     if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
         raise ValueError(f"energy is not finite: {value}")
     return value, _zero_fixed(gradient, fixed)
+
+
+def point_energy(
+    point: FloatArray, field: DistanceField, params: EnergyParams, length: float
+) -> TermValue:
+    """The obstacle terms of `total_energy` for copper at `point` that stands
+    for `length` mm of track, and their gradient (2,) at `point`."""
+    reach = obstacle_reach(params)
+    distance, direction = field.signed_distance(point[None], reach=reach)
+    value, slope = obstacle_integrand(params)(distance)
+    return length * float(value[0]), length * slope[0] * direction[0]
+
+
+def obstacle_energy(
+    points: FloatArray, field: DistanceField, params: EnergyParams
+) -> TermValue:
+    """The obstacle terms of `total_energy` alone, with the gradient of every
+    vertex, fixed ones included."""
+    integrand = obstacle_integrand(params)
+    reach = obstacle_reach(params)
+    return _edge_integral(points, field, integrand, params.points_per_edge, reach)
 
 
 def free_vertex_objective(
@@ -169,8 +188,8 @@ def free_vertex_objective(
     return objective
 
 
-def _obstacle(params: EnergyParams) -> Integrand:
-    """Repulsion plus clearance, weighted."""
+def obstacle_integrand(params: EnergyParams) -> Integrand:
+    """Repulsion plus clearance, weighted, and its slope, at given distances."""
     falloff = _falloff(params.falloff_range)
     hinge = _hinge(params.standoff)
 

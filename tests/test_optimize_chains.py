@@ -11,6 +11,7 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
+from kibends.bursts import OptimizerSettings
 from kibends.energy import EnergyParams, ObstacleField, obstacle_reach, total_energy
 from kibends.neighbours import (
     ChainInput,
@@ -22,7 +23,6 @@ from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
-    OptimizerSettings,
     PolylineStats,
     RunResult,
     Termination,

@@ -119,8 +119,8 @@ def neighbour_centrelines(
     arc = arc_lengths(points)
     left_out: list[tuple[float, float]] = []
     for at_own, at_other in touches:
-        own_pin = _vertex_at(mine, at_own)
-        other_pin = _vertex_at(points, at_other)
+        own_pin = _vertex_at(me.points, mine, at_own)
+        other_pin = _vertex_at(them.points, points, at_other)
         own_headings = [heading for _, heading in _departures(mine, own_pin, clear)]
         offset: FloatArray = points[other_pin] - mine[own_pin]
         along = float(arc[other_pin])
@@ -145,9 +145,18 @@ def _touches(own: ChainInput, other: ChainInput) -> list[tuple[FloatArray, Float
     return [(mine[a], theirs[b]) for a, b in zip(i, j, strict=True)]
 
 
-def _vertex_at(points: FloatArray, point: FloatArray) -> int:
-    """The vertex nearest `point`; a pinned point stays a vertex throughout."""
-    return int(np.argmin(np.sum((points - point) ** 2, axis=1)))
+def _vertex_at(original: FloatArray, points: FloatArray, pin: FloatArray) -> int:
+    """The vertex of `points` at `pin`, a pinned point of the polyline that
+    started as `original`.
+
+    A pinned point stays a vertex throughout, and stays put, except an end
+    that a moving via carries away: the ends are found by being ends.
+    """
+    if np.array_equal(pin, original[0]):
+        return 0
+    if np.array_equal(pin, original[-1]):
+        return len(points) - 1
+    return int(np.argmin(np.sum((points - pin) ** 2, axis=1)))
 
 
 def _departures(

@@ -352,14 +352,16 @@ class TestViaAsObstacleToChains:
         expected = 2 - (0.4 + 0.2 + CHAIN_WIDTH / 2)
         assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
-    def test_nothing_for_a_same_net_via(self) -> None:
+    def test_a_same_net_via_may_touch_but_not_overlap(self) -> None:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
 
         field = moving_via_obstacles(
             "F.Cu", NET, CHAIN_WIDTH, DEFAULT_CLEARANCE, [via], lambda _: 0.2
         )
 
-        assert field is None
+        assert field is not None
+        distance, _ = field.signed_distance(points((2, 0)))
+        assert distance[0] == pytest.approx(2 - (RADIUS + CHAIN_WIDTH / 2))
 
     def test_nothing_on_a_layer_the_via_does_not_span(self) -> None:
         blind = kipy_via(
@@ -425,14 +427,14 @@ class TestChainsAsObstaclesToAVia:
         assert distance == pytest.approx(expected, abs=NM_TOLERANCE)
         assert gradient == pytest.approx(expected_gradient, abs=NM_TOLERANCE)
 
-    def test_a_same_net_chain_is_no_obstacle(self) -> None:
+    def test_a_same_net_chain_may_touch_the_ring_but_not_overlap_it(self) -> None:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
         mine = ChainCentreline("chain SIG", NET, 0.25, 0.2, points((-5, 1), (5, 1)))
 
         field = chain_obstacles_for_via(via, [mine], lambda _: DEFAULT_CLEARANCE)
         distance, _ = field.signed_distance(points((0, 0)))
 
-        assert np.isinf(distance[0])
+        assert distance[0] == pytest.approx(1 - (0.25 / 2 + RADIUS))
 
 
 class TestMovingViasAsObstaclesToAVia:

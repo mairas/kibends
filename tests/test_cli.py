@@ -31,14 +31,10 @@ from shapely.geometry import LineString, Point, box
 
 from kibends import cli, drc
 from kibends import run as pipeline
+from kibends.bursts import OptimizerSettings
 from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import Obstacles
-from kibends.optimize import (
-    OptimizerSettings,
-    RunResult,
-    Termination,
-    optimize_chains,
-)
+from kibends.optimize import RunResult, Termination, optimize_chains
 
 WIDTH = 0.25
 CLEARANCE = 0.2
