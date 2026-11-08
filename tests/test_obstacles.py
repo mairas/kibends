@@ -28,6 +28,7 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
+    ObstacleField,
     clearance_energy,
     total_energy,
 )
@@ -41,7 +42,6 @@ from kibends.obstacles import (
     build_obstacles,
     chain_obstacles,
 )
-from kibends.optimize import ObstacleField
 from kibends.snapshot import LayerSnapshot
 
 LAYER = "F.Cu"

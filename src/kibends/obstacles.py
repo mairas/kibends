@@ -12,7 +12,6 @@ import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 import shapely
@@ -23,17 +22,13 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
-from kibends.energy import BoolArray, FloatArray
+from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.snapshot import (
     LayerSnapshot,
     PadKind,
     edge_paths_closed,
     outline_from_edge_paths,
 )
-
-if TYPE_CHECKING:
-    # optimize will import this module; a runtime import would be a cycle.
-    from kibends.optimize import ObstacleField
 
 ObjectArray = NDArray[np.object_]
 IntArray = NDArray[np.intp]

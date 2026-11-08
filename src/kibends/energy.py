@@ -41,6 +41,21 @@ class DistanceField(Protocol):
         ...
 
 
+class ObstacleField(DistanceField, Protocol):
+    """Distance field that can also check segments exactly."""
+
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        """Return per segment whether it stays out of every inflated obstacle.
+
+        starts and ends are (n, 2) arrays in mm. A segment is clear when it
+        does not enter the region where the signed distance is below
+        -tolerance; touching the boundary is clear.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class EnergyParams:
     """Weights and shape parameters of the total energy; length has weight 1."""

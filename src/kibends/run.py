@@ -20,7 +20,7 @@ from loguru import logger
 from kibends import drc
 from kibends.chain import Chain, extract_chains
 from kibends.commit import commit_chains, snapped_path, snapped_points
-from kibends.energy import EnergyParams, FloatArray
+from kibends.energy import EnergyParams, FloatArray, ObstacleField
 from kibends.obstacles import (
     ChainCentreline,
     CompositeField,
@@ -31,7 +31,6 @@ from kibends.optimize import (
     DEFAULT_SETTINGS,
     ChainInput,
     FrozenVertex,
-    ObstacleField,
     PolylineStats,
     RunResult,
     Termination,

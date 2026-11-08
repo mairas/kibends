@@ -11,12 +11,11 @@ from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
 import kibends.optimize as optimize_module
-from kibends.energy import BoolArray, total_energy
+from kibends.energy import BoolArray, ObstacleField, total_energy
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
-    ObstacleField,
     OptimizeResult,
     OptimizerSettings,
     Termination,

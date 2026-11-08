@@ -13,11 +13,10 @@ from collections.abc import Sequence
 import numpy as np
 from loguru import logger
 
-from kibends.energy import BoolArray, EnergyParams, FloatArray
+from kibends.energy import BoolArray, EnergyParams, FloatArray, ObstacleField
 from kibends.obstacles import CompositeField, chain_obstacles
 from kibends.optimize import (
     ChainInput,
-    ObstacleField,
     RunResult,
     neighbour_centreline,
     obstacle_reach,
