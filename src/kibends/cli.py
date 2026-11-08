@@ -362,6 +362,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "(needs the `plot` extra)",
     )
     smooth_parser.add_argument(
+        "--allow-via-in-pad",
+        action="store_true",
+        help="Let a moving via settle inside a pad of its own net. KiCad's DRC "
+        "does not check via-in-pad; without this option a moving via never "
+        "overlaps a pad",
+    )
+    smooth_parser.add_argument(
         "--no-drc",
         action="store_true",
         help="Commit without the kicad-cli DRC check against the board's rules",
@@ -392,6 +399,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         plot=args.plot,
         drc=not args.no_drc,
         kicad_cli=args.kicad_cli,
+        allow_via_in_pad=args.allow_via_in_pad,
     )
 
 

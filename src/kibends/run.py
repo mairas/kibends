@@ -89,6 +89,9 @@ class SmoothOptions:
     plot: Path | None
     drc: bool
     kicad_cli: str | None
+    allow_via_in_pad: bool = False
+    """Let a moving via settle inside a pad of its net, which KiCad's DRC
+    cannot flag."""
 
 
 @dataclass(frozen=True)
@@ -356,6 +359,7 @@ def _via_inputs(
                 moving=moving,
                 edge_clearance=options.edge_clearance,
                 hole_clearance=options.hole_clearance,
+                allow_via_in_pad=options.allow_via_in_pad,
             ),
         )
         for m in movable

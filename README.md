@@ -112,6 +112,7 @@ it, and a re-run after that chain has moved may free the vertex.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values give fewer, longer tracks. |
+| `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |

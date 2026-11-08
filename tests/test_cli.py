@@ -1670,21 +1670,25 @@ class TestMovingVias:
         assert "pad p" in warning
         assert (nm(VIA[0]), nm(VIA[1])) in ends(created_on(board, BL.BL_F_Cu))
 
-    def test_same_net_pad_on_its_path_stops_the_via_at_touching(
-        self, connect: Connector
+    @pytest.mark.parametrize("in_pad", [False, True])
+    def test_same_net_pad_on_its_path_stops_the_via_unless_allowed(
+        self, connect: Connector, in_pad: bool
     ) -> None:
         board = moving_via_board()
         x, y = 4.88, 0.0
         board.pads = [kipy_pad("p", "SIG", x, y, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
-        run("--no-drc")
+        run("--no-drc", *(["--allow-via-in-pad"] if in_pad else []))
 
         (via,) = created_vias(board)
         h = PAD_HALF_SIZE
         pad = box(x - h, y - h, x + h, y + h)
         centre = Point(via.position.x / 1e6, via.position.y / 1e6)
-        assert pad.distance(centre) >= via.diameter / 2e6 - NM_ROUNDING
+        if in_pad:
+            assert pad.contains(centre)
+        else:
+            assert pad.distance(centre) >= via.diameter / 2e6 - NM_ROUNDING
 
     def test_chains_meeting_at_a_moved_via_on_one_layer_need_no_trim_there(
         self, connect: Connector
