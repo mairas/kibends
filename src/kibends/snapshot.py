@@ -177,12 +177,12 @@ class BoardSnapshot:
         texts = _texts(board, footprints)
         zones = board.get_zones()
         default_clearance = _default_clearance(board)
-        pads = _read_pads(kipy_pads, footprints)
+        shapeless = _read_pads(kipy_pads, footprints)
         pads_by_layer: dict[str, tuple[Pad, ...]] = {}
         for layer in wanted:
             on_layer = _pad_shapes(board, kipy_pads, layer_from_canonical_name(layer))
             pads_by_layer[layer] = tuple(
-                replace(p, shape=on_layer.get(p.id)) for p in pads
+                replace(p, shape=on_layer.get(p.id)) for p in shapeless
             )
         graphics = {
             layer: (
@@ -192,7 +192,7 @@ class BoardSnapshot:
             for layer in wanted
         }
         nets = {
-            *(p.net for p in pads),
+            *(p.net for p in shapeless),
             *(t.net.name for t in all_tracks),
             *(v.net for v in vias),
             *(g.net for gs in graphics.values() for g in gs),
@@ -422,6 +422,7 @@ def _clearance_override(proto_owner: Message, field_name: str) -> float | None:
 def _read_pads(
     pads: Sequence[kbt.Pad], footprints: Sequence[kbt.FootprintInstance]
 ) -> tuple[Pad, ...]:
+    """Every pad with no `shape` yet; the caller sets each layer's copper."""
     refs = {f.id.value: f.reference_field.text.value for f in footprints}
     fp_overrides = {
         f.id.value: _clearance_override(f.proto.overrides, "copper_clearance")
