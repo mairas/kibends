@@ -998,6 +998,7 @@ class TestAbnormalBursts:
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
+        log: list[str],
     ) -> None:
         connect.to(two_l_board())
         with_abnormal_bursts(monkeypatch, [0, 1])
@@ -1011,6 +1012,9 @@ class TestAbnormalBursts:
             "rejected edge moves, 1 abnormal burst in SIG2 on F.Cu from (0.000, 0.600)"
         )
         assert "SIG on" not in line
+        (warning,) = [ln for ln in log if "abnormally" in ln]
+        assert warning.startswith("WARNING")
+        assert "1 burst of SIG2 on F.Cu from (0.000, 0.600)" in warning
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
