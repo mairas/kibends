@@ -1302,6 +1302,25 @@ class TestSeveralLayers:
         assert not {"a", "b", "e", "f"} & {uuid for _, uuid in segments}
         assert ("B.Cu", "g") in segments
 
+    def test_inner_layer_route_is_checked_and_committed_on_it(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(via_route_board(back_layer=BL.BL_In1_Cu))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "e", "f"]
+        front, inner = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_In1_Cu)
+        assert len(front) + len(inner) == len(board.created)
+        via = (nm(VIA[0]), nm(VIA[1]))
+        assert {via, (nm(8), nm(8))} <= ends(inner)
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        segments = CANDIDATE_SEGMENT.findall(candidate)
+        assert {layer for layer, _ in segments if layer != "B.Cu"} == {
+            "F.Cu",
+            "In1.Cu",
+        }
+
     def test_each_chain_keeps_touches_of_its_own_layers_copper(
         self, connect: Connector
     ) -> None:
