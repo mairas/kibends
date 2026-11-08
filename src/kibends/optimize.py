@@ -485,7 +485,7 @@ class _Run:
         self.anchors: list[BoolArray] = []
         self.frozen: list[tuple[FrozenVertex, ...]] = []
         for i, chain in enumerate(chains):
-            mask, records = _frozen(
+            mask, records = frozen_vertices(
                 chain, self.fields[i], self.dynamic[i], chains, settings
             )
             self.anchors.append(chain.fixed | mask)
@@ -849,8 +849,8 @@ class _Run:
             self.abnormal_streak[i] = 0
         self.rejected_edges[i] += burst.rejected_edges
         self.too_close[i] += burst.too_close
-        shape_change = _shape_change(self.shapes[i], burst.points)
-        self.moved |= shape_change > NOTHING_MOVED
+        change = shape_change(self.shapes[i], burst.points)
+        self.moved |= change > NOTHING_MOVED
         self.shapes[i] = burst.points
         self.states[i] = _Shape(
             burst.points,
@@ -869,7 +869,7 @@ class _Run:
                 # A section pressed onto its own other parts has moves to
                 # reject in every burst, which no energy term pushes back.
                 and burst.rejected_edges == burst.too_close
-                and (shape_change < settings.settled_change or rest.stalled(settings))
+                and (change < settings.settled_change or rest.stalled(settings))
             ),
             self.energies[i],
         )
@@ -945,7 +945,7 @@ class _Run:
         settings = self.settings
         old = self.positions[v]
         changes = {
-            i: _shape_change(self.states[i].points, points)
+            i: shape_change(self.states[i].points, points)
             for i, points in burst.polylines.items()
         }
         change = max(
@@ -1047,7 +1047,7 @@ class _Remembered:
         return answer
 
 
-def _frozen(
+def frozen_vertices(
     chain: ChainInput,
     field: ObstacleField,
     dynamic: dict[int, ObstacleField | None],
@@ -1244,7 +1244,7 @@ def _burst(
     return _ChainBurst(result, bounded.rejected_edges, bounded.abnormal, sum(counted))
 
 
-def _shape_change(before: FloatArray, after: FloatArray) -> float:
+def shape_change(before: FloatArray, after: FloatArray) -> float:
     """Local symmetric distance between two polylines, mm.
 
     Vertices sliding along an unchanged shape do not count: resampling to
