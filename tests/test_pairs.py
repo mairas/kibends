@@ -11,6 +11,7 @@ from kibends.pairs import (
     Pair,
     PairError,
     Piece,
+    _ends,  # pyright: ignore[reportPrivateUsage]
     bend_radius_limit,
     centreline,
     check_bend_radius,
@@ -201,10 +202,11 @@ def split_pair() -> tuple[Chain, Chain]:
     return a, b
 
 
-def test_pair_split_apart_gives_two_sections() -> None:
+@pytest.mark.parametrize("chord", [0.0, 0.01, 0.025])
+def test_pair_split_apart_gives_two_sections(chord: float) -> None:
     a, b = split_pair()
 
-    pair = find_pair(a, b, CHORD)
+    pair = find_pair(a, b, chord)
 
     assert pair is not None
     assert len(pair.sections) == 2
@@ -221,11 +223,14 @@ def test_pair_split_apart_gives_two_sections() -> None:
     )
 
 
-def test_split_pair_running_opposite_ways_tags_b_pieces_by_section() -> None:
+@pytest.mark.parametrize("chord", [0.0, 0.01, 0.025])
+def test_split_pair_running_opposite_ways_tags_b_pieces_by_section(
+    chord: float,
+) -> None:
     a, b = split_pair()
     reversed_b = chain("LVDS_N", *reversed(b.points))
 
-    pair = find_pair(a, reversed_b, CHORD)
+    pair = find_pair(a, reversed_b, chord)
 
     assert pair is not None
     np.testing.assert_allclose(
@@ -276,7 +281,8 @@ def test_short_coincidental_parallel_stretch_is_no_pair() -> None:
     assert find_pair(a, b, CHORD) is None
 
 
-def test_stretch_at_another_spacing_does_not_set_the_pitch() -> None:
+@pytest.mark.parametrize("chord", [0.0, 0.01, 0.025])
+def test_stretch_at_another_spacing_does_not_set_the_pitch(chord: float) -> None:
     """6 mm at the pair's pitch, then 2 mm with the gap widened to 0.5 mm."""
     jog = HALF_PITCH + 0.35
     a = chain(
@@ -288,13 +294,33 @@ def test_stretch_at_another_spacing_does_not_set_the_pitch() -> None:
     )
     b = chain("LVDS_N", (0.0, HALF_PITCH), (8.35, HALF_PITCH))
 
-    pair = find_pair(a, b, CHORD)
+    pair = find_pair(a, b, chord)
 
     coupled_a, coupled_b = only_section(pair)
     assert pair is not None
     np.testing.assert_allclose(coupled_a, [(0.0, -HALF_PITCH), (6.0, -HALF_PITCH)])
     np.testing.assert_allclose(coupled_b, [(0.0, HALF_PITCH), (6.0, HALF_PITCH)])
     assert pair.gap == pytest.approx(GAP)
+
+
+@pytest.mark.parametrize(
+    ("beyond_step", "expected"), [(0.0, (1.75, 8.25)), (0.01, (2.0, 8.0))]
+)
+def test_section_end_snaps_to_a_vertex_at_most_a_sample_step_outward(
+    beyond_step: float, expected: tuple[float, float]
+) -> None:
+    """Runs reach 2..8 mm; in-band vertices lie a 0.25 mm step, plus
+    `beyond_step`, outward of each run end."""
+    step = 0.25
+    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
+    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
+    first, last = 2.0 - step - beyond_step, 8.0 + step + beyond_step
+    candidates = array((first, first), (last, last))
+
+    ends = _ends(a, b, (2.0, 8.0), (2.0, 8.0), candidates, 2 * HALF_PITCH, step)
+
+    assert ends.a == expected
+    assert ends.b == expected
 
 
 def test_u_turn_is_one_coupled_section() -> None:

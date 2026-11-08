@@ -298,6 +298,7 @@ def _coupled_spans(
             (float(reach_b[columns].min()), float(reach_b[columns].max())),
             candidates,
             pitch,
+            step,
         )
         for rows, columns in _components(links)
     ]
@@ -389,13 +390,15 @@ def _ends(
     hull_b: tuple[float, float],
     candidates: FloatArray,
     pitch: float,
+    step: float,
 ) -> _SectionEnds:
     """Place a section's ends opposite each other.
 
-    Sampled runs overshoot a fan-out a little on the track that runs on, so
-    each end moves inward to the outermost in-band vertex of either track
-    within a pitch, given as `candidates` (arc length along a, along b), or
-    else stays at the inner of the two run ends.
+    Sampled runs overshoot a fan-out a little on the track that runs on, and
+    end up to a sample `step` short of where a track leaves the band, so each
+    end moves to the outermost in-band vertex of either track from a step
+    outward to a pitch inward, given as `candidates` (arc length along a,
+    along b), or else stays at the inner of the two run ends.
     """
     along_a = _nearest(_point_at(b, np.array(hull_b)), a).along
     start = max(hull_a[0], float(along_a.min()))
@@ -403,7 +406,7 @@ def _ends(
 
     def snap(target: float, inward: float) -> tuple[float, float]:
         reach = inward * (candidates[:, 0] - target)
-        close = candidates[(reach >= 0.0) & (reach <= pitch)]
+        close = candidates[(reach >= -step) & (reach <= pitch)]
         if len(close):
             chosen = close[np.argmin(inward * close[:, 0])]
             return float(chosen[0]), float(chosen[1])
