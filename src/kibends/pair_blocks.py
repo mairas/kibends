@@ -31,6 +31,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, ObstacleField, arc_lengths
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
@@ -210,6 +211,31 @@ class PairBlock:
         return _offset(
             self.given, self.a_on_right, self.held, self.gaps.at(points), points
         )
+
+    def offset_kept(
+        self, optimised: FloatArray, kept: FloatArray
+    ) -> tuple[FloatArray, FloatArray]:
+        """Tracks a and b along `kept`, vertices of the centreline at
+        `optimised`, each at its gap there, as the run offset them."""
+        gaps = self.gaps.at(optimised)
+        index = {(float(x), float(y)): k for k, (x, y) in enumerate(optimised)}
+        at = gaps[[index[float(x), float(y)] for x, y in kept]]
+        return _offset(self.given, self.a_on_right, self.held, at, kept)
+
+    def taper_bounds(self, points: FloatArray) -> BoolArray:
+        """Which vertices of the centreline at `points` bound the stretch
+        between the tapers of ends whose gaps differ from the pair's: there
+        and beyond, the gap is the pair's."""
+        arc = arc_lengths(points)
+        bounds = np.zeros(len(points), dtype=bool)
+        gaps = self.gaps
+        if abs(gaps.start - gaps.middle) > INSIDE_TOLERANCE:
+            flat = np.flatnonzero(arc >= gaps.held_start + gaps.taper_start)
+            bounds[flat[:1]] = True
+        if abs(gaps.end - gaps.middle) > INSIDE_TOLERANCE:
+            flat = np.flatnonzero(arc[-1] - arc >= gaps.held_end + gaps.taper_end)
+            bounds[flat[-1:]] = True
+        return bounds
 
     def bend(self, points: FloatArray) -> BendCheck:
         """The centreline at `points` against the bend-radius limit."""
