@@ -12,6 +12,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 
 from kibends import commit
 from kibends.chain import Chain, Segment, extract_chain
+from kibends.coords import BOARD_FRAME
 from kibends.energy import FloatArray
 from kibends.snapshot import segment_from_track, via_from_kipy
 
@@ -45,7 +46,7 @@ def setup(
         push_error=push_error,
     )
     selected = [segment_from_track(t) for t in tracks]
-    return board, extract_chain(selected), selected
+    return board, extract_chain(selected, frame=BOARD_FRAME), selected
 
 
 def run_commit(
@@ -106,7 +107,7 @@ class TestCommitChain:
         board = CommitBoard(selection=list(tracks), tracks=list(tracks))
         selected = [segment_from_track(t) for t in tracks]
 
-        run_commit(board, extract_chain(selected), selected)
+        run_commit(board, extract_chain(selected, frame=BOARD_FRAME), selected)
 
         assert sorted(board.deleted) == ["a", "b"]
 
@@ -208,8 +209,8 @@ def two_chains(
     )
     selected = [segment_from_track(t) for t in tracks]
     chains = [
-        (extract_chain(selected[:2]), NEW_PATH),
-        (extract_chain(selected[2:]), SECOND_PATH),
+        (extract_chain(selected[:2], frame=BOARD_FRAME), NEW_PATH),
+        (extract_chain(selected[2:], frame=BOARD_FRAME), SECOND_PATH),
     ]
     return board, chains, selected
 
@@ -311,8 +312,14 @@ def via_route(
     )
     selected = [segment_from_track(t) for t in tracks]
     chains = [
-        (extract_chain(selected[:1]), np.array([[0.0, 0.0], MOVED_TO])),
-        (extract_chain(selected[1:]), np.array([MOVED_TO, [10.0, 0.0]])),
+        (
+            extract_chain(selected[:1], frame=BOARD_FRAME),
+            np.array([[0.0, 0.0], MOVED_TO]),
+        ),
+        (
+            extract_chain(selected[1:], frame=BOARD_FRAME),
+            np.array([MOVED_TO, [10.0, 0.0]]),
+        ),
     ]
     return board, chains, selected, [commit.ViaMove(via_from_kipy(via), MOVED_TO)]
 

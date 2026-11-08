@@ -30,6 +30,7 @@ from kibends.chain import (
     split_locked,
 )
 from kibends.commit import ViaMove, commit_chains, snapped_path, snapped_points
+from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     FloatArray,
@@ -323,7 +324,9 @@ def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
     carried = (
-        carried_copper(may, split_chains(kept, locked, lambda _l, _n: ()))
+        carried_copper(
+            may, split_chains(kept, locked, lambda _l, _n: (), frame=BOARD_FRAME)
+        )
         if may
         else {}
     )
@@ -617,7 +620,7 @@ def _extract_chains(
             snapshot = replace(snapshot, vias=pinning)
         return snapshot.same_net_copper(net)
 
-    return split_chains(kept, locked, copper)
+    return split_chains(kept, locked, copper, frame=BOARD_FRAME)
 
 
 def _chain_inputs(

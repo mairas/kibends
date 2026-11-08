@@ -19,6 +19,8 @@ from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 
+from kibends.coords import UserFrame
+
 Point2 = tuple[float, float]
 NmPoint = tuple[int, int]
 
@@ -90,6 +92,8 @@ def extract_chains(
     same_net_copper: Callable[[str, str], Iterable[SameNetCopper]] = (
         lambda _layer, _net: ()
     ),
+    *,
+    frame: UserFrame,
 ) -> list[Chain]:
     """Split `segments` into open chains, one per connected piece, or raise.
 
@@ -104,10 +108,11 @@ def extract_chains(
     chains they touch on their layer.
 
     Chains are ordered by net, then by layer, then by first point, then by
-    width; each starts at its end with the smaller (x, y).
+    width; each starts at its end with the smaller (x, y). Errors give
+    positions in `frame`.
     """
     kept, locked = split_locked(segments)
-    return split_chains(kept, locked, same_net_copper)
+    return split_chains(kept, locked, same_net_copper, frame=frame)
 
 
 def split_locked(
@@ -126,6 +131,8 @@ def split_chains(
     kept: Sequence[Segment],
     locked: Sequence[Segment],
     same_net_copper: Callable[[str, str], Iterable[SameNetCopper]],
+    *,
+    frame: UserFrame,
 ) -> list[Chain]:
     """`extract_chains` for segments `split_locked` has already split."""
     if not kept:
@@ -143,7 +150,7 @@ def split_chains(
             width: (of_width, *_unique_edges(of_width))
             for width, of_width in _group(of_net, lambda s: s.width).items()
         }
-        _check_junctions([e for _, edges, _ in by_width.values() for e in edges])
+        _check_junctions([e for _, edges, _ in by_width.values() for e in edges], frame)
         pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
             adjacency = _adjacency(edges, dots)
@@ -176,6 +183,7 @@ def split_chains(
                 layer=layer,
                 net=net,
                 segment_ids=piece_ids,
+                frame=frame,
             )
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
         ]
@@ -191,7 +199,10 @@ def _edges_of(adjacency: Adjacency) -> list[Segment]:
 
 
 def extract_chain(
-    segments: Sequence[Segment], same_net_copper: Iterable[SameNetCopper] = ()
+    segments: Sequence[Segment],
+    same_net_copper: Iterable[SameNetCopper] = (),
+    *,
+    frame: UserFrame,
 ) -> Chain:
     """Build the one open chain that `segments` form, or raise `ChainError`.
 
@@ -209,10 +220,12 @@ def extract_chain(
         _, layer, net = _uniform_attributes(kept)
         edges, dots = _unique_edges(kept)
         if edges:
-            _check_junctions(edges)
-            _check_one_piece(_adjacency(edges, dots), _locked_on(locked, layer, net))
+            _check_junctions(edges, frame)
+            _check_one_piece(
+                _adjacency(edges, dots), _locked_on(locked, layer, net), frame
+            )
     copper = tuple(same_net_copper)
-    (chain,) = split_chains(kept, locked, lambda _layer, _net: copper)
+    (chain,) = split_chains(kept, locked, lambda _layer, _net: copper, frame=frame)
     return chain
 
 
@@ -262,13 +275,15 @@ def _chain(
     layer: str,
     net: str,
     segment_ids: Sequence[str],
+    frame: UserFrame,
 ) -> Chain:
     if not any(adjacency.values()):
         raise ChainError(
             f"selected zero-length tracks {', '.join(segment_ids)} at "
-            f"{_fmt(min(adjacency))} touch no other selected track of their width"
+            f"{_fmt(min(adjacency), frame)} touch no other selected track of "
+            "their width"
         )
-    _check_open(adjacency)
+    _check_open(adjacency, frame)
     half_width = width / NM_PER_MM / 2
     walked = [_mm(p) for p in _walk(adjacency)]
     points, pinned = _pin_touches(
@@ -293,7 +308,7 @@ def _group[Key](
     return groups
 
 
-def _check_junctions(edges: Sequence[Segment]) -> None:
+def _check_junctions(edges: Sequence[Segment], frame: UserFrame) -> None:
     """Refuse branches among the selected edges of one net, of any widths.
 
     `edges` must already be free of duplicates within each width, so a span
@@ -305,19 +320,18 @@ def _check_junctions(edges: Sequence[Segment]) -> None:
         if other is not s:
             raise ChainError(
                 f"selected tracks {other.id} and {s.id} overlap from "
-                f"{_fmt(s.start)} to {_fmt(s.end)} with different widths"
+                f"{_fmt(s.start, frame)} to {_fmt(s.end, frame)} with different widths"
             )
-    _check_no_mid_segment_junctions(edges)
-    _check_degrees(_adjacency(edges, ()))
+    _check_no_mid_segment_junctions(edges, frame)
+    _check_degrees(_adjacency(edges, ()), frame)
 
 
 def _mm(p: NmPoint) -> Point2:
     return p[0] / NM_PER_MM, p[1] / NM_PER_MM
 
 
-def _fmt(p: NmPoint) -> str:
-    x, y = _mm(p)
-    return f"({x:.3f}, {y:.3f}) mm"
+def _fmt(p: NmPoint, frame: UserFrame) -> str:
+    return f"{frame.point(_mm(p))} mm"
 
 
 def _fmt_width(width_nm: int) -> str:
@@ -372,7 +386,7 @@ def _unique_edges(segments: Sequence[Segment]) -> tuple[list[Segment], set[NmPoi
     return edges, dots
 
 
-def _check_no_mid_segment_junctions(edges: Sequence[Segment]) -> None:
+def _check_no_mid_segment_junctions(edges: Sequence[Segment], frame: UserFrame) -> None:
     """Refuse an edge end inside another edge, the first in input order.
 
     An STR tree narrows the candidates, so the check is O(n log n) for n
@@ -394,7 +408,7 @@ def _check_no_mid_segment_junctions(edges: Sequence[Segment]) -> None:
     if hits:
         i, j = hits[0]
         raise ChainError(
-            f"selected tracks branch at {_fmt(ends[i])}: "
+            f"selected tracks branch at {_fmt(ends[i], frame)}: "
             f"{edges[i // 2].id} ends in the middle of {edges[j].id}"
         )
 
@@ -425,11 +439,13 @@ def _other_end(s: Segment, p: NmPoint) -> NmPoint:
     return s.end if p == s.start else s.start
 
 
-def _check_degrees(adjacency: Adjacency) -> None:
+def _check_degrees(adjacency: Adjacency, frame: UserFrame) -> None:
     for p, segs in sorted(adjacency.items()):
         if len(segs) > MAX_CHAIN_DEGREE:
             ids = ", ".join(s.id for s in segs)
-            raise ChainError(f"selected tracks branch at {_fmt(p)}: {ids} meet there")
+            raise ChainError(
+                f"selected tracks branch at {_fmt(p, frame)}: {ids} meet there"
+            )
 
 
 def _pieces(adjacency: Adjacency) -> list[set[NmPoint]]:
@@ -452,7 +468,9 @@ def _pieces(adjacency: Adjacency) -> list[set[NmPoint]]:
     return pieces
 
 
-def _check_one_piece(adjacency: Adjacency, locked: Sequence[Segment]) -> None:
+def _check_one_piece(
+    adjacency: Adjacency, locked: Sequence[Segment], frame: UserFrame
+) -> None:
     pieces = _pieces(adjacency)
     if len(pieces) == 1:
         return
@@ -472,21 +490,22 @@ def _check_one_piece(adjacency: Adjacency, locked: Sequence[Segment]) -> None:
             f"locked segments {', '.join(splitters)} split the selected chain; "
             "unlock them or select one side only"
         )
-    described = "; ".join(_describe(piece, adjacency) for piece in pieces)
+    described = "; ".join(_describe(piece, adjacency, frame) for piece in pieces)
     raise ChainError(f"selected tracks form {len(pieces)} separate pieces: {described}")
 
 
-def _describe(piece: set[NmPoint], adjacency: Adjacency) -> str:
+def _describe(piece: set[NmPoint], adjacency: Adjacency, frame: UserFrame) -> str:
     ends = sorted(p for p in piece if len(adjacency[p]) < MAX_CHAIN_DEGREE)
     if not ends:
-        return f"loop through {_fmt(min(piece))}"
-    return " to ".join(_fmt(p) for p in ends)
+        return f"loop through {_fmt(min(piece), frame)}"
+    return " to ".join(_fmt(p, frame) for p in ends)
 
 
-def _check_open(adjacency: Adjacency) -> None:
+def _check_open(adjacency: Adjacency, frame: UserFrame) -> None:
     if all(len(segs) == MAX_CHAIN_DEGREE for segs in adjacency.values()):
         raise ChainError(
-            f"selected tracks form a closed loop through {_fmt(min(adjacency))}; "
+            "selected tracks form a closed loop through "
+            f"{_fmt(min(adjacency), frame)}; "
             "the chain must have two ends"
         )
 

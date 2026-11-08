@@ -17,6 +17,7 @@ from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
 from kipy.wrapper import Wrapper
 
 from kibends.chain import Chain, extract_chains
+from kibends.coords import BOARD_FRAME
 from kibends.snapshot import BoardSnapshot, read_selection
 from kibends.vias import ChainEnd, MovableVia, carried_copper, movable_vias
 
@@ -59,13 +60,15 @@ def judge(
     chosen = read_selection(fake)
     replaced = {s.id for s in chosen.segments if not s.locked}
     layers = {s.layer for s in chosen.segments if not s.locked}
-    bare = extract_chains(chosen.segments, lambda layer, net: ())
+    bare = extract_chains(chosen.segments, lambda layer, net: (), frame=BOARD_FRAME)
     whole = BoardSnapshot.read(
         fake, layers, chosen.vias, carried=carried_copper(chosen.vias, bare)
     )
     snapshots = {layer: whole.slice(layer, replaced) for layer in layers}
     chains = extract_chains(
-        chosen.segments, lambda layer, net: snapshots[layer].same_net_copper(net)
+        chosen.segments,
+        lambda layer, net: snapshots[layer].same_net_copper(net),
+        frame=BOARD_FRAME,
     )
     return movable_vias(chosen.vias, whole.via_contacts, chains), chains
 
