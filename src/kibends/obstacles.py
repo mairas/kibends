@@ -1,17 +1,19 @@
-"""Inflated obstacles on the chain's layer, answering distance queries.
+"""Inflated obstacles on the chain's layer, or on every layer a moving via
+spans, answering distance queries.
 
 Each obstacle is raw geometry (a copper polygon, a track centreline, a via or
 hole centre) plus an inflation: the distance from that geometry at which the
-chain's centreline reaches the required clearance. Distances are measured to
-the raw geometry and the inflation subtracted, which is the exact signed
-distance to the inflated shape without buffering it. The board edge is the
-outside of the Edge.Cuts outline, inflated the same way.
+chain's centreline, or the via's centre, reaches the required clearance.
+Distances are measured to the raw geometry and the inflation subtracted,
+which is the exact signed distance to the inflated shape without buffering
+it. The board edge is the outside of the Edge.Cuts outline, inflated the
+same way.
 """
 
 import itertools
 import math
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Iterable, Sequence
+from dataclasses import dataclass, replace
 
 import numpy as np
 import shapely
@@ -39,10 +41,12 @@ ComplexArray = NDArray[np.complex128]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.
 # 0.3 mm to the edge meets common fabs' minimum for routed outlines, and
-# 0.25 mm to holes is the hole clearance KiCad's own project templates set.
-# The kicad-cli DRC check enforces the board's real rules either way.
+# 0.25 mm to holes and between holes are the hole clearance and hole-to-hole
+# minimum KiCad's own project templates set. The kicad-cli DRC check enforces
+# the board's real rules either way.
 EDGE_CLEARANCE = 0.3
 HOLE_CLEARANCE = 0.25
+HOLE_TO_HOLE = 0.25
 
 # Closer than this to the nearest feature, the direction to it is noise; the
 # boundary's normal is used instead. Far below KiCad's 1 nm resolution.
@@ -526,15 +530,28 @@ def chain_obstacles(
     flag same-net overlap and both would otherwise be pulled onto each other.
     """
     half_width = width / 2
+    return _chains_field(
+        (
+            o,
+            half_width
+            + o.width / 2
+            + (max(clearance, o.clearance) if o.net != net else 0.0),
+        )
+        for o in others
+    )
+
+
+def _chains_field(
+    inflated: Iterable[tuple[ChainCentreline, float | None]],
+) -> ChainField:
+    """The centrelines as a field, each inflated by its own amount; those
+    with None are left out."""
     starts: list[FloatArray] = [np.empty((0, 2))]
     ends: list[FloatArray] = [np.empty((0, 2))]
     inflations: list[FloatArray] = [np.empty(0)]
-    for o in others:
-        inflation = (
-            half_width
-            + o.width / 2
-            + (max(clearance, o.clearance) if o.net != net else 0.0)
-        )
+    for o, inflation in inflated:
+        if inflation is None:
+            continue
         a, b = _split_edges(np.asarray(o.points, dtype=float).reshape(-1, 2))
         starts.append(a)
         ends.append(b)
@@ -547,7 +564,7 @@ def chain_obstacles(
 @dataclass(frozen=True)
 class _Keeper:
     """What keeps clear of the board's items: the copper disc around each
-    point of a track's centreline.
+    point of a track's centreline, or a via's ring and hole at its centre.
 
     Each method gives the inflation of another item's raw geometry, or None
     where no rule applies between the two.
@@ -555,28 +572,45 @@ class _Keeper:
 
     net: str
     radius: float
-    """Half the track width, mm."""
+    """Half the track width, or the via's ring radius, mm."""
     clearance: float
     """Its net's netclass clearance, mm."""
     hole_clearance: float
+    hole_radius: float | None = None
+    """A via's drill radius; None for a track."""
+    hole_to_hole: float = HOLE_TO_HOLE
+    touches_own_net: bool = False
+    """Whether copper of its own net is kept at touching distance rather
+    than ignored."""
+    enters_own_pads: bool = False
+    """Whether pads of its own net are ignored even with `touches_own_net`."""
 
     def copper(self, net: str, extent: float, clearance: float) -> float | None:
         """For copper of `net` reaching `extent` mm beyond its geometry, with
         `clearance` its own clearance."""
         if net == self.net:
-            return None
-        return extent + max(self.clearance, clearance) + self.radius
+            return extent + self.radius if self.touches_own_net else None
+        inflation = extent + max(self.clearance, clearance) + self.radius
+        if self.hole_radius is None:
+            return inflation
+        return max(inflation, extent + self.hole_radius + self.hole_clearance)
 
     def hole(self, net: str, radius: float, *, plated: bool) -> float | None:
-        """For a hole of `radius` mm of `net`; same-net plated holes are part
-        of the connection."""
-        if net == self.net and plated:
-            return None
-        return radius + self.hole_clearance + self.radius
+        """For a hole of `radius` mm of `net`. A same-net plated hole is part
+        of the connection, so only hole-to-hole applies to it."""
+        inflations: list[float] = []
+        if net != self.net or not plated:
+            inflations.append(radius + self.hole_clearance + self.radius)
+        if self.hole_radius is not None:
+            inflations.append(radius + self.hole_radius + self.hole_to_hole)
+        return max(inflations, default=None)
 
 
-def _copper_items(snapshot: LayerSnapshot, keeper: _Keeper) -> list[Obstacle]:
-    """The snapshot layer's copper and track keepouts, holes left out."""
+def _copper_items(
+    snapshot: LayerSnapshot, keeper: _Keeper, vias: Iterable[Via]
+) -> list[Obstacle]:
+    """The snapshot layer's copper and track keepouts, with `vias` in place
+    of the layer's vias, holes left out."""
     candidates: list[tuple[str, BaseGeometry, float | None]] = []
     for pad in snapshot.pads:
         if pad.shape is not None:
@@ -585,9 +619,12 @@ def _copper_items(snapshot: LayerSnapshot, keeper: _Keeper) -> list[Obstacle]:
                 if pad.clearance_override is not None
                 else snapshot.clearance(pad.net)
             )
-            candidates.append(
-                (f"pad {pad.name}", pad.shape, keeper.copper(pad.net, 0.0, clearance))
+            inflation = (
+                None
+                if keeper.enters_own_pads and pad.net == keeper.net
+                else keeper.copper(pad.net, 0.0, clearance)
             )
+            candidates.append((f"pad {pad.name}", pad.shape, inflation))
     candidates += [
         (
             f"track {t.id}",
@@ -602,7 +639,7 @@ def _copper_items(snapshot: LayerSnapshot, keeper: _Keeper) -> list[Obstacle]:
             Point(v.position),
             keeper.copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
         )
-        for v in snapshot.vias
+        for v in vias
     ]
     candidates += [
         (
@@ -640,13 +677,9 @@ def _hole_items(
 
 
 def _board_outline(edge_paths: Sequence[Sequence[Point2]]) -> BaseGeometry | None:
-    """The board area, or None, warning, if Edge.Cuts is not closed."""
+    """The board area, or None if Edge.Cuts is not closed."""
     if edge_paths_closed(edge_paths):
         return outline_from_edge_paths(edge_paths)
-    logger.warning(
-        "Edge.Cuts has no closed outline; the board edge is not kept clear "
-        "while smoothing, only the DRC check covers it"
-    )
     return None
 
 
@@ -666,10 +699,164 @@ def build_obstacles(
     """
     keeper = _Keeper(net, width / 2, snapshot.clearance(net), hole_clearance)
     items = [
-        *_copper_items(snapshot, keeper),
+        *_copper_items(snapshot, keeper, snapshot.vias),
         *_hole_items(snapshot.pads, snapshot.vias, keeper),
     ]
     outline = _board_outline(snapshot.edge_paths)
     if outline is None:
+        logger.warning(
+            "Edge.Cuts has no closed outline; the board edge is not kept clear "
+            "while smoothing, only the DRC check covers it"
+        )
         return Obstacles(items)
     return Obstacles(items, outline, edge_clearance + keeper.radius)
+
+
+def build_via_obstacles(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    *,
+    moving: Collection[str] = frozenset(),
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+    allow_via_in_pad: bool = False,
+) -> Obstacles:
+    """Obstacles for `via` at any position, over every layer of `layers` it
+    spans.
+
+    Its ring keeps the copper clearance, as a track of its diameter would,
+    and its hole keeps the hole clearance, to other nets' copper on each of
+    those layers. Its ring may touch copper of its own net but not overlap
+    it, so that it neither sinks into a pad nor makes a new connection; with
+    `allow_via_in_pad`, pads of its own net are no obstacle to its ring,
+    which KiCad's DRC does not flag either. Its
+    hole keeps hole-to-hole from every other hole the layers hold, of any
+    net. One field over all the layers' items is their minimum. The via
+    itself and the vias in `moving`, which the caller adds at their current
+    positions, are left out; so are copper zones, which the DRC check
+    refills.
+    """
+    spanned = [s for s in layers if via.reaches(s.layer)]
+    if not spanned:
+        raise ValueError(f"no layer that via {via.id} spans was given")
+    left_out = {via.id, *moving}
+    keeper = replace(
+        _via_keeper(via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole),
+        touches_own_net=True,
+        enters_own_pads=allow_via_in_pad,
+    )
+    # Track keepouts hold the via back as well, since the chain ends it joins
+    # sit at its centre. Rule areas that keep out vias are not read; only
+    # the DRC check covers them.
+    others = {v.id: v for s in spanned for v in s.vias if v.id not in left_out}.values()
+    # The via spans every layer here, so another via's ring counts once, as
+    # do pads' holes, which are the same on every layer.
+    items = [
+        *_copper_items(spanned[0], keeper, others),
+        *(o for s in spanned[1:] for o in _copper_items(s, keeper, ())),
+        *_hole_items(spanned[0].pads, others, keeper),
+    ]
+    outline = _board_outline(spanned[0].edge_paths)
+    if outline is None:
+        return Obstacles(items)
+    return Obstacles(items, outline, edge_clearance + keeper.radius)
+
+
+def moving_via_obstacles(
+    layer: str,
+    net: str,
+    width: float,
+    clearance: float,
+    vias: Iterable[Via],
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> ChainField | None:
+    """`vias`, at their positions, as obstacles to a track of `net`, `width`
+    and netclass `clearance` (mm) on `layer`, or None if none is one.
+
+    Each counts as `build_obstacles` counts a via on the board: its ring and
+    hole, kept at the clearances of both nets, with `clearance_of` giving a
+    via's netclass clearance. Vias of `net` and vias not spanning `layer`
+    are no obstacle.
+    """
+    keeper = _Keeper(net, width / 2, clearance, hole_clearance)
+    return _vias_field(keeper, (v for v in vias if v.reaches(layer)), clearance_of)
+
+
+def via_obstacles_for_via(
+    via: Via,
+    others: Iterable[Via],
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+) -> ChainField | None:
+    """`others`, at their positions, as obstacles to `via`, or None if none
+    is one; `via` itself among them is left out.
+
+    Each counts as `build_via_obstacles` counts a via on the board: rings
+    and holes of another net keep the copper and hole clearances, and holes
+    of any net keep hole-to-hole. Moving vias are through vias, so every
+    pair shares a layer.
+    """
+    keeper = _via_keeper(via, clearance_of(via.net), hole_clearance, hole_to_hole)
+    return _vias_field(keeper, (v for v in others if v.id != via.id), clearance_of)
+
+
+def chain_obstacles_for_via(
+    via: Via,
+    others: Sequence[ChainCentreline],
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> ChainField:
+    """Other chains' centrelines as obstacles to `via`, with `clearance_of`
+    giving its net's netclass clearance.
+
+    Another net's chain keeps the larger of the copper clearance from the
+    via's ring and the hole clearance from its hole. Chains of the via's net
+    are no obstacle, as same-net copper on the board is not.
+    """
+    # Chains have no holes, so the keeper's hole-to-hole is never asked.
+    keeper = _Keeper(
+        via.net, via.diameter / 2, clearance_of(via.net), hole_clearance, via.drill / 2
+    )
+    return _chains_field(
+        (o, keeper.copper(o.net, o.width / 2, o.clearance)) for o in others
+    )
+
+
+def _via_keeper(
+    via: Via, clearance: float, hole_clearance: float, hole_to_hole: float
+) -> _Keeper:
+    return _Keeper(
+        via.net,
+        via.diameter / 2,
+        clearance,
+        hole_clearance,
+        via.drill / 2,
+        hole_to_hole,
+    )
+
+
+def _vias_field(
+    keeper: _Keeper, vias: Iterable[Via], clearance_of: Callable[[str], float]
+) -> ChainField | None:
+    """The vias' rings and holes as obstacles to `keeper`, or None if none
+    is one."""
+    centres: list[Point2] = []
+    inflations: list[float] = []
+    for v in vias:
+        ring = keeper.copper(v.net, v.diameter / 2, clearance_of(v.net))
+        hole = keeper.hole(v.net, v.drill / 2, plated=True)
+        reach = [i for i in (ring, hole) if i is not None]
+        if reach:
+            centres.append(v.position)
+            inflations.append(max(reach))
+    if not centres:
+        return None
+    # Zero-length edges: ChainField measures to a point exactly as to an edge.
+    at = np.array(centres, dtype=float)
+    return ChainField(at, at, np.array(inflations, dtype=float))
