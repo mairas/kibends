@@ -298,7 +298,11 @@ def _outward_normal(
 
 @dataclass(frozen=True, eq=False)
 class ChainCentreline:
-    """Another selected chain's current shape, as an obstacle to this one."""
+    """A selected chain's identity and polyline.
+
+    It is a chain's own input to the optimizer, and, at the chain's current
+    shape, an obstacle to the other selected chains on its layer.
+    """
 
     description: str
     net: str
@@ -306,7 +310,7 @@ class ChainCentreline:
     clearance: float
     """Its net's netclass clearance in mm."""
     points: FloatArray
-    """Its current polyline, (n, 2) in mm."""
+    """Its polyline, (n, 2) in mm."""
 
 
 class ChainField:
