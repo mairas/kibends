@@ -25,6 +25,7 @@ from conftest import (
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
+from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from shapely.geometry import LineString, Point, box
 
@@ -1358,6 +1359,29 @@ class TestSeveralLayers:
             segment(t).distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
             for t in front
         )
+
+    def test_other_net_via_on_other_layers_is_no_obstacle(
+        self, connect: Connector
+    ) -> None:
+        back = [
+            kipy_track("e", "SIG", (0, 0), (4, 0), width=WIDTH, layer=BL.BL_B_Cu),
+            kipy_track("f", "SIG", (4, 0), (4, 4), width=WIDTH, layer=BL.BL_B_Cu),
+        ]
+        blind = kipy_via(
+            "bv",
+            "OTHER",
+            2,
+            0,
+            via_type=ViaType.VT_BLIND,
+            span=(BL.BL_F_Cu, BL.BL_In1_Cu),
+        )
+        board = connect.to(
+            CommitBoard(selection=list(back), tracks=list(back), vias=[blind])
+        )
+
+        run("--no-drc")
+
+        assert layout(board) == {(BL.BL_B_Cu, 0, 0, nm(4), nm(4))}
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(via_route_board())

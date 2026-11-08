@@ -685,6 +685,60 @@ class TestBoardSnapshot:
         assert [(p.id, p.shape) for p in inner.pads] == [("p", None)]
         assert inner.clearance("SIG") == pytest.approx(0.2)
 
+    def test_a_via_is_on_the_layers_its_drill_spans(self) -> None:
+        fake = FakeBoard(
+            vias=[
+                kipy_via("through", "SIG", 0, 0),
+                kipy_via(
+                    "blind",
+                    "SIG",
+                    1,
+                    0,
+                    via_type=ViaType.VT_BLIND,
+                    span=(BL.BL_F_Cu, BL.BL_In1_Cu),
+                ),
+                kipy_via(
+                    "buried",
+                    "SIG",
+                    2,
+                    0,
+                    via_type=ViaType.VT_BURIED,
+                    span=(BL.BL_In2_Cu, BL.BL_In1_Cu),
+                ),
+            ]
+        )
+        layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+
+        snap = BoardSnapshot.read(board(fake), layers)
+
+        assert {
+            layer: [v.id for v in snap.slice(layer, ()).vias] for layer in layers
+        } == {
+            "F.Cu": ["through", "blind"],
+            "In1.Cu": ["through", "blind", "buried"],
+            "In2.Cu": ["through", "buried"],
+            "B.Cu": ["through"],
+        }
+
+    @pytest.mark.parametrize(
+        "span",
+        [
+            (BL.BL_UNKNOWN, BL.BL_UNKNOWN),
+            (BL.BL_F_Cu, BL.BL_UNKNOWN),
+            (BL.BL_UNKNOWN, BL.BL_In1_Cu),
+        ],
+    )
+    def test_a_via_with_an_unknown_drill_layer_spans_the_board(
+        self, span: tuple[BL.ValueType, BL.ValueType]
+    ) -> None:
+        fake = FakeBoard(vias=[kipy_via("v", "SIG", 0, 0, span=span)])
+        layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+
+        snap = BoardSnapshot.read(board(fake), layers)
+
+        assert snap.vias[0].span == ("F.Cu", "B.Cu")
+        assert all(snap.slice(layer, ()).vias for layer in layers)
+
     def test_slicing_a_layer_not_read_is_an_error(self) -> None:
         snap = BoardSnapshot.read(board(FakeBoard()), ["F.Cu"])
 

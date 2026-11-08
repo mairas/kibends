@@ -96,7 +96,7 @@ class ViaKind(enum.Enum):
 
 @dataclass(frozen=True, eq=False)
 class Via:
-    """A via; obstacles take it to have copper on every layer."""
+    """A via, with copper and a hole on the layers of its span."""
 
     id: str
     net: str
@@ -107,6 +107,11 @@ class Via:
     span: tuple[str, str]
     """The copper layers its drill starts and ends on."""
     locked: bool = False
+
+    def reaches(self, layer: str) -> bool:
+        """Whether `layer` lies within the via's span."""
+        start, end = (layer_from_canonical_name(s) for s in self.span)
+        return min(start, end) <= layer_from_canonical_name(layer) <= max(start, end)
 
 
 class ViaContact(NamedTuple):
@@ -136,8 +141,9 @@ class Graphic:
 class LayerSnapshot:
     """The copper of one layer, without the tracks being replaced.
 
-    Pads and vias are listed whatever their layers, since their holes cross
-    every layer. Copper zones are not read: they reflow after an edit.
+    Pads are listed whatever their layers, since their holes cross every
+    layer; vias only on the layers they span. Copper zones are not read:
+    they reflow after an edit.
     """
 
     layer: str
@@ -274,7 +280,7 @@ class BoardSnapshot:
             layer=layer,
             pads=self.pads[layer],
             tracks=tuple(t for t in self.tracks[layer] if t.id not in replaced_ids),
-            vias=self.vias,
+            vias=tuple(v for v in self.vias if v.reaches(layer)),
             graphics=self.graphics[layer],
             keepouts=self.keepouts[layer],
             edge_paths=self.edge_paths,
@@ -531,6 +537,11 @@ _VIA_KINDS = {
 
 def _read_via(v: kbt.Via) -> Via:
     drill = v.padstack.drill
+    span = (drill.start_layer, drill.end_layer)
+    if BoardLayer.BL_UNKNOWN in span:
+        # As kipy's Via.type setter does; an unknown layer would otherwise
+        # take the via off every layer.
+        span = (BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu)
     return Via(
         id=v.id.value,
         net=v.net.name,
@@ -538,7 +549,7 @@ def _read_via(v: kbt.Via) -> Via:
         diameter=v.diameter / NM_PER_MM,
         drill=v.drill_diameter / NM_PER_MM,
         kind=_VIA_KINDS.get(v.type, ViaKind.UNKNOWN),
-        span=(canonical_name(drill.start_layer), canonical_name(drill.end_layer)),
+        span=(canonical_name(span[0]), canonical_name(span[1])),
         locked=v.locked,
     )
 
