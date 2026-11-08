@@ -343,7 +343,9 @@ def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
     # A moving via's copper must not pin the chains it carries where they
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates)
-    movable = movable_vias(selection.vias, whole.via_contacts, chains)
+    movable = movable_vias(
+        selection.vias, whole.via_contacts, chains, frame=BOARD_FRAME
+    )
     if movable:
         # Pairing depends on the chains' shapes, not their pins, so the
         # chains extracted again below pair alike.
