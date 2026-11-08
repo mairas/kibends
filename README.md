@@ -84,7 +84,13 @@ it.
 The command prints, for each chain, the length, track count, tightest bend
 radius and clearance margins before and after, then for each differential
 pair its gap and skew (see below), then for each selected via that may move
-how far it moved and where to, then the optimizer's outcome.
+how far it moved and where to, then the optimizer's outcome: whether it
+converged or stopped at its iteration cap or the time limit, after how many
+iterations and how many seconds.
+While a run lasts longer than a few seconds, it reports its progress every
+few seconds: the iteration, the time so far, the selected tracks' summed
+length, the energy it minimises and how many chains are still moving. Set
+`LOGURU_LEVEL=DEBUG` to see that line after every iteration.
 A chain the optimizer leaves as it was is marked unchanged and is neither
 checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
 changed chains are replaced and the moved vias moved in one commit, which
@@ -164,6 +170,14 @@ into coupling.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.025 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification, the DRC check and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each chain's or via's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
+| `--settled-change MM` | 0.001 | A chain settles when a burst moves its shape by less than this. Raising it alone saves little time and can leave visibly different tracks. |
+| `--stall-tolerance MM` | 0.001 | A chain also settles when its energy, in mm of track length, improves by less than this over `--stall-window` iterations. Raising it saves little time and lets some tracks end slightly longer. |
+| `--stall-window N` | 3 | Outer iterations the stall check looks back over. |
+| `--max-iterations N` | 200 | Outer iterations after which the optimizer stops and goes on with the best result found. |
+| `--burst-iterations N` | 300 | L-BFGS-B iterations per burst. Fewer are the strongest way to shorten a run, but some layouts then settle into a noticeably different shape. |
+| `--lbfgs-ftol TOL` | 1e-15 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this; the default effectively never does, so bursts run to `--burst-iterations`. A larger value, such as 1e-9, shortens runs, most of all on boards with differential pairs, at the cost of small changes in the result; much larger values change it a lot. |
+| `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |

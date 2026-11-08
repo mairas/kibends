@@ -14,9 +14,11 @@ blocks of their own (`kibends.via_moves`).
 """
 
 import math
-from collections.abc import Collection, Sequence
+import time
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import partial
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -80,15 +82,24 @@ STRETCHED = 2.0
 # within this many edges of the same index.
 SHAPE_WINDOW = 3
 
+# A run whose steps change no shape by more than this, KiCad's 1 nm grid,
+# mm, has nothing to do, however its stop rules are set.
+NOTHING_MOVED = 1e-6
+
 # Offsets from edge k of the vertices its bend radius depends on: the turns
 # at both its ends take the vertices on either side.
 BEND_REACH = np.arange(-1, 3)
+
+# A run logs its progress at INFO at most this often, seconds, and not at all
+# if it ends sooner; DEBUG gets every outer iteration.
+PROGRESS_INTERVAL = 5.0
 
 
 class Termination(Enum):
     CONVERGED = "converged"
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
+    TIME_LIMIT = "time limit reached"
     ABNORMAL = "L-BFGS-B terminated abnormally"
     """Some chain stopped after MAX_ABNORMAL_BURSTS abnormal bursts in a row
     and no burst of the run lowered the energy: nothing usable was found."""
@@ -239,6 +250,9 @@ def optimize_chains(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     pairs: Sequence[PairInput] = (),
+    clock: Callable[[], float] = time.monotonic,
+    started: float | None = None,
+    start: RunResult | None = None,
 ) -> RunResult:
     """Minimise the chains' summed energy by alternating bursts, in the given order.
 
@@ -277,6 +291,21 @@ def optimize_chains(
     cut a corner into a bend below the limit, which the copper around the
     section may keep it from rounding, so a centreline may end too tight:
     its result's `bend` says so. A via's burst never carries one.
+
+    With a time limit in `settings`, the run stops after the first burst,
+    of a chain or a via, that ends when `clock` reads the limit or more past
+    `started` (by default when the run starts), and returns its best state.
+
+    A run given the result of an earlier one on the same inputs as `start`
+    starts from its best state, the chains, the coupled sections not held
+    in this run and the vias where it left them, unless that leaves some
+    chain with more violations than its input or a via newly inside its
+    clearance; then it starts from the inputs. Either way it completes its
+    first outer iteration before it looks at the time limit, so that every
+    chain has a burst against what changed since.
+
+    Each outer iteration logs its progress at DEBUG, and at INFO once
+    `PROGRESS_INTERVAL` has passed since `started` or the last INFO line.
     """
     for chain in chains:
         if not (chain.fixed[0] and chain.fixed[-1]):
@@ -289,24 +318,40 @@ def optimize_chains(
         settings,
         MovingVias(everything, vias, params, hole_clearance, hole_to_hole),
         blocks,
+        start,
     )
     if not run.moving and not run.free_vias:
         return run.result(Termination.NOTHING_TO_DO, 0)
+    begun = clock()
+    origin = begun if started is None else started
+    deadline = None if settings.time_limit is None else origin + settings.time_limit
+    last_shown = begun
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
-        for i in run.moving:
-            if not run.resting(i):
-                run.chain_step(i)
-        for v in run.free_vias:
-            if not run.via_resting(v):
-                run.via_step(v)
+        timed = deadline is not None and (start is None or iteration > 1)
+        out_of_time = False
+        for step in run.steps():
+            step()
+            if timed and deadline is not None and clock() >= deadline:
+                out_of_time = True
+                break
+        now = clock()
+        message = _progress(run, iteration, now - origin)
+        if now - last_shown >= PROGRESS_INTERVAL:
+            logger.info(message)
+            last_shown = now
+        else:
+            logger.debug(message)
         if all(run.resting(i) for i in run.moving) and all(
             run.via_resting(v) for v in run.free_vias
         ):
             if iteration == 1 and not run.moved:
                 return run.result(Termination.NOTHING_TO_DO, 1)
             termination = Termination.CONVERGED
+            break
+        if out_of_time:
+            termination = Termination.TIME_LIMIT
             break
     gave_up = tuple(
         (everything[i].centreline.description, streak)
@@ -316,6 +361,19 @@ def optimize_chains(
     if gave_up and run.best_energy >= run.start_energy:
         termination = Termination.ABNORMAL
     return replace(run.result(termination, iteration, best=True), gave_up=gave_up)
+
+
+def _progress(run: _Run, iteration: int, elapsed: float) -> str:
+    """One line on where the run stands after an outer iteration."""
+    chains, vias = run.awake
+    moving = f"{chains} of {len(run.moving)} chains"
+    if run.free_vias:
+        moving += f" and {vias} of {len(run.free_vias)} vias"
+    return (
+        f"Iteration {iteration}, {elapsed:.1f} s: length {run.length():.3f} mm, "
+        f"energy {run.run_energy():.3f} (best {run.best_energy:.3f}), "
+        f"{moving} moving"
+    )
 
 
 @dataclass(frozen=True)
@@ -379,6 +437,7 @@ class _Run:
         settings: OptimizerSettings,
         vias: MovingVias,
         pairs: Sequence[PairBlock] = (),
+        start: RunResult | None = None,
     ) -> None:
         self.chains = chains
         self.params = params
@@ -410,7 +469,7 @@ class _Run:
             _Remembered(chain.field) if self.neighbours[i] or vias.vias else chain.field
             for i, chain in enumerate(chains)
         ]
-        self.dynamic = [
+        self.dynamic: list[dict[int, ObstacleField | None]] = [
             {
                 j: self.neighbour_field(
                     i, self.shown(j, self.originals[j]), self.originals[i]
@@ -419,10 +478,10 @@ class _Run:
             }
             for i in range(self.count)
         ]
-        self.via_parts = [
+        self.via_parts: list[ObstacleField | None] = [
             vias.via_obstacles_for_chain(i, self.positions) for i in range(self.count)
         ]
-        self.fields = [self.field_of(i) for i in range(self.count)]
+        self.fields: list[ObstacleField] = [self.field_of(i) for i in range(self.count)]
         self.anchors: list[BoolArray] = []
         self.frozen: list[tuple[FrozenVertex, ...]] = []
         for i, chain in enumerate(chains):
@@ -474,8 +533,9 @@ class _Run:
         ]
         self.moving_chains = [i for i in self.moving if i < self.first_pair]
         self.shapes = list(self.originals)
-        # Whether any step changed a shape by the settled change or more.
+        # Whether any step changed a shape by more than KiCad's grid.
         self.moved = False
+        self.awake = (0, 0)
 
         # Resampling can lay a chord across an obstacle corner or put a vertex
         # inside one, and a burst only rejects crossings its own moves create,
@@ -487,6 +547,8 @@ class _Run:
             for i, s in enumerate(self.states)
         ]
         self.counts: list[int | None] = list(self.allowed)
+        if start is not None and self.resume(start):
+            self.counts = [None] * self.count
         self.energies = [self.chain_energy(i) for i in range(self.count)]
         self.via_energies = [
             vias.energy(v, self.positions, self.current) for v in range(self.via_count)
@@ -503,6 +565,59 @@ class _Run:
             _Rest(energy, [energy])
             for energy in (self.via_block_energy(v) for v in range(self.via_count))
         ]
+
+    def resume(self, start: RunResult) -> bool:
+        """Take `start`'s best state as the current one, but the sections
+        held in this run, unless that leaves some chain with more violations
+        than `allowed` or a via newly inside its clearance. Returns whether
+        it did."""
+        settings = self.settings
+        inside = [
+            self.vias.distance(v, self.positions, self.current)
+            for v in range(self.via_count)
+        ]
+        saved = (self.states, self.positions, self.dynamic, self.via_parts, self.fields)
+        states = list(self.states)
+        for i in self.moving:
+            block = self.pairs.get(i)
+            if block is None:
+                result = start.chains[i]
+                points, mask = result.polyline, result.fixed
+            elif block.held:
+                continue
+            else:
+                section = start.pairs[i - self.first_pair]
+                points = section.centreline
+                mask = section.fixed | block.direction_pins(points)
+            states[i] = _Shape(points, mask, *resample(points, mask, settings.spacing))
+        self.states = states
+        self.positions = [np.array(v.position, dtype=float) for v in start.vias]
+        current = self.current
+        self.dynamic = [
+            {
+                j: self.neighbour_field(i, self.shown(j, current[j]), current[i])
+                for j in self.neighbours[i]
+            }
+            for i in range(self.count)
+        ]
+        self.via_parts = [
+            self.vias.via_obstacles_for_chain(i, self.positions)
+            for i in range(self.count)
+        ]
+        self.fields = [self.field_of(i) for i in range(self.count)]
+        if all(
+            violations(s.points, s.anchors, self.fields[i]) <= self.allowed[i]
+            for i, s in enumerate(self.states)
+        ) and all(
+            self.vias.distance(v, self.positions, current)
+            >= min(inside[v], -INSIDE_TOLERANCE)
+            for v in range(self.via_count)
+        ):
+            self.shapes = list(current)
+            self.moved = True
+            return True
+        self.states, self.positions, self.dynamic, self.via_parts, self.fields = saved
+        return False
 
     @property
     def current(self) -> list[FloatArray]:
@@ -657,6 +772,29 @@ class _Run:
     def resting(self, i: int) -> bool:
         return self.rests[i].resting(self.energies[i], self.settings)
 
+    def steps(self) -> Iterator[Callable[[], None]]:
+        """One outer iteration's steps: each chain's burst, then each via's,
+        of those not resting when their turn comes. `awake` counts the
+        chains and the vias given one."""
+        self.awake = (0, 0)
+        for i in self.moving:
+            if not self.resting(i):
+                self.awake = (self.awake[0] + 1, self.awake[1])
+                yield partial(self.chain_step, i)
+        for v in self.free_vias:
+            if not self.via_resting(v):
+                self.awake = (self.awake[0], self.awake[1] + 1)
+                yield partial(self.via_step, v)
+
+    def length(self) -> float:
+        """The summed length of the selected tracks at their current shapes,
+        a pair's section as its two tracks, mm."""
+        return sum(
+            float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+            for j, polyline in enumerate(self.current)
+            for _, points in self.shown(j, polyline)
+        )
+
     def via_block_energy(self, v: int) -> float:
         """Via v's energy and that of the chains its last burst moved."""
         return self.via_energies[v] + sum(self.energies[i] for i in self.carried[v])
@@ -712,7 +850,7 @@ class _Run:
         self.rejected_edges[i] += burst.rejected_edges
         self.too_close[i] += burst.too_close
         shape_change = _shape_change(self.shapes[i], burst.points)
-        self.moved |= shape_change >= settings.settled_change
+        self.moved |= shape_change > NOTHING_MOVED
         self.shapes[i] = burst.points
         self.states[i] = _Shape(
             burst.points,
@@ -843,7 +981,7 @@ class _Run:
                 self.states[i] = shape
             self.via_moved(v, burst.polylines)
             return 0.0
-        self.moved |= change >= settings.settled_change
+        self.moved |= change > NOTHING_MOVED
         held = {
             *vias.incident[v],
             *vias.contacts(

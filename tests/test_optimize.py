@@ -29,7 +29,7 @@ from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 SETTINGS = OptimizerSettings()
 # For long runs: about 20x faster than the defaults and, on the detour and
 # stall scenarios, still converging within 1 µm of the default result's length.
-COARSE = replace(SETTINGS, spacing=0.3, burst_maxiter=30)
+COARSE = replace(SETTINGS, spacing=0.3, settled_change=0.003, burst_maxiter=30)
 # Positions of a straight result within this of the ideal line, mm: the
 # energy cannot resolve smaller bows, and simplify flattens them anyway.
 STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
@@ -61,7 +61,9 @@ def y_at(points: FloatArray, x: float) -> float:
 
 # Stops on a residual bow of about 15 µm, as the defaults do, four times
 # faster.
-L_PATH_SETTINGS = replace(SETTINGS, spacing=0.2, burst_maxiter=100)
+L_PATH_SETTINGS = replace(
+    SETTINGS, spacing=0.2, settled_change=0.002, burst_maxiter=100
+)
 
 
 def test_l_path_in_free_space_becomes_straight() -> None:
@@ -81,7 +83,9 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 SOFT, STIFF = 0.1, 1.5
 # Resolves the 0.35 mm corner radius to within 5% while running both
 # stiffnesses about 8x faster than the defaults.
-WRAP_SETTINGS = replace(SETTINGS, spacing=0.25, burst_maxiter=100)
+WRAP_SETTINGS = replace(
+    SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
+)
 
 
 @pytest.fixture(scope="module")
@@ -134,8 +138,12 @@ class TestWrap:
         )
 
         assert again.rejected_edges == 0
-        assert again.termination is Termination.NOTHING_TO_DO
-        assert np.array_equal(again.polyline, soft.polyline)
+        assert again.termination is Termination.CONVERGED
+        assert again.iterations == 1
+        moved = shapely.LineString(again.polyline).hausdorff_distance(
+            shapely.LineString(soft.polyline)
+        )
+        assert moved < WRAP_SETTINGS.settled_change
 
 
 class TestChannel:
@@ -564,3 +572,16 @@ def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
 
     assert value == pytest.approx(exact_value, rel=1e-12)
     assert gradient == pytest.approx(exact_gradient, abs=1e-12)
+
+
+def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
+    scenario = scenarios.channel(repulsion=1.0)
+    lax = replace(COARSE, settled_change=0.2)
+
+    result = optimize(
+        scenario.polyline, scenario.fixed, scenario.field, scenario.params, lax
+    )
+
+    assert result.termination is Termination.CONVERGED
+    assert result.iterations == 1
+    assert result.after.mean_clearance > result.before.mean_clearance

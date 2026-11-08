@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import monotonic
 
 import kipy
 import kipy.board
@@ -19,7 +20,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
-from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE
+from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE, OptimizerSettings
 from kibends.chain import (
     Chain,
     Point2,
@@ -110,6 +111,8 @@ class SmoothOptions:
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
+    settings: OptimizerSettings = DEFAULT_SETTINGS
+    """Its time limit covers the whole optimize stage, re-runs included."""
 
 
 @dataclass(frozen=True)
@@ -185,7 +188,10 @@ class OptimizerReport:
     """The differential pairs among the chains."""
     termination: Termination
     iterations: int
-    """Outer iterations, each giving every chain one burst."""
+    """Outer iterations, each giving every chain one burst, summed over
+    the runs."""
+    elapsed: float
+    """Wall time of the optimize stage, re-runs included, s."""
 
 
 @dataclass(frozen=True)
@@ -222,6 +228,8 @@ class _Optimized:
     via_inputs: list[ViaInput]
     """With the selected chains' ends."""
     run: RunResult
+    elapsed: float
+    """Wall time of the optimize stage, s."""
 
 
 @dataclass(frozen=True)
@@ -295,9 +303,10 @@ def run_smooth(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            optimized.elapsed,
         )
     )
-    return _check_and_commit(board, gate, read, run, outcome, options)
+    return _check_and_commit(board, gate, read, optimized, outcome, options)
 
 
 def _read(board: kipy.board.Board, chord_tolerance: float) -> _Read:
@@ -364,21 +373,33 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     layout = lay_out(whole, pairs, section_field)
     logger.info(_optimizing(len(read.chains), len(pairs), len(read.movable)))
     via_inputs = _via_inputs(read.movable, read.snapshots, options)
+    started = monotonic()
+    previous: RunResult | None = None
+    iterations = 0
     while True:
         run = optimize_chains(
             layout.inputs,
             options.params,
+            options.settings,
             vias=_laid_out_vias(layout, via_inputs),
             hole_clearance=options.hole_clearance,
             pairs=layout.sections,
+            clock=monotonic,
+            started=started,
+            start=previous,
         )
+        iterations += run.iterations
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
             # Only the last run's: a first one was repeated.
             _warn_gave_up(run)
-            return _Optimized(whole, pairs, layout, via_inputs, run)
+            run = replace(run, iterations=iterations)
+            elapsed = monotonic() - started
+            return _Optimized(whole, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
-        # the sections cannot simply keep their own tracks.
+        # the sections cannot simply keep their own tracks; the run goes on
+        # from where this one left them, with these sections held.
+        previous = run
         sections = list(layout.sections)
         for k, hold in held.items():
             sections[k] = replace(sections[k], hold=hold)
@@ -492,12 +513,13 @@ def _check_and_commit(
     board: kipy.board.Board,
     gate: _DrcSetup | None,
     read: _Read,
-    run: RunResult,
+    optimized: _Optimized,
     outcome: _Outcome,
     options: SmoothOptions,
 ) -> RunReport:
     """Check the changed chains and moved vias against the DRC and, unless
     dry-running or refused, commit them."""
+    run = optimized.run
 
     def report(
         found: drc.Introduced | None = None,
@@ -511,6 +533,7 @@ def _check_and_commit(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            optimized.elapsed,
             found,
             committed,
             refusal,

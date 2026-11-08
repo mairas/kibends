@@ -18,8 +18,10 @@ import pytest
 import shapely
 from conftest import (
     PAD_HALF_SIZE,
+    BurstClock,
     CommitBoard,
     FakeKiCad,
+    Ticking,
     kipy_arc,
     kipy_pad,
     kipy_track,
@@ -106,7 +108,29 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+
+
+KEPT = 1e-3
+"""mm a chain's length may rise by between runs, as repulsion trades it."""
+
+
+def path_length(points: FloatArray) -> float:
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+
+
+def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
+    """`optimize_chains` at `settings`, but the time limit the run gives it."""
+    real: Callable[..., RunResult] = optimize_chains
+
+    def optimize(
+        chains: object, params: object, given: OptimizerSettings, **kwargs: object
+    ) -> RunResult:
+        return real(
+            chains, params, replace(settings, time_limit=given.time_limit), **kwargs
+        )
+
+    return optimize
 
 
 @pytest.fixture
@@ -116,9 +140,7 @@ def coarse_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
     For tests of error mapping and commit wiring, which need a real smoothed
     chain but not a finely smoothed one.
     """
-    monkeypatch.setattr(
-        pipeline, "optimize_chains", partial(optimize_chains, settings=COARSE)
-    )
+    monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
 
 
 # Answers DRC runs with the reports in reports.json next to it, keyed by the
@@ -413,6 +435,7 @@ class TestSmooth:
 
         def optimize_spy(*args: object, **kwargs: object) -> NoReturn:
             seen["params"] = args[1]
+            seen["settings"] = args[2]
             raise SystemExit(0)
 
         monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
@@ -425,6 +448,7 @@ class TestSmooth:
                 "--range=0.4",
                 "--edge-clearance=0.5",
                 "--hole-clearance=0.1",
+                "--time-limit=30",
             )
 
         params = cast(EnergyParams, seen["params"])
@@ -434,6 +458,7 @@ class TestSmooth:
             0.4,
         )
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
+        assert cast(OptimizerSettings, seen["settings"]).time_limit == 30.0
 
     @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize(
@@ -507,6 +532,115 @@ class TestSmooth:
         )
         assert drc_runs(kicad_cli) == 2
         assert "push_commit" in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_time_limit_commits_the_best_state_after_the_burst_past_it(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        capped = connect.to(l_board())
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, max_iterations=1))
+        )
+        run("--no-drc")
+        monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
+        monkeypatch.setattr(pipeline, "monotonic", Ticking())
+        capsys.readouterr()
+        board = connect.to(l_board())
+
+        run("--time-limit=0.5")
+
+        out = capsys.readouterr().out
+        assert re.search(
+            r"^Optimizer: time limit reached after 1 iterations in \d+\.\d s,",
+            out,
+            re.MULTILINE,
+        )
+        assert any(line.startswith("WARNING") and "time limit" in line for line in log)
+        assert drc_runs(kicad_cli) == 2
+        assert "push_commit" in board.calls
+        # The one burst of a single chain is the first outer iteration.
+        assert [segment(t) for t in cast(list[kbt.Track], board.created)] == [
+            segment(t) for t in cast(list[kbt.Track], capped.created)
+        ]
+
+    def test_reports_the_optimize_stages_wall_time(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(l_board())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        clock = Ticking(step=0.0)
+        monkeypatch.setattr(pipeline, "monotonic", clock)
+
+        def optimizing(*args: object, **kwargs: object) -> RunResult:
+            clock.now += 10.0
+            return at(COARSE)(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", optimizing)
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(options, optimized.append)
+
+        assert report.elapsed == optimized[0].elapsed == 10.0
+
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "--time-limit=0",
+            "--time-limit=-1",
+            "--time-limit=nan",
+            "--time-limit=inf",
+            "--stall-tolerance=nan",
+            "--settled-change=0",
+            "--stall-tolerance=-0.001",
+            "--stall-window=0",
+            "--stall-window=1.5",
+            "--max-iterations=0",
+            "--burst-iterations=-3",
+            "--lbfgs-ftol=0",
+            "--lbfgs-gtol=-1e-6",
+        ],
+    )
+    def test_stop_rules_must_be_positive(
+        self, option: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as raised:
+            run(option)
+
+        assert raised.value.code == 2
+        assert f"argument {option.split('=')[0]}:" in capsys.readouterr().err
+
+    def test_stop_rules_reach_the_settings(self) -> None:
+        options = cli.smooth_options(
+            cli.parse_args(
+                [
+                    "smooth",
+                    "--settled-change=0.005",
+                    "--stall-tolerance=0.01",
+                    "--stall-window=5",
+                    "--max-iterations=50",
+                    "--burst-iterations=100",
+                    "--lbfgs-ftol=1e-9",
+                    "--lbfgs-gtol=1e-6",
+                    "--time-limit=60",
+                ]
+            )
+        )
+
+        s = options.settings
+        assert s.settled_change == 0.005
+        assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
+        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 100, 60.0)
+        assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
+
+    def test_stop_rules_default_to_the_optimizers(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+
+        assert options.settings == DEFAULT_SETTINGS
 
 
 class TestDrc:
@@ -1207,8 +1341,8 @@ class TestAbnormalBursts:
         run("--dry-run", "--no-drc")
 
         assert re.search(
-            r"^Optimizer: converged after \d+ iterations, \d+ rejected edge "
-            r"moves, 3 abnormal bursts$",
+            r"^Optimizer: converged after \d+ iterations in \d+\.\d s, "
+            r"\d+ rejected edge moves, 3 abnormal bursts$",
             capsys.readouterr().out,
             re.MULTILINE,
         )
@@ -1257,7 +1391,8 @@ def test_single_chain_report_keeps_its_layout(
     ]
     assert lines[7] == "Frozen vertices: 0"
     assert re.fullmatch(
-        r"Optimizer: converged after \d+ iterations, \d+ rejected edge moves",
+        r"Optimizer: converged after \d+ iterations in \d+\.\d s, "
+        r"\d+ rejected edge moves",
         lines[8],
     )
     assert lines[9:] == ["DRC: no new violations"]
@@ -1930,11 +2065,15 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
         "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, 0, True
     )
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
-    report = pipeline.OptimizerReport((chain,), (via,), (), Termination.CONVERGED, 7)
+    report = pipeline.OptimizerReport(
+        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42
+    )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
 
-    assert outcome == "Optimizer: converged after 7 iterations, 5 rejected edge moves"
+    assert outcome == (
+        "Optimizer: converged after 7 iterations in 3.4 s, 5 rejected edge moves"
+    )
 
 
 def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() -> None:
@@ -1956,13 +2095,15 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
         rejected_edges=3,
         abnormal_bursts=2,
     )
-    report = pipeline.OptimizerReport((chain,), (), (pair,), Termination.CONVERGED, 7)
+    report = pipeline.OptimizerReport(
+        (chain,), (), (pair,), Termination.CONVERGED, 7, 0.04
+    )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
     warnings = cli.report_warnings(report)
 
     assert outcome == (
-        "Optimizer: converged after 7 iterations, 4 rejected edge moves, "
+        "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves, "
         "2 abnormal bursts"
     )
     assert any("(1.000, 2.000)" in w and "0.050 mm inside" in w for w in warnings)
@@ -2348,6 +2489,58 @@ class TestPairs:
         assert warning.startswith("WARNING")
         assert hold.value in warning and "again" in warning
 
+    def test_time_limit_keeps_the_first_runs_work_in_a_second_run(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+
+        def too_tight(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            runs.append(result)
+            pairs = tuple(
+                p
+                if p.block.held
+                else replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
+                for p in result.pairs
+            )
+            return replace(result, pairs=pairs)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
+        board = pair_board()
+        # Two Ls of other nets beside the pair, which the first run shortens.
+        bend = [
+            kipy_track(f"{net}{k}", net, start, end, width=WIDTH)
+            for net, y in (("SIG", 10), ("SIG2", 20))
+            for k, (start, end) in enumerate([((0, y), (4, y)), ((4, y), (4, y + 4))])
+        ]
+        board.selection = [*board.selection, *bend]
+        board.tracks = [*board.tracks, *bend]
+        connect.to(board)
+
+        run("--dry-run", "--no-drc", "--time-limit=3.5")
+
+        first, second = runs
+        assert first.termination is Termination.TIME_LIMIT
+        # Past the limit, the second run still completes one outer iteration,
+        # then stops at the first burst of the next.
+        assert second.iterations <= 2
+        # The first run shortened both Ls, and the second kept that.
+        shortened = [
+            k
+            for k, c in enumerate(first.chains)
+            if path_length(c.polyline) < c.before.length - KEPT
+        ]
+        assert len(shortened) == 2
+        for before, after in zip(first.chains, second.chains, strict=True):
+            assert path_length(after.polyline) <= path_length(before.polyline) + KEPT
+        total = first.iterations + second.iterations
+        assert f"after {total} iterations" in capsys.readouterr().out
+
     def test_a_second_run_reports_only_its_own_abandoned_chains(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
@@ -2418,9 +2611,7 @@ def pair_tracks_at(
 def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, settings: OptimizerSettings
 ) -> None:
-    monkeypatch.setattr(
-        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
-    )
+    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
 
     tracks, calls = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
 
@@ -2616,9 +2807,7 @@ def test_two_pairs_at_clearance_both_smooth_and_simplify(
     margin: float,
     settings: OptimizerSettings,
 ) -> None:
-    monkeypatch.setattr(
-        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
-    )
+    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
     board = connect.to(bus_board(margin))
 
     run("--no-drc")
@@ -2734,7 +2923,9 @@ SIDE_CHAIN = ((0.6, 0.0), (3.0, 0.0), (4.8, 1.8), (7.2, 1.8))
 SIDE_OFFSET = 0.62
 """Of the selected SIG chain beside the S-bend, outside the bend."""
 CROWDED_FAN = 0.6
-FINE = OptimizerSettings(spacing=0.15, burst_maxiter=30, max_iterations=30)
+FINE = OptimizerSettings(
+    spacing=0.15, settled_change=0.0015, burst_maxiter=30, max_iterations=30
+)
 """Coarser settings round the corner cleanly."""
 
 
@@ -2744,9 +2935,7 @@ def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
 ) -> None:
     # Slow: only spacings as fine as this cut the corner too tightly, and the
     # run then repeats with the section held, about 2 s in all.
-    monkeypatch.setattr(
-        pipeline, "optimize_chains", partial(optimize_chains, settings=FINE)
-    )
+    monkeypatch.setattr(pipeline, "optimize_chains", at(FINE))
     p, n = offset_pair(np.array(CROWDED_PAIR), PAIR_GAP, PAIR_WIDTH)
     x, y = CROWDED_PAIR[0]
     fanned = {
@@ -2898,9 +3087,7 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
 ) -> None:
     # As KiCad's router expects of a pair: otherwise a later edit of it in
     # KiCad no longer treats it as coupled.
-    monkeypatch.setattr(
-        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
-    )
+    monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
     calls = spy_simplify(monkeypatch)
     board = connect.to(PAIRED_BOARDS[layout]())
 

@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn, assert_never
 
@@ -161,7 +162,7 @@ def format_statistics(report: OptimizerReport) -> str:
     outcome = ", ".join(
         [
             f"Optimizer: {report.termination.value} after {report.iterations} "
-            f"iterations",
+            f"iterations in {report.elapsed:.1f} s",
             f"{rejected} rejected edge moves",
             *abnormal,
         ]
@@ -200,8 +201,13 @@ def report_warnings(report: OptimizerReport) -> list[str]:
     ]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
-            f"The optimizer stopped at its cap of {DEFAULT_SETTINGS.max_iterations} "
+            f"The optimizer stopped at its cap of {report.iterations} "
             "outer iterations without converging; using the best result found"
+        )
+    if report.termination is Termination.TIME_LIMIT:
+        warnings.append(
+            "The optimizer stopped at its time limit without converging; "
+            "using the best result found"
         )
     return warnings
 
@@ -317,15 +323,29 @@ def _radius(r: float) -> str:
     return "straight" if np.isinf(r) else f"{r:.3f}"
 
 
-def _non_negative(text: str) -> float:
+def _finite(text: str) -> float:
     value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {text}")
+    return value
+
+
+def _non_negative(text: str) -> float:
+    value = _finite(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"must not be negative, got {text}")
     return value
 
 
 def _positive(text: str) -> float:
-    value = float(text)
+    value = _finite(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive, got {text}")
+    return value
+
+
+def _positive_int(text: str) -> int:
+    value = int(text)
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be positive, got {text}")
     return value
@@ -394,6 +414,70 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"(default: {DEFAULT_CHORD_TOLERANCE:g})",
     )
     smooth_parser.add_argument(
+        "--settled-change",
+        type=_positive,
+        default=DEFAULT_SETTINGS.settled_change,
+        metavar="MM",
+        help="A chain settles when a burst moves its shape by less than this "
+        f"(default: {DEFAULT_SETTINGS.settled_change:g})",
+    )
+    smooth_parser.add_argument(
+        "--stall-tolerance",
+        type=_positive,
+        default=DEFAULT_SETTINGS.stall_tolerance,
+        metavar="MM",
+        help="A chain also settles when its energy, in mm of track length, "
+        "improves by less than this over --stall-window iterations "
+        f"(default: {DEFAULT_SETTINGS.stall_tolerance:g})",
+    )
+    smooth_parser.add_argument(
+        "--stall-window",
+        type=_positive_int,
+        default=DEFAULT_SETTINGS.stall_window,
+        metavar="N",
+        help=f"Iterations the stall check looks back over "
+        f"(default: {DEFAULT_SETTINGS.stall_window})",
+    )
+    smooth_parser.add_argument(
+        "--max-iterations",
+        type=_positive_int,
+        default=DEFAULT_SETTINGS.max_iterations,
+        metavar="N",
+        help="Outer iterations after which the optimizer stops with the best "
+        f"result found (default: {DEFAULT_SETTINGS.max_iterations})",
+    )
+    smooth_parser.add_argument(
+        "--burst-iterations",
+        type=_positive_int,
+        default=DEFAULT_SETTINGS.burst_maxiter,
+        metavar="N",
+        help="L-BFGS-B iterations per burst; fewer are faster but may leave "
+        f"a different result (default: {DEFAULT_SETTINGS.burst_maxiter})",
+    )
+    smooth_parser.add_argument(
+        "--lbfgs-ftol",
+        type=_positive,
+        default=DEFAULT_SETTINGS.lbfgs_ftol,
+        metavar="TOL",
+        help="L-BFGS-B ends a burst early when the energy's relative reduction "
+        f"falls below this (default: {DEFAULT_SETTINGS.lbfgs_ftol:g})",
+    )
+    smooth_parser.add_argument(
+        "--lbfgs-gtol",
+        type=_positive,
+        default=DEFAULT_SETTINGS.lbfgs_gtol,
+        metavar="TOL",
+        help="L-BFGS-B ends a burst early when the projected gradient falls "
+        f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
+    )
+    smooth_parser.add_argument(
+        "--time-limit",
+        type=_positive,
+        metavar="SECONDS",
+        help="Stop optimizing after this long and go on with the best result "
+        "found so far (default: no limit)",
+    )
+    smooth_parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
@@ -446,6 +530,17 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         drc=not args.no_drc,
         kicad_cli=args.kicad_cli,
         allow_via_in_pad=args.allow_via_in_pad,
+        settings=replace(
+            DEFAULT_SETTINGS,
+            settled_change=args.settled_change,
+            stall_tolerance=args.stall_tolerance,
+            stall_window=args.stall_window,
+            max_iterations=args.max_iterations,
+            burst_maxiter=args.burst_iterations,
+            lbfgs_ftol=args.lbfgs_ftol,
+            lbfgs_gtol=args.lbfgs_gtol,
+            time_limit=args.time_limit,
+        ),
     )
 
 

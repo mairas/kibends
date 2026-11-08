@@ -5,7 +5,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -33,12 +33,44 @@ from kipy.util.board_layer import canonical_name
 from kipy.wrapper import Wrapper
 from loguru import logger
 
+import kibends.optimize as optimize_module
 from kibends.chain import NM_PER_MM
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
+
+
+class Ticking:
+    """A clock that reads `now` and then advances by `step` seconds."""
+
+    def __init__(self, now: float = 0.0, step: float = 1.0) -> None:
+        self.now = now
+        self.step = step
+
+    def __call__(self) -> float:
+        now = self.now
+        self.now += self.step
+        return now
+
+
+class BurstClock:
+    """A clock that reads how many chain bursts have run since it was made,
+    however often it is read."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.bursts = 0
+        real = cast(Callable[..., object], optimize_module._burst)  # pyright: ignore[reportPrivateUsage]
+
+        def counted(*args: object, **kwargs: object) -> object:
+            self.bursts += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(optimize_module, "_burst", counted)
+
+    def __call__(self) -> float:
+        return float(self.bursts)
 
 
 @pytest.fixture

@@ -1,11 +1,13 @@
 import copy
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import numpy as np
 import pytest
 import scenarios
+from conftest import BurstClock, Ticking
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
@@ -23,6 +25,7 @@ from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
+    PROGRESS_INTERVAL,
     PolylineStats,
     RunResult,
     Termination,
@@ -31,7 +34,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 
-COARSE = OptimizerSettings(spacing=0.3, burst_maxiter=30)
+COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
 def run(scenario: ChainsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
@@ -258,7 +261,7 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
 @pytest.mark.parametrize(
     ("scenario", "settings"),
     [
-        (scenarios.drape(), replace(COARSE, spacing=0.25)),
+        (scenarios.drape(), replace(COARSE, spacing=0.25, settled_change=0.0025)),
         (scenarios.drape(), COARSE),
         (scenarios.squeeze(), COARSE),
         (scenarios.hooks(), COARSE),
@@ -288,7 +291,9 @@ JUNCTION_TOLERANCE = 1e-3
 JUNCTION_X = 10.0
 LEG = 10.0
 BOW = 0.5
-JUNCTION_SETTINGS = OptimizerSettings(spacing=0.2, burst_maxiter=60)
+JUNCTION_SETTINGS = OptimizerSettings(
+    spacing=0.2, settled_change=0.002, burst_maxiter=60
+)
 
 
 def test_chains_of_one_net_meeting_end_to_end_leave_the_junction_straight() -> None:
@@ -467,7 +472,9 @@ def test_a_woken_chain_does_not_stall_on_energies_from_before_it_woke(
     monkeypatch.setattr(optimize_module, "stalled", watched)
     pair = scenarios.uneven_channel_pair()
 
-    result = run(pair, OptimizerSettings(spacing=0.2, burst_maxiter=60))
+    result = run(
+        pair, OptimizerSettings(spacing=0.2, settled_change=0.002, burst_maxiter=60)
+    )
 
     assert stalled_on
     assert result.termination is Termination.CONVERGED
@@ -541,3 +548,118 @@ def test_chains_of_one_net_touching_mid_chain_do_not_repel() -> None:
         assert stats.min_clearance >= -INSIDE_TOLERANCE
         assert stats.length < chain.before.length
     assert np.all(result.chains[0].polyline == TOUCH, axis=1).sum() == 1
+
+
+def test_time_limit_stops_after_the_burst_that_passes_it() -> None:
+    scenario = scenarios.channel_pair()
+    limited = replace(COARSE, time_limit=0.5)
+
+    result = optimize_chains(scenario.chains, scenario.params, limited, clock=Ticking())
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert result.iterations == 1
+    first, second = (
+        LineString(c.polyline).hausdorff_distance(LineString(given.centreline.points))
+        for c, given in zip(result.chains, scenario.chains, strict=True)
+    )
+    assert first > COARSE.settled_change
+    # Only the first chain had its burst; the second keeps its shape.
+    assert second < INSIDE_TOLERANCE
+
+
+def test_time_limit_counts_from_when_the_stage_started() -> None:
+    scenario = scenarios.uneven_channel_pair()
+    # Standing still past the limit: only a deadline counted from `started`
+    # has passed.
+    clock = Ticking(now=10.0, step=0.0)
+    limited = replace(COARSE, time_limit=5.0)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=clock, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert result.iterations == 1
+
+
+PROGRESS_LINE = re.compile(
+    r"^(DEBUG|INFO) Iteration (\d+), (\d+\.\d) s: length \d+\.\d{3} mm, "
+    r"energy -?\d+\.\d{3} \(best -?\d+\.\d{3}\), \d+ of 2 chains moving$"
+)
+
+
+def progress(log: list[str]) -> list[tuple[str, int, float]]:
+    """The progress lines in `log` as (level, iteration, elapsed s)."""
+    lines = [line.strip() for line in log if " Iteration " in line]
+    matches = [PROGRESS_LINE.match(line) for line in lines]
+    assert all(matches), lines
+    return [(m[1], int(m[2]), float(m[3])) for m in matches if m]
+
+
+def test_progress_is_logged_after_every_iteration(log: list[str]) -> None:
+    scenario = scenarios.uneven_channel_pair()
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, COARSE, clock=Ticking(step=0.0)
+    )
+
+    lines = progress(log)
+    assert [iteration for _, iteration, _ in lines] == list(
+        range(1, result.iterations + 1)
+    )
+    # A run shorter than the interval says nothing at INFO.
+    assert {level for level, _, _ in lines} == {"DEBUG"}
+
+
+def test_progress_at_info_comes_at_most_once_per_interval(
+    log: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = scenarios.uneven_channel_pair()
+    # A second per burst, however often the clock is read.
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(scenario.chains, scenario.params, COARSE, clock=clock)
+
+    lines = progress(log)
+    assert [iteration for _, iteration, _ in lines] == list(
+        range(1, result.iterations + 1)
+    )
+    assert [elapsed for _, _, elapsed in lines][-1] == clock.bursts
+    shown = 0.0
+    for level, _, elapsed in lines:
+        due = elapsed - shown >= PROGRESS_INTERVAL
+        assert level == ("INFO" if due else "DEBUG")
+        if due:
+            shown = elapsed
+    assert any(level == "INFO" for level, _, _ in lines)
+
+
+def test_without_a_time_limit_the_clock_changes_nothing() -> None:
+    scenario = scenarios.uneven_channel_pair()
+
+    timed = optimize_chains(scenario.chains, scenario.params, COARSE, clock=Ticking())
+    plain = run(scenario)
+
+    assert timed.termination is plain.termination is Termination.CONVERGED
+    assert timed.iterations == plain.iterations
+    for a, b in zip(timed.chains, plain.chains, strict=True):
+        np.testing.assert_array_equal(a.polyline, b.polyline)
+
+
+def test_a_run_that_settles_on_the_burst_past_the_limit_has_converged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.uneven_channel_pair()
+    clock = BurstClock(monkeypatch)
+    plain = optimize_chains(scenario.chains, scenario.params, COARSE, clock=clock)
+    bursts = clock.bursts
+    clock.bursts = 0
+    # The limit passes during the last burst, after which every chain rests.
+    limited = replace(COARSE, time_limit=bursts - 0.5)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=clock, started=0.0
+    )
+
+    assert plain.termination is result.termination is Termination.CONVERGED
+    assert result.iterations == plain.iterations
