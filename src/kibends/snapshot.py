@@ -140,13 +140,6 @@ class LayerSnapshot:
             *(g.geometry for g in self.graphics if g.net == net),
         ]
 
-    @classmethod
-    def from_board(
-        cls, board: kipy.board.Board, layer: str, replaced_ids: Collection[str]
-    ) -> LayerSnapshot:
-        """Read `layer` and everything crossing it, less the tracks being replaced."""
-        return BoardSnapshot.read(board, [layer]).slice(layer, replaced_ids)
-
 
 @dataclass(frozen=True, eq=False)
 class BoardSnapshot:

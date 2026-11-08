@@ -27,6 +27,7 @@ from conftest import (
     kipy_track,
     kipy_via,
     kipy_zone,
+    layer_snapshot,
     netclass,
 )
 from kipy.errors import ApiError
@@ -57,7 +58,7 @@ def board(fake: FakeBoard) -> kipy.board.Board:
 
 
 def snapshot(fake: FakeBoard, replaced: frozenset[str] = frozenset()) -> LayerSnapshot:
-    return LayerSnapshot.from_board(board(fake), LAYER, replaced)
+    return layer_snapshot(fake, LAYER, replaced)
 
 
 class TestReadSelection:
@@ -581,13 +582,13 @@ class TestBoardSnapshot:
     LAYERS = ("F.Cu", "B.Cu")
     REPLACED = frozenset({"f-sel", "b-sel"})
 
-    def test_slices_equal_separate_single_layer_reads(self) -> None:
+    def test_slices_equal_single_layer_reads(self) -> None:
         fake = two_layer_board()
 
         snap = BoardSnapshot.read(board(fake), self.LAYERS)
 
         for layer in self.LAYERS:
-            alone = LayerSnapshot.from_board(board(fake), layer, self.REPLACED)
+            alone = layer_snapshot(fake, layer, self.REPLACED)
             assert plain(snap.slice(layer, self.REPLACED)) == plain(alone)
 
     def test_two_layers_read_each_board_wide_kind_once(self) -> None:

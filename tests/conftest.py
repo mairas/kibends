@@ -5,9 +5,11 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
+import kipy.board
 import kipy.board_types as kbt
 import pytest
 from google.protobuf.message import Message
@@ -27,10 +29,12 @@ from kipy.proto.common.commands.editor_commands_pb2 import (
 )
 from kipy.proto.common.types import base_types_pb2, project_settings_pb2
 from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
+from kipy.util.board_layer import canonical_name
 from kipy.wrapper import Wrapper
 from loguru import logger
 
 from kibends.chain import NM_PER_MM
+from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
@@ -427,12 +431,21 @@ class FakeBoard:
             f"\t(segment\n\t\t(start {t.start.x / NM_PER_MM} {t.start.y / NM_PER_MM})\n"
             f"\t\t(end {t.end.x / NM_PER_MM} {t.end.y / NM_PER_MM})\n"
             f"\t\t(width {t.width / NM_PER_MM})\n"
-            f'\t\t(layer "F.Cu")\n\t\t(net "{t.net.name}")\n'
+            f'\t\t(layer "{canonical_name(t.layer)}")\n\t\t(net "{t.net.name}")\n'
             f'\t\t(uuid "{t.id.value}")\n\t)\n'
             for t in self.tracks
             if type(t) is kbt.Track
         )
         return f"(kicad_pcb\n\t(version 20260206)\n{segments}\t(embedded_fonts no)\n)\n"
+
+
+def layer_snapshot(
+    board: FakeBoard, layer: str, replaced: Collection[str] = frozenset()
+) -> LayerSnapshot:
+    """`layer` of a board read for that layer alone, as a run on it reads it."""
+    return BoardSnapshot.read(cast(kipy.board.Board, board), [layer]).slice(
+        layer, replaced
+    )
 
 
 @dataclass

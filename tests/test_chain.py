@@ -376,13 +376,17 @@ class TestMixedAttributes:
         with pytest.raises(ChainError, match=r"nets.*GND.*b.*SIG.*a"):
             extract_chain(segments)
 
-    def test_two_layers_joined_at_a_via_suggest_one_run_per_layer(self) -> None:
+    def test_two_layers_joined_at_a_via_are_not_one_chain(self) -> None:
         segments = [
             seg("a", (0, 0), (10, 0)),
             seg("b", (10, 0), (20, 0), layer="B.Cu"),
         ]
 
-        with pytest.raises(ChainError, match=r"layers.*B\.Cu.*F\.Cu.*once per layer"):
+        with pytest.raises(
+            ChainError,
+            match=r"layers.*B\.Cu.*F\.Cu.*; tracks on several layers do "
+            r"not form one chain$",
+        ):
             extract_chain(segments)
 
     def test_locked_segment_on_another_layer_does_not_count(self) -> None:
@@ -405,7 +409,7 @@ class TestSeveralChains:
         ]
         gnd_pad = box(4, 9, 6, 11)
 
-        def copper(net: str) -> list[Polygon]:
+        def copper(_layer: str, net: str) -> list[Polygon]:
             return [gnd_pad] if net == "GND" else []
 
         gnd, sig = extract_chains(segments, copper)
@@ -421,7 +425,7 @@ class TestSeveralChains:
         segments = [*l_z_segments(), seg("dup", (10, 0), (0, 0))]
         tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
 
-        assert extract_chains(segments, lambda _net: [tee]) == [
+        assert extract_chains(segments, lambda _layer, _net: [tee]) == [
             extract_chain(segments, [tee])
         ]
 
@@ -523,11 +527,47 @@ class TestSeveralChains:
         with pytest.raises(ChainError, match=r"stray.*\(50\.000, 50\.000\)"):
             extract_chains(segments)
 
-    def test_two_layers_still_suggest_one_run_per_layer(self) -> None:
+    def test_two_layers_joined_at_a_via_give_a_chain_on_each(self) -> None:
         segments = [
             seg("a", (0, 0), (10, 0)),
             seg("b", (10, 0), (20, 0), layer="B.Cu"),
         ]
+        via = Point(10, 0).buffer(0.3)
+        asked: list[tuple[str, str]] = []
 
-        with pytest.raises(ChainError, match=r"layers.*B\.Cu.*F\.Cu.*once per layer"):
-            extract_chains(segments)
+        def copper(layer: str, net: str) -> list[Polygon]:
+            asked.append((layer, net))
+            return [via]
+
+        back, front = extract_chains(segments, copper)
+
+        assert (back.layer, back.segment_ids) == ("B.Cu", ("b",))
+        assert (front.layer, front.segment_ids) == (LAYER, ("a",))
+        assert_points(back, [(10, 0), (10.3, 0), (20, 0)])
+        assert_points(front, [(0, 0), (9.7, 0), (10, 0)])
+        assert back.pinned == front.pinned == (True, True, True)
+        assert sorted(asked) == [("B.Cu", NET), (LAYER, NET)]
+
+    def test_same_net_tracks_crossing_on_two_layers_do_not_branch(self) -> None:
+        segments = [
+            seg("a", (0, 0), (10, 0)),
+            seg("b", (5, -5), (5, 5), layer="B.Cu"),
+        ]
+
+        back, front = extract_chains(segments)
+
+        assert_points(back, [(5, -5), (5, 5)])
+        assert_points(front, [(0, 0), (10, 0)])
+
+    def test_locked_segment_pins_only_its_own_layer(self) -> None:
+        segments = [
+            seg("a", (0, 0), (10, 0)),
+            seg("b", (0, 1), (10, 1), layer="B.Cu"),
+            seg("lock", (5, 1), (5, -5), locked=True),
+        ]
+
+        back, front = extract_chains(segments)
+
+        assert back.pinned == (True, True)
+        assert_points(front, [(0, 0), (5, 0), (10, 0)])
+        assert front.pinned == (True, True, True)

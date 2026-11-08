@@ -19,10 +19,12 @@ from conftest import (
     kipy_arc,
     kipy_pad,
     kipy_track,
+    kipy_via,
     nm,
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
+from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from shapely.geometry import LineString, Point, box
 
@@ -1201,3 +1203,181 @@ def test_single_chain_report_keeps_its_layout(
         lines[8],
     )
     assert lines[9:] == ["DRC: no new violations"]
+
+
+VIA = (4.0, 4.0)
+"""Where `l_chain` ends: the via that takes SIG down to B.Cu."""
+BOARD_WIDE_READS = (
+    "get_selection",
+    "get_footprints",
+    "get_tracks",
+    "get_pads",
+    "get_vias",
+    "get_shapes",
+    "get_text",
+    "get_zones",
+    "get_netclass_for_nets",
+)
+
+
+def back_l() -> list[kbt.Track]:
+    """An L on B.Cu leaving the via at `VIA`."""
+    return [
+        kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=BL.BL_B_Cu),
+        kipy_track("f", "SIG", (8, 4), (8, 8), width=WIDTH, layer=BL.BL_B_Cu),
+    ]
+
+
+def via_route_board(
+    pad: tuple[float, float] = PAD,
+    pad_layers: Sequence[int] = (BL.BL_F_Cu, BL.BL_B_Cu),
+) -> CommitBoard:
+    """SIG along `l_chain` on F.Cu, down an unselected via, on along `back_l`,
+    with a GND pad at `pad` and an unselected GND track on B.Cu."""
+    route = [*l_chain(), *back_l()]
+    unselected = kipy_track("g", "GND", (0, 10), (8, 10), width=WIDTH, layer=BL.BL_B_Cu)
+    return CommitBoard(
+        selection=list(route),
+        tracks=[*route, unselected],
+        vias=[kipy_via("v", "SIG", *VIA)],
+        pads=[kipy_pad("pad", "GND", *pad, layers=pad_layers)],
+    )
+
+
+CANDIDATE_SEGMENT = re.compile(
+    r'\(layer "([^"]+)"\)\s*\(net "[^"]*"\)\s*\(uuid "([^"]+)"\)'
+)
+
+
+def created_on(board: CommitBoard, layer: BL.ValueType) -> list[kbt.Track]:
+    return [t for t in cast(list[kbt.Track], board.created) if t.layer == layer]
+
+
+def ends(tracks: Sequence[kbt.Track]) -> set[tuple[int, int]]:
+    return {(p.x, p.y) for t in tracks for p in (t.start, t.end)}
+
+
+def layout(board: CommitBoard) -> set[tuple[int, int, int, int, int]]:
+    return {
+        (t.layer, t.start.x, t.start.y, t.end.x, t.end.y)
+        for t in cast(list[kbt.Track], board.created)
+    }
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestSeveralLayers:
+    def test_route_through_a_via_smooths_both_sides_in_one_commit(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(via_route_board())
+
+        run()
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == ["a", "b", "e", "f"]
+        front, back = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_B_Cu)
+        assert len(front) + len(back) == len(board.created)
+        via = (nm(VIA[0]), nm(VIA[1]))
+        assert {(0, 0), via} <= ends(front)
+        assert {via, (nm(8), nm(8))} <= ends(back)
+        assert drc_runs(kicad_cli) == 2
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        segments = CANDIDATE_SEGMENT.findall(candidate)
+        assert {layer for layer, _ in segments} == {"F.Cu", "B.Cu"}
+        assert not {"a", "b", "e", "f"} & {uuid for _, uuid in segments}
+        assert ("B.Cu", "g") in segments
+
+    def test_each_layer_avoids_its_own_obstacles(self, connect: Connector) -> None:
+        # On F.Cu only, on the chord the front L would otherwise be pulled to.
+        on_chord = (2.0, 2.0)
+        board = connect.to(via_route_board(on_chord, pad_layers=(BL.BL_F_Cu,)))
+
+        run("--no-drc")
+
+        x, y = on_chord
+        h = PAD_HALF_SIZE
+        pad = box(x - h, y - h, x + h, y + h)
+        front = created_on(board, BL.BL_F_Cu)
+        assert front
+        assert all(
+            segment(t).distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+            for t in front
+        )
+
+    def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
+        board = connect.to(via_route_board())
+
+        run()
+
+        assert {kind: board.reads[kind] for kind in BOARD_WIDE_READS} == dict.fromkeys(
+            BOARD_WIDE_READS, 1
+        )
+        assert board.reads["get_pad_shapes_as_polygons"] == 2
+
+    def test_two_front_chains_of_one_net_need_no_clearance_to_each_other(
+        self, connect: Connector
+    ) -> None:
+        # Both ends of the two front chains lie closer than width plus
+        # clearance, which only chains of one net may.
+        gap = WIDTH + CLEARANCE / 2
+        inner_via = (VIA[0] - gap, VIA[1])
+        tracks = [
+            *l_chain(),
+            kipy_track("m", "SIG", VIA, inner_via, width=WIDTH, layer=BL.BL_B_Cu),
+            kipy_track("c", "SIG", (0, gap), (4 - gap, gap), width=WIDTH),
+            kipy_track("d", "SIG", (4 - gap, gap), inner_via, width=WIDTH),
+        ]
+        connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                vias=[kipy_via("v", "SIG", *VIA), kipy_via("w", "SIG", *inner_via)],
+            )
+        )
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert [(c.layer, c.tracks, c.changed) for c in report.chains] == [
+            ("B.Cu", 1, False),
+            ("F.Cu", 2, True),
+            ("F.Cu", 2, True),
+        ]
+        for c in report.chains[1:]:
+            assert c.after.min_clearance >= -NM_ROUNDING
+            assert c.frozen == ()
+
+    def test_chains_crossing_on_two_layers_smooth_as_if_alone(
+        self, connect: Connector
+    ) -> None:
+        front = l_chain()
+        back = [
+            kipy_track("e", "SIG2", (2, -2), (2, 2), width=WIDTH, layer=BL.BL_B_Cu),
+            kipy_track("f", "SIG2", (2, 2), (6, 2), width=WIDTH, layer=BL.BL_B_Cu),
+        ]
+
+        def smoothed(tracks: list[kbt.Track]) -> set[tuple[int, int, int, int, int]]:
+            board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+            run("--no-drc")
+            return layout(board)
+
+        together = smoothed([*front, *back])
+
+        assert together == smoothed(front) | smoothed(back)
+
+    def test_plot_titles_name_each_chains_layer(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kibends import plot
+
+        connect.to(via_route_board())
+        titles: list[str] = []
+
+        def spy(path: Path, panels: Sequence[plot.Panel]) -> None:
+            titles.extend(p.title for p in panels)
+
+        monkeypatch.setattr(plot, "render", spy)
+
+        run("--dry-run", "--no-drc", f"--plot={tmp_path / 'chains.png'}")
+
+        assert [t.split(":")[0] for t in titles] == ["SIG on B.Cu", "SIG on F.Cu"]
