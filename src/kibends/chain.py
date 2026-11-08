@@ -33,6 +33,8 @@ MAX_CHAIN_DEGREE = 2
 # reaches the exact integer test.
 CANDIDATE_MARGIN_NM = 1
 CANDIDATE_MARGIN_MM = CANDIDATE_MARGIN_NM / NM_PER_MM
+# Marks copper that belongs to no selected piece.
+NO_PIECE = -1
 
 
 class ChainError(ValueError):
@@ -93,8 +95,9 @@ def extract_chains(
     into connected pieces. Within one net, selected tracks of all widths must
     not branch: two widths may meet only end to end, where both chains end and
     so are pinned. `same_net_copper(net)` returns the copper of `net` on the
-    layer that pins its chains, as for `extract_chain`. Locked segments stay
-    out of every chain, with a warning, and pin the chains they touch.
+    layer that pins its chains, as for `extract_chain`; a net's chains also
+    pin each other where their copper overlaps. Locked segments stay out of
+    every chain, with a warning, and pin the chains they touch.
 
     Chains are ordered by net, then by first point, then by width; each
     starts at its end with the smaller (x, y).
@@ -128,41 +131,59 @@ def _chains(
 
     chains: list[Chain] = []
     for net, of_net in _group(kept, lambda s: s.net).items():
-        copper = _CopperIndex(
-            [
-                *same_net_copper(net),
-                *(
-                    SameNetTrack(
-                        LineString([_mm(s.start), _mm(s.end)]), s.width / NM_PER_MM
-                    )
-                    for s in _locked_on(locked, layer, net)
-                ),
-            ]
-        )
+        fixed = [
+            *same_net_copper(net),
+            *map(_same_net_track, _locked_on(locked, layer, net)),
+        ]
         by_width = {
             width: (of_width, *_unique_edges(of_width))
             for width, of_width in _group(of_net, lambda s: s.width).items()
         }
         _check_junctions([e for _, edges, _ in by_width.values() for e in edges])
+        pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
             adjacency = _adjacency(edges, dots)
-            pieces = _pieces(adjacency)
-            piece_of = {p: i for i, piece in enumerate(pieces) for p in piece}
-            ids: list[list[str]] = [[] for _ in pieces]
+            of_width_pieces = _pieces(adjacency)
+            piece_of = {p: i for i, piece in enumerate(of_width_pieces) for p in piece}
+            ids: list[list[str]] = [[] for _ in of_width_pieces]
             for s in of_width:
                 ids[piece_of[s.start]].append(s.id)
-            chains += [
-                _chain(
-                    {p: adjacency[p] for p in piece},
-                    copper,
-                    width=width,
-                    layer=layer,
-                    net=net,
-                    segment_ids=piece_ids,
-                )
-                for piece, piece_ids in zip(pieces, ids, strict=True)
+            pieces += [
+                (width, {p: adjacency[p] for p in piece}, piece_ids)
+                for piece, piece_ids in zip(of_width_pieces, ids, strict=True)
             ]
+        # A selected track whose copper overlaps another chain's connects to
+        # it like unselected copper, so each pins the other there.
+        tracks = [
+            (k, _same_net_track(s))
+            for k, (_, adjacency, _) in enumerate(pieces)
+            for s in dict.fromkeys(_edges_of(adjacency))
+        ]
+        copper = _CopperIndex(
+            [*fixed, *(t for _, t in tracks)],
+            [*(NO_PIECE for _ in fixed), *(k for k, _ in tracks)],
+        )
+        chains += [
+            _chain(
+                adjacency,
+                copper,
+                piece=k,
+                width=width,
+                layer=layer,
+                net=net,
+                segment_ids=piece_ids,
+            )
+            for k, (width, adjacency, piece_ids) in enumerate(pieces)
+        ]
     return sorted(chains, key=lambda c: (c.net, c.points[0], c.width))
+
+
+def _same_net_track(s: Segment) -> SameNetTrack:
+    return SameNetTrack(LineString([_mm(s.start), _mm(s.end)]), s.width / NM_PER_MM)
+
+
+def _edges_of(adjacency: Adjacency) -> list[Segment]:
+    return [s for segs in adjacency.values() for s in segs]
 
 
 def extract_chain(
@@ -198,10 +219,15 @@ def _locked_on(locked: Iterable[Segment], layer: str, net: str) -> list[Segment]
 
 
 class _CopperIndex:
-    """One net's pinning copper, searchable by distance from a chain."""
+    """One net's pinning copper, searchable by distance from a chain.
 
-    def __init__(self, items: Sequence[SameNetCopper]) -> None:
+    `pieces[i]` names the selected piece that `items[i]` belongs to, or is
+    `NO_PIECE`, so that a piece's search can skip its own tracks.
+    """
+
+    def __init__(self, items: Sequence[SameNetCopper], pieces: Sequence[int]) -> None:
         self._items = items
+        self._pieces = pieces
         self._tree = shapely.STRtree(
             [i.centreline if isinstance(i, SameNetTrack) else i for i in items]
         )
@@ -209,17 +235,25 @@ class _CopperIndex:
             (i.width / 2 for i in items if isinstance(i, SameNetTrack)), default=0.0
         )
 
-    def near(self, line: LineString, half_width: float) -> list[SameNetCopper]:
-        """Every item that can touch `line`, in the order given."""
+    def near(
+        self, line: LineString, half_width: float, piece: int
+    ) -> list[SameNetCopper]:
+        """Every item but `piece`'s own that can touch `line`, in the order
+        given."""
         reach = half_width + self._track_reach + CANDIDATE_MARGIN_MM
         indices = self._tree.query(line, predicate="dwithin", distance=reach)
-        return [self._items[i] for i in sorted(map(int, indices))]
+        return [
+            self._items[i]
+            for i in sorted(map(int, indices))
+            if self._pieces[i] != piece
+        ]
 
 
 def _chain(
     adjacency: Adjacency,
     copper: _CopperIndex,
     *,
+    piece: int,
     width: int,
     layer: str,
     net: str,
@@ -234,7 +268,7 @@ def _chain(
     half_width = width / NM_PER_MM / 2
     walked = [_mm(p) for p in _walk(adjacency)]
     points, pinned = _pin_touches(
-        walked, copper.near(LineString(walked), half_width), half_width
+        walked, copper.near(LineString(walked), half_width, piece), half_width
     )
     return Chain(
         points=tuple(points),

@@ -24,7 +24,7 @@ from conftest import (
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, Point, box
 
 from kibends import cli, drc
 from kibends import run as pipeline
@@ -300,6 +300,24 @@ class TestSmooth:
         ]
         assert ends[nm(STUB_TOUCH[0]), nm(STUB_TOUCH[1])] == 2
         assert (nm(4), 0) not in ends
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize("tip", [-0.25, -0.245, -0.24, -0.1])
+    def test_selected_stub_ending_in_the_chains_copper_stays_connected(
+        self, connect: Connector, tip: float
+    ) -> None:
+        chain = l_chain()
+        stub = kipy_track("stub", "SIG", (2, -3), (2, tip), width=WIDTH)
+        tracks = [*chain, stub]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--no-drc")
+
+        assert "stub" not in board.deleted
+        end = Point(2, tip)
+        created = cast(list[kbt.Track], board.created)
+        gap = min(segment(t).distance(end) for t in created)
+        assert gap <= WIDTH + NM_ROUNDING
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_prints_statistics(

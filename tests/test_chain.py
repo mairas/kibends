@@ -425,6 +425,24 @@ class TestSeveralChains:
             extract_chain(segments, [tee])
         ]
 
+    def test_selected_chains_of_one_net_pin_each_other_where_they_touch(
+        self,
+    ) -> None:
+        # B ends 0.05 mm off A's centreline: inside A's copper, yet no branch.
+        segments = [
+            seg("a1", (0, 0), (4, 2)),
+            seg("a2", (4, 2), (6, 2)),
+            seg("a3", (6, 2), (10, 0)),
+            seg("b", (5, 2.05), (5, 6)),
+        ]
+
+        a, b = extract_chains(segments)
+
+        assert_points(a, [(0, 0), (4, 2), (5, 2), (6, 2), (10, 0)])
+        assert a.pinned == (True, False, True, False, True)
+        assert_points(b, [(5, 2.05), (5, 6)])
+        assert b.pinned == (True, True)
+
     def test_disjoint_pieces_of_one_net_give_two_chains(self) -> None:
         segments = [seg("b", (20, 0), (30, 0)), seg("a", (10, 0), (0, 0))]
 
