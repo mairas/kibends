@@ -41,6 +41,7 @@ from kibends.pairs import (
     centreline,
     check_bend_radius,
     offset_pair,
+    offset_pair_pullback,
 )
 
 STUB_SPACINGS = 2
@@ -141,6 +142,29 @@ class _Gaps:
             + (self.end - self.middle) * near_end
         )
 
+    def pullback(self, points: FloatArray, gradient: FloatArray) -> FloatArray:
+        """The gradient of a function of `at(points)`, `gradient` at each
+        vertex, taken back to the vertices: a gap depends on how far along
+        the centreline its vertex lies from each end."""
+        arc = arc_lengths(points)
+        from_start = (self.start - self.middle) * _ramp_slope(
+            arc - self.held_start, self.taper_start
+        )
+        from_end = (self.end - self.middle) * _ramp_slope(
+            arc[-1] - arc - self.held_end, self.taper_end
+        )
+        # Edge e counts in the arc length from the start of every vertex
+        # after it, and in that from the end of every vertex up to it.
+        after = np.cumsum((gradient * from_start)[::-1])[::-1]
+        upto = np.cumsum(gradient * from_end)
+        at_length = after[1:] + upto[:-1]
+        delta = np.diff(points, axis=0)
+        along = delta / np.hypot(delta[:, 0], delta[:, 1])[:, None]
+        result = np.zeros_like(points)
+        result[1:] += at_length[:, None] * along
+        result[:-1] -= at_length[:, None] * along
+        return result
+
 
 def end_gaps(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
     """The gap at each end of track `b` beside `a`, across `a`'s end edges."""
@@ -152,6 +176,11 @@ def end_gaps(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
 def _ramp(beyond: FloatArray, length: float) -> FloatArray:
     """1 up to 0, falling to 0 at `length`."""
     return np.clip(1.0 - beyond / length, 0.0, 1.0)
+
+
+def _ramp_slope(beyond: FloatArray, length: float) -> FloatArray:
+    """The slope of `_ramp` in `beyond`."""
+    return np.where((beyond > 0.0) & (beyond < length), -1.0 / length, 0.0)
 
 
 def _separation(end: FloatArray, toward: FloatArray, point: FloatArray) -> float:
@@ -211,6 +240,25 @@ class PairBlock:
         return _offset(
             self.given, self.a_on_right, self.held, self.gaps.at(points), points
         )
+
+    def offset_pullback(
+        self, points: FloatArray, at_a: FloatArray, at_b: FloatArray
+    ) -> FloatArray:
+        """The gradient of a function of `offset(points)`, `at_a` and `at_b`
+        at the vertices of tracks a and b, taken back to the centreline's
+        vertices. The tracks' end points are the section's own, and a held
+        section's tracks are its own throughout, so neither depends on the
+        centreline."""
+        if self.held:
+            return np.zeros_like(points)
+        right, left = (at_a, at_b) if self.a_on_right else (at_b, at_a)
+        right, left = right.copy(), left.copy()
+        right[[0, -1]] = left[[0, -1]] = 0.0
+        gaps = self.gaps.at(points)
+        gradient, at_gaps = offset_pair_pullback(
+            points, gaps, self.given.a.width, right, left
+        )
+        return gradient + self.gaps.pullback(points, at_gaps)
 
     def offset_kept(
         self, optimised: FloatArray, kept: FloatArray
