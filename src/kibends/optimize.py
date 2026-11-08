@@ -239,12 +239,8 @@ def optimize_chains(
         if not (chain.fixed[0] and chain.fixed[-1]):
             raise ValueError("both endpoints of the chain must be fixed")
     count = len(chains)
-    neighbours = [
-        [j for j, other in enumerate(chains) if j != i and other.layer == chain.layer]
-        for i, chain in enumerate(chains)
-    ]
-    # Beyond this both obstacle terms of the energy are zero.
-    reach = max(params.standoff, params.falloff_range if params.repulsion else 0.0)
+    neighbours = same_layer_neighbours(chains)
+    reach = obstacle_reach(params)
     originals = [chain.centreline.points for chain in chains]
     statics: list[ObstacleField] = [
         _Remembered(chain.field) if neighbours[i] else chain.field
@@ -451,14 +447,40 @@ def _compose(
     return CompositeField([static, *others]) if others else static
 
 
+def obstacle_reach(params: EnergyParams) -> float:
+    """Distance from an obstacle beyond which both obstacle terms of the
+    energy are zero, mm."""
+    return max(params.standoff, params.falloff_range if params.repulsion else 0.0)
+
+
+def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
+    """For each chain, the indices of the other chains on its layer."""
+    return [
+        [j for j, other in enumerate(chains) if j != i and other.layer == chain.layer]
+        for i, chain in enumerate(chains)
+    ]
+
+
 def _neighbour_field(
     own: ChainInput, other: ChainInput, points: FloatArray, reach: float
 ) -> ObstacleField | None:
-    """`other` at `points` as an obstacle to `own`, or None if nothing is left.
+    """`other` at `points` as an obstacle to `own`, or None if nothing is left."""
+    centreline = neighbour_centreline(own, other, points, reach)
+    if centreline is None:
+        return None
+    me = own.centreline
+    return chain_obstacles(me.net, me.width, me.clearance, [centreline])
+
+
+def neighbour_centreline(
+    own: ChainInput, other: ChainInput, points: FloatArray, reach: float
+) -> ChainCentreline | None:
+    """The part of `other` at `points` that is an obstacle to `own`, or None
+    if nothing is left.
 
     A chain of the same net that ends where this one ends continues it, as at
     a neck-down: near that junction both must leave the shared point, so the
-    other is left out within its inflation plus the energy's reach of it.
+    other is left out within its inflation plus `reach` of it.
     """
     me, them = own.centreline, other.centreline
     if them.net == me.net:
@@ -474,9 +496,7 @@ def _neighbour_field(
         if start >= end:
             return None
         points = _cut(points, start, end)
-    return chain_obstacles(
-        me.net, me.width, me.clearance, [replace(them, points=points)]
-    )
+    return replace(them, points=points)
 
 
 def _cut(points: FloatArray, start: float, end: float) -> FloatArray:
