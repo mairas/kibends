@@ -54,6 +54,9 @@ DEGENERATE_DISTANCE = 1e-9
 NORMAL_PROBE = 1e-4
 FALLBACK_DIRECTION = (1.0, 0.0)
 AREA_DIMENSION = 2
+# Copper this much farther from a chain than both half widths still touches
+# it: 1 nm, KiCad's coordinate resolution.
+TOUCH_TOLERANCE = 1e-6
 # Other chains' edges are split to at most this length, so that a point near an
 # edge is also near its midpoint, where the k-d tree finds it. Chains resampled
 # at the default 0.1 mm `OptimizerSettings.spacing` are never split.
@@ -569,7 +572,8 @@ class _Keeper:
     where no rule applies between the two.
     """
 
-    net: str
+    net: str | None
+    """None for a pair's centreline, which keeps clear of every net."""
     radius: float
     """Half the track width, or the via's ring radius, mm."""
     clearance: float
@@ -697,6 +701,63 @@ def build_obstacles(
     obstacle; its holes are not either, except unplated ones.
     """
     keeper = _Keeper(net, width / 2, snapshot.clearance(net), hole_clearance)
+    return _layer_obstacles(snapshot, keeper, edge_clearance)
+
+
+def build_pair_obstacles(
+    snapshot: LayerSnapshot,
+    a: ChainCentreline,
+    b: ChainCentreline,
+    gap: float,
+    *,
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> Obstacles:
+    """Obstacles for the centreline of a coupled section of a differential
+    pair, its tracks `a` and `b` `gap` mm apart, on the snapshot's layer.
+
+    The centreline keeps clear as one track as wide as the pair would: half
+    its outer extent, a track width and half the gap, plus the larger of
+    the two nets' clearances and the obstacle's own. That is exact beside
+    the pair and errs on the safe side ahead of it.
+
+    Copper of the pair's own nets is an obstacle like any other's, since the
+    other track must keep clear of it and the centreline cannot tell its two
+    sides apart. Copper that overlaps the section's track of its own net is
+    left out: what the section connects to, at its pinned ends or between
+    them, where the centreline cannot keep clear of it. Copper that a fan-out
+    beyond the section connects to stays, as the other track keeps clear of
+    it in its own fan-out's place.
+    """
+    connected = {track.net: LineString(track.points) for track in (a, b)}
+
+    def free(net: str, geometry: BaseGeometry, extent: float) -> bool:
+        line = connected.get(net)
+        return line is None or geometry.distance(line) > (
+            extent + a.width / 2 + TOUCH_TOLERANCE
+        )
+
+    pair_snapshot = replace(
+        snapshot,
+        pads=tuple(
+            p for p in snapshot.pads if p.shape is None or free(p.net, p.shape, 0.0)
+        ),
+        tracks=tuple(
+            t for t in snapshot.tracks if free(t.net, t.centreline, t.width / 2)
+        ),
+        vias=tuple(
+            v for v in snapshot.vias if free(v.net, Point(v.position), v.diameter / 2)
+        ),
+        graphics=tuple(g for g in snapshot.graphics if free(g.net, g.geometry, 0.0)),
+    )
+    clearance = max(snapshot.clearance(a.net), snapshot.clearance(b.net))
+    keeper = _Keeper(None, a.width + gap / 2, clearance, hole_clearance)
+    return _layer_obstacles(pair_snapshot, keeper, edge_clearance)
+
+
+def _layer_obstacles(
+    snapshot: LayerSnapshot, keeper: _Keeper, edge_clearance: float
+) -> Obstacles:
     items = [
         *_copper_items(snapshot, keeper, snapshot.vias),
         *_hole_items(snapshot.pads, snapshot.vias, keeper),
