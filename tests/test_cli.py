@@ -320,6 +320,22 @@ class TestSmooth:
         assert gap <= WIDTH + NM_ROUNDING
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize("tip", [-0.25, -0.1])
+    def test_selected_stub_touching_the_chain_is_no_clearance_violation(
+        self, connect: Connector, tip: float
+    ) -> None:
+        tracks = [*l_chain(), kipy_track("stub", "SIG", (2, -3), (2, tip), width=WIDTH)]
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert len(report.chains) == 2
+        for c in report.chains:
+            assert c.after.min_clearance >= -NM_ROUNDING
+            assert c.frozen == ()
+
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_prints_statistics(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:

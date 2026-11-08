@@ -53,7 +53,7 @@ def simplify_chains(
     clear of the final neighbours; a chain whose merged edges do not is
     logged as an error and left as optimised.
 
-    Neighbours of one net are trimmed near shared ends by the reach of
+    Neighbours of one net are trimmed near every touch by the reach of
     `params`, measured against each chain's starting polyline, where the
     optimizer measures against the chain's current one. That is deliberate:
     trimming against the optimised polyline left more segments at acute

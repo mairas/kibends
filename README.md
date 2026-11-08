@@ -60,7 +60,7 @@ kibends smooth                              # then commit
 The chains are optimised together, so neighbouring chains make room for
 each other: chains of different nets keep their clearance to each other and
 repel each other like other copper, while chains of one net may touch but
-not overlap. Only selected chains move.
+not overlap, except where they already connect. Only selected chains move.
 
 The command prints, for each chain, the length, track count, tightest bend
 radius and clearance margins before and after, then the optimizer's outcome.
@@ -72,8 +72,8 @@ refill them yourself (B) or let KiCad's DRC refill them.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
-they are, as does every point where unselected copper of the same net (a
-pad, via, track or copper shape) touches the chain.
+they are, as does every point where other copper of the same net (a pad,
+via, track, copper shape or another selected chain) touches the chain.
 
 A vertex that starts inside another item's clearance stays where it is,
 with a warning. When that item is another selected chain, the warning names

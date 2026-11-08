@@ -19,7 +19,7 @@ from kibends.neighbours import (
     obstacle_reach,
     same_layer_neighbours,
 )
-from kibends.obstacles import CompositeField, chain_obstacles
+from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
@@ -480,3 +480,46 @@ def test_chains_of_one_net_meeting_at_an_acute_angle_keep_clear(angle: float) ->
     ):
         assert stats.min_clearance >= -INSIDE_TOLERANCE
         assert stats.length < chain.before.length
+
+
+TOUCH = (5.0, 0.0)
+STUB_TIP = (5.0, -0.1)
+
+
+def test_chains_of_one_net_touching_mid_chain_do_not_repel() -> None:
+    # The stub's end lies in the bar's copper at its pinned vertex TOUCH, and
+    # each starts with vertices next to the touch, inside the other's copper.
+    bar_points = np.array(
+        [
+            (0.0, 0.0),
+            (2.5, 0.5),
+            (4.95, 0.0),
+            TOUCH,
+            (5.05, 0.0),
+            (7.5, 0.5),
+            (10.0, 0.0),
+        ]
+    )
+    bar_fixed = np.array([True, False, False, True, False, False, True])
+    bar = ChainInput(
+        ChainCentreline(
+            "bar", "N", scenarios.PAIR_WIDTH, scenarios.PAIR_CLEARANCE, bar_points
+        ),
+        "F.Cu",
+        bar_fixed,
+        FreeSpace(),
+    )
+    stub = selected(
+        "stub", "N", FreeSpace(), (5.0, -3.0), (5.5, -1.5), (5.0, -0.15), STUB_TIP
+    )
+
+    result = optimize_chains([bar, stub], scenarios.PARAMS, COARSE)
+
+    assert result.termination is Termination.CONVERGED
+    for chain, stats in zip(
+        result.chains, after([bar, stub], result, scenarios.PARAMS), strict=True
+    ):
+        assert chain.frozen == ()
+        assert stats.min_clearance >= -INSIDE_TOLERANCE
+        assert stats.length < chain.before.length
+    assert np.all(result.chains[0].polyline == TOUCH, axis=1).sum() == 1

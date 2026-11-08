@@ -2,7 +2,9 @@
 
 Each chain has a static field of everything on the board but the selected
 chains. The other selected chains on its layer are added to it as obstacles,
-one field each, at whatever shape the caller holds them in.
+one field each, at whatever shape the caller holds them in. Where two
+chains of one net touch, each leaves the other out near the touch, so that
+neither keeps clear of the copper it connects to.
 """
 
 import math
@@ -20,6 +22,11 @@ from kibends.energy import (
     arc_lengths,
 )
 from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
+
+# Pins of two chains of one net up to this much farther apart than their half
+# widths still overlap: touch points are projected in floats. 1 nm, KiCad's
+# coordinate resolution.
+TOUCH_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True, eq=False)
@@ -84,63 +91,145 @@ def neighbour_field(
 ) -> ObstacleField | None:
     """`other` at `points` as an obstacle to `own` at `own_points`, by default
     its starting polyline, or None if nothing is left."""
-    centreline = neighbour_centreline(own, other, points, reach, own_points)
-    if centreline is None:
+    parts = neighbour_centrelines(own, other, points, reach, own_points)
+    if not parts:
         return None
     me = own.centreline
-    return chain_obstacles(me.net, me.width, me.clearance, [centreline])
+    return chain_obstacles(me.net, me.width, me.clearance, parts)
 
 
-def neighbour_centreline(
+def neighbour_centrelines(
     own: ChainInput,
     other: ChainInput,
     points: FloatArray,
     reach: float,
     own_points: FloatArray | None = None,
-) -> ChainCentreline | None:
-    """The part of `other` at `points` that is an obstacle to `own`, or None
-    if nothing is left.
+) -> list[ChainCentreline]:
+    """The parts of `other` at `points` that are obstacles to `own`.
 
-    A chain of the same net that ends where this one ends continues it, as at
-    a neck-down: near that junction both must leave the shared point, so the
-    other is left out as far as it lies within its inflation plus `reach` of
-    `own` at `own_points`, by default its starting polyline.
+    Chains of one net connect where their copper overlaps, and both are
+    pinned there: at a neck-down both end at one point, at a T one ends in
+    the other's copper. Near such a touch both must leave it, so the other
+    is left out on each side of its pin as far as it lies within its
+    inflation plus `reach` of `own` at `own_points`, by default its starting
+    polyline.
     """
     me, them = own.centreline, other.centreline
-    if them.net == me.net:
-        mine = me.points if own_points is None else own_points
-        clear = (me.width + them.width) / 2 + reach
-        ends = me.points[[0, -1]]
+    whole = [replace(them, points=points)]
+    if them.net != me.net:
+        return whole
+    touches = _touches(own, other)
+    if not touches:
+        return whole
+    mine = me.points if own_points is None else own_points
+    clear = (me.width + them.width) / 2 + reach
+    arc = arc_lengths(points)
+    left_out: list[tuple[float, float]] = []
+    for at_own, at_other in touches:
+        own_pin = _vertex_at(mine, at_own)
+        other_pin = _vertex_at(points, at_other)
+        own_headings = [heading for _, heading in _departures(mine, own_pin, clear)]
+        offset: FloatArray = points[other_pin] - mine[own_pin]
+        along = float(arc[other_pin])
+        for forward, heading in _departures(points, other_pin, clear):
+            length = _leave_out(own_headings, offset, heading, clear)
+            left_out.append(
+                (along, along + length) if forward else (along - length, along)
+            )
+    return [
+        replace(them, points=_cut(points, start, end))
+        for start, end in _complement(left_out, float(arc[-1]))
+    ]
 
-        def shared(point: FloatArray) -> bool:
-            return bool(np.any(np.all(ends == point, axis=1)))
 
-        total = float(arc_lengths(points)[-1])
-        start = _junction_cut(mine, points, clear) if shared(them.points[0]) else 0.0
-        end = (
-            total - _junction_cut(mine, points[::-1], clear)
-            if shared(them.points[-1])
-            else total
-        )
-        if start >= end:
-            return None
-        points = _cut(points, start, end)
-    return replace(them, points=points)
+def _touches(own: ChainInput, other: ChainInput) -> list[tuple[FloatArray, FloatArray]]:
+    """Pairs of pinned points, one of each chain, whose copper overlaps."""
+    mine = own.centreline.points[own.fixed]
+    theirs = other.centreline.points[other.fixed]
+    overlap = (own.centreline.width + other.centreline.width) / 2 + TOUCH_TOLERANCE
+    gaps = np.linalg.norm(mine[:, None] - theirs[None], axis=2)
+    i, j = np.nonzero(gaps <= overlap)
+    return [(mine[a], theirs[b]) for a, b in zip(i, j, strict=True)]
 
 
-def _junction_cut(own: FloatArray, other: FloatArray, clear: float) -> float:
-    """Length of `other`, which starts at an end of `own`, to leave out there.
+def _vertex_at(points: FloatArray, point: FloatArray) -> int:
+    """The vertex nearest `point`; a pinned point stays a vertex throughout."""
+    return int(np.argmin(np.sum((points - point) ** 2, axis=1)))
 
-    Beyond it `other` lies at least `clear` from `own`'s first stretch: at an
-    angle θ below 90° between the two that takes clear / sin θ, else clear.
+
+def _departures(
+    points: FloatArray, k: int, length: float
+) -> list[tuple[bool, FloatArray]]:
+    """Each way the polyline continues from vertex k: whether it is forward,
+    and its unit direction."""
+    departures: list[tuple[bool, FloatArray]] = []
+    if k < len(points) - 1:
+        departures.append((True, _heading(points[k:], length)))
+    if k > 0:
+        departures.append((False, _heading(points[k::-1], length)))
+    return departures
+
+
+def _leave_out(
+    own_headings: Sequence[FloatArray],
+    offset: FloatArray,
+    other_heading: FloatArray,
+    clear: float,
+) -> float:
+    """How far along `other_heading` the other chain, leaving its pin at
+    `offset` from this chain's pin, stays within `clear` of this one.
+
+    Each stretch of this chain leaving its pin, along one of `own_headings`, is
+    taken as a ray, and the other chain as a ray from its pin: the length is
+    where it last leaves the band of width `clear` around any of them. From
+    one shared point, at an angle θ below 90° between the two, that is
+    clear / sin θ, else clear.
     """
-    if not np.array_equal(own[0], other[0]):
-        own = own[::-1]
-    a, b = _heading(own, clear), _heading(other, clear)
-    if float(a @ b) <= 0.0:
-        return clear
-    sine = abs(float(a[0] * b[1] - a[1] * b[0]))
-    return clear / sine if sine > 0.0 else math.inf
+    along_other = float(offset @ other_heading)
+    # The disc of radius `clear` around this chain's pin.
+    discriminant = along_other**2 - float(offset @ offset) + clear**2
+    length = -along_other + math.sqrt(discriminant) if discriminant >= 0.0 else 0.0
+    for heading in own_headings:
+        cosine = float(other_heading @ heading)
+        start = float(offset @ heading)
+        side = _cross(offset, heading)
+        spread = _cross(other_heading, heading)
+        if spread == 0.0:
+            if abs(side) <= clear and cosine > 0.0:
+                return math.inf
+            continue
+        # The band beside the ray: |side + t·spread| <= clear, start + t·cosine >= 0.
+        last = max((clear - side) / spread, (-clear - side) / spread)
+        if cosine < 0.0:
+            last = min(last, -start / cosine)
+        elif cosine == 0.0 and start < 0.0:
+            continue
+        first = min((clear - side) / spread, (-clear - side) / spread)
+        if cosine > 0.0:
+            first = max(first, -start / cosine)
+        if first <= last:
+            length = max(length, last)
+    return max(length, 0.0)
+
+
+def _cross(u: FloatArray, v: FloatArray) -> float:
+    return float(u[0] * v[1] - u[1] * v[0])
+
+
+def _complement(
+    intervals: Sequence[tuple[float, float]], total: float
+) -> list[tuple[float, float]]:
+    """The parts of [0, total] outside every interval, each of positive length."""
+    kept: list[tuple[float, float]] = []
+    start = 0.0
+    for left, right in sorted(intervals):
+        if left > start:
+            kept.append((start, left))
+        start = max(start, right)
+        if start >= total:
+            return kept
+    kept.append((start, total))
+    return kept
 
 
 def _heading(points: FloatArray, length: float) -> FloatArray:
