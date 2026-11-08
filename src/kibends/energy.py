@@ -8,7 +8,7 @@ vertices zeroed.
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -106,7 +106,7 @@ def length_energy(points: FloatArray, fixed: BoolArray) -> TermValue:
 
 def bending_energy(points: FloatArray, fixed: BoolArray) -> TermValue:
     """Discrete elastic rod bending Σ (2·tan(φᵢ/2))² / (lᵢ/2), unweighted."""
-    value, gradient = _bending(points)
+    value, gradient = _bending(points, _bends(points))
     return value, _zero_fixed(gradient, fixed)
 
 
@@ -138,12 +138,32 @@ def clearance_energy(
     return value, _zero_fixed(gradient, fixed)
 
 
+def bend_radius_energy(
+    points: FloatArray, fixed: BoolArray, limit: float, params: EnergyParams
+) -> TermValue:
+    """Σ lₑ·c(rₑ - `limit`) over the edges, weighted like the clearance
+    hinge c and with its standoff, where rₑ is edge e's bend radius: its
+    length lₑ over |tan(φ/2)| summed over its two ends' turns φ, signed, 0
+    at the polyline's ends.
+
+    That is the radius `pairs.check_bend_radius` measures: below it the
+    polyline's mitred offset to the inside folds back on itself, so with
+    `limit` set to `pairs.bend_radius_limit` it keeps a pair's inner track
+    from folding. A bend at the limit is as hard a constraint as the
+    clearance, and has nothing to do with how smooth a track should be,
+    hence the clearance's weight and standoff and not the stiffness.
+    """
+    value, gradient = _bend_radius(points, _bends(points), limit, params)
+    return value, _zero_fixed(gradient, fixed)
+
+
 def total_energy(
     points: FloatArray,
     fixed: BoolArray,
     field: DistanceField,
     params: EnergyParams,
     short_edge: float = 0.0,
+    bend_limit: float | None = None,
 ) -> TermValue:
     """Weighted sum of all terms; raises ValueError if it is not finite.
 
@@ -153,13 +173,20 @@ def total_energy(
     a vanishing edge its gradient is meaningless; the barrier grows without
     bound as an edge shrinks, so free vertices never pile up. It is 0 with
     zero slope at s, so it leaves longer edges alone.
+
+    A `bend_limit`, mm, adds `bend_radius_energy` with that limit.
     """
     length_value, length_gradient = _length(points, fixed, short_edge)
-    bending_value, bending_gradient = _bending(points)
+    bends = _bends(points)
+    bending_value, bending_gradient = _bending(points, bends)
     obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
     bending_weight = params.stiffness**2
     value = length_value + bending_weight * bending_value + obstacle_value
     gradient = length_gradient + bending_weight * bending_gradient + obstacle_gradient
+    if bend_limit is not None:
+        bend_value, bend_gradient = _bend_radius(points, bends, bend_limit, params)
+        value += bend_value
+        gradient = gradient + bend_gradient
     if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
         raise ValueError(f"energy is not finite: {value}")
     return value, _zero_fixed(gradient, fixed)
@@ -192,6 +219,7 @@ def free_vertex_objective(
     field: DistanceField,
     params: EnergyParams,
     short_edge: float = 0.0,
+    bend_limit: float | None = None,
 ) -> Callable[[FloatArray], tuple[float, FloatArray]]:
     """Total energy as a function of the flattened free vertex coordinates.
 
@@ -203,7 +231,9 @@ def free_vertex_objective(
 
     def objective(free_coordinates: FloatArray) -> tuple[float, FloatArray]:
         work[free] = free_coordinates.reshape(-1, 2)
-        value, gradient = total_energy(work, fixed, field, params, short_edge)
+        value, gradient = total_energy(
+            work, fixed, field, params, short_edge, bend_limit
+        )
         return value, gradient[free].ravel()
 
     return objective
@@ -280,12 +310,31 @@ def _curvature(turn: FloatArray) -> tuple[FloatArray, FloatArray]:
     return 2 * tangent + slope * (turn - clipped), slope
 
 
-def _bending(points: FloatArray) -> TermValue:
-    edges, lengths, units = _edges(points)
+def _turns(edges: FloatArray) -> FloatArray:
+    """Signed turning angle at each interior vertex."""
     incoming, outgoing = edges[:-1], edges[1:]
     cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
-    turn = np.arctan2(cross, np.einsum("ij,ij->i", incoming, outgoing))
-    curvature, curvature_slope = _curvature(turn)
+    return np.arctan2(cross, np.einsum("ij,ij->i", incoming, outgoing))
+
+
+class _Bends(NamedTuple):
+    """A polyline's edges and the curvature at its interior vertices."""
+
+    edges: FloatArray
+    lengths: FloatArray
+    units: FloatArray
+    curvature: FloatArray
+    """2·tan(φ/2) of each turn φ, as `_curvature` continues it."""
+    curvature_slope: FloatArray
+
+
+def _bends(points: FloatArray) -> _Bends:
+    edges, lengths, units = _edges(points)
+    return _Bends(edges, lengths, units, *_curvature(_turns(edges)))
+
+
+def _bending(points: FloatArray, bends: _Bends) -> TermValue:
+    edges, lengths, units, curvature, curvature_slope = bends
 
     raw_span = lengths[:-1] + lengths[1:]
     span = np.maximum(raw_span, MIN_EDGE_LENGTH)
@@ -294,7 +343,21 @@ def _bending(points: FloatArray) -> TermValue:
     value = float(np.sum(2 * curvature**2 / span))
     d_turn = (4 * curvature * curvature_slope / span)[:, None]
     d_span = (-2 * curvature**2 / span**2)[:, None] * span_varies
+    return value, _turn_gradient(points, edges, lengths, units, d_turn, d_span)
 
+
+def _turn_gradient(
+    points: FloatArray,
+    edges: FloatArray,
+    lengths: FloatArray,
+    units: FloatArray,
+    d_turn: FloatArray,
+    d_span: FloatArray,
+) -> FloatArray:
+    """The gradient at every vertex of a sum over interior vertices, given its
+    derivatives (n-2, 1) by each vertex's turn and by the summed length of
+    the two edges meeting there."""
+    incoming, outgoing = edges[:-1], edges[1:]
     min_square = MIN_EDGE_LENGTH**2
     incoming_square = np.maximum(lengths[:-1] ** 2, min_square)[:, None]
     outgoing_square = np.maximum(lengths[1:] ** 2, min_square)[:, None]
@@ -309,7 +372,35 @@ def _bending(points: FloatArray) -> TermValue:
     gradient[:-2] -= d_incoming
     gradient[1:-1] += d_incoming - d_outgoing
     gradient[2:] += d_outgoing
-    return value, gradient
+    return gradient
+
+
+def _bend_radius(
+    points: FloatArray, bends: _Bends, limit: float, params: EnergyParams
+) -> TermValue:
+    edges, lengths, units, curvature, curvature_slope = bends
+    radii, spread = edge_bend_radii(lengths, curvature / 2)
+    size = np.abs(spread)
+    # Wider bends, straight edges among them, are beyond the hinge.
+    active = lengths < (limit + params.standoff) * size
+    if not active.any():
+        return 0.0, np.zeros_like(points)
+    safe_size = np.where(active, size, 1.0)
+    radius = np.where(active, radii, math.inf)
+    hinge_value, hinge_slope = _hinge(params.standoff)(radius - limit)
+    weight = params.clearance_weight
+    value = weight * float(lengths @ hinge_value)
+    d_length = weight * (hinge_value + lengths * hinge_slope / safe_size)
+    d_size = np.where(active, -weight * (lengths / safe_size) ** 2 * hinge_slope, 0.0)
+    d_half_turn = np.sign(spread) * d_size
+    d_turn = ((d_half_turn[:-1] + d_half_turn[1:]) * curvature_slope / 2)[:, None]
+    gradient = _scatter_edge_gradient(
+        len(points), -d_length[:, None] * units, d_length[:, None] * units
+    )
+    no_span = np.zeros_like(d_turn)
+    return value, gradient + _turn_gradient(
+        points, edges, lengths, units, d_turn, no_span
+    )
 
 
 def _falloff(falloff_range: float) -> Integrand:
