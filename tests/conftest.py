@@ -16,6 +16,7 @@ from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
 from kipy.project_types import NetClass
+from kipy.proto.board.board_commands_pb2 import BoardOriginType
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common.commands import base_commands_pb2
@@ -431,7 +432,15 @@ class FakeBoard:
         default_factory=lambda: [BL.BL_F_Cu, BL.BL_B_Cu]
     )
     client: FakeClient = field(default_factory=FakeClient)
+    grid_origin: tuple[float, float] = (0.0, 0.0)
+    """mm."""
     reads: Counter[str] = field(default_factory=Counter[str])
+
+    def get_origin(self, origin_type: BoardOriginType.ValueType) -> Vector2:
+        self.reads["get_origin"] += 1
+        assert origin_type == BoardOriginType.BOT_GRID
+        x, y = self.grid_origin
+        return Vector2.from_xy(round(x * NM_PER_MM), round(y * NM_PER_MM))
 
     def get_selection(self) -> list[Wrapper]:
         self.reads["get_selection"] += 1

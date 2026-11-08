@@ -41,6 +41,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
+from kibends.coords import UserFrame
 from kibends.snapshot import (
     BoardSnapshot,
     Disc,
@@ -54,6 +55,7 @@ from kibends.snapshot import (
     edge_paths_closed,
     outline_from_edge_paths,
     read_selection,
+    read_user_frame,
 )
 
 LAYER = "F.Cu"
@@ -181,6 +183,12 @@ class TestReadSelection:
     def test_empty_selection_is_an_error(self) -> None:
         with pytest.raises(SelectionError, match="no tracks"):
             read_selection(board(FakeBoard()))
+
+
+def test_user_frame_is_at_the_grid_origin() -> None:
+    frame = read_user_frame(board(FakeBoard(grid_origin=(50.0, 40.25))))
+
+    assert frame == UserFrame((50.0, 40.25))
 
 
 class TestCopperOnLayer:
