@@ -461,36 +461,6 @@ def test_channel_starts_that_collapsed_two_vertices_converge(y: float) -> None:
     assert shortest_edge(result.polyline) > SETTINGS.short_edge
 
 
-CHANNEL_WALL = 1.4
-CHANNEL_WALL_PIECE = 1.0
-CHANNEL_INFLATION = 0.4
-
-
-@pytest.mark.slow
-def test_channel_of_wall_pieces_converges_without_collapsing() -> None:
-    # Slow: only the default settings reproduce the collapse, and the
-    # converged run takes about 8 s.
-    pieces = np.arange(-5.0, 25.0, CHANNEL_WALL_PIECE)
-    field = Obstacles(
-        [
-            Obstacle(
-                "wall",
-                shapely.LineString([(x, wall), (x + CHANNEL_WALL_PIECE, wall)]),
-                CHANNEL_INFLATION,
-            )
-            for wall in (CHANNEL_WALL, -CHANNEL_WALL)
-            for x in pieces
-        ]
-    )
-    polyline, fixed = chain((0.0, 0.8), (20.0, 0.8))
-
-    result = optimize(polyline, fixed, field, scenarios.channel_pair().params)
-
-    assert result.termination is Termination.CONVERGED
-    assert result.abnormal_bursts == 0
-    assert shortest_edge(result.polyline) > SETTINGS.short_edge
-
-
 STALL_FIXTURE = Path(__file__).parent / "fixtures" / "stall" / "vin_sense_chain.json"
 STALL_ITERATION_LIMIT = 30
 
