@@ -854,8 +854,6 @@ def pair_turning_back(turn: float = 150.0) -> PairsScenario:
     )
 
 
-TURNING_BACK = OptimizerSettings(burst_maxiter=30)
-"""The default spacing, at which the legs of `pair_turning_back` close on
-each other unless every burst keeps them apart, with bursts short enough to
-run fast. Through the CLI they close at 15 to 40 iterations, and not
-reliably at a coarser spacing."""
+TURNING_BACK = OptimizerSettings(spacing=0.15, settled_change=0.0015, burst_maxiter=30)
+"""A spacing at which the legs of `pair_turning_back` close on each other
+unless every burst keeps them apart, with bursts short enough to run fast."""

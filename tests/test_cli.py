@@ -335,6 +335,7 @@ class TestSmooth:
         assert junction[0] == pytest.approx(nm(5), abs=nm(0.01))
         assert nm(2.0) < junction[1] < nm(3.2)
 
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_locked_other_net_track_in_the_selection_stays_an_obstacle(
         self, connect: Connector
     ) -> None:
@@ -2692,7 +2693,13 @@ def pair_tracks_at(
 
 
 @pytest.mark.parametrize(
-    "settings", [DEFAULT_SETTINGS, COARSE], ids=["default", "coarse"]
+    "settings",
+    [
+        # Slow: about 2 s at the default spacing, which neither shorter
+        # bursts nor a spacing up to 0.2 mm bring under 1 s.
+        pytest.param(DEFAULT_SETTINGS, id="default", marks=pytest.mark.slow),
+        pytest.param(COARSE, id="coarse"),
+    ],
 )
 def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, settings: OptimizerSettings
@@ -3139,9 +3146,12 @@ PAIRED_BOARDS: dict[str, Callable[[], CommitBoard]] = {
     [
         *(pytest.param(name, COARSE, id=f"{name}-coarse") for name in PAIRED_BOARDS),
         # The bus at the default spacing takes about 9 s; the coarse bus
-        # and the other layouts at the default spacing cover it.
+        # and the other layouts at the default spacing cover it. Those take
+        # 1 to 2 s each, slow too.
         *(
-            pytest.param(name, DEFAULT_SETTINGS, id=f"{name}-default")
+            pytest.param(
+                name, DEFAULT_SETTINGS, id=f"{name}-default", marks=pytest.mark.slow
+            )
             for name in PAIRED_BOARDS
             if name != "bus"
         ),
@@ -3261,24 +3271,15 @@ def v_board(turn: float) -> CommitBoard:
     )
 
 
-TURNING_BACK_ITERATIONS = 20
-"""Enough for the legs to close on each other. The run goes on creeping by
-a few µm a burst for some 190 iterations, which this test, about
-simplification and the gap check, need not wait for."""
-
-
 def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     connect: Connector,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Simplification and the gap check on a pair whose legs face each other,
-    # end to end; test_optimize_pairs covers the optimizer.
-    monkeypatch.setattr(
-        pipeline,
-        "optimize_chains",
-        at(replace(scenarios.TURNING_BACK, max_iterations=TURNING_BACK_ITERATIONS)),
-    )
+    # end to end, at coarse settings; test_optimize_pairs covers the
+    # optimizer at a spacing where the legs close on each other.
+    monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
     board = connect.to(v_board(150.0))
 
     run("--no-drc", f"--repulsion={V_REPULSION}")
