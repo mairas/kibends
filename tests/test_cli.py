@@ -42,6 +42,8 @@ PAD = (3.2, 0.8)
 """Other-net pad inside the L's inner corner, between the L and its chord."""
 LOCKED_ACROSS_CHORD = ((1.5, 2.5), (2.5, 1.5))
 """Other-net track across the chord the L would otherwise be pulled to."""
+ON_CHORD = (2.2, 1.8)
+"""Pad centre inside the L, near enough its chord to block it."""
 STUB_TOUCH = (2, 0)
 """Where a same-net stub ends, mid-way along the L's first leg."""
 # Rounding the created tracks to whole nanometres may cost this much clearance.
@@ -949,6 +951,33 @@ class TestSeveralChains:
             assert c.after.min_clearance == pytest.approx(
                 gap - (CLEARANCE + WIDTH), abs=1e-3
             )
+
+    def test_other_nets_pad_stays_an_obstacle_at_equal_widths(
+        self, connect: Connector
+    ) -> None:
+        sig = kipy_track("s", "SIG", (0, 10), (10, 10), width=WIDTH)
+        sig2 = [
+            kipy_track("c", "SIG2", (0, 0), (4, 0), width=WIDTH),
+            kipy_track("d", "SIG2", (4, 0), (4, 4), width=WIDTH),
+        ]
+        tracks = [sig, *sig2]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                pads=[kipy_pad("pad", "SIG", *ON_CHORD)],
+            )
+        )
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == list(INNER)
+        x, y = ON_CHORD
+        h = PAD_HALF_SIZE
+        pad = box(x - h, y - h, x + h, y + h)
+        required = CLEARANCE + WIDTH / 2
+        for t in cast(list[kbt.Track], board.created):
+            assert segment(t).distance(pad) >= required - NM_ROUNDING
 
     def test_plot_draws_both_chains(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
