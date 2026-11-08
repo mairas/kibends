@@ -31,7 +31,9 @@ class FreeSpace:
     ) -> tuple[FloatArray, FloatArray]:
         return np.full(len(points), FAR), np.zeros_like(points)
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
         return np.ones(len(starts), dtype=bool)
 
 
@@ -50,9 +52,11 @@ class Disc:
         direction = np.where(norm[:, None] > 0.0, offset / safe[:, None], [1.0, 0.0])
         return norm - self.radius, direction
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
         centre = np.broadcast_to([self.cx, self.cy], starts.shape)
-        return _point_segment_distance(centre, starts, ends) >= self.radius
+        return _point_segment_distance(centre, starts, ends) >= self.radius - tolerance
 
 
 @dataclass(frozen=True)
@@ -91,8 +95,13 @@ class Box:
         gradient = np.where(is_outside[:, None], outside_grad, inside_grad)
         return distance - self.corner_radius, gradient
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
-        core = self._core()
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        # A sharp box's core, or a rounded box's corner radius, shrinks by
+        # the tolerance.
+        core = self._core() - (tolerance if self.corner_radius == 0.0 else 0.0)
+        radius = self.corner_radius - tolerance
         centre = np.array([self.cx, self.cy])
         low, high = centre - core, centre + core
         enter, leave = _clip_to_rectangle(starts, ends, low, high)
@@ -116,7 +125,7 @@ class Box:
             self._outside_core_distance(starts), self._outside_core_distance(ends)
         )
         distance = np.minimum(corner_distance, endpoint_distance)
-        return np.asarray(~meets_core & (distance >= self.corner_radius))
+        return np.asarray(~meets_core & (distance >= radius))
 
     def _outside_core_distance(self, points: FloatArray) -> FloatArray:
         offset = np.abs(points - np.array([self.cx, self.cy])) - self._core()
@@ -160,8 +169,11 @@ class Walls:
         gradient = np.stack([np.zeros_like(y), toward_centre], axis=1)
         return self.half_gap - np.abs(y), gradient
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
-        inside = np.abs(np.stack([starts[:, 1], ends[:, 1]])) <= self.half_gap
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        offsets = np.abs(np.stack([starts[:, 1], ends[:, 1]]))
+        inside = offsets <= self.half_gap + tolerance
         return np.asarray(np.all(inside, axis=0))
 
 
@@ -181,6 +193,8 @@ class Union:
         rows = np.arange(len(points))
         return distances[nearest, rows], gradients[nearest, rows]
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
-        clear = [shape.segments_clear(starts, ends) for shape in self.shapes]
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        clear = [shape.segments_clear(starts, ends, tolerance) for shape in self.shapes]
         return np.asarray(np.all(clear, axis=0))

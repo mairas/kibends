@@ -129,11 +129,16 @@ class Obstacles:
             gradient = np.where(nearer[:, None], edge_gradient, gradient)
         return distance, gradient
 
-    def segments_clear(self, starts: FloatArray, ends: FloatArray) -> BoolArray:
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
         """Whether each segment from starts[i] to ends[i] stays out of every
         inflated obstacle and inside the inflated board edge.
 
-        Touching an inflated boundary, which is exactly at clearance, is clear.
+        Touching an inflated boundary, which is exactly at clearance, is clear,
+        and so is entering it by at most `tolerance` mm. The tolerance does not
+        extend the board outline itself, which only matters with an edge
+        clearance below it.
         """
         segments: ObjectArray = np.asarray(
             shapely.linestrings(
@@ -150,11 +155,13 @@ class Obstacles:
             gaps = shapely.distance(  # pyright: ignore[reportUnknownMemberType]
                 segments[segment_index], self._geometries[item_index]
             )
-            clear[segment_index[gaps < self._inflations[item_index]]] = False
+            allowed = self._inflations[item_index] - tolerance
+            clear[segment_index[gaps < allowed]] = False
         if self.board_outline is not None:
             clear &= shapely.covered_by(segments, self.board_outline)
             clear &= (
-                self.board_outline.boundary.distance(segments) >= self.edge_inflation
+                self.board_outline.boundary.distance(segments)
+                >= self.edge_inflation - tolerance
             )
         return clear
 
