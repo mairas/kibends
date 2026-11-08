@@ -1,6 +1,6 @@
 # kibends
 
-`kibends smooth` replaces each chain of track segments selected in KiCad's PCB editor (several chains per run, on one layer) with a short, smooth path of straight segments that keeps clearance to other copper and to the other selected chains. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README is the user documentation.
+`kibends smooth` replaces each chain of track segments selected in KiCad's PCB editor (several chains per run, on any copper layers) with a short, smooth path of straight segments that keeps clearance to other copper and to the other selected chains. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README is the user documentation.
 
 The repository is public. Never write host names, addresses or other details of the author's machines into files, commits, issues or PRs.
 
@@ -19,9 +19,9 @@ Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.y
 
 `run.run_smooth` runs the stages in this order without printing. Before the DRC check and the commit, either of which may raise, it hands an `OptimizerReport` (per-chain statistics, frozen vertices, abnormal bursts, unchanged chains, termination) to its `on_optimized` callback; at the end it returns a `RunReport`, which adds the DRC verdict, whether it committed and any refusal. `cli.smooth` prints the statistics and warnings from the callback and the DRC verdict from the returned report. A GUI is meant to call the same function.
 
-1. `snapshot.read_selection` and `LayerSnapshot.from_board` read the selection and its copper layer once per run. Everything they return is free of kipy.
-2. `chain.extract_chains` splits the selection into chains, one per connected piece of one net and width, and pins each chain's ends and every point where same-net copper (pads, vias, tracks, copper shapes) touches it. Mixed layers are refused.
-3. `obstacles.build_obstacles` turns other-net copper, holes, keepouts and the board edge into obstacles inflated by the required clearance: one static field per (net, width), with every selected track removed.
+1. `snapshot.read_selection` and `BoardSnapshot.read` read the selection and the board once per run, for the copper layers of the selection; `BoardSnapshot.slice` gives one `LayerSnapshot` per layer without further requests. Everything they return is free of kipy.
+2. `chain.extract_chains` splits the selection into chains, one per connected piece of one layer, net and width, and pins each chain's ends and every point where same-net copper (pads, vias, tracks, copper shapes) on its layer touches it. A route through a via is one chain per layer, each pinned at the via.
+3. `obstacles.build_obstacles` turns other-net copper, holes, keepouts and the board edge into obstacles inflated by the required clearance: one static field per (layer, net, width), from that layer's snapshot, with every selected track removed.
 4. `optimize.optimize_chains` minimises length + stiffness² × bending + repulsion with L-BFGS-B, in alternating bursts, one chain at a time. Each burst sees its chain's static field plus the other chains on the layer at their current shapes (`obstacles.CompositeField`, `ChainField`). Free vertices move only inside their bubble, a box in the free space around them, and an edge check rejects edges that newly cross an obstacle. Together these keep every chain on the same side of every obstacle and of every other chain.
 5. `simplify.simplify_chains` merges each optimised polyline back into few straight segments within `--chord-tolerance`, re-checking each merged edge against the static field and the other chains.
 6. A chain whose result equals its selected tracks is unchanged: it is left out of the DRC check and the commit, and if every chain is unchanged nothing is committed.

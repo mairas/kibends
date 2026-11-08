@@ -1,5 +1,6 @@
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import fields, is_dataclass
 from functools import partial
 from typing import cast
 
@@ -26,6 +27,7 @@ from conftest import (
     kipy_track,
     kipy_via,
     kipy_zone,
+    layer_snapshot,
     netclass,
 )
 from kipy.errors import ApiError
@@ -34,9 +36,11 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
 from kipy.proto.common import ApiStatusCode
 from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry.base import BaseGeometry
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
 from kibends.snapshot import (
+    BoardSnapshot,
     LayerSnapshot,
     PadKind,
     SelectionError,
@@ -54,7 +58,7 @@ def board(fake: FakeBoard) -> kipy.board.Board:
 
 
 def snapshot(fake: FakeBoard, replaced: frozenset[str] = frozenset()) -> LayerSnapshot:
-    return LayerSnapshot.from_board(board(fake), LAYER, replaced)
+    return layer_snapshot(fake, LAYER, replaced)
 
 
 class TestReadSelection:
@@ -180,6 +184,18 @@ class TestCopperOnLayer:
         assert tht.shape.area == pytest.approx((2 * PAD_HALF_SIZE) ** 2)
         assert back.shape is None
         assert back.drill == 0
+
+    def test_pad_shapes_are_read_for_the_snapshot_layer(self) -> None:
+        pads = [
+            kipy_pad("front", "GND", 2, 3),
+            kipy_pad("back", "GND", 5, 5, layers=(BL.BL_B_Cu,)),
+        ]
+
+        front, back = layer_snapshot(FakeBoard(pads=pads), "B.Cu").pads
+
+        assert front.shape is None
+        assert back.shape is not None
+        assert back.shape.centroid.coords[0] == pytest.approx((5, 5))
 
     def test_pad_shape_fallback_fills_every_pad_when_the_batch_drops_one(
         self,
@@ -518,6 +534,116 @@ class TestKeepoutsAndEdge:
         assert outline_from_edge_paths(snap.edge_paths).area == pytest.approx(
             60 - (4 - math.pi), abs=1e-2
         )
+
+
+def plain(value: object) -> object:
+    """`value` with snapshot dataclasses and geometry made comparable with ==."""
+    if isinstance(value, BaseGeometry):
+        return value.wkb
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple(plain(getattr(value, f.name)) for f in fields(value))
+    if isinstance(value, Mapping):
+        items = cast(Mapping[object, object], value).items()
+        return {k: plain(v) for k, v in items}
+    if isinstance(value, tuple | list):
+        return tuple(plain(v) for v in cast(Sequence[object], value))
+    return value
+
+
+def two_layer_board() -> FakeBoard:
+    """Copper of every kind on F.Cu and B.Cu, with a replaced track on each."""
+    return FakeBoard(
+        tracks=[
+            kipy_track("f-sel", "SIG", (0, 0), (1, 0)),
+            kipy_track("f-gnd", "GND", (0, 1), (1, 1), width=0.4),
+            kipy_track("b-sel", "B_ONLY", (0, 2), (1, 2), layer=BL.BL_B_Cu),
+            kipy_track("b-gnd", "GND", (0, 3), (1, 3), layer=BL.BL_B_Cu),
+        ],
+        pads=[
+            kipy_pad("top", "SIG", 2, 0),
+            kipy_pad("bottom", "GND", 2, 3, layers=[BL.BL_B_Cu]),
+            kipy_pad(
+                "thru",
+                "PWR",
+                4,
+                4,
+                layers=[BL.BL_F_Cu, BL.BL_B_Cu],
+                pad_type=PadType.PT_PTH,
+                drill=0.8,
+            ),
+        ],
+        vias=[kipy_via("v", "GND", 5, 5)],
+        shapes=[
+            kipy_segment((0, 6), (2, 6), net="PWR", shape_id="f-shape"),
+            kipy_segment((0, 7), (2, 7), layer=BL.BL_B_Cu, shape_id="b-shape"),
+            kipy_segment((0, 0), (9, 0), layer=BL.BL_Edge_Cuts, shape_id="edge"),
+        ],
+        texts=[
+            kipy_text("TOP", 10, 10),
+            kipy_text("BOTTOM", 10, 12, layer=BL.BL_B_Cu),
+        ],
+        zones=[
+            kipy_zone(kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu], zone_id="f-k"),
+            kipy_zone(kipy_rect(0, 0, 3, 3), [BL.BL_B_Cu], zone_id="b-k"),
+        ],
+        netclasses={"PWR": netclass("Power", 0.3), "B_ONLY": netclass("B", 0.25)},
+    )
+
+
+class TestBoardSnapshot:
+    LAYERS = ("F.Cu", "B.Cu")
+    REPLACED = frozenset({"f-sel", "b-sel"})
+
+    def test_slices_equal_single_layer_reads(self) -> None:
+        fake = two_layer_board()
+
+        snap = BoardSnapshot.read(board(fake), self.LAYERS)
+
+        for layer in self.LAYERS:
+            alone = layer_snapshot(fake, layer, self.REPLACED)
+            assert plain(snap.slice(layer, self.REPLACED)) == plain(alone)
+
+    def test_two_layers_read_each_board_wide_kind_once(self) -> None:
+        fake = two_layer_board()
+
+        snap = BoardSnapshot.read(board(fake), self.LAYERS)
+        for layer in self.LAYERS:
+            snap.slice(layer, self.REPLACED)
+
+        assert fake.reads == {
+            "get_footprints": 1,
+            "get_tracks": 1,
+            "get_pads": 1,
+            "get_vias": 1,
+            "get_shapes": 1,
+            "get_text": 1,
+            "get_zones": 1,
+            "get_project": 1,
+            "get_netclass_for_nets": 1,
+            "get_pad_shapes_as_polygons": 2,
+        }
+        assert fake.client.renders == 2
+
+    def test_layer_without_copper_gives_an_empty_slice(self) -> None:
+        fake = FakeBoard(
+            tracks=[kipy_track("t", "SIG", (0, 0), (1, 0))],
+            pads=[kipy_pad("p", "SIG", 2, 0)],
+            texts=[kipy_text("TOP", 10, 10)],
+        )
+
+        inner = BoardSnapshot.read(board(fake), ["F.Cu", "In1.Cu"]).slice(
+            "In1.Cu", frozenset()
+        )
+
+        assert (inner.tracks, inner.graphics, inner.keepouts) == ((), (), ())
+        assert [(p.id, p.shape) for p in inner.pads] == [("p", None)]
+        assert inner.clearance("SIG") == pytest.approx(0.2)
+
+    def test_slicing_a_layer_not_read_is_an_error(self) -> None:
+        snap = BoardSnapshot.read(board(FakeBoard()), ["F.Cu"])
+
+        with pytest.raises(ValueError, match=r"B\.Cu"):
+            snap.slice("B.Cu", frozenset())
 
 
 class TestGeometryHelpers:

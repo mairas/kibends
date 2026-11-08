@@ -6,7 +6,7 @@ it hands over; it prints nothing.
 
 import importlib
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,7 +39,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.simplify import simplify_chains
-from kibends.snapshot import LayerSnapshot, read_selection
+from kibends.snapshot import BoardSnapshot, LayerSnapshot, read_selection
 
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
@@ -149,11 +149,13 @@ def run_smooth(
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}
-    first = next((s for s in selected if not s.locked), selected[0])
-    # Mixed layers are left for `extract_chains` to report.
-    snapshot = LayerSnapshot.from_board(board, first.layer, replaced)
-    chains = extract_chains(selected, snapshot.same_net_copper)
-    inputs = _chain_inputs(chains, snapshot, options)
+    layers = {s.layer for s in selected if not s.locked}
+    whole = BoardSnapshot.read(board, layers)
+    snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(layers)}
+    chains = extract_chains(
+        selected, lambda layer, net: snapshots[layer].same_net_copper(net)
+    )
+    inputs = _chain_inputs(chains, snapshots, options)
 
     run = optimize_chains(inputs, options.params)
     nothing_to_do = run.termination is Termination.NOTHING_TO_DO
@@ -201,13 +203,17 @@ def run_smooth(
 
 
 def _chain_inputs(
-    chains: Sequence[Chain], snapshot: LayerSnapshot, options: SmoothOptions
+    chains: Sequence[Chain],
+    snapshots: Mapping[str, LayerSnapshot],
+    options: SmoothOptions,
 ) -> list[ChainInput]:
-    """One optimizer input per chain; chains of one net and width share a field."""
-    fields: dict[tuple[str, float], Obstacles] = {}
+    """One optimizer input per chain, over its layer's snapshot; chains of one
+    layer, net and width share a field."""
+    fields: dict[tuple[str, str, float], Obstacles] = {}
     inputs: list[ChainInput] = []
     for chain in chains:
-        key = (chain.net, chain.width)
+        snapshot = snapshots[chain.layer]
+        key = (chain.layer, chain.net, chain.width)
         if key not in fields:
             fields[key] = build_obstacles(
                 snapshot,

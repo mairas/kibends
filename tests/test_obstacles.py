@@ -1,8 +1,6 @@
 import math
 from itertools import pairwise
-from typing import cast
 
-import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
@@ -18,6 +16,7 @@ from conftest import (
     kipy_track,
     kipy_via,
     kipy_zone,
+    layer_snapshot,
     netclass,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -42,7 +41,6 @@ from kibends.obstacles import (
     build_obstacles,
     chain_obstacles,
 )
-from kibends.snapshot import LayerSnapshot
 
 LAYER = "F.Cu"
 NET = "SIG"
@@ -58,7 +56,7 @@ def obstacles_of(
     replaced: frozenset[str] = frozenset(),
     **clearances: float,
 ) -> Obstacles:
-    snap = LayerSnapshot.from_board(cast(kipy.board.Board, fake), LAYER, replaced)
+    snap = layer_snapshot(fake, LAYER, replaced)
     return build_obstacles(snap, NET, WIDTH, **clearances)
 
 

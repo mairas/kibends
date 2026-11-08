@@ -20,7 +20,7 @@ of every obstacle it started next to.
 Uses the KiCad IPC API through
 [kicad-python](https://pypi.org/project/kicad-python/).
 
-Status: early development. All selected chains must be on one layer.
+Status: early development.
 
 ## Requirements
 
@@ -45,11 +45,17 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 
 1. Open the board in KiCad's PCB editor and save it: the DRC check reads
    the project and rule files from disk.
-2. Select the track segments to smooth, on one layer. Each connected piece
-   of one net and one width is a chain: its segments join end to end without
-   branches. Two widths of one net may meet only end to end, as at a
-   neck-down. Selected vias, pads and other items are ignored; arc tracks are
-   refused.
+2. Select the track segments to smooth, on any copper layers. Each
+   connected piece of one net and one width on one layer is a chain: its
+   segments join end to end without branches. Two widths of one net may meet
+   only end to end, as at a neck-down. A route that changes layers through a
+   via is one chain per layer; the via stays where it is and holds the chain
+   ends on both sides. Chains on different layers do not affect each other.
+   Selected vias, pads and other items are ignored; arc tracks are refused.
+   A box selection catches tracks on every visible layer, and all of them
+   are smoothed. Check what a run would change with `--dry-run` first, or
+   set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
+   the active layer.
 3. Run:
 
 ```sh

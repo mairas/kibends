@@ -1,4 +1,4 @@
-"""Read the selection and one copper layer from a kipy Board.
+"""Read the selection and the copper layers from a kipy Board.
 
 Everything returned is free of kipy: segments use integer nanometres as
 `kibends.chain` expects, the rest is mm floats and shapely geometry. Every
@@ -14,7 +14,7 @@ import enum
 import math
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import kipy.board
 import kipy.board_types as kbt
@@ -140,52 +140,96 @@ class LayerSnapshot:
             *(g.geometry for g in self.graphics if g.net == net),
         ]
 
-    @classmethod
-    def from_board(
-        cls, board: kipy.board.Board, layer: str, replaced_ids: Collection[str]
-    ) -> LayerSnapshot:
-        """Read `layer` and everything crossing it, less the tracks being replaced.
 
-        The replaced tracks' nets are looked up too, so their clearance is
-        known even when those tracks are the only copper of their net.
-        """
-        layer_id = layer_from_canonical_name(layer)
+@dataclass(frozen=True, eq=False)
+class BoardSnapshot:
+    """One read of the board, holding the copper of the layers asked for.
+
+    Board-wide reads happen once; pad shapes and copper text, which KiCad
+    hands out per layer, are read once per layer. Slicing makes no requests.
+    """
+
+    layers: frozenset[str]
+    """The copper layers read, the ones `slice` accepts."""
+    pads: Mapping[str, tuple[Pad, ...]]
+    """Every pad, with its copper on each layer read."""
+    tracks: Mapping[str, tuple[Track, ...]]
+    vias: tuple[Via, ...]
+    graphics: Mapping[str, tuple[Graphic, ...]]
+    keepouts: Mapping[str, tuple[BaseGeometry, ...]]
+    edge_paths: tuple[tuple[Point2, ...], ...]
+    clearances: Mapping[str, float]
+    """Netclass clearance of every net on the board, in mm."""
+    default_clearance: float
+
+    @classmethod
+    def read(cls, board: kipy.board.Board, layers: Iterable[str]) -> BoardSnapshot:
+        """Read the board once for the copper layers `layers`."""
+        wanted = sorted(set(layers))
         footprints = board.get_footprints()
         all_tracks = board.get_tracks()
-        tracks = tuple(
-            _read_track(t)
-            for t in all_tracks
-            if canonical_name(t.layer) == layer and t.id.value not in replaced_ids
-        )
-        pads = _read_pads(board, board.get_pads(), footprints, layer_id)
+        kipy_pads = board.get_pads()
         vias = tuple(_read_via(v) for v in board.get_vias())
-        board_shapes = board.get_shapes()
-        footprint_shapes = [s for f in footprints for s in f.definition.shapes]
-        graphics = (
-            *_read_copper_shapes([*board_shapes, *footprint_shapes], layer),
-            *_read_copper_text(board, footprints, layer),
-        )
-        nets = {
-            *(p.net for p in pads),
-            *(t.net for t in tracks),
-            *(v.net for v in vias),
-            *(g.net for g in graphics),
-            *(t.net.name for t in all_tracks if t.id.value in replaced_ids),
-        } - {""}
+        shapes = [
+            *board.get_shapes(),
+            *(s for f in footprints for s in f.definition.shapes),
+        ]
+        texts = _texts(board, footprints)
+        zones = board.get_zones()
         default_clearance = _default_clearance(board)
-        snap = cls(
-            layer=layer,
-            pads=pads,
-            tracks=tracks,
+        shapeless = _read_pads(kipy_pads, footprints)
+        pads_by_layer: dict[str, tuple[Pad, ...]] = {}
+        for layer in wanted:
+            on_layer = _pad_shapes(board, kipy_pads, layer_from_canonical_name(layer))
+            pads_by_layer[layer] = tuple(
+                replace(p, shape=on_layer.get(p.id)) for p in shapeless
+            )
+        graphics = {
+            layer: (
+                *_read_copper_shapes(shapes, layer),
+                *_read_copper_text(board, texts, layer),
+            )
+            for layer in wanted
+        }
+        nets = {
+            *(p.net for p in shapeless),
+            *(t.net.name for t in all_tracks),
+            *(v.net for v in vias),
+            *(g.net for gs in graphics.values() for g in gs),
+        } - {""}
+        return cls(
+            layers=frozenset(wanted),
+            pads=pads_by_layer,
+            tracks={
+                layer: tuple(
+                    _read_track(t)
+                    for t in all_tracks
+                    if canonical_name(t.layer) == layer
+                )
+                for layer in wanted
+            },
             vias=vias,
             graphics=graphics,
-            keepouts=_read_track_keepouts(board.get_zones(), layer),
-            edge_paths=tuple(
-                tuple(path)
-                for path in read_edge_paths([*board_shapes, *footprint_shapes])
-            ),
+            keepouts={layer: _read_track_keepouts(zones, layer) for layer in wanted},
+            edge_paths=tuple(tuple(path) for path in read_edge_paths(shapes)),
             clearances=_read_clearances(board, sorted(nets), default_clearance),
             default_clearance=default_clearance,
+        )
+
+    def slice(self, layer: str, replaced_ids: Collection[str]) -> LayerSnapshot:
+        """`layer` and everything crossing it, less the tracks being replaced."""
+        if layer not in self.layers:
+            raise ValueError(f"{layer} was not read from the board")
+        snap = LayerSnapshot(
+            layer=layer,
+            pads=self.pads[layer],
+            tracks=tuple(t for t in self.tracks[layer] if t.id not in replaced_ids),
+            vias=self.vias,
+            graphics=self.graphics[layer],
+            keepouts=self.keepouts[layer],
+            edge_paths=self.edge_paths,
+            clearances=self.clearances,
+            default_clearance=self.default_clearance,
         )
         logger.info(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
@@ -376,12 +420,9 @@ def _clearance_override(proto_owner: Message, field_name: str) -> float | None:
 
 
 def _read_pads(
-    board: kipy.board.Board,
-    pads: Sequence[kbt.Pad],
-    footprints: Sequence[kbt.FootprintInstance],
-    layer_id: BoardLayer.ValueType,
+    pads: Sequence[kbt.Pad], footprints: Sequence[kbt.FootprintInstance]
 ) -> tuple[Pad, ...]:
-    shapes = _pad_shapes(board, pads, layer_id)
+    """Every pad with no `shape` yet; the caller sets each layer's copper."""
     refs = {f.id.value: f.reference_field.text.value for f in footprints}
     fp_overrides = {
         f.id.value: _clearance_override(f.proto.overrides, "copper_clearance")
@@ -404,7 +445,7 @@ def _read_pads(
                 position=_mm(p.position),
                 # Oval drills: the larger axis is the conservative clearance.
                 drill=max(drill.x, drill.y) / NM_PER_MM,
-                shape=shapes.get(p.id.value),
+                shape=None,
                 clearance_override=override,
             )
         )
@@ -497,8 +538,8 @@ def _read_copper_shapes(shapes: Iterable[kbt.BoardShape], layer: str) -> list[Gr
     return graphics
 
 
-def _text_on_layer(
-    board: kipy.board.Board, footprints: Sequence[kbt.FootprintInstance], layer: str
+def _texts(
+    board: kipy.board.Board, footprints: Sequence[kbt.FootprintInstance]
 ) -> list[kbt.BoardText | kbt.BoardTextBox]:
     texts: list[kbt.BoardText | kbt.BoardTextBox] = list(board.get_text())
     for f in footprints:
@@ -508,14 +549,16 @@ def _text_on_layer(
                     texts.append(t.text)
             else:
                 texts.append(t)
-    return [t for t in texts if canonical_name(t.layer) == layer]
+    return texts
 
 
 def _read_copper_text(
-    board: kipy.board.Board, footprints: Sequence[kbt.FootprintInstance], layer: str
+    board: kipy.board.Board,
+    all_texts: Sequence[kbt.BoardText | kbt.BoardTextBox],
+    layer: str,
 ) -> list[Graphic]:
-    """Copper text as polygons, rendered by KiCad's GetTextAsShapes."""
-    texts = _text_on_layer(board, footprints, layer)
+    """Copper text on `layer` as polygons, rendered by KiCad's GetTextAsShapes."""
+    texts = [t for t in all_texts if canonical_name(t.layer) == layer]
     if not texts:
         return []
     command = base_commands_pb2.GetTextAsShapes()

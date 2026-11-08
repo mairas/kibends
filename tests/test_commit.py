@@ -228,7 +228,7 @@ class TestCommitChains:
 
         run_commit_chains(board, chains, selected)
 
-        assert board.reads == 1
+        assert board.reads["get_items_by_id"] == 1
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         assert len(board.labels) == 1
         assert sorted(board.deleted) == ["a", "b", "c", "d"]

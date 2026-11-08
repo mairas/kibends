@@ -87,20 +87,24 @@ class Chain:
 
 def extract_chains(
     segments: Sequence[Segment],
-    same_net_copper: Callable[[str], Iterable[SameNetCopper]] = lambda _net: (),
+    same_net_copper: Callable[[str, str], Iterable[SameNetCopper]] = (
+        lambda _layer, _net: ()
+    ),
 ) -> list[Chain]:
     """Split `segments` into open chains, one per connected piece, or raise.
 
-    Selected segments are grouped by net and width, and each group is split
-    into connected pieces. Within one net, selected tracks of all widths must
-    not branch: two widths may meet only end to end, where both chains end and
-    so are pinned. `same_net_copper(net)` returns the copper of `net` on the
-    layer that pins its chains, as for `extract_chain`; a net's chains also
-    pin each other where their copper overlaps. Locked segments stay out of
-    every chain, with a warning, and pin the chains they touch.
+    Selected segments are grouped by layer, net and width, and each group is
+    split into connected pieces. Within one net on one layer, selected tracks
+    of all widths must not branch: two widths may meet only end to end, where
+    both chains end and so are pinned. `same_net_copper(layer, net)` returns
+    the copper of `net` on `layer` that pins its chains, as for
+    `extract_chain`; a via joining chains on two layers pins both, and a
+    net's chains on one layer pin each other where their copper overlaps.
+    Locked segments stay out of every chain, with a warning, and pin the
+    chains they touch on their layer.
 
-    Chains are ordered by net, then by first point, then by width; each
-    starts at its end with the smaller (x, y).
+    Chains are ordered by net, then by layer, then by first point, then by
+    width; each starts at its end with the smaller (x, y).
     """
     kept, locked = _split_locked(segments)
     return _chains(kept, locked, same_net_copper)
@@ -121,18 +125,17 @@ def _split_locked(
 def _chains(
     kept: Sequence[Segment],
     locked: Sequence[Segment],
-    same_net_copper: Callable[[str], Iterable[SameNetCopper]],
+    same_net_copper: Callable[[str, str], Iterable[SameNetCopper]],
 ) -> list[Chain]:
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
-    layer = _single_layer(kept)
     if all(s.start == s.end for s in kept):
         raise ChainError("selection has no tracks of non-zero length")
 
     chains: list[Chain] = []
-    for net, of_net in _group(kept, lambda s: s.net).items():
+    for (layer, net), of_net in _group(kept, lambda s: (s.layer, s.net)).items():
         fixed = [
-            *same_net_copper(net),
+            *same_net_copper(layer, net),
             *map(_same_net_track, _locked_on(locked, layer, net)),
         ]
         by_width = {
@@ -175,7 +178,7 @@ def _chains(
             )
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
         ]
-    return sorted(chains, key=lambda c: (c.net, c.points[0], c.width))
+    return sorted(chains, key=lambda c: (c.net, c.layer, c.points[0], c.width))
 
 
 def _same_net_track(s: Segment) -> SameNetTrack:
@@ -208,7 +211,7 @@ def extract_chain(
             _check_junctions(edges)
             _check_one_piece(_adjacency(edges, dots), _locked_on(locked, layer, net))
     copper = tuple(same_net_copper)
-    (chain,) = _chains(kept, locked, lambda _net: copper)
+    (chain,) = _chains(kept, locked, lambda _layer, _net: copper)
     return chain
 
 
@@ -322,15 +325,15 @@ def _fmt_width(width_nm: int) -> str:
 
 def _uniform_attributes(segments: Sequence[Segment]) -> tuple[int, str, str]:
     width = _single_value(segments, "widths", lambda s: s.width, _fmt_width)
-    layer = _single_layer(segments)
+    layer = _single_value(
+        segments,
+        "layers",
+        lambda s: s.layer,
+        str,
+        "; tracks on several layers do not form one chain",
+    )
     net = _single_value(segments, "nets", lambda s: s.net, str)
     return width, layer, net
-
-
-def _single_layer(segments: Sequence[Segment]) -> str:
-    return _single_value(
-        segments, "layers", lambda s: s.layer, str, "; run kibends once per layer"
-    )
 
 
 def _single_value[Attribute: (int, str)](
