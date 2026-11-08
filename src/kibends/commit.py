@@ -1,10 +1,12 @@
-"""Replace the tracks of one or more chains in KiCad as one undoable commit.
+"""Replace the tracks of one or more chains, and move the vias they join, in
+KiCad as one undoable commit.
 
 `commit_label`, `create_checked` and `push_checked` are copied and
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections.abc import Sequence
+from dataclasses import astuple, dataclass
 from datetime import datetime
 from itertools import pairwise
 
@@ -29,7 +31,7 @@ from loguru import logger
 
 from kibends.chain import NM_PER_MM, Chain, NmPoint, Point2, Segment
 from kibends.energy import FloatArray
-from kibends.snapshot import segment_from_track
+from kibends.snapshot import Via, segment_from_track, via_from_kipy
 
 COMMIT_PREFIX = "kibends"
 # Rounding to KiCad's grid may move a point of a straight path this far off it.
@@ -37,7 +39,7 @@ STRAIGHT_TOLERANCE_NM = 1
 
 
 class BoardChangedError(RuntimeError):
-    """A selected track changed in KiCad after it was read."""
+    """A selected track or via changed in KiCad after it was read."""
 
 
 class CreateItemsError(RuntimeError):
@@ -50,6 +52,14 @@ class DeleteItemsError(RuntimeError):
 
 class CommitUncertainError(RuntimeError):
     """The push timed out or lost the connection; the commit may have landed."""
+
+
+@dataclass(frozen=True)
+class ViaMove:
+    via: Via
+    """As it was read."""
+    position: Point2
+    """Where it moves to, mm."""
 
 
 def commit_label(command: str) -> str:
@@ -71,64 +81,91 @@ def commit_chains(
     board: kipy.board.Board,
     chains: Sequence[tuple[Chain, FloatArray]],
     selected: Sequence[Segment],
+    vias: Sequence[ViaMove] = (),
 ) -> None:
-    """Replace each chain's tracks with straight tracks along its polyline (mm).
+    """Replace each chain's tracks with straight tracks along its polyline
+    (mm), and move each of `vias`.
 
-    All chains go into one KiCad commit, so the run is one undo step, and
-    each IPC step is one request for all chains. The tracks are re-read
-    first, so a track edited since the selection was read aborts the run
-    instead of being overwritten. Zones are not refilled: a refill would be
-    a second undo step. An empty `chains` raises ValueError, since it would
-    push an empty undo step.
+    All chains and vias go into one KiCad commit, so the run is one undo
+    step, and each IPC step is one request for all of them. A via moves as
+    a copy at its new position that replaces it. The tracks and vias are
+    re-read first, so one edited since the selection was read aborts the
+    run instead of being overwritten. Zones are not refilled: a refill would
+    be a second undo step. An empty `chains` raises ValueError, since it
+    would push an empty undo step.
     """
     if not chains:
         raise ValueError("No chains to commit")
-    ids = [i for chain, _ in chains for i in chain.segment_ids]
-    current = _unchanged_tracks(board, ids, selected)
-    new_tracks = [
+    track_ids = [i for chain, _ in chains for i in chain.segment_ids]
+    current, current_vias = _unchanged_items(board, track_ids, selected, vias)
+    new_items: list[Wrapper] = [
         track
         for chain, polyline in chains
         for track in track_items(polyline, chain.width, current[chain.segment_ids[0]])
     ]
+    new_items += [_moved(current_vias[m.via.id], m.position) for m in vias]
+    ids = [*track_ids, *(m.via.id for m in vias)]
     label = commit_label("smooth")
 
     commit = board.begin_commit()
     try:
         delete_checked(board, ids)
-        create_checked(board, new_tracks)
+        create_checked(board, new_items)
     except BaseException:
         board.drop_commit(commit)
         raise
 
     # Outside the try above: once pushed, the commit can't be dropped.
     push_checked(board, commit, label)
+    moved = f" and moved {len(vias)} vias" if vias else ""
     logger.info(
-        f"Committed '{label}': replaced {len(ids)} tracks with {len(new_tracks)}"
+        f"Committed '{label}': replaced {len(track_ids)} tracks with "
+        f"{len(new_items) - len(vias)}{moved}"
     )
 
 
-def _unchanged_tracks(
-    board: kipy.board.Board, ids: Sequence[str], selected: Sequence[Segment]
-) -> dict[str, kbt.Track]:
-    """The tracks `ids` as KiCad has them now, by id; raise if any changed."""
-    wanted = set(ids)
+def _unchanged_items(
+    board: kipy.board.Board,
+    track_ids: Sequence[str],
+    selected: Sequence[Segment],
+    vias: Sequence[ViaMove],
+) -> tuple[dict[str, kbt.Track], dict[str, kbt.Via]]:
+    """The tracks `track_ids` and the vias of `vias` as KiCad has them now,
+    by id, in one request; raise if any changed."""
+    wanted = set(track_ids)
     expected = {s.id: s for s in selected if s.id in wanted}
-    fetched = {
-        item.id.value: item
-        for item in board.get_items_by_id([KIID(value=i) for i in ids])
-        if isinstance(item, kbt.Track)
-    }
+    ids = [*track_ids, *(m.via.id for m in vias)]
+    items = board.get_items_by_id([KIID(value=i) for i in ids])
+    tracks = {i.id.value: i for i in items if isinstance(i, kbt.Track)}
+    found_vias = {i.id.value: i for i in items if isinstance(i, kbt.Via)}
     changed = [
         i
-        for i in ids
-        if i not in fetched or segment_from_track(fetched[i]) != expected[i]
+        for i in track_ids
+        if i not in tracks or segment_from_track(tracks[i]) != expected[i]
+    ]
+    changed += [
+        m.via.id
+        for m in vias
+        if m.via.id not in found_vias
+        or astuple(via_from_kipy(found_vias[m.via.id])) != astuple(m.via)
     ]
     if changed:
         raise BoardChangedError(
-            "Selected tracks changed in KiCad since they were read: "
-            f"{', '.join(changed)}; select the chain again and rerun"
+            "Selected items changed in KiCad since they were read: "
+            f"{', '.join(changed)}; select them again and rerun"
         )
-    return fetched
+    return tracks, found_vias
+
+
+def _moved(via: kbt.Via, position: Point2) -> kbt.Via:
+    """A copy of `via` at `position` (mm), for KiCad to give a new id."""
+    moved = kbt.Via(via.proto)
+    moved.proto.ClearField("id")
+    # A group lists its members by id, and the old via leaves it when
+    # deleted; a copy claiming the group would join it behind KiCad's back.
+    moved.proto.ClearField("parent")
+    moved.position = Vector2.from_xy(_nm(position[0]), _nm(position[1]))
+    return moved
 
 
 def track_items(
@@ -198,7 +235,7 @@ def delete_checked(board: kipy.board.Board, ids: Sequence[str]) -> None:
     """Delete items by id and raise unless KiCad deleted every one.
 
     kipy's remove_items discards the per-item results, so a refused deletion
-    would otherwise leave the old track under the new ones.
+    would otherwise leave the old item under the new ones.
     """
     command = DeleteItems()
     command.header.document.CopyFrom(board.document)
@@ -213,7 +250,7 @@ def delete_checked(board: kipy.board.Board, ids: Sequence[str]) -> None:
     ]
     if failed:
         raise DeleteItemsError(
-            f"KiCad did not delete {len(failed)} of {len(ids)} tracks: "
+            f"KiCad did not delete {len(failed)} of {len(ids)} items: "
             + ", ".join(failed)
         )
 
@@ -237,7 +274,7 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
         reasons = f": {'; '.join(sorted(set(refused)))}" if refused else ""
         raise CreateItemsError(
             f"KiCad created {len(response.created_items) - len(refused)} of "
-            f"{len(items)} tracks{reasons}"
+            f"{len(items)} items{reasons}"
         )
 
 

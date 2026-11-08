@@ -513,8 +513,8 @@ class CommitBoard(FakeBoard):
     create, push_commit, drop_commit, and refill_zones, which kibends must
     never call. `short_create` answers CreateItems with one item fewer than
     sent, all reported as created. `refuse_create_nets` refuses only the
-    items on those nets. `unanswered_delete` leaves those ids out of the
-    DeleteItems answer.
+    tracks on those nets, `refuse_create_vias` only the vias.
+    `unanswered_delete` leaves those ids out of the DeleteItems answer.
     """
 
     calls: list[str] = field(default_factory=list[str])
@@ -524,6 +524,7 @@ class CommitBoard(FakeBoard):
     refuse_create: bool = False
     refuse_create_nets: frozenset[str] = frozenset()
     short_create: bool = False
+    refuse_create_vias: bool = False
     refuse_delete: frozenset[str] = frozenset()
     unanswered_delete: frozenset[str] = frozenset()
     push_error: Exception | None = None
@@ -535,7 +536,7 @@ class CommitBoard(FakeBoard):
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
         self.reads["get_items_by_id"] += 1
         wanted = {i.value for i in ids}
-        return [t for t in self.tracks if t.id.value in wanted]
+        return [i for i in [*self.tracks, *self.vias] if i.id.value in wanted]
 
     def begin_commit(self) -> Commit:
         self.calls.append("begin_commit")
@@ -559,8 +560,13 @@ class CommitBoard(FakeBoard):
         answered = command.items[:-1] if self.short_create else command.items
         for packed in answered:
             item = kbt.unwrap(packed)
-            refused = self.refuse_create or (
-                isinstance(item, kbt.Track) and item.net.name in self.refuse_create_nets
+            refused = (
+                self.refuse_create
+                or (
+                    isinstance(item, kbt.Track)
+                    and item.net.name in self.refuse_create_nets
+                )
+                or (isinstance(item, kbt.Via) and self.refuse_create_vias)
             )
             result = response.created_items.add()
             result.item.CopyFrom(packed)

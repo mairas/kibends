@@ -216,7 +216,7 @@ class BoardSnapshot:
         footprints = board.get_footprints()
         all_tracks = board.get_tracks()
         kipy_pads = board.get_pads()
-        vias = tuple(_read_via(v) for v in board.get_vias())
+        vias = tuple(via_from_kipy(v) for v in board.get_vias())
         shapes = [
             *board.get_shapes(),
             *(s for f in footprints for s in f.definition.shapes),
@@ -318,7 +318,7 @@ def read_selection(board: kipy.board.Board) -> Selection:
     if not tracks:
         raise SelectionError("selection has no tracks")
     return Selection(
-        [segment_from_track(t) for t in tracks], tuple(map(_read_via, vias))
+        [segment_from_track(t) for t in tracks], tuple(map(via_from_kipy, vias))
     )
 
 
@@ -535,7 +535,7 @@ _VIA_KINDS = {
 }
 
 
-def _read_via(v: kbt.Via) -> Via:
+def via_from_kipy(v: kbt.Via) -> Via:
     drill = v.padstack.drill
     span = (drill.start_layer, drill.end_layer)
     if BoardLayer.BL_UNKNOWN in span:

@@ -4,7 +4,7 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
-from conftest import CommitBoard, kipy_track, nm
+from conftest import CommitBoard, kipy_track, kipy_via, nm
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -13,7 +13,7 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from kibends import commit
 from kibends.chain import Chain, Segment, extract_chain
 from kibends.energy import FloatArray
-from kibends.snapshot import segment_from_track
+from kibends.snapshot import segment_from_track, via_from_kipy
 
 WIDTH = 0.3
 NEW_PATH = np.array([[0.0, 0.0], [2.0, 1.0], [4.0000004, 3.0], [5.0, 5.0]])
@@ -145,7 +145,7 @@ class TestRefusals:
         board, chain, selected = setup(short_create=True)
 
         with pytest.raises(
-            commit.CreateItemsError, match=r"^KiCad created 2 of 3 tracks$"
+            commit.CreateItemsError, match=r"^KiCad created 2 of 3 items$"
         ):
             run_commit(board, chain, selected)
 
@@ -156,7 +156,7 @@ class TestRefusals:
         board, chain, selected = setup(refuse_delete=frozenset({"b"}))
 
         with pytest.raises(
-            commit.DeleteItemsError, match=r"tracks: b \(IDS_IMMUTABLE\)$"
+            commit.DeleteItemsError, match=r"items: b \(IDS_IMMUTABLE\)$"
         ):
             run_commit(board, chain, selected)
 
@@ -165,7 +165,7 @@ class TestRefusals:
     def test_unanswered_delete_drops_the_commit(self) -> None:
         board, chain, selected = setup(unanswered_delete=frozenset({"b"}))
 
-        with pytest.raises(commit.DeleteItemsError, match=r"tracks: b \(no answer\)$"):
+        with pytest.raises(commit.DeleteItemsError, match=r"items: b \(no answer\)$"):
             run_commit(board, chain, selected)
 
         assert board.calls == ["begin_commit", "delete", "drop_commit"]
@@ -285,3 +285,121 @@ class TestSnappedPath:
         polyline = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 0.0]])
 
         assert len(commit.snapped_path(polyline)) == 3
+
+
+VIA = (5.0, 5.0)
+MOVED_TO = (4.0, 4.5)
+
+
+def via_route(
+    *, refuse_create_vias: bool = False
+) -> tuple[
+    CommitBoard, list[tuple[Chain, FloatArray]], list[Segment], list[commit.ViaMove]
+]:
+    """SIG from (0, 0) on F.Cu down the via `v` at VIA and on to (10, 0) on
+    B.Cu, with the via moved to MOVED_TO and both chains straight to it."""
+    tracks = [
+        kipy_track("a", "SIG", (0, 0), VIA, width=WIDTH),
+        kipy_track("e", "SIG", VIA, (10, 0), width=WIDTH, layer=BL.BL_B_Cu),
+    ]
+    via = kipy_via("v", "SIG", *VIA, diameter=0.8, drill=0.4)
+    board = CommitBoard(
+        selection=[*tracks, via],
+        tracks=list(tracks),
+        vias=[via],
+        refuse_create_vias=refuse_create_vias,
+    )
+    selected = [segment_from_track(t) for t in tracks]
+    chains = [
+        (extract_chain(selected[:1]), np.array([[0.0, 0.0], MOVED_TO])),
+        (extract_chain(selected[1:]), np.array([MOVED_TO, [10.0, 0.0]])),
+    ]
+    return board, chains, selected, [commit.ViaMove(via_from_kipy(via), MOVED_TO)]
+
+
+def run_commit_vias(
+    board: CommitBoard,
+    chains: list[tuple[Chain, FloatArray]],
+    selected: list[Segment],
+    vias: list[commit.ViaMove],
+) -> None:
+    commit.commit_chains(cast(kipy.board.Board, board), chains, selected, vias)
+
+
+class TestMovedVias:
+    def test_moves_the_via_with_its_chains_in_one_commit(self) -> None:
+        board, chains, selected, vias = via_route()
+        old = board.vias[0]
+
+        run_commit_vias(board, chains, selected, vias)
+
+        assert board.reads["get_items_by_id"] == 1
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == ["a", "e", "v"]
+        (via,) = [i for i in board.created if isinstance(i, kbt.Via)]
+        assert (via.position.x, via.position.y) == (nm(4.0), nm(4.5))
+        assert via.id.value == ""
+        assert (via.net.name, via.diameter, via.drill_diameter, via.type) == (
+            old.net.name,
+            old.diameter,
+            old.drill_diameter,
+            old.type,
+        )
+        assert via.padstack.drill.start_layer == old.padstack.drill.start_layer
+        assert via.padstack.drill.end_layer == old.padstack.drill.end_layer
+        tracks = [i for i in board.created if isinstance(i, kbt.Track)]
+        moved = (nm(4.0), nm(4.5))
+        assert [(t.layer, (t.end.x, t.end.y)) for t in tracks[:1]] == [
+            (BL.BL_F_Cu, moved)
+        ]
+        assert [(t.layer, (t.start.x, t.start.y)) for t in tracks[1:]] == [
+            (BL.BL_B_Cu, moved)
+        ]
+
+    def test_refused_via_create_drops_the_whole_commit(self) -> None:
+        board, chains, selected, vias = via_route(refuse_create_vias=True)
+
+        with pytest.raises(commit.CreateItemsError, match="created 2 of 3 items"):
+            run_commit_vias(board, chains, selected, vias)
+
+        assert board.calls == ["begin_commit", "delete", "create", "drop_commit"]
+
+    @pytest.mark.parametrize(
+        "now",
+        [
+            kipy_via("v", "SIG", 5.0, 5.1, diameter=0.8, drill=0.4),
+            kipy_via("v", "SIG", *VIA, diameter=0.8, drill=0.3),
+            kipy_via("v", "SIG", *VIA, diameter=0.6, drill=0.4),
+            kipy_via("v", "GND", *VIA, diameter=0.8, drill=0.4),
+            kipy_via("v", "SIG", *VIA, diameter=0.8, drill=0.4, locked=True),
+            kipy_via(
+                "v",
+                "SIG",
+                *VIA,
+                diameter=0.8,
+                drill=0.4,
+                span=(BL.BL_F_Cu, BL.BL_In1_Cu),
+            ),
+            None,
+        ],
+        ids=["moved", "drill", "diameter", "net", "locked", "span", "deleted"],
+    )
+    def test_via_changed_since_reading_refuses_the_commit(
+        self, now: kbt.Via | None
+    ) -> None:
+        board, chains, selected, vias = via_route()
+        board.vias = [] if now is None else [now]
+
+        with pytest.raises(commit.BoardChangedError, match="v"):
+            run_commit_vias(board, chains, selected, vias)
+
+        assert board.calls == []
+
+    def test_the_moved_via_leaves_its_group(self) -> None:
+        board, chains, selected, vias = via_route()
+        board.vias[0].proto.parent.value = "group"
+
+        run_commit_vias(board, chains, selected, vias)
+
+        (via,) = [i for i in board.created if isinstance(i, kbt.Via)]
+        assert not via.proto.HasField("parent")
