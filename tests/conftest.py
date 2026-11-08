@@ -441,15 +441,18 @@ class CommitBoard(FakeBoard):
     `calls` lists the commit lifecycle in order: begin_commit, delete,
     create, push_commit, drop_commit, and refill_zones, which kibends must
     never call. `short_create` answers CreateItems with one item fewer than
-    sent, all reported as created. `unanswered_delete` leaves those ids out
-    of the DeleteItems answer.
+    sent, all reported as created. `refuse_create_nets` refuses only the
+    items on those nets. `unanswered_delete` leaves those ids out of the
+    DeleteItems answer. `reads` counts get_items_by_id requests.
     """
 
     calls: list[str] = field(default_factory=list[str])
     deleted: list[str] = field(default_factory=list[str])
     created: list[Wrapper] = field(default_factory=list[Wrapper])
     labels: list[str] = field(default_factory=list[str])
+    reads: int = 0
     refuse_create: bool = False
+    refuse_create_nets: frozenset[str] = frozenset()
     short_create: bool = False
     refuse_delete: frozenset[str] = frozenset()
     unanswered_delete: frozenset[str] = frozenset()
@@ -460,6 +463,7 @@ class CommitBoard(FakeBoard):
         self.client = CommitClient(board=self)
 
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
+        self.reads += 1
         wanted = {i.value for i in ids}
         return [t for t in self.tracks if t.id.value in wanted]
 
@@ -484,15 +488,17 @@ class CommitBoard(FakeBoard):
         response = CreateItemsResponse()
         answered = command.items[:-1] if self.short_create else command.items
         for packed in answered:
+            item = kbt.unwrap(packed)
+            refused = self.refuse_create or (
+                isinstance(item, kbt.Track) and item.net.name in self.refuse_create_nets
+            )
             result = response.created_items.add()
             result.item.CopyFrom(packed)
             result.status.code = (
-                ItemStatusCode.ISC_INVALID_DATA
-                if self.refuse_create
-                else ItemStatusCode.ISC_OK
+                ItemStatusCode.ISC_INVALID_DATA if refused else ItemStatusCode.ISC_OK
             )
-            if not self.refuse_create:
-                self.created.append(kbt.unwrap(packed))
+            if not refused:
+                self.created.append(item)
         return response
 
     def answer_delete(self, command: DeleteItems) -> DeleteItemsResponse:

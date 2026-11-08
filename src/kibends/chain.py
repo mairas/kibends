@@ -1,4 +1,4 @@
-"""Order a selection of track segments into one chain with pinned vertices.
+"""Order a selection of track segments into chains with pinned vertices.
 
 Units: segment endpoints and widths are integer nanometres, as KiCad stores
 them, so that endpoint matching and deduplication are exact. Same-net copper
@@ -6,6 +6,7 @@ is shapely geometry in millimetres. The resulting chain is in millimetre
 floats. Every coordinate is in KiCad's board frame, with y pointing down.
 """
 
+import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -28,10 +29,16 @@ PIN_MERGE_TOLERANCE_MM = 0.5 / NM_PER_MM
 # diagonal segment.
 JUNCTION_TOLERANCE_NM = 10
 MAX_CHAIN_DEGREE = 2
+# Widens the float candidate search so a point exactly at the tolerance still
+# reaches the exact integer test.
+CANDIDATE_MARGIN_NM = 1
+CANDIDATE_MARGIN_MM = CANDIDATE_MARGIN_NM / NM_PER_MM
+# Marks copper that belongs to no selected piece.
+NO_PIECE = -1
 
 
 class ChainError(ValueError):
-    """The selection does not form one open chain of uniform track."""
+    """The selection cannot be split into open, unbranched chains."""
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,107 @@ class Chain:
     segment_ids: tuple[str, ...]
 
 
+def extract_chains(
+    segments: Sequence[Segment],
+    same_net_copper: Callable[[str], Iterable[SameNetCopper]] = lambda _net: (),
+) -> list[Chain]:
+    """Split `segments` into open chains, one per connected piece, or raise.
+
+    Selected segments are grouped by net and width, and each group is split
+    into connected pieces. Within one net, selected tracks of all widths must
+    not branch: two widths may meet only end to end, where both chains end and
+    so are pinned. `same_net_copper(net)` returns the copper of `net` on the
+    layer that pins its chains, as for `extract_chain`; a net's chains also
+    pin each other where their copper overlaps. Locked segments stay out of
+    every chain, with a warning, and pin the chains they touch.
+
+    Chains are ordered by net, then by first point, then by width; each
+    starts at its end with the smaller (x, y).
+    """
+    kept, locked = _split_locked(segments)
+    return _chains(kept, locked, same_net_copper)
+
+
+def _split_locked(
+    segments: Sequence[Segment],
+) -> tuple[list[Segment], list[Segment]]:
+    """Unlocked and locked segments, warning about the locked ones."""
+    locked = [s for s in segments if s.locked]
+    if locked:
+        logger.warning(
+            "Leaving locked segments untouched: {}", ", ".join(s.id for s in locked)
+        )
+    return [s for s in segments if not s.locked], locked
+
+
+def _chains(
+    kept: Sequence[Segment],
+    locked: Sequence[Segment],
+    same_net_copper: Callable[[str], Iterable[SameNetCopper]],
+) -> list[Chain]:
+    if not kept:
+        raise ChainError("selection has no tracks that can be modified")
+    layer = _single_layer(kept)
+    if all(s.start == s.end for s in kept):
+        raise ChainError("selection has no tracks of non-zero length")
+
+    chains: list[Chain] = []
+    for net, of_net in _group(kept, lambda s: s.net).items():
+        fixed = [
+            *same_net_copper(net),
+            *map(_same_net_track, _locked_on(locked, layer, net)),
+        ]
+        by_width = {
+            width: (of_width, *_unique_edges(of_width))
+            for width, of_width in _group(of_net, lambda s: s.width).items()
+        }
+        _check_junctions([e for _, edges, _ in by_width.values() for e in edges])
+        pieces: list[tuple[int, Adjacency, list[str]]] = []
+        for width, (of_width, edges, dots) in by_width.items():
+            adjacency = _adjacency(edges, dots)
+            of_width_pieces = _pieces(adjacency)
+            piece_of = {p: i for i, piece in enumerate(of_width_pieces) for p in piece}
+            ids: list[list[str]] = [[] for _ in of_width_pieces]
+            for s in of_width:
+                ids[piece_of[s.start]].append(s.id)
+            pieces += [
+                (width, {p: adjacency[p] for p in piece}, piece_ids)
+                for piece, piece_ids in zip(of_width_pieces, ids, strict=True)
+            ]
+        # A selected track whose copper overlaps another chain's connects to
+        # it like unselected copper, so each pins the other there.
+        tracks = [
+            (k, _same_net_track(s))
+            for k, (_, adjacency, _) in enumerate(pieces)
+            for s in dict.fromkeys(_edges_of(adjacency))
+        ]
+        copper = _CopperIndex(
+            [*fixed, *(t for _, t in tracks)],
+            [*(NO_PIECE for _ in fixed), *(k for k, _ in tracks)],
+        )
+        chains += [
+            _chain(
+                adjacency,
+                copper,
+                piece=k,
+                width=width,
+                layer=layer,
+                net=net,
+                segment_ids=piece_ids,
+            )
+            for k, (width, adjacency, piece_ids) in enumerate(pieces)
+        ]
+    return sorted(chains, key=lambda c: (c.net, c.points[0], c.width))
+
+
+def _same_net_track(s: Segment) -> SameNetTrack:
+    return SameNetTrack(LineString([_mm(s.start), _mm(s.end)]), s.width / NM_PER_MM)
+
+
+def _edges_of(adjacency: Adjacency) -> list[Segment]:
+    return [s for segs in adjacency.values() for s in segs]
+
+
 def extract_chain(
     segments: Sequence[Segment], same_net_copper: Iterable[SameNetCopper] = ()
 ) -> Chain:
@@ -92,40 +200,75 @@ def extract_chain(
 
     The chain starts at the end with the smaller (x, y).
     """
-    locked = [s for s in segments if s.locked]
-    kept = [s for s in segments if not s.locked]
-    if locked:
-        logger.warning(
-            "Leaving locked segments untouched: {}", ", ".join(s.id for s in locked)
+    kept, locked = _split_locked(segments)
+    if kept:
+        _, layer, net = _uniform_attributes(kept)
+        edges, dots = _unique_edges(kept)
+        if edges:
+            _check_junctions(edges)
+            _check_one_piece(_adjacency(edges, dots), _locked_on(locked, layer, net))
+    copper = tuple(same_net_copper)
+    (chain,) = _chains(kept, locked, lambda _net: copper)
+    return chain
+
+
+def _locked_on(locked: Iterable[Segment], layer: str, net: str) -> list[Segment]:
+    """The distinct locked edges of `net` on `layer`, which pin like copper."""
+    edges, _ = _unique_edges([s for s in locked if s.layer == layer and s.net == net])
+    return edges
+
+
+class _CopperIndex:
+    """One net's pinning copper, searchable by distance from a chain.
+
+    `pieces[i]` names the selected piece that `items[i]` belongs to, or is
+    `NO_PIECE`, so that a piece's search can skip its own tracks.
+    """
+
+    def __init__(self, items: Sequence[SameNetCopper], pieces: Sequence[int]) -> None:
+        self._items = items
+        self._pieces = pieces
+        self._tree = shapely.STRtree(
+            [i.centreline if isinstance(i, SameNetTrack) else i for i in items]
         )
-    if not kept:
-        raise ChainError("selection has no tracks that can be modified")
-    width, layer, net = _uniform_attributes(kept)
+        self._track_reach = max(
+            (i.width / 2 for i in items if isinstance(i, SameNetTrack)), default=0.0
+        )
 
-    edges, dots = _unique_edges(kept)
-    if not edges:
-        raise ChainError("selection has no tracks of non-zero length")
-    _check_no_mid_segment_junctions(edges)
-    adjacency = _adjacency(edges, dots)
-    _check_degrees(adjacency)
-    locked_here, _ = _unique_edges(
-        [s for s in locked if s.layer == layer and s.net == net]
-    )
-    _check_one_piece(adjacency, locked_here)
+    def near(
+        self, line: LineString, half_width: float, piece: int
+    ) -> list[SameNetCopper]:
+        """Every item but `piece`'s own that can touch `line`, in the order
+        given."""
+        reach = half_width + self._track_reach + CANDIDATE_MARGIN_MM
+        indices = self._tree.query(line, predicate="dwithin", distance=reach)
+        return [
+            self._items[i]
+            for i in sorted(map(int, indices))
+            if self._pieces[i] != piece
+        ]
+
+
+def _chain(
+    adjacency: Adjacency,
+    copper: _CopperIndex,
+    *,
+    piece: int,
+    width: int,
+    layer: str,
+    net: str,
+    segment_ids: Sequence[str],
+) -> Chain:
+    if not any(adjacency.values()):
+        raise ChainError(
+            f"selected zero-length tracks {', '.join(segment_ids)} at "
+            f"{_fmt(min(adjacency))} touch no other selected track of their width"
+        )
     _check_open(adjacency)
-
+    half_width = width / NM_PER_MM / 2
+    walked = [_mm(p) for p in _walk(adjacency)]
     points, pinned = _pin_touches(
-        [_mm(p) for p in _walk(adjacency)],
-        [
-            *same_net_copper,
-            *(
-                SameNetTrack(
-                    LineString([_mm(s.start), _mm(s.end)]), s.width / NM_PER_MM
-                )
-                for s in locked_here
-            ),
-        ],
-        width / NM_PER_MM / 2,
+        walked, copper.near(LineString(walked), half_width, piece), half_width
     )
     return Chain(
         points=tuple(points),
@@ -133,8 +276,35 @@ def extract_chain(
         width=width / NM_PER_MM,
         layer=layer,
         net=net,
-        segment_ids=tuple(s.id for s in kept),
+        segment_ids=tuple(segment_ids),
     )
+
+
+def _group[Key](
+    segments: Iterable[Segment], key: Callable[[Segment], Key]
+) -> dict[Key, list[Segment]]:
+    groups: dict[Key, list[Segment]] = defaultdict(list)
+    for s in segments:
+        groups[key(s)].append(s)
+    return groups
+
+
+def _check_junctions(edges: Sequence[Segment]) -> None:
+    """Refuse branches among the selected edges of one net, of any widths.
+
+    `edges` must already be free of duplicates within each width, so a span
+    that appears twice is two tracks of different widths.
+    """
+    first_by_ends: dict[frozenset[NmPoint], Segment] = {}
+    for s in edges:
+        other = first_by_ends.setdefault(frozenset((s.start, s.end)), s)
+        if other is not s:
+            raise ChainError(
+                f"selected tracks {other.id} and {s.id} overlap from "
+                f"{_fmt(s.start)} to {_fmt(s.end)} with different widths"
+            )
+    _check_no_mid_segment_junctions(edges)
+    _check_degrees(_adjacency(edges, ()))
 
 
 def _mm(p: NmPoint) -> Point2:
@@ -152,11 +322,15 @@ def _fmt_width(width_nm: int) -> str:
 
 def _uniform_attributes(segments: Sequence[Segment]) -> tuple[int, str, str]:
     width = _single_value(segments, "widths", lambda s: s.width, _fmt_width)
-    layer = _single_value(
-        segments, "layers", lambda s: s.layer, str, "; run kibends once per layer"
-    )
+    layer = _single_layer(segments)
     net = _single_value(segments, "nets", lambda s: s.net, str)
     return width, layer, net
+
+
+def _single_layer(segments: Sequence[Segment]) -> str:
+    return _single_value(
+        segments, "layers", lambda s: s.layer, str, "; run kibends once per layer"
+    )
 
 
 def _single_value[Attribute: (int, str)](
@@ -195,14 +369,30 @@ def _unique_edges(segments: Sequence[Segment]) -> tuple[list[Segment], set[NmPoi
 
 
 def _check_no_mid_segment_junctions(edges: Sequence[Segment]) -> None:
-    for s in edges:
-        for p in (s.start, s.end):
-            for other in edges:
-                if other is not s and _lies_inside(p, other):
-                    raise ChainError(
-                        f"selected tracks branch at {_fmt(p)}: "
-                        f"{s.id} ends in the middle of {other.id}"
-                    )
+    """Refuse an edge end inside another edge, the first in input order.
+
+    An STR tree narrows the candidates, so the check is O(n log n) for n
+    edges rather than comparing every pair; the exact test stays integer.
+    """
+    if not edges:
+        return
+    tree = shapely.STRtree([LineString([s.start, s.end]) for s in edges])
+    ends = [p for s in edges for p in (s.start, s.end)]
+    end_index, edge_index = tree.query(
+        shapely.points(ends),
+        predicate="dwithin",
+        distance=JUNCTION_TOLERANCE_NM + CANDIDATE_MARGIN_NM,
+    )
+    candidates = zip(map(int, end_index), map(int, edge_index), strict=True)
+    hits = sorted(
+        (i, j) for i, j in candidates if i // 2 != j and _lies_inside(ends[i], edges[j])
+    )
+    if hits:
+        i, j = hits[0]
+        raise ChainError(
+            f"selected tracks branch at {_fmt(ends[i])}: "
+            f"{edges[i // 2].id} ends in the middle of {edges[j].id}"
+        )
 
 
 def _lies_inside(p: NmPoint, s: Segment) -> bool:
@@ -239,10 +429,11 @@ def _check_degrees(adjacency: Adjacency) -> None:
 
 
 def _pieces(adjacency: Adjacency) -> list[set[NmPoint]]:
-    unvisited = set(adjacency)
+    visited: set[NmPoint] = set()
     pieces: list[set[NmPoint]] = []
-    while unvisited:
-        start = min(unvisited)
+    for start in sorted(adjacency):
+        if start in visited:
+            continue
         piece = {start}
         stack = [start]
         while stack:
@@ -252,7 +443,7 @@ def _pieces(adjacency: Adjacency) -> list[set[NmPoint]]:
                 if q not in piece:
                     piece.add(q)
                     stack.append(q)
-        unvisited -= piece
+        visited |= piece
         pieces.append(piece)
     return pieces
 
@@ -320,7 +511,7 @@ def _pin_touches(
     """Insert and pin a vertex wherever `copper` touches the chain."""
     line = LineString(points)
     last = len(points) - 1
-    lengths = (Point(a).distance(Point(b)) for a, b in pairwise(points))
+    lengths = (math.dist(a, b) for a, b in pairwise(points))
     stations = [
         _Station(along, p, i in (0, last), original=True)
         for i, (along, p) in enumerate(

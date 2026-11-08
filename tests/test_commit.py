@@ -188,3 +188,100 @@ class TestRefusals:
             run_commit(board, chain, selected)
 
         assert "drop_commit" not in board.calls
+
+
+SECOND_PATH = np.array([[0.0, 10.0], [3.0, 12.0], [5.0, 15.0]])
+
+
+def two_chains(
+    *, refuse_create_nets: frozenset[str] = frozenset()
+) -> tuple[CommitBoard, list[tuple[Chain, FloatArray]], list[Segment]]:
+    tracks = [
+        *l_tracks(),
+        kipy_track("c", "PWR", (0, 10), (5, 10), width=WIDTH),
+        kipy_track("d", "PWR", (5, 10), (5, 15), width=WIDTH),
+    ]
+    board = CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        refuse_create_nets=refuse_create_nets,
+    )
+    selected = [segment_from_track(t) for t in tracks]
+    chains = [
+        (extract_chain(selected[:2]), NEW_PATH),
+        (extract_chain(selected[2:]), SECOND_PATH),
+    ]
+    return board, chains, selected
+
+
+def run_commit_chains(
+    board: CommitBoard,
+    chains: list[tuple[Chain, FloatArray]],
+    selected: list[Segment],
+) -> None:
+    commit.commit_chains(cast(kipy.board.Board, board), chains, selected)
+
+
+class TestCommitChains:
+    def test_replaces_every_chain_in_one_request_per_step(self) -> None:
+        board, chains, selected = two_chains()
+
+        run_commit_chains(board, chains, selected)
+
+        assert board.reads == 1
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert len(board.labels) == 1
+        assert sorted(board.deleted) == ["a", "b", "c", "d"]
+        created = cast(list[kbt.Track], board.created)
+        assert [t.net.name for t in created] == ["SIG"] * 3 + ["PWR"] * 2
+        assert [(t.end.x, t.end.y) for t in created[3:]] == [
+            (nm(x), nm(y)) for x, y in SECOND_PATH[1:]
+        ]
+
+    def test_one_changed_chain_refuses_the_whole_commit(self) -> None:
+        board, chains, selected = two_chains()
+        board.tracks[3] = kipy_track("d", "PWR", (5, 10), (5, 16), width=WIDTH)
+
+        with pytest.raises(commit.BoardChangedError, match="d"):
+            run_commit_chains(board, chains, selected)
+
+        assert board.calls == []
+        assert board.deleted == []
+
+    def test_refused_create_on_the_second_chain_drops_everything(self) -> None:
+        board, chains, selected = two_chains(refuse_create_nets=frozenset({"PWR"}))
+
+        with pytest.raises(commit.CreateItemsError, match="created 3 of 5"):
+            run_commit_chains(board, chains, selected)
+
+        assert board.calls == ["begin_commit", "delete", "create", "drop_commit"]
+
+    def test_no_chains_is_an_error(self) -> None:
+        board, _, selected = two_chains()
+
+        with pytest.raises(ValueError, match="No chains"):
+            run_commit_chains(board, [], selected)
+
+        assert board.calls == []
+
+
+class TestSnappedPath:
+    def test_drops_vertices_that_do_not_bend_the_path(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 1.0]])
+
+        assert commit.snapped_path(polyline) == [(0, 0), (nm(2), 0), (nm(2), nm(1))]
+
+    def test_drops_a_vertex_one_nanometre_off_the_line(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 1e-6], [2.0, 0.0]])
+
+        assert commit.snapped_path(polyline) == [(0, 0), (nm(2), 0)]
+
+    def test_keeps_a_vertex_two_nanometres_off_the_line(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 2e-6], [2.0, 0.0]])
+
+        assert len(commit.snapped_path(polyline)) == 3
+
+    def test_keeps_a_reversal(self) -> None:
+        polyline = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 0.0]])
+
+        assert len(commit.snapped_path(polyline)) == 3

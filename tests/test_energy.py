@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 from kibends.energy import (
     DistanceField,
     EnergyParams,
+    TermValue,
     bending_energy,
     clearance_energy,
     free_vertex_objective,
@@ -334,3 +335,54 @@ class TestFreeVertexObjective:
         value, _ = objective(moved[~fixed].ravel())
         assert value == pytest.approx(total_energy(moved, fixed, BOX, PARAMS)[0])
         np.testing.assert_array_equal(points, NEAR_BOX[1])
+
+
+SHORT_EDGE = 0.1
+
+
+def short_edge_barrier(points: FloatArray, fixed: NDArray[np.bool_]) -> TermValue:
+    """The barrier's share of the total energy."""
+    with_value, with_gradient = total_energy(points, fixed, DISC, PARAMS, SHORT_EDGE)
+    without_value, without_gradient = total_energy(points, fixed, DISC, PARAMS)
+    return with_value - without_value, with_gradient - without_gradient
+
+
+def pinched(gap: float) -> FloatArray:
+    """An arc with its two middle vertices `gap` apart along the chord between them."""
+    points = arc(2.0, 1.0, 9)
+    middle = (points[4] + points[5]) / 2
+    chord: FloatArray = points[5] - points[4]
+    along = chord / float(np.linalg.norm(chord))
+    points[4], points[5] = middle - gap / 2 * along, middle + gap / 2 * along
+    return points
+
+
+class TestShortEdgeBarrier:
+    def test_gradient_matches_finite_differences(self) -> None:
+        assert_gradient_matches(short_edge_barrier, pinched(0.03))
+
+    def test_is_zero_when_no_edge_is_short(self) -> None:
+        points = arc(2.0, 1.0, 9)
+        value, gradient = short_edge_barrier(points, free(len(points)))
+        assert value == 0.0
+        np.testing.assert_array_equal(gradient, 0.0)
+
+    def test_grows_without_bound_as_two_vertices_close(self) -> None:
+        gaps = [0.08, 0.03, 1e-3, 1e-5]
+        values = [short_edge_barrier(pinched(g), free(9))[0] for g in gaps]
+        assert values == sorted(values)
+        assert values[-1] > 1e2
+
+    def test_pulling_two_vertices_together_costs_energy(self) -> None:
+        # Without the barrier, bending pays the arc to pile its vertices up.
+        def energy(gap: float, short_edge: float) -> float:
+            return total_energy(pinched(gap), free(9), DISC, PARAMS, short_edge)[0]
+
+        assert energy(1e-6, 0.0) < energy(0.03, 0.0)
+        assert energy(1e-6, SHORT_EDGE) > energy(0.03, SHORT_EDGE)
+
+    def test_leaves_an_edge_between_fixed_vertices_alone(self) -> None:
+        points = pinched(1e-3)
+        fixed = free(len(points))
+        fixed[[4, 5]] = True
+        assert short_edge_barrier(points, fixed)[0] == 0.0

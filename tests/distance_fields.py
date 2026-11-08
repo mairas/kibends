@@ -177,6 +177,16 @@ class Walls:
         return np.asarray(np.all(inside, axis=0))
 
 
+class MisleadingWalls(Walls):
+    """Walls whose distance gradient points the wrong way."""
+
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        distance, gradient = super().signed_distance(points)
+        return distance, -gradient
+
+
 @dataclass(frozen=True)
 class Union:
     """Nearest of several obstacles; exact in free space."""

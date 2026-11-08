@@ -168,7 +168,7 @@ class TestInject:
         )
         before = parse_sexpr(board)
 
-        text, ids = drc.inject(board, new)
+        text, (ids,) = drc.inject(board, [new])
 
         after = parse_sexpr(text)
         added = children(after, "segment")[len(children(before, "segment")) :]
@@ -186,7 +186,7 @@ class TestInject:
         assert others == [c[0] for c in before[1:] if c[0] != "segment"]
 
     def test_places_segments_before_embedded_fonts(self) -> None:
-        text, _ = drc.inject(gate_text(), tracks((0, 0), (1, 1)))
+        text, _ = drc.inject(gate_text(), [tracks((0, 0), (1, 1))])
 
         assert text.rindex("(segment") < text.rindex("(embedded_fonts")
 
@@ -275,11 +275,30 @@ def introduced(
     baseline: list[drc.Violation], candidate: list[drc.Violation]
 ) -> drc.Introduced:
     return drc.introduced(
-        baseline, candidate, old_ids=frozenset({"old"}), new_ids=frozenset({"new"})
+        baseline, candidate, old_ids=[frozenset({"old"})], new_ids=[frozenset({"new"})]
     )
 
 
 class TestIntroduced:
+    def test_one_chains_old_violation_does_not_excuse_anothers(self) -> None:
+        def track(net: str, uuid: str, x: float) -> drc.ReportItem:
+            return item(f"Track [{net}] on F.Cu, length {x:.4f} mm", x, 1, uuid)
+
+        base = parsed(violation("clearance", track("A", "oldA", 1), PAD))
+        candidate = parsed(
+            violation("clearance", track("B", "newB", 3), PAD),
+            violation("clearance", track("A", "newA", 2), PAD),
+        )
+
+        result = drc.introduced(
+            base,
+            candidate,
+            old_ids=[frozenset({"oldA"}), frozenset({"oldB"})],
+            new_ids=[frozenset({"newA"}), frozenset({"newB"})],
+        )
+
+        assert [drc.violation_nets(v) for v in result.violations] == [{"B", "GND"}]
+
     def test_identical_reports_introduce_nothing(self) -> None:
         report = parsed(
             violation("clearance", item("Via [GND]", 1, 1), item("Track [X]", 2, 1)),
@@ -587,6 +606,26 @@ violations = [
 out.write_text(json.dumps({"violations": violations, "unconnected_items": []}))
 """
 
+# Reports a clearance violation on every segment of the net "BAD", naming
+# the net in the segment's description as kicad-cli does.
+NET_FAKE_CLI = """
+import json, pathlib, re, sys
+args = sys.argv[1:]
+pcb = pathlib.Path(args[-1])
+out = pathlib.Path(args[args.index("-o") + 1])
+bad = re.findall(r'\\(net "BAD"\\)\\s*\\(uuid "([^"]+)"\\)', pcb.read_text())
+violations = [
+    {
+        "type": "clearance",
+        "description": "c",
+        "severity": "error",
+        "items": [{"description": "Track [BAD]", "pos": {"x": 0, "y": 0}, "uuid": u}],
+    }
+    for u in bad
+]
+out.write_text(json.dumps({"violations": violations, "unconnected_items": []}))
+"""
+
 
 def project(tmp_path: Path) -> drc.ProjectFiles:
     directory = tmp_path / "project"
@@ -616,8 +655,8 @@ class TestCheck:
             cli,
             files,
             gate_text(),
-            OLD_CHAIN,
-            tracks((5, 10), (25, 10), net="NEW"),
+            [OLD_CHAIN],
+            [tracks((5, 10), (25, 10), net="NEW")],
             work,
         )
 
@@ -634,8 +673,8 @@ class TestCheck:
             cli,
             project(tmp_path),
             gate_text(),
-            OLD_CHAIN,
-            tracks((5, 10), (25, 10)),
+            [OLD_CHAIN],
+            [tracks((5, 10), (25, 10))],
             tmp_path,
         )
 
@@ -649,8 +688,8 @@ class TestCheck:
                 cli,
                 project(tmp_path),
                 gate_text(),
-                ("gone",),
-                tracks((5, 10), (25, 10)),
+                [("gone",)],
+                [tracks((5, 10), (25, 10))],
                 tmp_path,
             )
 
@@ -664,8 +703,8 @@ class TestCheck:
                 cli,
                 project(tmp_path),
                 gate_text(),
-                OLD_CHAIN,
-                tracks((5, 10), (25, 10)),
+                [OLD_CHAIN],
+                [tracks((5, 10), (25, 10))],
                 tmp_path,
             )
 
@@ -680,8 +719,8 @@ class TestCheck:
                 cli,
                 project(tmp_path),
                 gate_text(),
-                OLD_CHAIN,
-                tracks((5, 10), (25, 10)),
+                [OLD_CHAIN],
+                [tracks((5, 10), (25, 10))],
                 tmp_path,
             )
 
@@ -694,14 +733,59 @@ class TestCheck:
             cli,
             project(tmp_path),
             gate_text(),
-            OLD_CHAIN,
-            tracks((5, 10), (25, 10)),
+            [OLD_CHAIN],
+            [tracks((5, 10), (25, 10))],
             tmp_path,
         )
 
         timed = [line for line in log if " s" in line and "DRC" in line]
         assert any("Baseline" in line for line in timed)
         assert any("Candidate" in line for line in timed)
+
+    def test_several_chains_share_one_candidate_run(self, tmp_path: Path) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
+
+        result = drc.check(
+            cli,
+            project(tmp_path),
+            gate_text(),
+            [OLD_CHAIN[:1], OLD_CHAIN[1:]],
+            [tracks((5, 10), (15, 11)), tracks((15, 11), (25, 10), net="SIG2")],
+            tmp_path,
+        )
+
+        assert not result
+        assert len(cli_calls(cli)) == 2
+        candidate = (tmp_path / "candidate.kicad_pcb").read_text(encoding="utf-8")
+        assert not any(i in candidate for i in OLD_CHAIN)
+        segments = children(parse_sexpr(candidate), "segment")
+        added = [(field(s, "net"), field(s, "end")) for s in segments[-2:]]
+        assert added == [(["SIG"], ["15", "11"]), (["SIG2"], ["25", "10"])]
+
+    def test_a_violation_on_the_second_chain_names_its_net(
+        self, tmp_path: Path
+    ) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", NET_FAKE_CLI)
+
+        result = drc.check(
+            cli,
+            project(tmp_path),
+            gate_text(),
+            [OLD_CHAIN[:1], OLD_CHAIN[1:]],
+            [tracks((5, 10), (15, 11)), tracks((15, 11), (25, 10), net="BAD")],
+            tmp_path,
+        )
+
+        assert result
+        assert {n for v in result.violations for n in drc.violation_nets(v)} == {"BAD"}
+
+    def test_no_chains_is_an_error(self, tmp_path: Path) -> None:
+        cli = make_executable(tmp_path / "kicad-cli", FAKE_CLI)
+
+        with pytest.raises(ValueError, match="No chains"):
+            drc.check(cli, project(tmp_path), gate_text(), [], [], tmp_path)
+
+        assert cli_calls(cli) == []
 
 
 def test_kicad_cli_version(tmp_path: Path) -> None:
@@ -758,8 +842,8 @@ class TestKiCadCli:
             KICAD_CLI,
             files,
             board_text or gate_text(),
-            removed,
-            candidate,
+            [removed],
+            [candidate],
             tmp_path,
         )
 
@@ -788,8 +872,8 @@ class TestKiCadCli:
     def test_a_violation_the_old_chain_had_is_not_introduced(
         self, tmp_path: Path
     ) -> None:
-        tight, ids = drc.inject(
-            drc.remove_segments(gate_text(), OLD_CHAIN), past_the_pad(0.15)
+        tight, (ids,) = drc.inject(
+            drc.remove_segments(gate_text(), OLD_CHAIN), [past_the_pad(0.15)]
         )
 
         result = self.gate(tmp_path, past_the_pad(0.14), tight, ids)

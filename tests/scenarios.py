@@ -10,6 +10,8 @@ import numpy as np
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Union, Walls
 
 from kibends.energy import EnergyParams
+from kibends.neighbours import ChainInput
+from kibends.obstacles import ChainCentreline
 
 ENVELOPE = 0.35
 """Clearance plus half track width, mm: the corner radius of inflated boxes."""
@@ -156,3 +158,167 @@ def narrow_gap() -> Scenario:
     """Path threading a 0.4 mm gap that the straight line would pass above."""
     polyline, fixed = chain((0.0, 2.5), (5.0, 0.0), (10.0, 2.5))
     return Scenario("narrow-gap", polyline, fixed, Union(GAP_DISCS))
+
+
+PAIR_WIDTH = 0.2
+PAIR_CLEARANCE = 0.2
+PAIR_INFLATION = PAIR_WIDTH + PAIR_CLEARANCE
+"""Distance two chains of different nets keep between their centrelines."""
+SAME_NET_INFLATION = PAIR_WIDTH
+"""Distance two chains of one net keep: they may touch but not overlap."""
+
+
+@dataclass(frozen=True)
+class ChainsScenario:
+    """Several chains on one layer, each with its own static field."""
+
+    name: str
+    chains: tuple[ChainInput, ...]
+    params: EnergyParams = PARAMS
+
+
+def selected(
+    description: str,
+    net: str,
+    field: Field,
+    *vertices: tuple[float, float],
+) -> ChainInput:
+    polyline, fixed = chain(*vertices)
+    return ChainInput(
+        ChainCentreline(description, net, PAIR_WIDTH, PAIR_CLEARANCE, polyline),
+        "F.Cu",
+        fixed,
+        field,
+    )
+
+
+def channel_pair() -> ChainsScenario:
+    """Two chains hugging opposite walls of a channel, each the other's obstacle."""
+    walls = Walls(CHANNEL_HALF_GAP)
+    hug = -CHANNEL_HUG
+    return ChainsScenario(
+        "channel-pair",
+        (
+            selected("A", "A", walls, (0.0, hug), (20.0, hug)),
+            selected("B", "B", walls, (0.0, -hug), (20.0, -hug)),
+        ),
+        replace(PARAMS, repulsion=1.0, falloff_range=1.5),
+    )
+
+
+def uneven_channel_pair() -> ChainsScenario:
+    """The channel pair with one chain starting nearer the middle, kinked."""
+    pair = channel_pair()
+    walls = Walls(CHANNEL_HALF_GAP)
+    return replace(
+        pair,
+        name="uneven-channel-pair",
+        chains=(
+            pair.chains[0],
+            selected("B", "B", walls, (0.0, -0.3), (8.0, -0.6), (20.0, -0.3)),
+        ),
+    )
+
+
+TENT_HEIGHT = 1.0
+
+
+def tent() -> ChainsScenario:
+    """A chain arching over a short straight one that blocks its shortcut."""
+    return ChainsScenario(
+        "tent",
+        (
+            selected(
+                "arch",
+                "A",
+                FreeSpace(),
+                (0.0, 0.0),
+                (3.0, 3.0),
+                (7.0, 3.0),
+                (10.0, 0.0),
+            ),
+            selected("bar", "B", FreeSpace(), (4.0, TENT_HEIGHT), (6.0, TENT_HEIGHT)),
+        ),
+    )
+
+
+SAME_NET_DISC = Disc(5.0, 0.0, 1.0)
+
+
+def same_net_wrap() -> ChainsScenario:
+    """Two chains of one net arching over a disc, the outer one above the inner."""
+    return ChainsScenario(
+        "same-net-wrap",
+        (
+            selected("inner", "N", SAME_NET_DISC, (0.0, 0.0), (5.0, 1.5), (10.0, 0.0)),
+            selected("outer", "N", SAME_NET_DISC, (0.0, 0.4), (5.0, 2.5), (10.0, 0.4)),
+        ),
+    )
+
+
+CROWDED_VERTEX = (5.0, 0.0)
+CROWDED_NEIGHBOUR_VERTEX = (5.0, 0.1)
+
+
+def crowded() -> ChainsScenario:
+    """Two chains hand-routed 0.1 mm apart at one vertex each."""
+    return ChainsScenario(
+        "crowded",
+        (
+            selected("A", "A", FreeSpace(), (0.0, 0.0), CROWDED_VERTEX, (10.0, 0.0)),
+            selected(
+                "B", "B", FreeSpace(), (0.0, 1.0), CROWDED_NEIGHBOUR_VERTEX, (10.0, 1.0)
+            ),
+        ),
+    )
+
+
+def drape() -> ChainsScenario:
+    """A long arch above a short one, both pulled flat onto each other."""
+    free = FreeSpace()
+    return ChainsScenario(
+        "drape",
+        (
+            selected("A", "A", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+            selected("B", "B", free, (3.0, 0.8), (5.0, 2.0), (7.0, 0.8)),
+        ),
+    )
+
+
+def squeeze() -> ChainsScenario:
+    """A V hanging inside an arch whose shortcut it blocks."""
+    free = FreeSpace()
+    return ChainsScenario(
+        "squeeze",
+        (
+            selected("A", "A", free, (0.0, 0.0), (5.0, 4.0), (10.0, 0.0)),
+            selected("B", "B", free, (4.0, 2.5), (5.0, 0.5), (6.0, 2.5)),
+        ),
+    )
+
+
+def hooks() -> ChainsScenario:
+    """Two interlocked hooks, each pulled tight around the other's end."""
+    free = FreeSpace()
+    return ChainsScenario(
+        "hooks",
+        (
+            selected("A", "A", free, (0.0, 0.0), (0.0, 4.0), (6.0, 4.0), (6.0, 1.0)),
+            selected("B", "B", free, (8.0, 5.0), (8.0, -1.0), (2.0, -1.0), (2.0, 2.5)),
+        ),
+    )
+
+
+JUNCTION = (10.0, 0.0)
+
+
+def neck_down() -> ChainsScenario:
+    """Two chains of one net meeting end to end, each bowed on its own side."""
+    free = FreeSpace()
+    return ChainsScenario(
+        "neck-down",
+        (
+            selected("A", "N", free, (0.0, 0.0), (5.0, 2.0), JUNCTION),
+            selected("B", "N", free, JUNCTION, (15.0, 2.0), (20.0, 0.0)),
+        ),
+    )

@@ -4,14 +4,20 @@ Free vertices move only inside their bubble, a box inscribed in the free disc
 around them, so they never jump over an obstacle; an exact edge check after
 each burst rejects edges that newly cross an obstacle. Together they keep the
 chain on the same side of every obstacle (topology preservation).
+
+Several chains are optimised by alternating bursts: each outer iteration gives
+every chain one burst in turn while the other chains on its layer stand still
+as obstacles, so the same-side guarantee holds between chains too.
 """
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from itertools import pairwise
-from typing import Protocol
 
 import numpy as np
+from loguru import logger
 from scipy.optimize import minimize
 
 from kibends.chain import Point2
@@ -21,9 +27,19 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
+    ObstacleField,
+    arc_lengths,
     free_vertex_objective,
     total_energy,
 )
+from kibends.neighbours import (
+    ChainInput,
+    chain_field,
+    neighbour_field,
+    obstacle_reach,
+    same_layer_neighbours,
+)
+from kibends.obstacles import ChainCentreline
 
 # A span only slightly longer than a multiple of the spacing gets no extra
 # vertex, so float noise in re-measured lengths does not change the count.
@@ -45,6 +61,14 @@ MAX_BOUND_HALVINGS = 4
 
 LBFGSB_ABNORMAL = 2
 
+# After this many abnormal L-BFGS-B ends in a row a chain counts as settled
+# and keeps what its bursts reached; a neighbour's move can still wake it.
+MAX_ABNORMAL_BURSTS = 3
+
+# Edges shorter than this fraction of the spacing meet the short-edge barrier.
+# Resampling leaves every edge at a free vertex at least half the spacing.
+SHORT_EDGE_FRACTION = 0.1
+
 # The chain's length term is ill-conditioned (tension spreads one vertex per
 # iteration), so L-BFGS-B's default stopping tolerances end a burst long before
 # the shape settles; with these, burst_maxiter bounds the burst instead.
@@ -56,26 +80,13 @@ LBFGSB_GTOL = 1e-10
 SHAPE_WINDOW = 3
 
 
-class ObstacleField(DistanceField, Protocol):
-    """Distance field that can also check segments exactly."""
-
-    def segments_clear(
-        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
-    ) -> BoolArray:
-        """Return per segment whether it stays out of every inflated obstacle.
-
-        starts and ends are (n, 2) arrays in mm. A segment is clear when it
-        does not enter the region where the signed distance is below
-        -tolerance; touching the boundary is clear.
-        """
-        ...
-
-
 class Termination(Enum):
     CONVERGED = "converged"
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
     ABNORMAL = "L-BFGS-B terminated abnormally"
+    """Some chain stopped after MAX_ABNORMAL_BURSTS abnormal bursts in a row
+    and no burst of the run lowered the energy: nothing usable was found."""
 
 
 @dataclass(frozen=True)
@@ -102,6 +113,11 @@ class OptimizerSettings:
         if self.spacing <= 0.0:
             raise ValueError(f"spacing must be positive, got {self.spacing}")
 
+    @property
+    def short_edge(self) -> float:
+        """Length below which an edge meets the energy's short-edge barrier, mm."""
+        return SHORT_EDGE_FRACTION * self.spacing
+
 
 DEFAULT_SETTINGS = OptimizerSettings()
 
@@ -113,6 +129,8 @@ class FrozenVertex:
     position: Point2
     distance: float
     """Signed distance to the clearance boundary, negative, mm."""
+    neighbours: tuple[str, ...] = ()
+    """Descriptions of the other selected chains whose clearance it starts in."""
 
 
 @dataclass(frozen=True)
@@ -137,9 +155,33 @@ class OptimizeResult:
     iterations: int
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
+    abnormal_bursts: int
+    """Bursts L-BFGS-B ended abnormally; each was taken like any other."""
     frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     after: PolylineStats
+
+
+@dataclass(frozen=True)
+class ChainResult:
+    polyline: FloatArray
+    fixed: BoolArray
+    """Pinned and frozen vertices of `polyline`; simplification keeps them."""
+    rejected_edges: int
+    """Edges whose burst moves were undone because they crossed an obstacle."""
+    abnormal_bursts: int
+    """Bursts L-BFGS-B ended abnormally; each was taken like any other."""
+    frozen: tuple[FrozenVertex, ...]
+    before: PolylineStats
+
+
+@dataclass(frozen=True)
+class RunResult:
+    chains: tuple[ChainResult, ...]
+    """In the order the chains were given."""
+    termination: Termination
+    iterations: int
+    """Outer iterations, each giving every chain one burst."""
 
 
 @dataclass(frozen=True)
@@ -157,82 +199,296 @@ def optimize(
     settings: OptimizerSettings = DEFAULT_SETTINGS,
 ) -> OptimizeResult:
     """Minimise the chain's energy with its fixed vertices held in place."""
-    if not (fixed[0] and fixed[-1]):
-        raise ValueError("both endpoints of the chain must be fixed")
-    distance, _ = field.signed_distance(polyline)
-    frozen_mask = ~fixed & (distance < -settings.bubble_tolerance)
-    frozen = tuple(
-        FrozenVertex((float(x), float(y)), float(d))
-        for (x, y), d in zip(polyline[frozen_mask], distance[frozen_mask], strict=True)
+    alone = ChainInput(
+        ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, field
     )
-    anchors = fixed | frozen_mask
-    before = measure(polyline, field, settings.spacing)
+    run = optimize_chains([alone], params, settings)
+    (chain,) = run.chains
+    after = (
+        chain.before
+        if run.termination is Termination.NOTHING_TO_DO
+        else measure(chain.polyline, field, settings.spacing)
+    )
+    return OptimizeResult(
+        polyline=chain.polyline,
+        fixed=chain.fixed,
+        termination=run.termination,
+        iterations=run.iterations,
+        rejected_edges=chain.rejected_edges,
+        abnormal_bursts=chain.abnormal_bursts,
+        frozen=chain.frozen,
+        before=chain.before,
+        after=after,
+    )
+
+
+def optimize_chains(
+    chains: Sequence[ChainInput],
+    params: EnergyParams,
+    settings: OptimizerSettings = DEFAULT_SETTINGS,
+) -> RunResult:
+    """Minimise the chains' summed energy by alternating bursts, in the given order.
+
+    Each chain's energy is taken in its own field plus the other chains on its
+    layer, so every pair counts from both sides. The run keeps one best state,
+    all polylines together, replaced only after a burst that does not raise
+    the summed energy and leaves no chain with more violations than it started
+    with; a cap or abnormal stop returns that state. A burst L-BFGS-B ends
+    abnormally (status 2, a failed line search) still holds the best point it
+    found, so the same guard decides whether it enters the best state.
+
+    A chain rests once it has converged or stalled on its own energy, until a
+    neighbour's move changes that energy by more than the stall tolerance.
+    The run converges when every chain rests.
+    """
+    for chain in chains:
+        if not (chain.fixed[0] and chain.fixed[-1]):
+            raise ValueError("both endpoints of the chain must be fixed")
+    count = len(chains)
+    neighbours = same_layer_neighbours(chains)
+    reach = obstacle_reach(params)
+    originals = [chain.centreline.points for chain in chains]
+    statics: list[ObstacleField] = [
+        _Remembered(chain.field) if neighbours[i] else chain.field
+        for i, chain in enumerate(chains)
+    ]
+    dynamic = [
+        {
+            j: neighbour_field(chains[i], chains[j], originals[j], reach, originals[i])
+            for j in neighbours[i]
+        }
+        for i in range(count)
+    ]
+    fields = [chain_field(statics[i], dynamic[i].values()) for i in range(count)]
+    anchors: list[BoolArray] = []
+    frozen: list[tuple[FrozenVertex, ...]] = []
+    for i, chain in enumerate(chains):
+        mask, records = _frozen(chain, fields[i], dynamic[i], chains, settings)
+        anchors.append(chain.fixed | mask)
+        frozen.append(records)
+    before = [
+        measure(points, field, settings.spacing)
+        for points, field in zip(originals, fields, strict=True)
+    ]
+    rejected_edges = [0] * count
+    abnormal_bursts = [0] * count
 
     def finish(
-        points: FloatArray,
-        mask: BoolArray,
+        polylines: list[FloatArray],
+        masks: list[BoolArray],
         termination: Termination,
         iterations: int,
-        rejected_edges: int = 0,
-    ) -> OptimizeResult:
-        return OptimizeResult(
-            polyline=points,
-            fixed=mask,
-            termination=termination,
-            iterations=iterations,
-            rejected_edges=rejected_edges,
-            frozen=frozen,
-            before=before,
-            after=before
-            if points is polyline
-            else measure(points, field, settings.spacing),
+    ) -> RunResult:
+        return RunResult(
+            tuple(
+                ChainResult(
+                    polyline=polylines[i],
+                    fixed=masks[i],
+                    rejected_edges=rejected_edges[i],
+                    abnormal_bursts=abnormal_bursts[i],
+                    frozen=frozen[i],
+                    before=before[i],
+                )
+                for i in range(count)
+            ),
+            termination,
+            iterations,
         )
 
-    points, mask = resample(polyline, anchors, settings.spacing)
-    if mask.all():
-        return finish(polyline, anchors, Termination.NOTHING_TO_DO, 0)
+    # A burst starts from its chain's polyline resampled; the polyline as the
+    # burst left it is what the energy, the guard, the best state and the
+    # other chains see.
+    inputs: list[FloatArray] = []
+    input_masks: list[BoolArray] = []
+    for original, anchor in zip(originals, anchors, strict=True):
+        points, mask = resample(original, anchor, settings.spacing)
+        inputs.append(points)
+        input_masks.append(mask)
+    moving = [i for i in range(count) if not input_masks[i].all()]
+    if not moving:
+        return finish(originals, anchors, Termination.NOTHING_TO_DO, 0)
+    current = [inputs[i] if i in moving else originals[i] for i in range(count)]
+    masks = [input_masks[i] if i in moving else anchors[i] for i in range(count)]
 
     # Resampling can lay a chord across an obstacle corner or put a vertex
     # inside one, and a burst only rejects crossings its own moves create, so
     # the result is limited to polylines with no more violations than the
     # resampled input. Counting rather than locating them lets the input's own
     # violations move as the chain tightens.
-    allowed_violations = violations(points, mask, field)
-    best, best_mask = points, mask
-    best_energy = total_energy(points, mask, field, params)[0]
-    # The stall check follows every iteration, not just the ones the guard
+    allowed = [violations(current[i], masks[i], fields[i]) for i in range(count)]
+    counts: list[int | None] = list(allowed)
+    energies = [
+        total_energy(current[i], masks[i], fields[i], params, settings.short_edge)[0]
+        for i in range(count)
+    ]
+    best, best_masks = list(current), list(masks)
+    start_energy = best_energy = sum(energies)
+
+    def within_allowed(i: int) -> bool:
+        counted = counts[i]
+        if counted is None:
+            counted = counts[i] = violations(current[i], masks[i], fields[i])
+        return counted <= allowed[i]
+
+    # The stall check follows every burst, not just the ones the guard
     # accepts, or a briefly cut corner would end the run early.
-    lowest_energies = [best_energy]
-    rejected_edges = 0
-    accepted = polyline
+    lowest_energies = [[energy] for energy in energies]
+    settled = [False] * count
+    settled_energy = list(energies)
+    abnormal_streak = [0] * count
+
+    def resting(i: int) -> bool:
+        return (
+            settled[i]
+            and abs(energies[i] - settled_energy[i]) <= settings.stall_tolerance
+        )
+
+    shapes = list(originals)
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
-        burst = _burst(points, mask, field, params, settings)
-        rejected_edges += burst.rejected_edges
-        shape_change = _shape_change(accepted, burst.points)
-        accepted = burst.points
-        energy = total_energy(burst.points, mask, field, params)[0]
-        if (
-            energy <= best_energy
-            and violations(burst.points, mask, field) <= allowed_violations
-        ):
-            best, best_mask, best_energy = burst.points, mask, energy
-        lowest_energies.append(min(lowest_energies[-1], energy))
-        converged = burst.rejected_edges == 0 and (
-            shape_change < settings.displacement_tolerance * settings.spacing
-            or stalled(lowest_energies, settings)
-        )
-        if burst.abnormal:
-            termination = Termination.ABNORMAL
-            break
-        if converged and iteration == 1:
-            return finish(polyline, anchors, Termination.NOTHING_TO_DO, iteration)
-        if converged:
+        for i in moving:
+            if resting(i):
+                continue
+            if settled[i]:
+                # Woken by a neighbour: the energies it stalled on are gone.
+                lowest_energies[i] = [energies[i]]
+            burst = _burst(inputs[i], input_masks[i], fields[i], params, settings)
+            if burst.abnormal:
+                abnormal_bursts[i] += 1
+                abnormal_streak[i] += 1
+                logger.debug(
+                    f"L-BFGS-B ended a burst of {chains[i].centreline.description} "
+                    f"abnormally, {abnormal_streak[i]} in a row"
+                )
+            else:
+                abnormal_streak[i] = 0
+            rejected_edges[i] += burst.rejected_edges
+            shape_change = _shape_change(shapes[i], burst.points)
+            shapes[i] = current[i] = burst.points
+            masks[i] = input_masks[i]
+            for j in neighbours[i]:
+                dynamic[j][i] = neighbour_field(
+                    chains[j], chains[i], current[i], reach, current[j]
+                )
+                fields[j] = chain_field(statics[j], dynamic[j].values())
+                if chains[j].centreline.net == chains[i].centreline.net:
+                    # How much of j is left out at a junction depends on the
+                    # angle i now leaves it at.
+                    dynamic[i][j] = neighbour_field(
+                        chains[i], chains[j], current[j], reach, current[i]
+                    )
+                    fields[i] = chain_field(statics[i], dynamic[i].values())
+            for j in (i, *neighbours[i]):
+                energies[j] = total_energy(
+                    current[j], masks[j], fields[j], params, settings.short_edge
+                )[0]
+                counts[j] = None
+            energy = sum(energies)
+            if energy <= best_energy and all(within_allowed(j) for j in range(count)):
+                best, best_masks, best_energy = list(current), list(masks), energy
+            lowest_energies[i].append(min(lowest_energies[i][-1], energies[i]))
+            # An abnormal burst may have stopped anywhere, so only the streak
+            # settles it, not its shape change or the stall check.
+            settled[i] = abnormal_streak[i] >= MAX_ABNORMAL_BURSTS or (
+                not burst.abnormal
+                and burst.rejected_edges == 0
+                and (
+                    shape_change < settings.displacement_tolerance * settings.spacing
+                    or stalled(lowest_energies[i], settings)
+                )
+            )
+            settled_energy[i] = energies[i]
+            inputs[i], input_masks[i] = resample(
+                burst.points, masks[i], settings.spacing
+            )
+        if all(resting(i) for i in moving):
+            if iteration == 1:
+                return finish(originals, anchors, Termination.NOTHING_TO_DO, 1)
             termination = Termination.CONVERGED
             break
-        points, mask = resample(burst.points, mask, settings.spacing)
-    return finish(best, best_mask, termination, iteration, rejected_edges)
+    for i, streak in enumerate(abnormal_streak):
+        if streak >= MAX_ABNORMAL_BURSTS:
+            logger.warning(
+                f"Gave up on {chains[i].centreline.description} after {streak} "
+                "abnormal optimizer bursts in a row; it keeps its best shape"
+            )
+    if best_energy >= start_energy and any(
+        streak >= MAX_ABNORMAL_BURSTS for streak in abnormal_streak
+    ):
+        termination = Termination.ABNORMAL
+    return finish(best, best_masks, termination, iteration)
+
+
+class _Remembered:
+    """A field that answers a query repeating the previous one from memory.
+
+    A chain standing still is measured again with the same points after each
+    neighbour's burst, when only the neighbours' part of its field changed.
+    """
+
+    def __init__(self, field: ObstacleField) -> None:
+        self.field = field
+        self._distances: dict[
+            float, tuple[FloatArray, tuple[FloatArray, FloatArray]]
+        ] = {}
+        self._clear: dict[float, tuple[FloatArray, FloatArray, BoolArray]] = {}
+
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        last = self._distances.get(reach)
+        if last is not None and np.array_equal(last[0], points):
+            return last[1]
+        answer = self.field.signed_distance(points, reach)
+        self._distances[reach] = (points.copy(), answer)
+        return answer
+
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        last = self._clear.get(tolerance)
+        if (
+            last is not None
+            and np.array_equal(last[0], starts)
+            and np.array_equal(last[1], ends)
+        ):
+            return last[2]
+        answer = self.field.segments_clear(starts, ends, tolerance)
+        self._clear[tolerance] = (starts.copy(), ends.copy(), answer)
+        return answer
+
+
+def _frozen(
+    chain: ChainInput,
+    field: ObstacleField,
+    dynamic: dict[int, ObstacleField | None],
+    chains: Sequence[ChainInput],
+    settings: OptimizerSettings,
+) -> tuple[BoolArray, tuple[FrozenVertex, ...]]:
+    """Free vertices starting more than δ inside the clearance, and their records."""
+    points = chain.centreline.points
+    distance, _ = field.signed_distance(points)
+    mask = ~chain.fixed & (distance < -settings.bubble_tolerance)
+    if not mask.any():
+        return mask, ()
+    stuck = points[mask]
+    inside = [
+        (
+            chains[j].centreline.description,
+            other.signed_distance(stuck)[0] < -settings.bubble_tolerance,
+        )
+        for j, other in dynamic.items()
+        if other is not None
+    ]
+    return mask, tuple(
+        FrozenVertex(
+            (float(x), float(y)),
+            float(d),
+            tuple(name for name, near in inside if near[k]),
+        )
+        for k, ((x, y), d) in enumerate(zip(stuck, distance[mask], strict=True))
+    )
 
 
 def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> int:
@@ -282,7 +538,7 @@ def resample(
     masks = [np.ones(1, dtype=bool)]
     for start, end in pairwise(anchor_indices):
         span = points[start : end + 1]
-        arc = _arc_lengths(span)
+        arc = arc_lengths(span)
         total = float(arc[-1])
         count = max(1, int(np.ceil(total / spacing - RESAMPLE_SLACK)))
         targets = np.linspace(0.0, total, count + 1)[1:-1]
@@ -378,7 +634,7 @@ def _burst(
             )
         )
         result = minimize(
-            free_vertex_objective(current, fixed, field, params),
+            free_vertex_objective(current, fixed, field, params, settings.short_edge),
             current[free].ravel(),
             jac=True,
             method="L-BFGS-B",
@@ -437,14 +693,8 @@ def _local_distance(points: FloatArray, polyline: FloatArray) -> float:
 
 
 def _arc_fractions(points: FloatArray) -> FloatArray:
-    arc = _arc_lengths(points)
+    arc = arc_lengths(points)
     return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
-
-
-def _arc_lengths(points: FloatArray) -> FloatArray:
-    """Cumulative arc length at each vertex, starting at 0."""
-    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    return np.concatenate((np.zeros(1), np.cumsum(steps)))
 
 
 def _revert_new_crossings(

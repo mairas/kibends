@@ -1,9 +1,10 @@
 # kibends
 
-Smooths KiCad tracks. `kibends smooth` takes the chain of track segments
-selected in the PCB editor and replaces it with a short, smooth path of
-plain straight segments that keeps clearance to other copper. The result is
-not made of KiCad native arcs, so the tracks stay editable.
+Smooths KiCad tracks. `kibends smooth` takes the chains of track segments
+selected in the PCB editor and replaces each with a short, smooth path of
+plain straight segments that keeps clearance to other copper, including the
+other selected chains. The result is not made of KiCad native arcs, so the
+tracks stay editable.
 
 The new path minimises a weighted sum of three goals:
 
@@ -19,7 +20,7 @@ of every obstacle it started next to.
 Uses the KiCad IPC API through
 [kicad-python](https://pypi.org/project/kicad-python/).
 
-Status: early development. One chain per run.
+Status: early development. All selected chains must be on one layer.
 
 ## Requirements
 
@@ -44,9 +45,11 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 
 1. Open the board in KiCad's PCB editor and save it: the DRC check reads
    the project and rule files from disk.
-2. Select the track segments of one chain: connected end to end, on one
-   layer, one net and one width, without branches. Selected vias, pads and
-   other items are ignored; arc tracks are refused.
+2. Select the track segments to smooth, on one layer. Each connected piece
+   of one net and one width is a chain: its segments join end to end without
+   branches. Two widths of one net may meet only end to end, as at a
+   neck-down. Selected vias, pads and other items are ignored; arc tracks are
+   refused.
 3. Run:
 
 ```sh
@@ -54,16 +57,27 @@ kibends smooth --dry-run --plot chain.png   # look first
 kibends smooth                              # then commit
 ```
 
-The command prints the length, track count, tightest bend radius and
-clearance margins before and after, and the optimizer's outcome. Without
-`--dry-run`, and if the DRC check passes, the selected tracks are replaced
-in one commit, which one undo
-in KiCad reverts. kibends does not refill zones: refill them yourself (B)
-or let KiCad's DRC refill them.
+The chains are optimised together, so neighbouring chains make room for
+each other: chains of different nets keep their clearance to each other and
+repel each other like other copper, while chains of one net may touch but
+not overlap, except where they already connect. Only selected chains move.
 
-Locked tracks in the selection are left untouched. The chain's two ends
-stay where they are, as does every point where unselected copper of the same
-net (a pad, via, track or copper shape) touches the chain.
+The command prints, for each chain, the length, track count, tightest bend
+radius and clearance margins before and after, then the optimizer's outcome.
+A chain the optimizer leaves as it was is marked unchanged and is neither
+checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
+changed chains are replaced in one commit, which one undo in KiCad reverts;
+if any chain fails, nothing is committed. kibends does not refill zones:
+refill them yourself (B) or let KiCad's DRC refill them.
+
+Locked tracks in the selection are left untouched, and a locked track that
+splits a selected piece makes two chains. Each chain's two ends stay where
+they are, as does every point where other copper of the same net (a pad,
+via, track, copper shape or another selected chain) touches the chain.
+
+A vertex that starts inside another item's clearance stays where it is,
+with a warning. When that item is another selected chain, the warning names
+it, and a re-run after that chain has moved may free the vertex.
 
 ### Options
 
@@ -78,7 +92,7 @@ net (a pad, via, track or copper shape) touches the chain.
 | `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
-| `--plot FILE` | | Draw the original and smoothed chain over the area its centreline must avoid; the format follows the extension. Works with or without `--dry-run`. |
+| `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain; the format follows the extension. Works with or without `--dry-run`. |
 
 The defaults give a modest rounding: in the test geometries, a 90° corner
 wrapped around a pad gets a bend radius of roughly 0.7 to 1.4 mm. Bending
@@ -97,10 +111,12 @@ minimums are not seen by the optimizer.
 The DRC check covers what the optimizer cannot see. Before committing,
 kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch
 directory, with the project's `.kicad_pro` and `.kicad_dru`: once on the
-board as it is, and once with the chain replaced. If the result adds a
-violation, nothing is committed, and each new violation is listed with its
-type, description and position. Violations the board already had do not
-count, including ones the old chain had against the same item. A path that
+board as it is, and once with every changed chain replaced. If the result
+adds a violation, nothing is committed: the message names the nets involved,
+and each new violation is listed with its type, description and position.
+Violations the board already had do not count, including ones a chain's old
+tracks had against the same item; another chain's old violation does not
+excuse a new one. A path that
 splits another net's pour shows up as more unconnected items on that net and
 is refused, naming the net.
 
@@ -111,7 +127,7 @@ how long each took.
 
 ### Editing a smoothed track
 
-Change the route by hand or with the router, select the chain again and
+Change the route by hand or with the router, select the chains again and
 re-run. Re-running on kibends' own output with nothing else changed moves it
 only slightly, but still replaces its tracks.
 
