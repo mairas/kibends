@@ -1,4 +1,5 @@
 import itertools
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import replace
@@ -7,19 +8,25 @@ import numpy as np
 import pytest
 import scenarios
 from conftest import Ticking
-from distance_fields import FloatArray, FreeSpace
+from distance_fields import Disc, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point, Polygon
 
 import kibends.joint as joint_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
+from kibends.commit import snapped_points
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
     obstacle_reach,
     total_energy,
 )
-from kibends.joint import layer_energy, optimize_jointly
+from kibends.joint import (
+    layer_energy,
+    optimize_jointly,
+    pinned_at_junctions,
+    seen_parts,
+)
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
@@ -32,6 +39,7 @@ from kibends.optimize import (
     optimize_chains,
     resample,
 )
+from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -422,9 +430,13 @@ def test_an_optimised_layout_converges_again_almost_unchanged() -> None:
         )
 
 
-def test_two_chains_of_one_net_on_a_layer_are_refused() -> None:
-    with pytest.raises(ValueError, match=r"inner and outer.*net N on F\.Cu"):
-        run(scenarios.same_net_wrap())
+def test_chains_of_one_net_are_pulled_together_without_overlapping() -> None:
+    result = run(scenarios.same_net_wrap())
+
+    inner, outer = (c.polyline for c in result.chains)
+    assert result.termination is Termination.CONVERGED
+    assert gap(inner, outer) >= scenarios.SAME_NET_INFLATION - INSIDE_TOLERANCE
+    assert gap(inner, outer) < scenarios.SAME_NET_INFLATION + 0.05
 
 
 def test_chains_of_one_net_on_different_layers_are_taken() -> None:
@@ -548,3 +560,329 @@ def test_joint_ends_no_higher_than_the_loop(scenario: ChainsScenario) -> None:
         c >= -INSIDE_TOLERANCE
         for c in min_clearances(scenario.chains, joint, scenario.params)
     )
+
+
+JUNCTION_SETTINGS = OptimizerSettings(
+    spacing=0.3, settled_change=0.002, burst_maxiter=60
+)
+PAD = (10.0, 0.0)
+LEG = 10.0
+BOW = 0.5
+
+
+def heading(points: FloatArray, at: int, toward: int) -> float:
+    """The direction from vertex `at` to vertex `toward`, degrees."""
+    dx, dy = points[toward] - points[at]
+    return math.degrees(math.atan2(dy, dx))
+
+
+@pytest.mark.parametrize("angle", [30.0, 10.0])
+def test_chains_of_one_net_meeting_at_a_pad_depart_at_their_own_angles(
+    angle: float,
+) -> None:
+    # Near the pad each leaves the other out as far as it lies within their
+    # half widths plus the reach; farther at a sharper angle.
+    turn = math.radians(angle)
+    far = (PAD[0] - LEG * math.cos(turn), LEG * math.sin(turn))
+    bow = (
+        (PAD[0] + far[0]) / 2 + BOW * math.sin(turn),
+        far[1] / 2 + BOW * math.cos(turn),
+    )
+    a = selected("A", "N", FreeSpace(), (0.0, 0.0), (5.0, -BOW), PAD)
+    b = selected("B", "N", FreeSpace(), PAD, bow, far)
+
+    result = optimize_jointly([a, b], scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    assert result.termination is Termination.CONVERGED
+    for chain, clearance in zip(
+        result.chains, min_clearances([a, b], result, scenarios.PARAMS), strict=True
+    ):
+        assert clearance >= -INSIDE_TOLERANCE
+        assert length(chain.polyline) < chain.before.length
+    first, second = (c.polyline for c in result.chains)
+    np.testing.assert_array_equal(first[-1], PAD)
+    np.testing.assert_array_equal(second[0], PAD)
+    assert heading(first, -1, 0) == pytest.approx(180.0, abs=1.0)
+    assert heading(second, 0, -1) == pytest.approx(180.0 - angle, abs=1.0)
+
+
+TOUCH = (5.0, 0.0)
+STUB_TIP = (5.0, -0.1)
+
+
+def test_chains_of_one_net_touching_mid_chain_do_not_repel() -> None:
+    # The stub's end lies in the bar's copper at its pinned vertex TOUCH, and
+    # each starts with vertices next to the touch, inside the other's copper.
+    bar_points = np.array(
+        [
+            (0.0, 0.0),
+            (2.5, 0.5),
+            (4.95, 0.0),
+            TOUCH,
+            (5.05, 0.0),
+            (7.5, 0.5),
+            (10.0, 0.0),
+        ]
+    )
+    bar = ChainInput(
+        ChainCentreline(
+            "bar", "N", scenarios.PAIR_WIDTH, scenarios.PAIR_CLEARANCE, bar_points
+        ),
+        "F.Cu",
+        np.array([True, False, False, True, False, False, True]),
+        FreeSpace(),
+    )
+    stub = selected(
+        "stub", "N", FreeSpace(), (5.0, -3.0), (5.5, -1.5), (5.0, -0.15), STUB_TIP
+    )
+
+    result = optimize_jointly([bar, stub], scenarios.PARAMS, COARSE)
+
+    assert result.termination is Termination.CONVERGED
+    for chain, clearance in zip(
+        result.chains,
+        min_clearances([bar, stub], result, scenarios.PARAMS),
+        strict=True,
+    ):
+        assert chain.frozen == ()
+        assert clearance >= -INSIDE_TOLERANCE
+        assert length(chain.polyline) < chain.before.length
+    assert np.all(result.chains[0].polyline == TOUCH, axis=1).sum() == 1
+
+
+def branch(
+    description: str,
+    junction: tuple[float, float],
+    *vertices: tuple[float, float],
+    width: float = scenarios.PAIR_WIDTH,
+    field: ObstacleField | None = None,
+) -> ChainInput:
+    """A chain of net N from a loose end at `junction` through `vertices`."""
+    chain = selected(
+        description, "N", FreeSpace() if field is None else field, junction, *vertices
+    )
+    fixed = chain.fixed.copy()
+    fixed[0] = False
+    return replace(
+        chain, centreline=replace(chain.centreline, width=width), fixed=fixed
+    )
+
+
+def junction_of(result: RunResult) -> FloatArray:
+    """The point every chain of `result` starts at, asserting they all do."""
+    starts = [c.polyline[0] for c in result.chains]
+    for start in starts:
+        np.testing.assert_array_equal(start, starts[0])
+    assert not any(c.fixed[0] for c in result.chains)
+    return starts[0]
+
+
+def angles_at_junction(result: RunResult) -> list[float]:
+    """The angles between neighbouring branches where they leave the
+    junction, degrees, sorted."""
+    headings = sorted(heading(c.polyline, 0, 1) % 360.0 for c in result.chains)
+    return sorted(
+        (b - a) % 360.0 for a, b in itertools.pairwise([*headings, headings[0]])
+    )
+
+
+def fermat_tee(
+    widths: Sequence[float] = (scenarios.PAIR_WIDTH,) * 3,
+) -> list[ChainInput]:
+    """Three bowed branches from scenarios.FERMAT_START to the corners of
+    scenarios.FERMAT_ENDS."""
+    start = scenarios.FERMAT_START
+    first, second, third = scenarios.FERMAT_ENDS
+    return [
+        branch("A", start, (0.5, -0.5), first, width=widths[0]),
+        branch("B", start, (5.0, -1.0), second, width=widths[1]),
+        branch("C", start, (2.0, 4.0), third, width=widths[2]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "widths", [(0.2, 0.2, 0.2), (0.2, 0.4, 0.3)], ids=["even", "mixed"]
+)
+def test_a_tee_moves_its_junction_to_where_the_branches_meet_at_120_degrees(
+    widths: tuple[float, float, float],
+) -> None:
+    chains = fermat_tee(widths)
+
+    result = optimize_jointly(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    assert result.termination is Termination.CONVERGED
+    np.testing.assert_allclose(junction_of(result), scenarios.FERMAT_POINT, atol=0.05)
+    assert angles_at_junction(result) == pytest.approx([120.0] * 3, abs=2.0)
+    assert all(
+        c >= -INSIDE_TOLERANCE
+        for c in min_clearances(pinned_at_junctions(chains), result, scenarios.PARAMS)
+    )
+    for chain, given in zip(result.chains, chains, strict=True):
+        np.testing.assert_array_equal(chain.polyline[-1], given.centreline.points[-1])
+
+
+def test_a_star_of_four_branches_meets_in_the_middle() -> None:
+    corners = ((-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0))
+    start = (1.0, 0.5)
+    chains = [
+        branch(f"arm {k}", start, (x / 2 + y / 4, y / 2 - x / 4), (x, y))
+        for k, (x, y) in enumerate(corners)
+    ]
+
+    result = optimize_jointly(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    assert result.termination is Termination.CONVERGED
+    np.testing.assert_allclose(junction_of(result), (0.0, 0.0), atol=0.05)
+    assert angles_at_junction(result) == pytest.approx([90.0] * 4, abs=2.0)
+
+
+def test_a_junction_on_a_pad_stays_where_it_is() -> None:
+    # Extraction pins a junction that a pad covers: the branches arrive with
+    # that end fixed and meet at a pinned touch.
+    chains = [
+        replace(c, fixed=c.fixed | (np.arange(len(c.fixed)) == 0)) for c in fermat_tee()
+    ]
+
+    result = optimize_jointly(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    assert result.termination is Termination.CONVERGED
+    for chain, clearance in zip(
+        result.chains, min_clearances(chains, result, scenarios.PARAMS), strict=True
+    ):
+        np.testing.assert_array_equal(chain.polyline[0], scenarios.FERMAT_START)
+        assert chain.fixed[0]
+        assert clearance >= -INSIDE_TOLERANCE
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_simplified_and_snapped_branches_still_share_the_junction() -> None:
+    chains = fermat_tee((0.2, 0.4, 0.3))
+    result = optimize_jointly(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
+
+    simplified = simplify_chains(pinned_at_junctions(chains), result, scenarios.PARAMS)
+
+    junction = junction_of(result)
+    for polyline in simplified:
+        np.testing.assert_array_equal(polyline[0], junction)
+    assert len({snapped_points(p)[0] for p in simplified}) == 1
+
+
+class TestJunctionEnergy:
+    def params(self) -> EnergyParams:
+        return replace(scenarios.PARAMS, repulsion=1.0, falloff_range=0.5)
+
+    def test_has_no_bending_term_at_the_junction(self) -> None:
+        # Straight branches meeting at right angles: only their lengths
+        # count, and each pulls the junction straight along itself.
+        chains = pinned_at_junctions(
+            [
+                branch("left", (0.0, 0.0), (-2.0, 0.0), (-4.0, 0.0)),
+                branch("right", (0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
+                branch("up", (0.0, 0.0), (0.0, 2.0), (0.0, 4.0)),
+            ]
+        )
+        polylines = [c.centreline.points for c in chains]
+        masks = [np.array([False, False, True])] * 3
+
+        value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
+
+        assert value == pytest.approx(12.0, rel=1e-12)
+        for g, pull in zip(
+            gradients, [(1.0, 0.0), (-1.0, 0.0), (0.0, -1.0)], strict=True
+        ):
+            np.testing.assert_allclose(g[0], pull, atol=1e-12)
+
+    def test_gradient_of_the_shared_junction_matches_finite_differences(
+        self,
+    ) -> None:
+        # The middle branch swings back toward the first beyond what each
+        # leaves out of the other near the junction, so they repel there.
+        chains = pinned_at_junctions(
+            [
+                branch("A", (0.0, 0.0), (3.0, 0.0), (6.0, 0.0)),
+                branch("B", (0.0, 0.0), (1.5, 1.5), (3.0, 0.55), (4.5, 1.5)),
+                branch("C", (0.0, 0.0), (0.0, -3.0), (0.0, -6.0)),
+            ]
+        )
+        polylines = [c.centreline.points.copy() for c in chains]
+        masks = [np.arange(len(p)) == len(p) - 1 for p in polylines]
+        params = self.params()
+        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        apart = sum(
+            layer_energy([c], [p], [m], params, 0.01)[0]
+            for c, p, m in zip(chains, polylines, masks, strict=True)
+        )
+        assert value > apart
+        step = 1e-7
+
+        def moved(axis: int, by: float) -> float:
+            shifted = [p.copy() for p in polylines]
+            for p in shifted:
+                p[0, axis] += by
+            return layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+
+        for axis in (0, 1):
+            numeric = (moved(axis, step) - moved(axis, -step)) / (2 * step)
+            analytic = sum(g[0, axis] for g in gradients)
+            assert analytic == pytest.approx(numeric, rel=1e-5)
+
+
+@pytest.mark.parametrize("height", [1.5, 3.0, 6.0])
+def test_a_junction_cannot_jump_through_another_chain_in_one_burst(
+    height: float,
+) -> None:
+    # The arch of test_a_chain_cannot_jump_through_another_in_one_burst,
+    # its apex a junction of its two halves.
+    free = FreeSpace()
+    apex = (5.0, height)
+    left = branch("left", apex, (0.0, 0.0))
+    right = branch("right", apex, (10.0, 0.0))
+    bar = selected("bar", "B", free, (4.0, 0.7), (6.0, 0.7))
+
+    result = optimize_jointly([left, right, bar], scenarios.PARAMS, SPARSE)
+
+    junction = junction_of(replace(result, chains=result.chains[:2]))
+    b = result.chains[2].polyline
+    assert junction[1] > 0.7
+    for chain in result.chains[:2]:
+        assert gap(chain.polyline, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+
+
+BLOCKER_Y = 0.7
+BLOCKED = replace(SPARSE, burst_maxiter=10)
+
+
+@pytest.mark.parametrize("kind", ["chain", "disc"])
+def test_a_junction_cannot_pass_what_lies_between_it_and_its_best_place(
+    kind: str,
+) -> None:
+    # The branches would meet at 120 degrees below the blocker, but the
+    # junction starts above it, the third branch routed around its right
+    # end; at this spacing a burst's straight line there crosses it.
+    if kind == "chain":
+        field: ObstacleField = FreeSpace()
+        others = [selected("bar", "B", field, (4.0, BLOCKER_Y), (6.0, BLOCKER_Y))]
+    else:
+        field = Disc(5.0, BLOCKER_Y, 0.5)
+        others = []
+    start = (5.0, 3.0)
+    chains = [
+        branch("A", start, (2.5, 2.0), (0.0, 0.0), field=field),
+        branch("B", start, (7.5, 2.0), (10.0, 0.0), field=field),
+        branch("C", start, (6.5, 1.5), (7.0, 0.0), (5.0, -6.0), field=field),
+        *others,
+    ]
+
+    result = optimize_jointly(chains, scenarios.PARAMS, BLOCKED)
+
+    views = pinned_at_junctions(chains)
+    assert all(
+        c >= -INSIDE_TOLERANCE for c in min_clearances(views, result, scenarios.PARAMS)
+    )
+    a, b, c = (r.polyline for r in result.chains[:3])
+    junction = Point(junction_of(replace(result, chains=result.chains[:3])))
+    for first, second in itertools.combinations((a, b, c), 2):
+        assert LineString(first).intersection(LineString(second)).equals(junction)
+    enclosed = Polygon(np.concatenate([a[::-1], c[1:]]))
+    assert enclosed.contains(Point(5.0, BLOCKER_Y))
