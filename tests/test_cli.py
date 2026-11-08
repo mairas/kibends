@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import stat
 import sys
@@ -27,6 +28,7 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
+from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, box
 
 from kibends import cli, drc
@@ -34,7 +36,7 @@ from kibends import run as pipeline
 from kibends.bursts import OptimizerSettings
 from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import Obstacles
-from kibends.optimize import RunResult, Termination, optimize_chains
+from kibends.optimize import PolylineStats, RunResult, Termination, optimize_chains
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -1262,7 +1264,7 @@ CANDIDATE_SEGMENT = re.compile(
 
 
 def created_on(board: CommitBoard, layer: BL.ValueType) -> list[kbt.Track]:
-    return [t for t in cast(list[kbt.Track], board.created) if t.layer == layer]
+    return [t for t in board.created if isinstance(t, kbt.Track) and t.layer == layer]
 
 
 def ends(tracks: Sequence[kbt.Track]) -> set[tuple[int, int]]:
@@ -1379,20 +1381,50 @@ class TestSeveralLayers:
 
         assert layout(board) == {(BL.BL_B_Cu, 0, 0, nm(4), nm(4))}
 
-    def test_selected_via_leaves_the_commit_as_without_it(
+    def test_selected_fixed_via_leaves_the_run_as_without_it(
         self, connect: Connector, log: list[str]
     ) -> None:
-        without = connect.to(via_route_board())
+        def locked_via_board() -> CommitBoard:
+            board = via_route_board()
+            board.vias = [kipy_via("v", "SIG", *VIA, locked=True)]
+            return board
+
+        without = connect.to(locked_via_board())
         run("--no-drc")
-        board = via_route_board()
-        board.selection.append(kipy_via("v", "SIG", *VIA))
+        board = locked_via_board()
+        board.selection.append(board.vias[0])
         connect.to(board)
 
         run("--no-drc")
 
         assert layout(board) == layout(without)
         assert board.reads == without.reads
-        assert not [line for line in log if "stays fixed" in line]
+        assert board.deleted == without.deleted
+        assert len([line for line in log if "stays fixed" in line]) == 1
+
+    @pytest.mark.parametrize(
+        "fixed",
+        [
+            partial(kipy_via, locked=True),
+            partial(kipy_via, via_type=ViaType.VT_BLIND),
+        ],
+        ids=["locked", "blind"],
+    )
+    def test_selected_vias_that_cannot_move_cost_no_reads(
+        self, connect: Connector, fixed: Callable[[str, str, float, float], kbt.Via]
+    ) -> None:
+        # A through-hole pad of the via's net lists layers no run reads.
+        pth = kipy_pad("pth", "SIG", 0, 8, layers=list(iter_copper_layers()))
+        board = via_route_board()
+        board.pads.append(pth)
+        board.vias = [fixed("v", "SIG", *VIA)]
+        board.selection.append(board.vias[0])
+        connect.to(board)
+
+        run("--dry-run", "--no-drc")
+
+        assert board.reads["get_enabled_layers"] == 0
+        assert board.reads["get_pad_shapes_as_polygons"] == 2
 
     def test_selected_via_that_must_stay_is_named(
         self, connect: Connector, log: list[str]
@@ -1421,6 +1453,48 @@ class TestSeveralLayers:
 
         (warning,) = [line for line in log if "stays fixed" in line]
         assert warning.startswith("WARNING Via v ") and "track g2 on In1.Cu" in warning
+
+    def test_selected_via_held_by_other_copper_leaves_the_run_as_without_it(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        locked = kipy_track("k", "OTHER", (0, 7), (3, 7), width=WIDTH, locked=True)
+
+        def held_via_board() -> CommitBoard:
+            """The via may move by kind, but g2 on In1.Cu holds it."""
+            board = via_route_board()
+            third = kipy_track(
+                "g2", "SIG", VIA, (4, 9), width=WIDTH, layer=BL.BL_In1_Cu
+            )
+            board.tracks += [third, locked]
+            board.selection.append(locked)
+            return board
+
+        without = connect.to(held_via_board())
+        run("--no-drc")
+        board = held_via_board()
+        board.selection.append(board.vias[0])
+        connect.to(board)
+        log.clear()
+
+        run("--no-drc")
+
+        assert layout(board) == layout(without)
+        assert board.deleted == without.deleted
+        assert len([line for line in log if "stays fixed" in line]) == 1
+        assert len([line for line in log if "Leaving locked" in line]) == 1
+
+    def test_reads_only_the_selected_layers_without_a_moving_via(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = via_route_board()
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        connect.to(board)
+
+        run("--dry-run", "--no-drc")
+
+        read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
+        assert read == ["B.Cu", "F.Cu"]
+        assert board.reads["get_enabled_layers"] == 0
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(via_route_board())
@@ -1499,3 +1573,310 @@ class TestSeveralLayers:
         run("--dry-run", "--no-drc", f"--plot={tmp_path / 'chains.png'}")
 
         assert [t.split(":")[0] for t in titles] == ["SIG on B.Cu", "SIG on F.Cu"]
+
+
+def detour_back() -> list[kbt.Track]:
+    """From the via at `VIA` back up to (8, 0) on B.Cu: with `l_chain`, a
+    route whose straight line runs 4 mm from the via."""
+    return [
+        kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=BL.BL_B_Cu),
+        kipy_track("f", "SIG", (8, 4), (8, 0), width=WIDTH, layer=BL.BL_B_Cu),
+    ]
+
+
+def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
+    """`l_chain` down the selected via `v` at `VIA` and on along
+    `detour_back`, in free space."""
+    route = [*l_chain(), *detour_back()]
+    via = kipy_via("v", "SIG", *VIA)
+    return CommitBoard(
+        selection=[*route, via],
+        tracks=list(route),
+        vias=[via],
+        refuse_create_vias=refuse_create_vias,
+    )
+
+
+def created_vias(board: CommitBoard) -> list[kbt.Via]:
+    return [i for i in board.created if isinstance(i, kbt.Via)]
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestMovingVias:
+    def test_moves_the_via_with_its_chains_in_one_commit(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(moving_via_board())
+
+        run()
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == ["a", "b", "e", "f", "v"]
+        (via,) = created_vias(board)
+        moved = (via.position.x, via.position.y)
+        assert moved[1] < nm(1)
+        assert moved in ends(created_on(board, BL.BL_F_Cu))
+        assert moved in ends(created_on(board, BL.BL_B_Cu))
+        assert drc_runs(kicad_cli) == 2
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        assert '(uuid "v")' not in candidate
+        at = re.findall(r"\(at (\S+) (\S+)\)", candidate)
+        assert [(nm(float(x)), nm(float(y))) for x, y in at] == [moved]
+
+    def test_copper_touching_only_a_carried_end_holds_the_via_and_the_end(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The wide end's copper reaches y = 4.5 and the pad's edge 4.4; the
+        # via's ring reaches only 4.3.
+        wide = [
+            kipy_track("a", "SIG", (0, 0), (4, 0), width=1.0),
+            kipy_track("b", "SIG", (4, 0), VIA, width=1.0),
+        ]
+        board = moving_via_board()
+        board.tracks = [*wide, *detour_back()]
+        board.selection = [*board.tracks, *board.vias]
+        board.pads = [kipy_pad("p", "SIG", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
+        connect.to(board)
+
+        run("--no-drc")
+
+        assert "push_commit" in board.calls
+        assert created_vias(board) == [] and "v" not in board.deleted
+        (warning,) = [line for line in log if "stays fixed" in line]
+        assert "pad p" in warning
+        assert (nm(VIA[0]), nm(VIA[1])) in ends(created_on(board, BL.BL_F_Cu))
+
+    def test_same_net_pad_on_its_path_stops_the_via_at_touching(
+        self, connect: Connector
+    ) -> None:
+        board = moving_via_board()
+        x, y = 4.88, 0.0
+        board.pads = [kipy_pad("p", "SIG", x, y, layers=(BL.BL_F_Cu,))]
+        connect.to(board)
+
+        run("--no-drc")
+
+        (via,) = created_vias(board)
+        h = PAD_HALF_SIZE
+        pad = box(x - h, y - h, x + h, y + h)
+        centre = Point(via.position.x / 1e6, via.position.y / 1e6)
+        assert pad.distance(centre) >= via.diameter / 2e6 - NM_ROUNDING
+
+    def test_chains_meeting_at_a_moved_via_on_one_layer_need_no_trim_there(
+        self, connect: Connector
+    ) -> None:
+        # Two widths, so that the two sides are two chains of one layer.
+        wide = WIDTH + 0.05
+        route = [
+            *l_chain(),
+            kipy_track("e", "SIG", VIA, (8, 4), width=wide),
+            kipy_track("f", "SIG", (8, 4), (8, 0), width=wide),
+        ]
+        via = kipy_via("v", "SIG", *VIA)
+        connect.to(CommitBoard(selection=[*route, via], tracks=list(route), vias=[via]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert report.vias[0].end[1] < 1.0
+        for chain in report.chains:
+            assert chain.after.segment_count == 1
+            assert chain.after.min_clearance >= -NM_ROUNDING
+
+    def test_a_frozen_via_stays_while_its_chains_change(
+        self,
+        connect: Connector,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The pad's edge is 0.1 mm from the via's ring, inside its clearance,
+        # and clear of both chains.
+        board = moving_via_board()
+        board.pads = [kipy_pad("p", "GND", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
+        connect.to(board)
+
+        run("--no-drc")
+
+        assert "push_commit" in board.calls
+        assert sorted(board.deleted) == ["a", "b", "e", "f"]
+        assert created_vias(board) == []
+        assert "WARNING Left via v at (4.000, 4.000) in place" in "".join(log)
+        assert "Via v stays at (4.000, 4.000)" in capsys.readouterr().out.splitlines()
+
+    def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
+        board = connect.to(moving_via_board())
+
+        run()
+
+        assert {kind: board.reads[kind] for kind in BOARD_WIDE_READS} == dict.fromkeys(
+            BOARD_WIDE_READS, 1
+        )
+        assert board.reads["get_enabled_layers"] == 1
+        assert board.reads["get_items_by_id"] == 1
+
+    def test_reads_every_copper_layer_for_the_via(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = moving_via_board()
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu, BL.BL_F_SilkS]
+        connect.to(board)
+
+        run("--dry-run", "--no-drc")
+
+        read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
+        assert read == ["B.Cu", "F.Cu", "In1.Cu"]
+
+    def test_reports_the_move(
+        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        board = connect.to(moving_via_board())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+
+        report = pipeline.run_smooth(options)
+
+        (via,) = report.vias
+        assert (via.id, via.start, via.moved) == ("v", VIA, True)
+        assert via.end[1] < 1.0
+        assert board.calls == []
+        cli.smooth(options)
+        out = capsys.readouterr().out
+        x, y = via.end
+        distance = np.hypot(x - VIA[0], y - VIA[1])
+        assert (
+            f"Via v moved {distance:.3f} mm, from (4.000, 4.000) to ({x:.3f}, {y:.3f})"
+            in out.splitlines()
+        )
+
+    def test_a_refused_via_create_drops_the_whole_commit(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(moving_via_board(refuse_create_vias=True))
+
+        error = exit_message(log, "--no-drc")
+
+        assert re.search(r"KiCad created 2 of 3 items", error)
+        assert board.calls == ["begin_commit", "delete", "create", "drop_commit"]
+
+    def test_a_via_changed_in_kicad_refuses_the_commit(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(moving_via_board())
+        optimize: Callable[..., RunResult] = pipeline.optimize_chains
+
+        def edited_meanwhile(*args: object, **kwargs: object) -> RunResult:
+            board.vias = [kipy_via("v", "SIG", 4.0, 4.5)]
+            return optimize(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", edited_meanwhile)
+
+        error = exit_message(log, "--no-drc")
+
+        assert "changed in KiCad" in error and "v" in error
+        assert board.calls == []
+
+    def test_merged_tracks_keep_clear_of_where_a_via_moved_to(
+        self, connect: Connector
+    ) -> None:
+        # The via presses an inner-layer chain of another net down into a
+        # bow, which a chord this loose would straighten through the via.
+        board = moving_via_board()
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        inner = kipy_track(
+            "i", "SIG2", (0, 1.5), (10, 1.5), width=WIDTH, layer=BL.BL_In1_Cu
+        )
+        board.tracks.append(inner)
+        board.selection.append(inner)
+        connect.to(board)
+
+        run("--no-drc", "--chord-tolerance=2")
+
+        (via,) = created_vias(board)
+        centre = Point(via.position.x / 1e6, via.position.y / 1e6)
+        bowed = created_on(board, BL.BL_In1_Cu)
+        keep = via.diameter / 2e6 + CLEARANCE + WIDTH / 2
+        assert all(segment(t).distance(centre) >= keep - NM_ROUNDING for t in bowed)
+        assert len(bowed) > 1
+
+    def test_other_chains_may_take_the_place_the_via_left(
+        self, connect: Connector
+    ) -> None:
+        # Straight, the inner chain would run through the via's start.
+        board = moving_via_board()
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        inner = [
+            kipy_track("i", "SIG2", (2, 2), (2, 6), width=WIDTH, layer=BL.BL_In1_Cu),
+            kipy_track("j", "SIG2", (2, 6), (6, 6), width=WIDTH, layer=BL.BL_In1_Cu),
+        ]
+        board.tracks += inner
+        board.selection += inner
+        connect.to(board)
+
+        run("--no-drc")
+
+        (via,) = created_vias(board)
+        assert via.position.y < nm(1)
+        start = Point(VIA)
+        keep = via.diameter / 2e6 + CLEARANCE + WIDTH / 2
+        inner_tracks = created_on(board, BL.BL_In1_Cu)
+        assert min(segment(t).distance(start) for t in inner_tracks) < keep
+
+    def test_plot_marks_where_the_via_was_and_is(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kibends import plot
+
+        connect.to(moving_via_board())
+        drawn: list[plot.Panel] = []
+        real = plot.render
+
+        def spy(path: Path, panels: Sequence[plot.Panel]) -> None:
+            drawn.extend(panels)
+            real(path, panels)
+
+        monkeypatch.setattr(plot, "render", spy)
+        figure = tmp_path / "vias.png"
+
+        run("--dry-run", "--no-drc", f"--plot={figure}")
+
+        assert len(drawn) == 2
+        for panel in drawn:
+            ((start, end),) = panel.vias
+            assert start == VIA and end[1] < 1.0
+        assert figure.stat().st_size > 0
+
+    def test_plot_marks_the_via_only_on_the_chains_it_joins(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kibends import plot
+
+        board = moving_via_board()
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        inner = kipy_track(
+            "i", "SIG2", (0, 8), (10, 8), width=WIDTH, layer=BL.BL_In1_Cu
+        )
+        board.tracks.append(inner)
+        board.selection.append(inner)
+        connect.to(board)
+        marks: dict[str, int] = {}
+
+        def spy(path: Path, panels: Sequence[plot.Panel]) -> None:
+            marks.update((p.title.split(":")[0], len(p.vias)) for p in panels)
+
+        monkeypatch.setattr(plot, "render", spy)
+
+        run("--dry-run", "--no-drc", f"--plot={tmp_path / 'vias.png'}")
+
+        assert marks == {"SIG on B.Cu": 1, "SIG on F.Cu": 1, "SIG2 on In1.Cu": 0}
+
+
+def test_statistics_count_the_vias_rejected_edge_moves() -> None:
+    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    chain = pipeline.ChainReport(
+        "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, 0, True
+    )
+    via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
+    report = pipeline.OptimizerReport((chain,), (via,), Termination.CONVERGED, 7)
+
+    outcome = cli.format_statistics(report).splitlines()[-1]
+
+    assert outcome == "Optimizer: converged after 7 iterations, 5 rejected edge moves"

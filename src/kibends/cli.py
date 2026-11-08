@@ -5,6 +5,7 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 import argparse
+import math
 import os
 import sys
 from collections.abc import Generator, Sequence
@@ -20,7 +21,7 @@ from loguru import logger
 
 from kibends import drc
 from kibends.bursts import DEFAULT_SETTINGS
-from kibends.chain import ChainError
+from kibends.chain import ChainError, Point2
 from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
@@ -37,6 +38,7 @@ from kibends.run import (
     OptimizerReport,
     PlotUnavailableError,
     SmoothOptions,
+    ViaReport,
     new_violations,
     run_smooth,
 )
@@ -133,11 +135,16 @@ def smooth(options: SmoothOptions) -> None:
 
 
 def format_statistics(report: OptimizerReport) -> str:
-    """One statistics block per chain and the optimizer's outcome."""
+    """One statistics block per chain, a line per movable via and the
+    optimizer's outcome."""
     some_changed = any(c.changed for c in report.chains)
     blocks = [_chain_block(c, some_changed) for c in report.chains]
-    several = len(blocks) > 1
-    rejected = sum(c.rejected_edges for c in report.chains)
+    if report.vias:
+        blocks.append("\n".join(_via_line(v) for v in report.vias))
+    several = len(report.chains) > 1
+    rejected = sum(c.rejected_edges for c in report.chains) + sum(
+        v.rejected_edges for v in report.vias
+    )
     # A run can converge while a chain gave up after abnormal bursts.
     abnormal = [
         f"{c.abnormal_bursts} abnormal burst{'' if c.abnormal_bursts == 1 else 's'}"
@@ -156,9 +163,29 @@ def format_statistics(report: OptimizerReport) -> str:
     return ("\n\n" if several else "\n").join([*blocks, outcome])
 
 
+def _via_line(v: ViaReport) -> str:
+    if not v.moved:
+        return f"Via {v.id} stays at {_point(v.start)}"
+    distance = math.dist(v.start, v.end)
+    return (
+        f"Via {v.id} moved {distance:.3f} mm, from {_point(v.start)} to {_point(v.end)}"
+    )
+
+
+def _point(p: Point2) -> str:
+    return f"({p[0]:.3f}, {p[1]:.3f})"
+
+
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """Frozen vertices, abnormal bursts and an iteration cap, one line each."""
+    """Frozen vertices and vias, abnormal bursts and an iteration cap, one
+    line each."""
     warnings = [_frozen_warning(v) for c in report.chains for v in c.frozen]
+    warnings += [
+        f"Left via {v.id} at {_point(v.start)} in place: it starts inside "
+        "another item's clearance"
+        for v in report.vias
+        if v.frozen
+    ]
     warnings += [
         f"L-BFGS-B ended {c.abnormal_bursts} burst"
         f"{'' if c.abnormal_bursts == 1 else 's'} of {c.description} abnormally; "

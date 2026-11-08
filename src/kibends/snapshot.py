@@ -114,6 +114,12 @@ class Via:
         return min(start, end) <= layer_from_canonical_name(layer) <= max(start, end)
 
 
+class Disc(NamedTuple):
+    centre: Point2
+    radius: float
+    """mm."""
+
+
 class ViaContact(NamedTuple):
     """Same-net copper that touches a via; `track_id` is set for tracks."""
 
@@ -200,8 +206,9 @@ class BoardSnapshot:
     """Netclass clearance of every net on the board, in mm."""
     default_clearance: float
     via_contacts: Mapping[str, tuple[ViaContact, ...]]
-    """By via id, for the vias asked for: the same-net copper touching each
-    on any copper layer, the via itself left out."""
+    """By via id, for the vias asked for: the same-net copper touching each,
+    or the copper it carries, on any copper layer, the via itself left
+    out."""
 
     @classmethod
     def read(
@@ -209,10 +216,18 @@ class BoardSnapshot:
         board: kipy.board.Board,
         layers: Iterable[str],
         selected_vias: Sequence[Via] = (),
+        *,
+        carried: Mapping[str, Sequence[Disc]] | None = None,
+        every_copper_layer: bool = False,
     ) -> BoardSnapshot:
-        """Read the board once for the copper layers `layers`, and the copper
-        touching `selected_vias`."""
-        wanted = sorted(set(layers))
+        """Read the board once for the copper layers `layers`, or for every
+        copper layer the board enables, and the copper touching
+        `selected_vias` or the copper `carried` gives, by via id, as moving
+        with each."""
+        enabled = set(board.get_enabled_layers()) if every_copper_layer else None
+        wanted = sorted(
+            {*layers, *(canonical_name(L) for L in enabled or () if is_copper_layer(L))}
+        )
         footprints = board.get_footprints()
         all_tracks = board.get_tracks()
         kipy_pads = board.get_pads()
@@ -265,10 +280,17 @@ class BoardSnapshot:
             default_clearance=default_clearance,
             via_contacts=_via_contacts(
                 board,
-                selected_vias,
+                {
+                    v: (
+                        Disc(v.position, v.diameter / 2),
+                        *(carried or {}).get(v.id, ()),
+                    )
+                    for v in selected_vias
+                },
                 _BoardCopper(
                     all_tracks, kipy_pads, shapeless, pad_shapes, vias, shapes, zones
                 ),
+                enabled,
             ),
         )
 
@@ -711,13 +733,17 @@ class _Copper(NamedTuple):
 
 
 def _via_contacts(
-    board: kipy.board.Board, selected: Sequence[Via], copper: _BoardCopper
+    board: kipy.board.Board,
+    selected: Mapping[Via, Sequence[Disc]],
+    copper: _BoardCopper,
+    enabled: set[BoardLayer.ValueType] | None,
 ) -> dict[str, tuple[ViaContact, ...]]:
-    """The same-net copper touching each of `selected` on any copper layer.
+    """The same-net copper touching any of the discs of each selected via on
+    any copper layer.
 
-    Pad copper on layers the snapshot did not read costs one request for the
-    board's layers and one per such layer, asked only for pads of the vias'
-    nets.
+    Pad copper on layers the snapshot did not read costs one request per
+    such layer, asked only for pads of the vias' nets, and one for the
+    board's `enabled` layers unless the caller has them.
     """
     if not selected:
         return {}
@@ -729,7 +755,7 @@ def _via_contacts(
     }
     if unread:
         # A through-hole pad may list every copper layer KiCad knows of.
-        unread &= set(board.get_enabled_layers())
+        unread &= set(board.get_enabled_layers()) if enabled is None else enabled
     for layer_id in sorted(unread):
         pad_shapes[canonical_name(layer_id)] = _pad_shapes(board, of_nets, layer_id)
     names = {p.id: p.name for p in copper.pads}
@@ -764,6 +790,7 @@ def _via_contacts(
     ]
     # A plane's fill is large and mostly far away; converting only the pieces
     # whose bounding box comes near a via keeps a selected GND via cheap.
+    # Teardrops are not copper zones: KiCad reapplies them on the next refill.
     found += [
         _Copper(
             net,
@@ -780,32 +807,39 @@ def _via_contacts(
         if _box_near(piece.bounding_box(), net, selected)
     ]
 
-    def touching(via: Via) -> set[ViaContact]:
-        centre = Point(via.position)
-        radius = via.diameter / 2
+    def touching(via: Via, discs: Sequence[Disc]) -> set[ViaContact]:
         return {
             c.contact
             for c in found
-            if c.net == via.net and c.geometry.distance(centre) <= radius + c.reach
+            if c.net == via.net
+            and any(
+                c.geometry.distance(Point(d.centre)) <= d.radius + c.reach
+                for d in discs
+            )
         } | {
             ViaContact(f"via {other.id}")
             for other in copper.vias
             if other.net == via.net
             and other.id != via.id
-            and math.dist(other.position, via.position) <= radius + other.diameter / 2
+            and any(
+                math.dist(other.position, d.centre) <= d.radius + other.diameter / 2
+                for d in discs
+            )
         }
 
-    return {via.id: tuple(sorted(touching(via))) for via in selected}
+    return {
+        via.id: tuple(sorted(touching(via, discs))) for via, discs in selected.items()
+    }
 
 
-def _box_near(box: Box2, net: str, vias: Sequence[Via]) -> bool:
-    """Whether copper inside `box` may touch one of `vias` on `net`."""
+def _box_near(box: Box2, net: str, selected: Mapping[Via, Sequence[Disc]]) -> bool:
+    """Whether copper inside `box` may touch a disc of a selected via on `net`."""
     x0, y0 = box.pos.x / NM_PER_MM, box.pos.y / NM_PER_MM
     x1, y1 = x0 + box.size.x / NM_PER_MM, y0 + box.size.y / NM_PER_MM
     return any(
         v.net == net and x0 - r <= x <= x1 + r and y0 - r <= y <= y1 + r
-        for v in vias
-        for (x, y), r in ((v.position, v.diameter / 2),)
+        for v, discs in selected.items()
+        for (x, y), r in discs
     )
 
 

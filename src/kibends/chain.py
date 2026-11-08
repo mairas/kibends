@@ -106,11 +106,11 @@ def extract_chains(
     Chains are ordered by net, then by layer, then by first point, then by
     width; each starts at its end with the smaller (x, y).
     """
-    kept, locked = _split_locked(segments)
-    return _chains(kept, locked, same_net_copper)
+    kept, locked = split_locked(segments)
+    return split_chains(kept, locked, same_net_copper)
 
 
-def _split_locked(
+def split_locked(
     segments: Sequence[Segment],
 ) -> tuple[list[Segment], list[Segment]]:
     """Unlocked and locked segments, warning about the locked ones."""
@@ -122,11 +122,12 @@ def _split_locked(
     return [s for s in segments if not s.locked], locked
 
 
-def _chains(
+def split_chains(
     kept: Sequence[Segment],
     locked: Sequence[Segment],
     same_net_copper: Callable[[str, str], Iterable[SameNetCopper]],
 ) -> list[Chain]:
+    """`extract_chains` for segments `split_locked` has already split."""
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
     if all(s.start == s.end for s in kept):
@@ -203,7 +204,7 @@ def extract_chain(
 
     The chain starts at the end with the smaller (x, y).
     """
-    kept, locked = _split_locked(segments)
+    kept, locked = split_locked(segments)
     if kept:
         _, layer, net = _uniform_attributes(kept)
         edges, dots = _unique_edges(kept)
@@ -211,7 +212,7 @@ def extract_chain(
             _check_junctions(edges)
             _check_one_piece(_adjacency(edges, dots), _locked_on(locked, layer, net))
     copper = tuple(same_net_copper)
-    (chain,) = _chains(kept, locked, lambda _layer, _net: copper)
+    (chain,) = split_chains(kept, locked, lambda _layer, _net: copper)
     return chain
 
 

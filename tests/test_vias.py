@@ -13,12 +13,12 @@ from conftest import (
     kipy_via,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import ViaType
+from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
 from kipy.wrapper import Wrapper
 
 from kibends.chain import Chain, extract_chains
 from kibends.snapshot import BoardSnapshot, read_selection
-from kibends.vias import ChainEnd, MovableVia, movable_vias
+from kibends.vias import ChainEnd, MovableVia, carried_copper, movable_vias
 
 VIA = (4.0, 4.0)
 
@@ -59,7 +59,10 @@ def judge(
     chosen = read_selection(fake)
     replaced = {s.id for s in chosen.segments if not s.locked}
     layers = {s.layer for s in chosen.segments if not s.locked}
-    whole = BoardSnapshot.read(fake, layers, chosen.vias)
+    bare = extract_chains(chosen.segments, lambda layer, net: ())
+    whole = BoardSnapshot.read(
+        fake, layers, chosen.vias, carried=carried_copper(chosen.vias, bare)
+    )
     snapshots = {layer: whole.slice(layer, replaced) for layer in layers}
     chains = extract_chains(
         chosen.segments, lambda layer, net: snapshots[layer].same_net_copper(net)
@@ -149,9 +152,7 @@ class TestMovableVias:
 
         assert movable == []
         (warning,) = [w for w in warnings(log) if "stays fixed" in w]
-        assert "copper that does not move with it touches it: track e on B.Cu" in (
-            warning
-        )
+        assert "chain end it carries: track e on B.Cu" in (warning)
 
     def test_same_net_pad_under_it_pins_it(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -175,6 +176,18 @@ class TestMovableVias:
         assert movable == []
         (warning,) = warnings(log)
         assert "zone plane on In2.Cu" in warning
+
+    def test_teardrop_leaves_it_movable(self, log: list[str]) -> None:
+        v = kipy_via("v", "SIG", *VIA)
+        drop = {BL.BL_F_Cu: kipy_rect(3.9, 3.0, 4.1, 3.8)}
+        teardrop = kipy_filled_zone("drop", "SIG", drop, ZoneType.ZT_TEARDROP)
+
+        movable, _ = judge(
+            [*front(), *back(), v], [*front(), *back()], [v], zones=[teardrop]
+        )
+
+        assert [m.via.id for m in movable] == ["v"]
+        assert warnings(log) == []
 
     def test_other_net_and_distant_fills_leave_it_movable(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -233,3 +246,74 @@ class TestMovableVias:
         pinned = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
         assert pinned == [(0, 0), pytest.approx((1.7, 0)), pytest.approx((2.3, 0)), VIA]
         assert len(warnings(log)) == int(selected)
+
+
+SHARED_END = (4.45, 4.0)
+"""Within reach of a via at `VIA` and of one at `BESIDE` for a 0.4 mm track."""
+BESIDE = (4.9, 4.0)
+
+
+def front_to(end: tuple[float, float], width: float = 0.25) -> list[kbt.Track]:
+    return [
+        kipy_track("a", "SIG", (0, 0), (end[0], 0), width=width),
+        kipy_track("b", "SIG", (end[0], 0), end, width=width),
+    ]
+
+
+class TestCopperAtCarriedEnds:
+    """Copper touching a chain end the via would carry, but not the via."""
+
+    def test_pad_by_a_wide_end_pins_it(self, log: list[str]) -> None:
+        # The end's copper reaches y = 4.5, the via's only 4.3; the pad's
+        # edge is at 4.4.
+        wide = front_to(VIA, width=1.0)
+        v = kipy_via("v", "SIG", *VIA)
+        pad = kipy_pad("p", "SIG", 4.0, 4.65, layers=(BL.BL_F_Cu,))
+
+        movable, _ = judge([*wide, *back(), v], [*wide, *back()], [v], pads=[pad])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert "pad p" in warning
+
+    def test_narrow_track_at_an_off_centre_end_pins_it(self, log: list[str]) -> None:
+        end = (4.0, 3.64)
+        stub = kipy_track("s", "SIG", end, (2.5, 3.64), width=0.1)
+        v = kipy_via("v", "SIG", *VIA)
+
+        movable, _ = judge(
+            [*front_to(end), *back(), v], [*front_to(end), *back(), stub], [v]
+        )
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert "track s on F.Cu" in warning
+
+    def test_unselected_via_sharing_an_end_pins_it(self, log: list[str]) -> None:
+        front = front_to(SHARED_END, width=0.4)
+        v, w = kipy_via("v", "SIG", *VIA), kipy_via("w", "SIG", *BESIDE)
+
+        movable, _ = judge([*front, *back(), v], [*front, *back()], [v, w])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert "via w" in warning
+
+    def test_two_selected_vias_sharing_an_end_pin_each_other(
+        self, log: list[str]
+    ) -> None:
+        front = front_to(SHARED_END, width=0.4)
+        beside = [
+            kipy_track("g", "SIG", BESIDE, (9, 8), layer=BL.BL_In1_Cu),
+            kipy_track("h", "SIG", (9, 8), (12, 8), layer=BL.BL_In1_Cu),
+        ]
+        v, w = kipy_via("v", "SIG", *VIA), kipy_via("w", "SIG", *BESIDE)
+        route = [*front, *back(), *beside]
+
+        movable, _ = judge([*route, v, w], route, [v, w])
+
+        assert movable == []
+        held = warnings(log)
+        assert len(held) == 2
+        assert "Via v " in held[0] and "via w" in held[0]
+        assert "Via w " in held[1] and "via v" in held[1]

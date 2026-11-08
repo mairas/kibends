@@ -468,7 +468,7 @@ class FakeBoard:
         )
 
     def get_as_string(self) -> str:
-        """The board file text, holding only the straight tracks."""
+        """The board file text, holding only the straight tracks and the vias."""
         segments = "".join(
             f"\t(segment\n\t\t(start {t.start.x / NM_PER_MM} {t.start.y / NM_PER_MM})\n"
             f"\t\t(end {t.end.x / NM_PER_MM} {t.end.y / NM_PER_MM})\n"
@@ -478,7 +478,19 @@ class FakeBoard:
             for t in self.tracks
             if type(t) is kbt.Track
         )
-        return f"(kicad_pcb\n\t(version 20260206)\n{segments}\t(embedded_fonts no)\n)\n"
+        vias = "".join(
+            f"\t(via\n\t\t(at {v.position.x / NM_PER_MM} {v.position.y / NM_PER_MM})\n"
+            f"\t\t(size {v.diameter / NM_PER_MM})\n"
+            f"\t\t(drill {v.drill_diameter / NM_PER_MM})\n"
+            f'\t\t(layers "{canonical_name(v.padstack.drill.start_layer)}" '
+            f'"{canonical_name(v.padstack.drill.end_layer)}")\n'
+            f'\t\t(net "{v.net.name}")\n\t\t(uuid "{v.id.value}")\n\t)\n'
+            for v in self.vias
+        )
+        return (
+            f"(kicad_pcb\n\t(version 20260206)\n{segments}{vias}"
+            "\t(embedded_fonts no)\n)\n"
+        )
 
 
 def layer_snapshot(

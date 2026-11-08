@@ -64,15 +64,29 @@ def neighbour_fields(
     others: Iterable[int],
     polylines: Sequence[FloatArray],
     reach: float,
+    own_points: FloatArray | None = None,
 ) -> list[ObstacleField]:
-    """The chains `others`, at `polylines`, as obstacles to chain i at its
-    starting polyline; those left out entirely are dropped."""
+    """The chains `others`, at `polylines`, as obstacles to chain i at
+    `own_points`, by default its starting polyline; those left out entirely
+    are dropped."""
     return [
         field
         for j in others
-        if (field := neighbour_field(chains[i], chains[j], polylines[j], reach))
+        if (
+            field := neighbour_field(
+                chains[i], chains[j], polylines[j], reach, own_points
+            )
+        )
         is not None
     ]
+
+
+def with_moved_ends(start: FloatArray, current: FloatArray) -> FloatArray:
+    """`start` with its ends where `current` has them, which differ only
+    where a moving via carried them."""
+    moved = start.copy()
+    moved[0], moved[-1] = current[0], current[-1]
+    return moved
 
 
 def neighbour_field(

@@ -43,6 +43,7 @@ from shapely.geometry.base import BaseGeometry
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
 from kibends.snapshot import (
     BoardSnapshot,
+    Disc,
     LayerSnapshot,
     PadKind,
     SelectionError,
@@ -802,6 +803,19 @@ class TestViaContacts:
                 ViaContact("zone fill on In2.Cu"),
             )
         }
+
+    def test_copper_touching_what_a_via_carries_counts(self) -> None:
+        fake = self.contact_board()
+        (via,) = read_selection(board(fake)).vias
+        # Clear of the via, 0.1 mm from the far track and the far fill.
+        end = Disc((1.1, 0.0), 0.2)
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via], carried={"v": [end]})
+
+        assert {
+            ViaContact("track far on F.Cu", "far"),
+            ViaContact("zone away on In3.Cu"),
+        } <= set(snap.via_contacts["v"])
 
     def test_pads_on_layers_not_read_cost_one_read_per_layer(self) -> None:
         fake = self.contact_board()

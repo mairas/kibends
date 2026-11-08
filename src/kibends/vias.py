@@ -1,9 +1,10 @@
 """Decide which selected vias may move with the chains they join.
 
 A selected via moves only when it is an unlocked through via, every copper
-item touching it on any layer is the end of a selected chain, and at least
-two such ends meet it. Every other selected via stays fixed, with a warning
-naming the reason, and pins the chains it touches like an unselected via.
+item touching it on any layer is the end of a selected chain, no other
+copper touches those ends, and at least two such ends meet it. Every other
+selected via stays fixed, with a warning naming the reason, and pins the
+chains it touches like an unselected via.
 """
 
 import math
@@ -15,7 +16,7 @@ from loguru import logger
 
 from kibends.chain import Chain
 from kibends.energy import ObstacleField
-from kibends.snapshot import Via, ViaContact, ViaKind
+from kibends.snapshot import Disc, Via, ViaContact, ViaKind
 
 MIN_JOINED_ENDS = 2
 
@@ -48,6 +49,37 @@ class ViaInput:
     moving vias, which the optimizer adds at their current shapes."""
 
 
+def may_move(via: Via) -> bool:
+    """Whether `via` is of a kind that moves: an unlocked through via."""
+    return not via.locked and via.kind is ViaKind.THROUGH
+
+
+def carried_ends(via: Via, chains: Sequence[Chain]) -> tuple[ChainEnd, ...]:
+    """The ends of `chains` whose copper overlaps `via`'s, in chain order."""
+    return tuple(
+        ChainEnd(k, last)
+        for k, chain in enumerate(chains)
+        for last, point in ((False, chain.points[0]), (True, chain.points[-1]))
+        if chain.net == via.net
+        and math.dist(point, via.position) <= (via.diameter + chain.width) / 2
+    )
+
+
+def carried_copper(
+    vias: Sequence[Via], chains: Sequence[Chain]
+) -> dict[str, tuple[Disc, ...]]:
+    """By via id, the copper of the chain ends each of `vias` would carry,
+    for `BoardSnapshot.read` to find what touches it."""
+    return {
+        via.id: tuple(
+            Disc(chain.points[-1 if end.last else 0], chain.width / 2)
+            for end in carried_ends(via, chains)
+            for chain in (chains[end.chain],)
+        )
+        for via in vias
+    }
+
+
 def movable_vias(
     vias: Sequence[Via],
     contacts: Mapping[str, Sequence[ViaContact]],
@@ -55,19 +87,13 @@ def movable_vias(
 ) -> list[MovableVia]:
     """The vias among `vias` that may move, warning once about each other one.
 
-    `contacts` gives the same-net copper touching each via, as
-    `BoardSnapshot.read` finds it.
+    `contacts` gives the same-net copper touching each via or the chain ends
+    it carries, as `BoardSnapshot.read` finds it from `carried_copper`.
     """
     chain_of = {s: k for k, c in enumerate(chains) for s in c.segment_ids}
     movable: list[MovableVia] = []
     for via in vias:
-        ends = tuple(
-            ChainEnd(k, last)
-            for k, chain in enumerate(chains)
-            for last, point in ((False, chain.points[0]), (True, chain.points[-1]))
-            if chain.net == via.net
-            and math.dist(point, via.position) <= (via.diameter + chain.width) / 2
-        )
+        ends = carried_ends(via, chains)
         ended = {end.chain for end in ends}
         strangers = [
             c.description
@@ -89,7 +115,10 @@ def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
     if via.kind is not ViaKind.THROUGH:
         return f"it is a {via.kind.value} via; only through vias move"
     if strangers:
-        return f"copper that does not move with it touches it: {', '.join(strangers)}"
+        return (
+            "copper that does not move with it touches it or a chain end "
+            f"it carries: {', '.join(strangers)}"
+        )
     if ends == 0:
         return "no selected chain ends at it"
     if ends < MIN_JOINED_ENDS:

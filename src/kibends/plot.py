@@ -12,6 +12,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from kibends.chain import Point2
 from kibends.energy import DistanceField, FloatArray
 from kibends.optimize import FrozenVertex
 
@@ -34,6 +35,8 @@ class Panel:
     simplified: FloatArray
     frozen: Sequence[FrozenVertex]
     title: str
+    vias: Sequence[tuple[Point2, Point2]] = ()
+    """The start and end of each moving via the chain ends at."""
 
 
 def render(path: Path, panels: Sequence[Panel]) -> None:
@@ -97,6 +100,18 @@ def _draw(axes: Axes, panel: Panel, low: FloatArray, high: FloatArray) -> None:
             color="#000000",
             markersize=8,
             label="frozen vertices",
+        )
+    for k, (start, end) in enumerate(panel.vias):
+        axes.plot(
+            *start,
+            "o",
+            markerfacecolor="none",
+            color="#2ca02c",
+            markersize=10,
+            label=None if k else "via start",
+        )
+        axes.plot(
+            *end, "o", color="#2ca02c", markersize=10, label=None if k else "via end"
         )
     axes.set_aspect("equal")
     axes.set_xlim(low[0], high[0])
