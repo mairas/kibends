@@ -91,6 +91,11 @@ While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises and how many chains are still moving. Set
 `LOGURU_LEVEL=DEBUG` to see that line after every iteration.
+Every position kibends prints, in errors, warnings, statistics and DRC
+lines, is in millimetres relative to the board's grid origin, with y
+pointing down: as the PCB editor shows coordinates with the grid origin
+chosen under Preferences > PCB Editor > Origins & Axes and neither axis
+inverted.
 A chain the optimizer leaves as it was is marked unchanged and is neither
 checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
 changed chains are replaced and the moved vias moved in one commit, which
