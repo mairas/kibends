@@ -1749,6 +1749,10 @@ class TestMovingVias:
 
         read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
         assert read == ["B.Cu", "F.Cu", "In1.Cu"]
+        assert (
+            "INFO Optimizing 2 chains and 1 moving via; moving vias may take a while\n"
+            in log
+        )
 
     def test_reports_the_move(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
@@ -1904,3 +1908,11 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
     outcome = cli.format_statistics(report).splitlines()[-1]
 
     assert outcome == "Optimizer: converged after 7 iterations, 5 rejected edge moves"
+
+
+def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
+    connect.to(straight_board())
+
+    run("--dry-run", "--no-drc")
+
+    assert "INFO Optimizing 1 chain\n" in log

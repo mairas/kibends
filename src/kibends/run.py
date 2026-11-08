@@ -213,6 +213,7 @@ def run_smooth(
         chains = _extract_chains(kept, locked, snapshots, moving)
     inputs = _chain_inputs(chains, snapshots, options, moving)
 
+    logger.info(_optimizing(len(chains), len(movable)))
     via_inputs = _via_inputs(movable, snapshots, options)
     run = optimize_chains(
         inputs,
@@ -268,6 +269,16 @@ def run_smooth(
         return report(found)
     commit_chains(board, changed, selected, moves)
     return report(found, committed=True)
+
+
+def _optimizing(chains: int, vias: int) -> str:
+    message = f"Optimizing {chains} chain{'' if chains == 1 else 's'}"
+    if not vias:
+        return message
+    return (
+        f"{message} and {vias} moving via{'' if vias == 1 else 's'}; "
+        "moving vias may take a while"
+    )
 
 
 def _extract_chains(
