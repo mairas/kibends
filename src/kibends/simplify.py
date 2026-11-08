@@ -68,7 +68,7 @@ def simplify_chains(
         static = chains[i].field
         field = (
             CompositeField(
-                [static, _neighbour_field(chains, current, i, neighbours[i], reach)]
+                [static, neighbour_field(chains, current, i, neighbours[i], reach)]
             )
             if neighbours[i]
             else static
@@ -85,7 +85,7 @@ def simplify_chains(
     return current
 
 
-def _neighbour_field(
+def neighbour_field(
     chains: Sequence[ChainInput],
     polylines: Sequence[FloatArray],
     i: int,
@@ -121,7 +121,7 @@ def cutting_chains(
             continue
         starts = optimised[i][indices[:-1][merged]]
         ends = optimised[i][indices[1:][merged]]
-        field = _neighbour_field(chains, simplified, i, neighbours[i], reach)
+        field = neighbour_field(chains, simplified, i, neighbours[i], reach)
         if not field.segments_clear(starts, ends).all():
             cutting.append(i)
     return cutting

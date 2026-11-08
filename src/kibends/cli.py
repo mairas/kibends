@@ -7,15 +7,11 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 import argparse
 import os
 import sys
-import tempfile
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, Protocol, assert_never
+from typing import NoReturn, assert_never
 
-import kipy
-import kipy.board
 import numpy as np
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -23,28 +19,28 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
 from kibends import drc
-from kibends.chain import Chain, ChainError, Segment, extract_chain
+from kibends.chain import ChainError
 from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
-    commit_chain,
-    snapped_points,
 )
-from kibends.energy import DistanceField, EnergyParams, FloatArray
-from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, build_obstacles
-from kibends.optimize import (
-    DEFAULT_SETTINGS,
-    FrozenVertex,
-    OptimizeResult,
-    PolylineStats,
-    Termination,
-    measure,
-    optimize,
+from kibends.energy import EnergyParams
+from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
+from kibends.optimize import DEFAULT_SETTINGS, FrozenVertex, Termination
+from kibends.run import (
+    KICAD_TIMEOUT_MS,
+    ChainReport,
+    NoBoardError,
+    PlotUnavailableError,
+    RunReport,
+    SmoothOptions,
+    new_violations,
+    run_smooth,
 )
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify
-from kibends.snapshot import LayerSnapshot, SelectionError, read_selection
+from kibends.simplify import DEFAULT_CHORD_TOLERANCE
+from kibends.snapshot import SelectionError
 
 DEFAULT_STIFFNESS = 0.3
 DEFAULT_REPULSION = 0.5
@@ -56,36 +52,16 @@ CLEARANCE_WEIGHT = 50.0
 STANDOFF = 0.02
 POINTS_PER_EDGE = 3
 
-# kipy's 2 s default is too short for reading a large board as text and for
-# deleting or creating items on one.
-KICAD_TIMEOUT_MS = 30_000
-
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
-)
-PLOT_EXTRA_MESSAGE = (
-    "--plot needs matplotlib, which comes with the `plot` extra: "
-    "uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'"
 )
 
 DEFAULT_LOG_LEVEL = "INFO"
 LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
-class NoBoardError(RuntimeError):
-    pass
-
-
-class PlotUnavailableError(RuntimeError):
-    pass
-
-
-class OptimizerFailedError(RuntimeError):
-    pass
-
-
-class DrcViolationsError(RuntimeError):
-    pass
+class RunRefusedError(RuntimeError):
+    """The optimizer or the DRC check refused the result; nothing committed."""
 
 
 # Failures that need no traceback; all but CommitUncertainError leave the
@@ -99,45 +75,12 @@ EXPECTED_ERRORS = (
     DeleteItemsError,
     NoBoardError,
     PlotUnavailableError,
-    OptimizerFailedError,
-    DrcViolationsError,
+    RunRefusedError,
     drc.KiCadCliNotFound,
     drc.ProjectFilesError,
     drc.BoardTextError,
     drc.DrcError,
 )
-
-
-class Renderer(Protocol):
-    def __call__(
-        self,
-        path: Path,
-        field: DistanceField,
-        *,
-        original: FloatArray,
-        optimised: FloatArray,
-        simplified: FloatArray,
-        frozen: Sequence[FrozenVertex],
-        title: str,
-    ) -> None: ...
-
-
-@dataclass(frozen=True)
-class SmoothOptions:
-    params: EnergyParams
-    edge_clearance: float
-    hole_clearance: float
-    chord_tolerance: float
-    dry_run: bool
-    plot: Path | None
-    drc: bool
-    kicad_cli: str | None
-
-
-@dataclass(frozen=True)
-class DrcSetup:
-    kicad_cli: Path
-    project: drc.ProjectFiles
 
 
 def _fail(message: str) -> NoReturn:
@@ -167,193 +110,83 @@ def _exit_on_failure() -> Generator[None]:
 
 
 def smooth(options: SmoothOptions) -> None:
-    """Smooth the chain selected in KiCad and, unless dry-running, commit it."""
-    render = _plot_renderer() if options.plot is not None else None
-    kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
-    board = _open_board(kicad)
-    gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
-    if gate is None:
-        logger.warning(
-            "Skipping the DRC check (--no-drc): custom rules, board minimums "
-            "and edge and hole clearances are not checked"
-        )
-
-    selected = read_selection(board)
-    layer, net = _layer_and_net(selected)
-    # Locked tracks stay on the board, so they are obstacles or pins like any
-    # unselected track.
-    replaced = {s.id for s in selected if not s.locked}
-    snapshot = LayerSnapshot.from_board(board, layer, replaced)
-    chain = extract_chain(selected, snapshot.same_net_copper(net))
-    obstacles = build_obstacles(
-        snapshot,
-        chain.net,
-        chain.width,
-        edge_clearance=options.edge_clearance,
-        hole_clearance=options.hole_clearance,
-    )
-
-    original = np.array(chain.points)
-    result = optimize(original, np.array(chain.pinned), obstacles, options.params)
-    nothing_to_do = result.termination is Termination.NOTHING_TO_DO
-    simplified = (
-        result.polyline
-        if nothing_to_do
-        else simplify(
-            result.polyline,
-            result.fixed,
-            obstacles,
-            tolerance=options.chord_tolerance,
-        )
-    )
-    after = measure(simplified, obstacles, DEFAULT_SETTINGS.spacing)
-    print(
-        _report(
-            f"{len(chain.segment_ids)} tracks of {chain.net} on {chain.layer}, "
-            f"{chain.width:g} mm wide",
-            result,
-            after,
-        )
-    )
-    for v in result.frozen:
-        logger.warning(
-            f"Left the vertex at ({v.position[0]:.3f}, {v.position[1]:.3f}) in "
-            f"place: it starts {-v.distance:.3f} mm inside another item's clearance"
-        )
-
-    if render is not None and options.plot is not None:
-        render(
-            options.plot,
-            obstacles,
-            original=original,
-            optimised=result.polyline,
-            simplified=simplified,
-            frozen=result.frozen,
-            title=f"{chain.net} on {chain.layer}: {result.termination.value}, "
-            f"length {result.before.length:.3f} → {after.length:.3f} mm, "
-            f"min clearance margin {after.min_clearance:.4f} mm",
-        )
-        logger.info(f"Wrote {options.plot}")
-
-    if result.termination is Termination.ABNORMAL:
-        raise OptimizerFailedError(
-            "The optimizer terminated abnormally without improving the track; "
-            "nothing committed. "
-            "Try other --stiffness, --repulsion or --range values"
-        )
-    if nothing_to_do:
-        logger.info("Nothing to do: the optimizer leaves the chain as it is")
-        return
-    if result.termination is Termination.ITERATION_CAP:
-        logger.warning(
-            f"The optimizer stopped at its cap of {DEFAULT_SETTINGS.max_iterations} "
-            "iterations without converging; using the best result found"
-        )
-    if gate is not None:
-        _check_drc(gate, board, chain, simplified, options.dry_run)
-    if options.dry_run:
-        logger.info("Dry run: nothing committed")
-        return
-    commit_chain(board, chain, selected, simplified)
-
-
-def _prepare_drc(
-    kicad: kipy.KiCad, board: kipy.board.Board, explicit_cli: str | None
-) -> DrcSetup:
-    kicad_cli = drc.locate_kicad_cli(explicit_cli, kicad)
-    logger.info(f"Using {kicad_cli} ({drc.kicad_cli_version(kicad_cli)})")
-    project = drc.project_files(board)
-    logger.info(
-        f"DRC uses the project files on disk: {project.pro}"
-        + (f", {project.dru}" if project.dru else " (no .kicad_dru)")
-        + "; unsaved rule or netclass edits in KiCad are not seen"
-    )
-    return DrcSetup(kicad_cli, project)
-
-
-def _check_drc(
-    gate: DrcSetup,
-    board: kipy.board.Board,
-    chain: Chain,
-    polyline: FloatArray,
-    dry_run: bool,
-) -> None:
-    """Print the DRC verdict; raise if the result adds violations."""
-    tracks = drc.NewTracks(
-        points=tuple(snapped_points(polyline)),
-        width=chain.width,
-        layer=chain.layer,
-        net=chain.net,
-    )
-    with tempfile.TemporaryDirectory(prefix="kibends-drc-") as tmp:
-        found = drc.check(
-            gate.kicad_cli,
-            gate.project,
-            board.get_as_string(),
-            [chain.segment_ids],
-            [tracks],
-            Path(tmp),
-        )
-    print(_verdict(found))
-    if not found:
-        return
-    if dry_run:
+    """Smooth the chains selected in KiCad, print the report and, unless
+    dry-running, commit them."""
+    report = run_smooth(options)
+    print(format_report(report))
+    for warning in report_warnings(report):
+        logger.warning(warning)
+    if report.drc and options.dry_run:
         logger.warning("A real run would refuse to commit this result")
-        return
-    raise DrcViolationsError(
-        f"DRC: the result adds {_new_violations(len(found.violations))}; "
-        "nothing committed"
-    )
+    if report.refusal is not None:
+        raise RunRefusedError(report.refusal)
+    if not any(c.changed for c in report.chains):
+        logger.info("Nothing to do: the optimizer leaves the selection as it is")
+    elif options.dry_run:
+        logger.info("Dry run: nothing committed")
 
 
-def _new_violations(n: int) -> str:
-    return f"{n} new violation{'' if n == 1 else 's'}"
-
-
-def _verdict(found: drc.Introduced) -> str:
-    if not found:
-        return "DRC: no new violations"
-    return "\n".join(
+def format_report(report: RunReport) -> str:
+    """One statistics block per chain, the optimizer's outcome and the DRC
+    verdict."""
+    some_changed = any(c.changed for c in report.chains)
+    blocks = [_chain_block(c, some_changed) for c in report.chains]
+    several = len(blocks) > 1
+    rejected = sum(c.rejected_edges for c in report.chains)
+    # A run can converge while a chain gave up after abnormal bursts.
+    abnormal = [
+        f"{c.abnormal_bursts} abnormal burst{'' if c.abnormal_bursts == 1 else 's'}"
+        + (f" in {c.description}" if several else "")
+        for c in report.chains
+        if c.abnormal_bursts > 0
+    ]
+    outcome = ", ".join(
         [
-            f"DRC: {_new_violations(len(found.violations))}",
-            *(f"  {v}" for v in found.violations),
-            *(
-                f"  More connectivity violations on {net}: the new path may "
-                f"split a pour of {net}"
-                for net in sorted(found.split_nets)
-            ),
+            f"Optimizer: {report.termination.value} after {report.iterations} "
+            f"iterations",
+            f"{rejected} rejected edge moves",
+            *abnormal,
         ]
     )
+    text = ("\n\n" if several else "\n").join([*blocks, outcome])
+    if report.drc is not None:
+        text += "\n" + _verdict(report.drc)
+    return text
 
 
-def _plot_renderer() -> Renderer:
-    try:
-        from kibends.plot import render
-    except ImportError as e:
-        raise PlotUnavailableError(f"{PLOT_EXTRA_MESSAGE} ({e})") from None
-    return render
+def report_warnings(report: RunReport) -> list[str]:
+    """Frozen vertices, abnormal bursts and an iteration cap, one line each."""
+    warnings = [_frozen_warning(v) for c in report.chains for v in c.frozen]
+    warnings += [
+        f"L-BFGS-B ended {c.abnormal_bursts} burst"
+        f"{'' if c.abnormal_bursts == 1 else 's'} of {c.description} abnormally; "
+        "the run judged each like any other burst"
+        for c in report.chains
+        if c.abnormal_bursts > 0
+    ]
+    if report.termination is Termination.ITERATION_CAP:
+        warnings.append(
+            f"The optimizer stopped at its cap of {DEFAULT_SETTINGS.max_iterations} "
+            "outer iterations without converging; using the best result found"
+        )
+    return warnings
 
 
-def _open_board(kicad: kipy.KiCad) -> kipy.board.Board:
-    try:
-        return kicad.get_board()
-    except ApiError as e:
-        if e.code == ApiStatusCode.AS_BUSY:
-            raise
-        raise NoBoardError(f"No board is open in KiCad's PCB editor ({e})") from None
+def _frozen_warning(v: FrozenVertex) -> str:
+    message = (
+        f"Left the vertex at ({v.position[0]:.3f}, {v.position[1]:.3f}) in "
+        f"place: it starts {-v.distance:.3f} mm inside another item's clearance"
+    )
+    if v.neighbours:
+        message += (
+            f", that of the selected chain {' and '.join(v.neighbours)}; "
+            "a re-run may free it"
+        )
+    return message
 
 
-def _layer_and_net(selected: Sequence[Segment]) -> tuple[str, str]:
-    """The layer and net of the chain, read before the chain is built.
-
-    Mixed layers or nets are left for `extract_chain` to report.
-    """
-    first = next((s for s in selected if not s.locked), selected[0])
-    return first.layer, first.net
-
-
-def _report(heading: str, result: OptimizeResult, after: PolylineStats) -> str:
-    before = result.before
+def _chain_block(chain: ChainReport, some_changed: bool) -> str:
+    before, after = chain.before, chain.after
     rows = [
         ("Length (mm)", f"{before.length:.3f}", f"{after.length:.3f}"),
         ("Tracks", str(before.segment_count), str(after.segment_count)),
@@ -375,16 +208,31 @@ def _report(heading: str, result: OptimizeResult, after: PolylineStats) -> str:
     ]
     label_width = max(len(r[0]) for r in rows)
     lines = [
-        heading,
+        f"{chain.tracks} tracks of {chain.net} on {chain.layer}, "
+        f"{chain.width:g} mm wide",
         f"{'':{label_width}}  {'before':>10}  {'after':>10}",
         *(f"{name:{label_width}}  {b:>10}  {a:>10}" for name, b, a in rows),
-        f"Frozen vertices: {len(result.frozen)}",
-        (
-            f"Optimizer: {result.termination.value} after {result.iterations} "
-            f"iterations, {result.rejected_edges} rejected edge moves"
-        ),
+        f"Frozen vertices: {len(chain.frozen)}",
     ]
+    if some_changed and not chain.changed:
+        lines.append("Unchanged: left out of the DRC check and the commit")
     return "\n".join(lines)
+
+
+def _verdict(found: drc.Introduced) -> str:
+    if not found:
+        return "DRC: no new violations"
+    return "\n".join(
+        [
+            f"DRC: {new_violations(len(found.violations))}",
+            *(f"  {v}" for v in found.violations),
+            *(
+                f"  More connectivity violations on {net}: the new path may "
+                f"split a pour of {net}"
+                for net in sorted(found.split_nets)
+            ),
+        ]
+    )
 
 
 def _radius(r: float) -> str:
@@ -412,11 +260,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     smooth_parser = subparsers.add_parser(
         "smooth",
-        help="Smooth the track chain selected in the PCB editor",
-        description="Replace the selected chain of tracks with a short, smooth "
-        "path of straight tracks that keeps clearance to other copper. The "
-        "result minimises length + bending weighted by stiffness squared + "
-        "repulsion from nearby copper.",
+        help="Smooth the track chains selected in the PCB editor",
+        description="Replace each selected chain of tracks with a short, smooth "
+        "path of straight tracks that keeps clearance to other copper and to "
+        "the other selected chains. The result minimises length + bending "
+        "weighted by stiffness squared + repulsion from nearby copper.",
     )
     smooth_parser.add_argument(
         "--stiffness",
@@ -477,8 +325,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--plot",
         type=Path,
         metavar="FILE",
-        help="Draw the original and smoothed chain over the area it must avoid; "
-        "the format follows the extension (needs the `plot` extra)",
+        help="Draw each original and smoothed chain over the area it must "
+        "avoid, one subplot per chain; the format follows the extension "
+        "(needs the `plot` extra)",
     )
     smooth_parser.add_argument(
         "--no-drc",
@@ -494,8 +343,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def execute_smooth(args: argparse.Namespace) -> None:
-    options = SmoothOptions(
+def smooth_options(args: argparse.Namespace) -> SmoothOptions:
+    return SmoothOptions(
         params=EnergyParams(
             stiffness=args.stiffness,
             repulsion=args.repulsion,
@@ -512,6 +361,10 @@ def execute_smooth(args: argparse.Namespace) -> None:
         drc=not args.no_drc,
         kicad_cli=args.kicad_cli,
     )
+
+
+def execute_smooth(args: argparse.Namespace) -> None:
+    options = smooth_options(args)
     with _exit_on_failure():
         smooth(options)
 

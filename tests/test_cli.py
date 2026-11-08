@@ -3,7 +3,7 @@ import re
 import stat
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -26,9 +26,15 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from shapely.geometry import LineString, box
 
 from kibends import cli, drc
+from kibends import run as pipeline
 from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import Obstacles
-from kibends.optimize import OptimizeResult, OptimizerSettings, Termination, optimize
+from kibends.optimize import (
+    OptimizerSettings,
+    RunResult,
+    Termination,
+    optimize_chains,
+)
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -83,7 +89,9 @@ def coarse_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
     For tests of error mapping and commit wiring, which need a real smoothed
     chain but not a finely smoothed one.
     """
-    monkeypatch.setattr(cli, "optimize", partial(optimize, settings=COARSE))
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", partial(optimize_chains, settings=COARSE)
+    )
 
 
 # Answers DRC runs with the reports in reports.json next to it, keyed by the
@@ -189,7 +197,7 @@ class Connector:
             self.client_options = options
             return FakeKiCad(board)
 
-        self.monkeypatch.setattr(cli.kipy, "KiCad", kicad)
+        self.monkeypatch.setattr(pipeline.kipy, "KiCad", kicad)
         return board
 
     def failing(self, error: Exception) -> None:
@@ -200,7 +208,7 @@ class Connector:
             def get_board(self) -> None:
                 raise error
 
-        self.monkeypatch.setattr(cli.kipy, "KiCad", Failing)
+        self.monkeypatch.setattr(pipeline.kipy, "KiCad", Failing)
 
 
 def run(*args: str) -> None:
@@ -336,18 +344,18 @@ class TestSmooth:
     ) -> None:
         connect.to(straight_board())
         seen: dict[str, object] = {}
-        real_build: Callable[..., Obstacles] = cli.build_obstacles
+        real_build: Callable[..., Obstacles] = pipeline.build_obstacles
 
         def build_spy(*args: object, **kwargs: object) -> Obstacles:
             seen.update(kwargs)
             return real_build(*args, **kwargs)
 
         def optimize_spy(*args: object, **kwargs: object) -> NoReturn:
-            seen["params"] = args[3]
+            seen["params"] = args[1]
             raise SystemExit(0)
 
-        monkeypatch.setattr(cli, "build_obstacles", build_spy)
-        monkeypatch.setattr(cli, "optimize", optimize_spy)
+        monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
+        monkeypatch.setattr(pipeline, "optimize_chains", optimize_spy)
 
         with pytest.raises(SystemExit):
             run(
@@ -379,13 +387,13 @@ class TestSmooth:
     ) -> None:
         connect.to(l_board())
         seen: dict[str, object] = {}
-        real_simplify: Callable[..., FloatArray] = cli.simplify
+        real_simplify: Callable[..., list[FloatArray]] = pipeline.simplify_chains
 
-        def simplify_spy(*a: object, **kwargs: object) -> FloatArray:
+        def simplify_spy(*a: object, **kwargs: object) -> list[FloatArray]:
             seen.update(kwargs)
             return real_simplify(*a, **kwargs)
 
-        monkeypatch.setattr(cli, "simplify", simplify_spy)
+        monkeypatch.setattr(pipeline, "simplify_chains", simplify_spy)
 
         run("--dry-run", *args)
 
@@ -405,12 +413,12 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real: Callable[..., OptimizeResult] = cli.optimize
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
-        def abnormal(*args: object, **kwargs: object) -> OptimizeResult:
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
             return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
-        monkeypatch.setattr(cli, "optimize", abnormal)
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
 
         assert "abnormally" in exit_message(log)
         assert board.calls == []
@@ -424,12 +432,12 @@ class TestSmooth:
         log: list[str],
     ) -> None:
         board = connect.to(l_board())
-        real: Callable[..., OptimizeResult] = cli.optimize
+        real: Callable[..., RunResult] = pipeline.optimize_chains
 
-        def capped(*args: object, **kwargs: object) -> OptimizeResult:
+        def capped(*args: object, **kwargs: object) -> RunResult:
             return replace(real(*args, **kwargs), termination=Termination.ITERATION_CAP)
 
-        monkeypatch.setattr(cli, "optimize", capped)
+        monkeypatch.setattr(pipeline, "optimize_chains", capped)
 
         run()
 
@@ -559,7 +567,7 @@ class TestDrc:
         def never(*args: object, **kwargs: object) -> NoReturn:
             pytest.fail("optimized")
 
-        monkeypatch.setattr(cli, "optimize", never)
+        monkeypatch.setattr(pipeline, "optimize_chains", never)
 
         message = exit_message(log)
 
@@ -674,8 +682,8 @@ class TestErrors:
 
         run("--dry-run")
 
-        assert connect.client_options == {"timeout_ms": cli.KICAD_TIMEOUT_MS}
-        assert cli.KICAD_TIMEOUT_MS > 2000
+        assert connect.client_options == {"timeout_ms": pipeline.KICAD_TIMEOUT_MS}
+        assert pipeline.KICAD_TIMEOUT_MS > 2000
 
     def test_no_board_open(self, connect: Connector, log: list[str]) -> None:
         connect.failing(ApiError("Expected to be able to retrieve at least one board"))
@@ -697,13 +705,14 @@ class TestErrors:
     ) -> None:
         tracks = [
             kipy_track("a", "SIG", (0, 0), (5, 0)),
-            kipy_track("b", "SIG", (7, 0), (9, 0)),
+            kipy_track("b", "SIG", (5, 0), (9, 0)),
+            kipy_track("c", "SIG", (5, 0), (5, 3)),
         ]
         connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
 
         message = exit_message(log)
 
-        assert "selected tracks form 2 separate pieces" in message
+        assert "selected tracks branch at" in message
         assert "ChainError" not in message
 
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -749,3 +758,282 @@ class TestErrors:
 
         assert "changed in KiCad" in exit_message(log)
         assert board.calls == []
+
+
+INNER_OFFSET = 0.6
+"""How far the inner L of `two_l_board` lies inside the outer one, mm: clear
+of it, but their chords would be closer than clearance plus width."""
+OUTER = ("a", "b")
+INNER = ("c", "d")
+
+
+def two_l_board(*, inner: list[kbt.Track] | None = None) -> CommitBoard:
+    """Two nested L chains of different nets that must push each other apart."""
+    o = INNER_OFFSET
+    outer = l_chain()
+    if inner is None:
+        inner = [
+            kipy_track("c", "SIG2", (0, o), (4 - o, o), width=WIDTH),
+            kipy_track("d", "SIG2", (4 - o, o), (4 - o, 4), width=WIDTH),
+        ]
+    return CommitBoard(selection=[*outer, *inner], tracks=[*outer, *inner])
+
+
+def far_straight() -> list[kbt.Track]:
+    """A SIG2 chain in free space far from the L: nothing to optimise."""
+    return [kipy_track("s", "SIG2", (0, 10), (10, 10), width=WIDTH)]
+
+
+def segment(t: kbt.Track) -> LineString:
+    return LineString(
+        [(t.start.x / 1e6, t.start.y / 1e6), (t.end.x / 1e6, t.end.y / 1e6)]
+    )
+
+
+SIG2_TRACK_CLEARANCE: drc.ReportViolation = {
+    "type": "clearance",
+    "description": "Clearance violation (netclass 'Default' clearance 0.2000 mm; "
+    "actual 0.1500 mm)",
+    "severity": "error",
+    "items": [
+        {"description": "Track [SIG2] on F.Cu, length 1.0 mm", "pos": {"x": 1, "y": 1}}
+    ],
+}
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestSeveralChains:
+    def test_commits_both_in_one_commit_and_prints_a_block_for_each(
+        self, connect: Connector, kicad_cli: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        board = connect.to(two_l_board())
+
+        run()
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == [*OUTER, *INNER]
+        created = cast(list[kbt.Track], board.created)
+        by_net = {
+            net: [segment(t) for t in created if t.net.name == net]
+            for net in ("SIG", "SIG2")
+        }
+        assert all(by_net.values())
+        required = CLEARANCE + WIDTH
+        assert all(
+            a.distance(b) >= required - NM_ROUNDING
+            for a in by_net["SIG"]
+            for b in by_net["SIG2"]
+        )
+        assert drc_runs(kicad_cli) == 2
+        out = capsys.readouterr().out
+        assert "2 tracks of SIG on F.Cu, 0.25 mm wide" in out
+        assert "2 tracks of SIG2 on F.Cu, 0.25 mm wide" in out
+        assert out.count("Frozen vertices: 0") == 2
+        assert out.count("Optimizer: ") == 1
+
+    def test_dry_run_prints_both_and_commits_nothing(
+        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        board = connect.to(two_l_board())
+
+        run("--dry-run")
+
+        out = capsys.readouterr().out
+        assert "of SIG on" in out and "of SIG2 on" in out
+        assert board.calls == []
+
+    def test_unchanged_chain_is_neither_checked_nor_committed(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(two_l_board(inner=far_straight()))
+
+        run()
+
+        assert sorted(board.deleted) == list(OUTER)
+        assert {t.net.name for t in cast(list[kbt.Track], board.created)} == {"SIG"}
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        assert '(uuid "s")' in candidate
+        assert "Unchanged: left out of the DRC check and the commit" in (
+            capsys.readouterr().out
+        )
+
+    def test_all_unchanged_commits_nothing(
+        self, connect: Connector, kicad_cli: Path, log: list[str]
+    ) -> None:
+        tracks = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            *far_straight(),
+        ]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert board.calls == []
+        assert drc_runs(kicad_cli) == 0
+        assert any("Nothing to do" in line for line in log)
+
+    def test_abnormal_run_commits_nothing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(two_l_board())
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
+            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+
+        assert "abnormally" in exit_message(log)
+        assert board.calls == []
+
+    def test_drc_refusal_names_the_violating_chains_net(
+        self, connect: Connector, kicad_cli: Path, log: list[str]
+    ) -> None:
+        board = connect.to(two_l_board())
+        report_on(kicad_cli, candidate=[SIG2_TRACK_CLEARANCE])
+
+        message = exit_message(log)
+
+        assert "1 new violation on SIG2; nothing committed" in message
+        assert board.calls == []
+
+    def test_frozen_warning_names_the_other_chain(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # 0.3 mm from the L's corner, inside clearance plus both half widths.
+        across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
+        connect.to(two_l_board(inner=across))
+
+        run("--dry-run", "--no-drc")
+
+        frozen = [line for line in log if "Left the vertex at (4.000, 0.000)" in line]
+        assert len(frozen) == 1
+        assert frozen[0].startswith("WARNING")
+        assert "selected chain SIG2 on F.Cu from (4.300, -1.000)" in frozen[0]
+
+    def test_run_function_reports_each_chain(self, connect: Connector) -> None:
+        board = connect.to(two_l_board())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert [(c.net, c.layer, c.width, c.tracks) for c in report.chains] == [
+            ("SIG", "F.Cu", WIDTH, 2),
+            ("SIG2", "F.Cu", WIDTH, 2),
+        ]
+        for c in report.chains:
+            assert c.changed
+            assert c.after.length < c.before.length
+            assert c.after.min_clearance >= -NM_ROUNDING
+            assert (c.frozen, c.abnormal_bursts) == ((), 0)
+        assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
+        assert report.iterations > 0
+        assert (report.drc, report.committed, report.refusal) == (None, False, None)
+        assert board.calls == []
+
+    def test_plot_draws_both_chains(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kibends import plot
+
+        connect.to(two_l_board())
+        drawn: list[int] = []
+        real = plot.render
+
+        def spy(path: Path, panels: Sequence[plot.Panel]) -> None:
+            drawn.append(len(panels))
+            real(path, panels)
+
+        monkeypatch.setattr(plot, "render", spy)
+        figure = tmp_path / "chains.png"
+
+        run("--dry-run", "--no-drc", f"--plot={figure}")
+
+        assert drawn == [2]
+        assert figure.stat().st_size > 0
+
+
+def with_abnormal_bursts(
+    monkeypatch: pytest.MonkeyPatch, counts: Sequence[int]
+) -> None:
+    """Make the optimizer report `counts` abnormal bursts per chain."""
+    real: Callable[..., RunResult] = pipeline.optimize_chains
+
+    def abnormal(*args: object, **kwargs: object) -> RunResult:
+        result = real(*args, **kwargs)
+        chains = tuple(
+            replace(c, abnormal_bursts=n)
+            for c, n in zip(result.chains, counts, strict=True)
+        )
+        return replace(result, chains=chains)
+
+    monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestAbnormalBursts:
+    def test_single_chain_shows_them_on_the_optimizer_line(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        connect.to(l_board())
+        with_abnormal_bursts(monkeypatch, [3])
+
+        run("--dry-run", "--no-drc")
+
+        assert re.search(
+            r"^Optimizer: converged after \d+ iterations, \d+ rejected edge "
+            r"moves, 3 abnormal bursts$",
+            capsys.readouterr().out,
+            re.MULTILINE,
+        )
+
+    def test_several_chains_name_the_chain_on_the_optimizer_line(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        connect.to(two_l_board())
+        with_abnormal_bursts(monkeypatch, [0, 1])
+
+        run("--dry-run", "--no-drc")
+
+        (line,) = [
+            ln for ln in capsys.readouterr().out.splitlines() if "Optimizer:" in ln
+        ]
+        assert line.endswith(
+            "rejected edge moves, 1 abnormal burst in SIG2 on F.Cu from (0.000, 0.600)"
+        )
+        assert "SIG on" not in line
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_single_chain_report_keeps_its_layout(
+    connect: Connector, capsys: pytest.CaptureFixture[str]
+) -> None:
+    connect.to(l_board())
+
+    run("--dry-run")
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "2 tracks of SIG on F.Cu, 0.25 mm wide"
+    assert lines[1].split() == ["before", "after"]
+    assert [line.split("  ")[0] for line in lines[2:7]] == [
+        "Length (mm)",
+        "Tracks",
+        "Tightest bend radius (mm)",
+        "Min clearance margin (mm)",
+        "Mean clearance margin (mm)",
+    ]
+    assert lines[7] == "Frozen vertices: 0"
+    assert re.fullmatch(
+        r"Optimizer: converged after \d+ iterations, \d+ rejected edge moves",
+        lines[8],
+    )
+    assert lines[9:] == ["DRC: no new violations"]

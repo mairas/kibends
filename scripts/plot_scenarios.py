@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 import scenarios
 
 from kibends.optimize import optimize
-from kibends.plot import render
+from kibends.plot import Panel, render
 from kibends.simplify import simplify
 
 SCENARIOS = [
@@ -30,8 +30,7 @@ def plot_scenario(scenario: scenarios.Scenario, output: Path) -> Path:
     simplified = simplify(result.polyline, result.fixed, scenario.field)
     after = result.after
     path = output / f"{scenario.name}.png"
-    render(
-        path,
+    panel = Panel(
         scenario.field,
         original=scenario.polyline,
         optimised=result.polyline,
@@ -44,6 +43,7 @@ def plot_scenario(scenario: scenarios.Scenario, output: Path) -> Path:
         f"min clearance {after.min_clearance:.4f} mm, "
         f"{len(simplified) - 1} segments simplified",
     )
+    render(path, [panel])
     return path
 
 
