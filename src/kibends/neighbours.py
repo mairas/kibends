@@ -142,7 +142,25 @@ def neighbour_centrelines(
     own_points: FloatArray | None = None,
     margin: float = 0.0,
 ) -> list[ChainCentreline]:
-    """The parts of `other` at `points` that are obstacles to `own`.
+    """The parts of `other` at `points` that are obstacles to `own`, as
+    `kept_spans` gives them."""
+    them = other.centreline
+    spans = kept_spans(own, other, points, reach, own_points, margin)
+    if spans is None:
+        return [replace(them, points=points)]
+    return [replace(them, points=_cut(points, start, end)) for start, end in spans]
+
+
+def kept_spans(
+    own: ChainInput,
+    other: ChainInput,
+    points: FloatArray,
+    reach: float,
+    own_points: FloatArray | None = None,
+    margin: float = 0.0,
+) -> list[tuple[float, float]] | None:
+    """The stretches of `other` at `points` that are obstacles to `own`, as
+    arc lengths along `points`; None for the whole of it.
 
     Chains of one net connect where their copper overlaps, and both are
     pinned there: at a neck-down both end at one point, at a T one ends in
@@ -153,12 +171,11 @@ def neighbour_centrelines(
     widens its inflation by that `margin`.
     """
     me, them = own.centreline, other.centreline
-    whole = [replace(them, points=points)]
     if them.net != me.net:
-        return whole
+        return None
     touches = _touches(own, other)
     if not touches:
-        return whole
+        return None
     mine = me.points if own_points is None else own_points
     clear = (me.width + them.width) / 2 + reach + margin
     arc = arc_lengths(points)
@@ -174,10 +191,7 @@ def neighbour_centrelines(
             left_out.append(
                 (along, along + length) if forward else (along - length, along)
             )
-    return [
-        replace(them, points=_cut(points, start, end))
-        for start, end in _complement(left_out, float(arc[-1]))
-    ]
+    return _complement(left_out, float(arc[-1]))
 
 
 def _touches(own: ChainInput, other: ChainInput) -> list[tuple[FloatArray, FloatArray]]:
