@@ -176,13 +176,11 @@ def total_energy(
 
     A `bend_limit`, mm, adds `bend_radius_energy` with that limit.
     """
-    length_value, length_gradient = _length(points, fixed, short_edge)
     bends = _bends(points)
-    bending_value, bending_gradient = _bending(points, bends)
+    shape_value, shape_gradient = _shape(points, fixed, bends, params, short_edge)
     obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
-    bending_weight = params.stiffness**2
-    value = length_value + bending_weight * bending_value + obstacle_value
-    gradient = length_gradient + bending_weight * bending_gradient + obstacle_gradient
+    value = shape_value + obstacle_value
+    gradient = shape_gradient + obstacle_gradient
     if bend_limit is not None:
         bend_value, bend_gradient = _bend_radius(points, bends, bend_limit, params)
         value += bend_value
@@ -190,6 +188,31 @@ def total_energy(
     if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
         raise ValueError(f"energy is not finite: {value}")
     return value, _zero_fixed(gradient, fixed)
+
+
+def shape_energy(
+    points: FloatArray, fixed: BoolArray, params: EnergyParams, short_edge: float
+) -> TermValue:
+    """The terms of `total_energy` that depend on the polyline alone: length,
+    the short-edge barrier and the weighted bending."""
+    value, gradient = _shape(points, fixed, _bends(points), params, short_edge)
+    return value, _zero_fixed(gradient, fixed)
+
+
+def _shape(
+    points: FloatArray,
+    fixed: BoolArray,
+    bends: _Bends,
+    params: EnergyParams,
+    short_edge: float,
+) -> TermValue:
+    length_value, length_gradient = _length(points, fixed, short_edge)
+    bending_value, bending_gradient = _bending(points, bends)
+    bending_weight = params.stiffness**2
+    return (
+        length_value + bending_weight * bending_value,
+        length_gradient + bending_weight * bending_gradient,
+    )
 
 
 def point_energy(
@@ -445,24 +468,48 @@ def _edge_integral(
     points_per_edge: int,
     reach: float,
 ) -> TermValue:
-    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge.
+    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge."""
+    distance, direction = field.signed_distance(
+        quadrature_points(points, points_per_edge), reach=reach
+    )
+    value, gradient, _ = edge_integral(
+        points, distance, direction, integrand, points_per_edge
+    )
+    return value, gradient
 
-    Each quadrature point's gradient goes to the edge's endpoints by its linear
-    interpolation weights; the edge-length factor contributes f's mean times
-    the edge direction.
-    """
-    n = len(points)
+
+def quadrature_points(points: FloatArray, points_per_edge: int) -> FloatArray:
+    """The points at which `edge_integral` takes distances: the vertices,
+    then each edge's interior points in order."""
     interior_t = np.arange(1, points_per_edge + 1) / (points_per_edge + 1)
     interior = (
         points[:-1, None, :] * (1 - interior_t)[None, :, None]
         + points[1:, None, :] * interior_t[None, :, None]
     )
-    distance, distance_gradient = field.signed_distance(
-        np.concatenate([points, interior.reshape(-1, 2)]), reach=reach
-    )
+    return np.concatenate([points, interior.reshape(-1, 2)])
+
+
+def edge_integral(
+    points: FloatArray,
+    distance: FloatArray,
+    direction: FloatArray,
+    integrand: Integrand,
+    points_per_edge: int,
+) -> tuple[float, FloatArray, FloatArray]:
+    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge,
+    from the distances and their unit gradients at `quadrature_points`.
+
+    Each quadrature point's gradient goes to the edge's endpoints by its linear
+    interpolation weights; the edge-length factor contributes f's mean times
+    the edge direction. Returns the value, its gradient at every vertex, and
+    its derivative by the distance at each quadrature point, for a caller
+    whose distances also depend on other coordinates.
+    """
+    n = len(points)
+    interior_t = np.arange(1, points_per_edge + 1) / (points_per_edge + 1)
     vertex_distance, interior_distance = distance[:n], distance[n:].reshape(n - 1, -1)
-    vertex_gradient = distance_gradient[:n]
-    interior_gradient = distance_gradient[n:].reshape(n - 1, -1, 2)
+    vertex_gradient = direction[:n]
+    interior_gradient = direction[n:].reshape(n - 1, -1, 2)
 
     edge_distance = np.concatenate(
         [vertex_distance[:-1, None], interior_distance, vertex_distance[1:, None]],
@@ -480,11 +527,17 @@ def _edge_integral(
     _, lengths, units = _edges(points)
     edge_mean = value_at @ weights
 
-    point_gradient = (weights * slope_at)[:, :, None] * edge_distance_gradient
+    weighted_slope = weights * slope_at
+    point_gradient = weighted_slope[:, :, None] * edge_distance_gradient
     start_gradient = lengths[:, None] * np.einsum("k,ekj->ej", 1 - t, point_gradient)
     end_gradient = lengths[:, None] * np.einsum("k,ekj->ej", t, point_gradient)
     measure_gradient = edge_mean[:, None] * units
     gradient = _scatter_edge_gradient(
         n, start_gradient - measure_gradient, end_gradient + measure_gradient
     )
-    return float(lengths @ edge_mean), gradient
+    by_edge = lengths[:, None] * weighted_slope
+    slopes = np.zeros(len(distance))
+    slopes[: n - 1] += by_edge[:, 0]
+    slopes[1:n] += by_edge[:, -1]
+    slopes[n:] = by_edge[:, 1:-1].ravel()
+    return float(lengths @ edge_mean), gradient, slopes
