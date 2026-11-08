@@ -60,7 +60,7 @@ def l_chain() -> list[kbt.Track]:
 
 
 def l_board(
-    *, refuse_create: bool = False, push_error: Exception | None = None
+    *, refuse_create: bool = False, push_error: BaseException | None = None
 ) -> CommitBoard:
     chain = l_chain()
     return CommitBoard(
@@ -795,6 +795,30 @@ class TestErrors:
 
         assert "may have landed" in message and "undo history" in message
         assert "drop_commit" not in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_interrupt_during_the_push_may_have_landed(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(l_board(push_error=KeyboardInterrupt()))
+
+        message = exit_message(log)
+
+        assert "Interrupted" in message and "may have landed" in message
+        assert "drop_commit" not in board.calls
+
+    def test_interrupt_before_the_push_commits_nothing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+
+        def interrupted(*args: object, **kwargs: object) -> NoReturn:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(pipeline, "optimize_chains", interrupted)
+
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
+        assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_vanished_track_exits_before_any_change(

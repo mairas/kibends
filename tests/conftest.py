@@ -539,7 +539,7 @@ class CommitBoard(FakeBoard):
     refuse_create_vias: bool = False
     refuse_delete: frozenset[str] = frozenset()
     unanswered_delete: frozenset[str] = frozenset()
-    push_error: Exception | None = None
+    push_error: BaseException | None = None
     document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
 
     def __post_init__(self) -> None:

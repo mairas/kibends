@@ -96,6 +96,9 @@ def _exit_on_failure() -> Generator[None]:
     """Report an expected failure as one log line and exit 1."""
     try:
         yield
+    except KeyboardInterrupt:
+        # The push maps its own interrupt to CommitUncertainError.
+        _fail("Interrupted: nothing committed")
     except EXPECTED_ERRORS as e:
         _fail(str(e))
     except ApiError as e:

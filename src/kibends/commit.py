@@ -50,6 +50,9 @@ class DeleteItemsError(RuntimeError):
     pass
 
 
+UNCERTAIN_ADVICE = "it may have landed. Check KiCad's undo history before running again"
+
+
 class CommitUncertainError(RuntimeError):
     """The push timed out or lost the connection; the commit may have landed."""
 
@@ -281,17 +284,21 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
 def push_checked(board: kipy.board.Board, commit: Commit, label: str) -> None:
     """Push the commit and raise unless KiCad confirms it landed.
 
-    A lost or timed-out connection doesn't mean KiCad didn't land it, so the
-    commit is kept and `CommitUncertainError` raised. An ApiError is KiCad's
-    answer, so nothing landed and the commit is dropped.
+    A lost or timed-out connection, or an interrupt, doesn't mean KiCad
+    didn't land it, so the commit is kept and `CommitUncertainError` raised.
+    An ApiError is KiCad's answer, so nothing landed and the commit is
+    dropped.
     """
     try:
         board.push_commit(commit, label)
     except KiCadConnectionError as e:
         raise CommitUncertainError(
             f"Committing '{label}' timed out or lost the connection to KiCad "
-            f"({e}); it may have landed. Check KiCad's undo history before "
-            "running again"
+            f"({e}); {UNCERTAIN_ADVICE}"
+        ) from None
+    except KeyboardInterrupt:
+        raise CommitUncertainError(
+            f"Interrupted while committing '{label}'; {UNCERTAIN_ADVICE}"
         ) from None
     except ApiError:
         board.drop_commit(commit)

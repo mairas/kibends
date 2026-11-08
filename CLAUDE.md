@@ -34,7 +34,7 @@ Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.y
 - One run is one undo step in KiCad. kibends never refills zones; the user refills them or lets KiCad's DRC do it.
 - Locked tracks, other nets' copper, unselected or fixed vias and pads are never modified.
 - Pinned points stay where they are, except chain ends at a moving via, which keep their offset from its centre. KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline, so pinning uses both tracks' half widths.
-- Any failure before the push, in any chain, drops the whole commit. A connection loss during the push is reported as "may have landed", never as success.
+- Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
 - Arc tracks are refused; output is always straight tracks.
 
 ## Units and coordinates
