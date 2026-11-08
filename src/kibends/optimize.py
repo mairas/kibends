@@ -90,6 +90,10 @@ NOTHING_MOVED = 1e-6
 # at both its ends take the vertices on either side.
 BEND_REACH = np.arange(-1, 3)
 
+# A run logs its progress at INFO at most this often, seconds, and not at all
+# if it ends sooner; DEBUG gets every outer iteration.
+PROGRESS_INTERVAL = 5.0
+
 
 class Termination(Enum):
     CONVERGED = "converged"
@@ -299,6 +303,9 @@ def optimize_chains(
     clearance; then it starts from the inputs. Either way it completes its
     first outer iteration before it looks at the time limit, so that every
     chain has a burst against what changed since.
+
+    Each outer iteration logs its progress at DEBUG, and at INFO once
+    `PROGRESS_INTERVAL` has passed since `started` or the last INFO line.
     """
     for chain in chains:
         if not (chain.fixed[0] and chain.fixed[-1]):
@@ -313,13 +320,12 @@ def optimize_chains(
         blocks,
         start,
     )
-    deadline = (
-        None
-        if settings.time_limit is None
-        else (clock() if started is None else started) + settings.time_limit
-    )
     if not run.moving and not run.free_vias:
         return run.result(Termination.NOTHING_TO_DO, 0)
+    begun = clock()
+    origin = begun if started is None else started
+    deadline = None if settings.time_limit is None else origin + settings.time_limit
+    last_shown = begun
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
@@ -330,6 +336,13 @@ def optimize_chains(
             if timed and deadline is not None and clock() >= deadline:
                 out_of_time = True
                 break
+        now = clock()
+        message = _progress(run, iteration, now - origin)
+        if now - last_shown >= PROGRESS_INTERVAL:
+            logger.info(message)
+            last_shown = now
+        else:
+            logger.debug(message)
         if all(run.resting(i) for i in run.moving) and all(
             run.via_resting(v) for v in run.free_vias
         ):
@@ -348,6 +361,19 @@ def optimize_chains(
     if gave_up and run.best_energy >= run.start_energy:
         termination = Termination.ABNORMAL
     return replace(run.result(termination, iteration, best=True), gave_up=gave_up)
+
+
+def _progress(run: _Run, iteration: int, elapsed: float) -> str:
+    """One line on where the run stands after an outer iteration."""
+    chains, vias = run.awake
+    moving = f"{chains} of {len(run.moving)} chains"
+    if run.free_vias:
+        moving += f" and {vias} of {len(run.free_vias)} vias"
+    return (
+        f"Iteration {iteration}, {elapsed:.1f} s: length {run.length():.3f} mm, "
+        f"energy {run.run_energy():.3f} (best {run.best_energy:.3f}), "
+        f"{moving} moving"
+    )
 
 
 @dataclass(frozen=True)
@@ -509,6 +535,7 @@ class _Run:
         self.shapes = list(self.originals)
         # Whether any step changed a shape by more than KiCad's grid.
         self.moved = False
+        self.awake = (0, 0)
 
         # Resampling can lay a chord across an obstacle corner or put a vertex
         # inside one, and a burst only rejects crossings its own moves create,
@@ -747,13 +774,26 @@ class _Run:
 
     def steps(self) -> Iterator[Callable[[], None]]:
         """One outer iteration's steps: each chain's burst, then each via's,
-        of those not resting when their turn comes."""
+        of those not resting when their turn comes. `awake` counts the
+        chains and the vias given one."""
+        self.awake = (0, 0)
         for i in self.moving:
             if not self.resting(i):
+                self.awake = (self.awake[0] + 1, self.awake[1])
                 yield partial(self.chain_step, i)
         for v in self.free_vias:
             if not self.via_resting(v):
+                self.awake = (self.awake[0], self.awake[1] + 1)
                 yield partial(self.via_step, v)
+
+    def length(self) -> float:
+        """The summed length of the selected tracks at their current shapes,
+        a pair's section as its two tracks, mm."""
+        return sum(
+            float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+            for j, polyline in enumerate(self.current)
+            for _, points in self.shown(j, polyline)
+        )
 
     def via_block_energy(self, v: int) -> float:
         """Via v's energy and that of the chains its last burst moved."""

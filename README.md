@@ -87,6 +87,10 @@ pair its gap and skew (see below), then for each selected via that may move
 how far it moved and where to, then the optimizer's outcome: whether it
 converged or stopped at its iteration cap or the time limit, after how many
 iterations and how many seconds.
+While a run lasts longer than a few seconds, it reports its progress every
+few seconds: the iteration, the time so far, the selected tracks' summed
+length, the energy it minimises and how many chains are still moving. Set
+`LOGURU_LEVEL=DEBUG` to see that line after every iteration.
 A chain the optimizer leaves as it was is marked unchanged and is neither
 checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
 changed chains are replaced and the moved vias moved in one commit, which

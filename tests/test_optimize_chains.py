@@ -1,5 +1,6 @@
 import copy
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
@@ -24,6 +25,7 @@ from kibends.obstacles import ChainCentreline, CompositeField, chain_obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
+    PROGRESS_INTERVAL,
     PolylineStats,
     RunResult,
     Termination,
@@ -578,6 +580,58 @@ def test_time_limit_counts_from_when_the_stage_started() -> None:
 
     assert result.termination is Termination.TIME_LIMIT
     assert result.iterations == 1
+
+
+PROGRESS_LINE = re.compile(
+    r"^(DEBUG|INFO) Iteration (\d+), (\d+\.\d) s: length \d+\.\d{3} mm, "
+    r"energy -?\d+\.\d{3} \(best -?\d+\.\d{3}\), \d+ of 2 chains moving$"
+)
+
+
+def progress(log: list[str]) -> list[tuple[str, int, float]]:
+    """The progress lines in `log` as (level, iteration, elapsed s)."""
+    lines = [line.strip() for line in log if " Iteration " in line]
+    matches = [PROGRESS_LINE.match(line) for line in lines]
+    assert all(matches), lines
+    return [(m[1], int(m[2]), float(m[3])) for m in matches if m]
+
+
+def test_progress_is_logged_after_every_iteration(log: list[str]) -> None:
+    scenario = scenarios.uneven_channel_pair()
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, COARSE, clock=Ticking(step=0.0)
+    )
+
+    lines = progress(log)
+    assert [iteration for _, iteration, _ in lines] == list(
+        range(1, result.iterations + 1)
+    )
+    # A run shorter than the interval says nothing at INFO.
+    assert {level for level, _, _ in lines} == {"DEBUG"}
+
+
+def test_progress_at_info_comes_at_most_once_per_interval(
+    log: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = scenarios.uneven_channel_pair()
+    # A second per burst, however often the clock is read.
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(scenario.chains, scenario.params, COARSE, clock=clock)
+
+    lines = progress(log)
+    assert [iteration for _, iteration, _ in lines] == list(
+        range(1, result.iterations + 1)
+    )
+    assert [elapsed for _, _, elapsed in lines][-1] == clock.bursts
+    shown = 0.0
+    for level, _, elapsed in lines:
+        due = elapsed - shown >= PROGRESS_INTERVAL
+        assert level == ("INFO" if due else "DEBUG")
+        if due:
+            shown = elapsed
+    assert any(level == "INFO" for level, _, _ in lines)
 
 
 def test_without_a_time_limit_the_clock_changes_nothing() -> None:
