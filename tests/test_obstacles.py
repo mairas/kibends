@@ -6,6 +6,7 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
+import shapely
 from conftest import (
     PAD_HALF_SIZE,
     FakeBoard,
@@ -21,7 +22,7 @@ from conftest import (
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
 from kibends.energy import (
     DistanceField,
@@ -528,7 +529,7 @@ def other_chain(net: str, *xy: tuple[float, float]) -> ChainCentreline:
     )
 
 
-def neighbours(*others: ChainCentreline) -> Obstacles:
+def neighbours(*others: ChainCentreline) -> ObstacleField:
     return chain_obstacles(NET, WIDTH, DEFAULT_CLEARANCE, others)
 
 
@@ -626,6 +627,132 @@ class TestChainObstacles:
         assert np.all(np.isinf(d))
         assert np.all(g == 0)
         assert empty.segments_clear(points((0, 0)), points((5, 5))).tolist() == [True]
+
+    def test_a_zero_length_edge_blocks_segments_around_it(self) -> None:
+        dot = neighbours(other_chain(OTHER_NET, (5, 0), (5, 0)))
+
+        clear = dot.segments_clear(points((4, 0.1), (4, 5)), points((6, 0.1), (6, 5)))
+
+        assert clear.tolist() == [False, True]
+
+    def test_a_zero_length_segment_inside_the_band_is_not_clear(self) -> None:
+        assert neighbours(BELOW).segments_clear(
+            points((5, 0)), points((5, 0))
+        ).tolist() == [False]
+
+    def test_a_point_on_a_centreline_gets_its_normal(self) -> None:
+        d, g = neighbours(BELOW).signed_distance(points((5, 0)))
+
+        assert d[0] == pytest.approx(-OTHER_NET_INFLATION, abs=NM_TOLERANCE)
+        assert g[0] == pytest.approx((0, 1), abs=1e-9)
+
+
+def random_chains(rng: np.random.Generator) -> list[ChainCentreline]:
+    """Random walks of ragged length on both nets, with edges from much
+    shorter to much longer than the resampling spacing and one repeated
+    vertex."""
+    chains: list[ChainCentreline] = []
+    for i, net in enumerate([NET, OTHER_NET, "THIRD", NET]):
+        count = int(rng.integers(2, 30))
+        heading = rng.uniform(0, 2 * math.pi) + np.cumsum(rng.normal(0, 0.6, count - 1))
+        steps = rng.uniform(0.05, 1.5) * rng.uniform(0.2, 1.0, (count - 1, 1))
+        offsets = steps * np.column_stack([np.cos(heading), np.sin(heading)])
+        vertices = rng.uniform(0, 3, 2) + np.vstack([(0, 0), np.cumsum(offsets, 0)])
+        if i == 0:
+            vertices = np.insert(vertices, 1, vertices[1], axis=0)
+        chains.append(
+            ChainCentreline(
+                f"chain {i}",
+                net,
+                float(rng.uniform(0.1, 0.5)),
+                float(rng.uniform(0.1, 0.4)),
+                vertices,
+            )
+        )
+    return chains
+
+
+def shapely_chain_field(
+    net: str, width: float, clearance: float, others: list[ChainCentreline]
+) -> Obstacles:
+    """The same field as whole-chain centrelines in a shapely `Obstacles`."""
+    return Obstacles(
+        [
+            Obstacle(
+                o.description,
+                LineString(o.points),
+                width / 2
+                + o.width / 2
+                + (max(clearance, o.clearance) if o.net != net else 0.0),
+            )
+            for o in others
+        ]
+    )
+
+
+def probes_around(
+    chains: list[ChainCentreline], rng: np.random.Generator
+) -> FloatArray:
+    """Points at random, and near the vertices and edge midpoints of chains."""
+    vertices = np.vstack([c.points for c in chains])
+    midpoints = np.vstack([(c.points[1:] + c.points[:-1]) / 2 for c in chains])
+    anchors = np.vstack([vertices, midpoints])
+    angle = rng.uniform(0, 2 * math.pi, len(anchors))
+    radius = rng.uniform(0, 1.5, (len(anchors), 1))
+    near = anchors + radius * np.column_stack([np.cos(angle), np.sin(angle)])
+    low, high = vertices.min(0) - 2, vertices.max(0) + 2
+    return np.vstack([near, rng.uniform(low, high, (200, 2))])
+
+
+# Closer than this to a centreline, the gradient is the direction of a
+# micrometre offset and only agrees to within rounding of the nearest point.
+GRADIENT_COMPARISON_MIN_DISTANCE = 1e-3
+
+
+class TestChainFieldMatchesShapely:
+    @pytest.mark.parametrize("seed", range(6))
+    @pytest.mark.parametrize("reach", [math.inf, 1.0, 0.2])
+    def test_signed_distance(self, seed: int, reach: float) -> None:
+        rng = np.random.default_rng(seed)
+        chains = random_chains(rng)
+        probes = probes_around(chains, rng)
+        reference = shapely_chain_field(NET, WIDTH, DEFAULT_CLEARANCE, chains)
+
+        d, g = chain_obstacles(NET, WIDTH, DEFAULT_CLEARANCE, chains).signed_distance(
+            probes, reach
+        )
+        d_ref, g_ref = reference.signed_distance(probes, reach)
+
+        np.testing.assert_array_equal(np.isinf(d), np.isinf(d_ref))
+        finite = np.isfinite(d_ref)
+        np.testing.assert_allclose(d[finite], d_ref[finite], rtol=0, atol=1e-9)
+        centrelines = MultiLineString([c.points for c in chains])
+        away = finite & (
+            centrelines.distance(shapely.points(probes))
+            > GRADIENT_COMPARISON_MIN_DISTANCE
+        )
+        np.testing.assert_allclose(g[away], g_ref[away], rtol=0, atol=1e-9)
+        np.testing.assert_array_equal(g[~finite], 0.0)
+
+    @pytest.mark.parametrize("seed", range(6))
+    @pytest.mark.parametrize("tolerance", [0.0, 0.05])
+    def test_segments_clear(self, seed: int, tolerance: float) -> None:
+        rng = np.random.default_rng(seed)
+        chains = random_chains(rng)
+        starts = probes_around(chains, rng)
+        angle = rng.uniform(0, 2 * math.pi, len(starts))
+        length = rng.uniform(0, 3, (len(starts), 1))
+        ends = starts + length * np.column_stack([np.cos(angle), np.sin(angle)])
+        reference = shapely_chain_field(NET, WIDTH, DEFAULT_CLEARANCE, chains)
+
+        clear = chain_obstacles(NET, WIDTH, DEFAULT_CLEARANCE, chains).segments_clear(
+            starts, ends, tolerance
+        )
+
+        np.testing.assert_array_equal(
+            clear, reference.segments_clear(starts, ends, tolerance)
+        )
+        assert 0 < clear.sum() < len(clear)
 
 
 SPREAD = points((4, 1), (0.5, 1), (1, 5), (2.5, 1), (0, 0), (-3, 2), (12, 0.1))

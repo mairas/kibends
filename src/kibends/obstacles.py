@@ -8,6 +8,7 @@ distance to the inflated shape without buffering it. The board edge is the
 outside of the Edge.Cuts outline, inflated the same way.
 """
 
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import numpy as np
 import shapely
 from loguru import logger
 from numpy.typing import NDArray
+from scipy.spatial import cKDTree
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
     from kibends.optimize import ObstacleField
 
 ObjectArray = NDArray[np.object_]
+IntArray = NDArray[np.intp]
+ComplexArray = NDArray[np.complex128]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.
 # 0.3 mm to the edge meets common fabs' minimum for routed outlines, and
@@ -49,13 +53,10 @@ DEGENERATE_DISTANCE = 1e-9
 NORMAL_PROBE = 1e-4
 FALLBACK_DIRECTION = (1.0, 0.0)
 AREA_DIMENSION = 2
-# Another chain enters the tree in pieces of this many edges. Measuring a
-# point against a whole resampled chain walks all its vertices; single edges
-# flood the tree query with neighbours. 16 edges at the default 0.1 mm
-# `OptimizerSettings.spacing` span about 1.6 mm, close to the query radius of
-# `EnergyParams.falloff_range` (1.0 mm from the CLI's default `--range`) plus
-# the inflation; retune if either default changes.
-EDGES_PER_PIECE = 16
+# Other chains' edges are split to at most this length, so that a point near an
+# edge is also near its midpoint, where the k-d tree finds it. Chains resampled
+# at the default 0.1 mm `OptimizerSettings.spacing` are never split.
+MAX_EDGE_LENGTH = 0.5
 
 
 @dataclass(frozen=True)
@@ -313,10 +314,209 @@ class ChainCentreline:
     """Its current polyline, (n, 2) in mm."""
 
 
+class ChainField:
+    """Signed distance to other chains' inflated centrelines, and edge checks.
+
+    The same answers as `Obstacles` with each centreline as an obstacle,
+    except that zero-length edges and zero-length query segments count like
+    any other, where shapely's tree query skips them. Done in numpy instead
+    of shapely because the optimizer rebuilds this field for every burst and
+    queries it on every energy evaluation. A k-d tree over the edge midpoints
+    finds the edges near each query, and the exact distances to those edges
+    are computed in bulk. Points are complex numbers inside, which keeps
+    every gather one-dimensional.
+    """
+
+    def __init__(
+        self, starts: FloatArray, ends: FloatArray, inflations: FloatArray
+    ) -> None:
+        """Edges from starts[i] to ends[i], (m, 2) in mm, each inflated by
+        inflations[i]."""
+        self._starts = _complex(starts)
+        self._along = _complex(ends) - self._starts
+        self._inflations = inflations
+        self._max_inflation = float(inflations.max(initial=0.0))
+        self._max_half_length = float(np.abs(self._along).max(initial=0.0)) / 2
+        self._tree = cKDTree((starts + ends) / 2) if len(starts) else None
+
+    def signed_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        """Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
+
+        With no edges the distance is +inf and the gradient zero everywhere.
+        Points farther than `reach` from every inflated edge get +inf and a
+        zero gradient.
+        """
+        coords = np.asarray(points, dtype=float).reshape(-1, 2)
+        distance = np.full(len(coords), np.inf)
+        gradient = np.zeros((len(coords), 2))
+        if self._tree is None or not len(coords):
+            return distance, gradient
+        query = _complex(coords)
+        if math.isfinite(reach):
+            # An edge is within reach once inflated only if it is within reach
+            # plus the largest inflation.
+            limit = reach + self._max_inflation
+            point, edge = _pairs_within(
+                self._tree, coords, limit + self._max_half_length + DEGENERATE_DISTANCE
+            )
+            point_limit: FloatArray | float = limit
+        else:
+            _, nearest = self._tree.query(coords)
+            nearest_raw = np.abs(
+                _offsets(query, self._starts[nearest], self._along[nearest])
+            )
+            # An edge farther than the nearest one can still be nearer once
+            # inflated, by at most the spread of the inflations.
+            limits = nearest_raw - self._inflations[nearest] + self._max_inflation
+            point, edge = _pairs_each_within(
+                self._tree, coords, limits + self._max_half_length + DEGENERATE_DISTANCE
+            )
+            point_limit = limits[point]
+        if not len(point):
+            return distance, gradient
+        offset = _offsets(query[point], self._starts[edge], self._along[edge])
+        raw = np.abs(offset)
+        candidate = np.where(
+            raw <= point_limit + DEGENERATE_DISTANCE,
+            raw - self._inflations[edge],
+            np.inf,
+        )
+        np.minimum.at(distance, point, candidate)
+        best = np.flatnonzero((candidate == distance[point]) & (candidate < np.inf))
+        gradient[point[best]] = self._unit_gradient(offset[best], raw[best], edge[best])
+        return distance, gradient
+
+    def segments_clear(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
+    ) -> BoolArray:
+        """Whether each segment from starts[i] to ends[i] stays out of every
+        inflated edge.
+
+        Touching an inflated boundary, which is exactly at clearance, is clear,
+        and so is entering it by at most `tolerance` mm.
+        """
+        a = _complex(np.asarray(starts, dtype=float).reshape(-1, 2))
+        b = _complex(np.asarray(ends, dtype=float).reshape(-1, 2))
+        clear = np.ones(len(a), dtype=np.bool_)
+        reach = self._max_inflation - tolerance
+        if self._tree is None or reach <= 0.0 or not len(a):
+            return clear
+        middle = (a + b) / 2
+        segment, edge = _pairs_each_within(
+            self._tree,
+            np.column_stack([middle.real, middle.imag]),
+            reach + np.abs(b - a) / 2 + self._max_half_length + DEGENERATE_DISTANCE,
+        )
+        if not len(segment):
+            return clear
+        gap = _segment_gaps(
+            a[segment], b[segment] - a[segment], self._starts[edge], self._along[edge]
+        )
+        clear[segment[gap < self._inflations[edge] - tolerance]] = False
+        return clear
+
+    def _unit_gradient(
+        self, offset: ComplexArray, length: FloatArray, edge: IntArray
+    ) -> FloatArray:
+        """The direction away from each edge; its normal on the centreline."""
+        degenerate = length < DEGENERATE_DISTANCE
+        direction = offset / np.where(degenerate, 1.0, length)
+        if degenerate.any():
+            along = self._along[edge[degenerate]]
+            norm = np.abs(along)
+            # A quarter turn of the tangent, as `_outward_normal` turns it.
+            direction[degenerate] = np.where(
+                norm > 0.0,
+                1j * along / np.where(norm > 0.0, norm, 1.0),
+                complex(*FALLBACK_DIRECTION),
+            )
+        return np.column_stack([direction.real, direction.imag])
+
+
+def _complex(points: FloatArray) -> ComplexArray:
+    return points[:, 0] + 1j * points[:, 1]
+
+
+def _pairs_within(
+    tree: cKDTree, centres: FloatArray, radius: float
+) -> tuple[IntArray, IntArray]:
+    """(centre, point) index pairs with the tree's point within `radius`."""
+    # Built for one query, the tree skips the balancing and node shrinking
+    # that only pay off over many queries.
+    once = cKDTree(centres, balanced_tree=False, compact_nodes=False)
+    found = once.sparse_distance_matrix(tree, radius, output_type="ndarray")
+    return found["i"].astype(np.intp), found["j"].astype(np.intp)
+
+
+def _pairs_each_within(
+    tree: cKDTree, centres: FloatArray, radii: FloatArray
+) -> tuple[IntArray, IntArray]:
+    """(centre, point) index pairs with the tree's point within radii[i] of
+    centres[i]."""
+    found = tree.query_ball_point(centres, radii, return_sorted=False)
+    counts = np.fromiter((len(f) for f in found), np.intp, len(found))
+    flat = itertools.chain.from_iterable(found)
+    points = np.fromiter(flat, np.intp, int(counts.sum()))
+    return np.repeat(np.arange(len(centres)), counts), points
+
+
+def _offsets(
+    points: ComplexArray, starts: ComplexArray, along: ComplexArray
+) -> ComplexArray:
+    """The vector to each point from the nearest point of the segment from
+    starts[i] along along[i]."""
+    relative = points - starts
+    projection = relative.real * along.real + relative.imag * along.imag
+    squared = along.real**2 + along.imag**2
+    t = np.clip(projection / np.where(squared > 0.0, squared, 1.0), 0.0, 1.0)
+    return relative - t * along
+
+
+def _segment_gaps(
+    a: ComplexArray, ab: ComplexArray, c: ComplexArray, cd: ComplexArray
+) -> FloatArray:
+    """Distance between each segment from a[i] along ab[i] and the segment
+    from c[i] along cd[i]."""
+
+    def cross(u: ComplexArray, v: ComplexArray) -> FloatArray:
+        return u.real * v.imag - u.imag * v.real
+
+    b, d = a + ab, c + cd
+    crossing = (cross(ab, c - a) * cross(ab, d - a) < 0.0) & (
+        cross(cd, a - c) * cross(cd, b - c) < 0.0
+    )
+    # Segments that do not cross are nearest at an endpoint of one of them.
+    nearest_end = np.minimum.reduce(
+        [
+            np.abs(_offsets(c, a, ab)),
+            np.abs(_offsets(d, a, ab)),
+            np.abs(_offsets(a, c, cd)),
+            np.abs(_offsets(b, c, cd)),
+        ]
+    )
+    return np.where(crossing, 0.0, nearest_end)
+
+
+def _split_edges(vertices: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """The polyline's edges, each split evenly into parts of at most
+    MAX_EDGE_LENGTH."""
+    a, b = vertices[:-1], vertices[1:]
+    lengths = np.hypot(*(b - a).T)
+    parts = np.maximum(np.ceil(lengths / MAX_EDGE_LENGTH), 1).astype(np.intp)
+    edge = np.repeat(np.arange(len(a)), parts)
+    part = np.arange(len(edge)) - np.repeat(np.cumsum(parts) - parts, parts)
+    along = (b - a)[edge]
+    first = (part / parts[edge])[:, None]
+    last = ((part + 1) / parts[edge])[:, None]
+    return a[edge] + first * along, a[edge] + last * along
+
+
 def chain_obstacles(
     net: str, width: float, clearance: float, others: Sequence[ChainCentreline]
-) -> Obstacles:
-    """Obstacles for a track of `net`, `width` and netclass `clearance` (mm)
+) -> ChainField:
+    """The field for a track of `net`, `width` and netclass `clearance` (mm)
     made of other chains' centrelines.
 
     Another net's chain is kept at the larger of both clearances. A chain of
@@ -324,23 +524,22 @@ def chain_obstacles(
     flag same-net overlap and both would otherwise be pulled onto each other.
     """
     half_width = width / 2
-    items: list[Obstacle] = []
+    starts: list[FloatArray] = [np.empty((0, 2))]
+    ends: list[FloatArray] = [np.empty((0, 2))]
+    inflations: list[FloatArray] = [np.empty(0)]
     for o in others:
         inflation = (
             half_width
             + o.width / 2
             + (max(clearance, o.clearance) if o.net != net else 0.0)
         )
-        vertices = np.asarray(o.points, dtype=float)
-        items.extend(
-            Obstacle(
-                o.description,
-                LineString(vertices[start : start + EDGES_PER_PIECE + 1]),
-                inflation,
-            )
-            for start in range(0, len(vertices) - 1, EDGES_PER_PIECE)
-        )
-    return Obstacles(items)
+        a, b = _split_edges(np.asarray(o.points, dtype=float).reshape(-1, 2))
+        starts.append(a)
+        ends.append(b)
+        inflations.append(np.full(len(a), inflation))
+    return ChainField(
+        np.concatenate(starts), np.concatenate(ends), np.concatenate(inflations)
+    )
 
 
 def build_obstacles(
