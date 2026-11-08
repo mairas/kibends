@@ -1,11 +1,13 @@
+import contextlib
+import itertools
 import json
 import math
 import re
 import stat
 import sys
 from collections import Counter
-from collections.abc import Callable, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import NoReturn, cast
@@ -13,6 +15,7 @@ from typing import NoReturn, cast
 import kipy.board_types as kbt
 import numpy as np
 import pytest
+import shapely
 from conftest import (
     PAD_HALF_SIZE,
     CommitBoard,
@@ -21,8 +24,10 @@ from conftest import (
     kipy_pad,
     kipy_track,
     kipy_via,
+    netclass,
     nm,
 )
+from distance_fields import FreeSpace
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -30,13 +35,31 @@ from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, box
+from shapely.ops import linemerge, unary_union
 
-from kibends import cli, drc
+import kibends.optimize as optimize_module
+from kibends import cli, drc, plot
 from kibends import run as pipeline
-from kibends.bursts import OptimizerSettings
-from kibends.energy import EnergyParams, FloatArray
-from kibends.obstacles import Obstacles
-from kibends.optimize import PolylineStats, RunResult, Termination, optimize_chains
+from kibends.bursts import (
+    DEFAULT_SETTINGS,
+    INSIDE_TOLERANCE,
+    Crossings,
+    OptimizerSettings,
+)
+from kibends.energy import BoolArray, EnergyParams, FloatArray, IntArray
+from kibends.neighbours import ChainInput
+from kibends.obstacles import ChainCentreline, Obstacles
+from kibends.optimize import (
+    MAX_ABNORMAL_BURSTS,
+    FrozenVertex,
+    PolylineStats,
+    RunResult,
+    Termination,
+    optimize_chains,
+)
+from kibends.pair_blocks import Hold, PairBlock, PairInput
+from kibends.pairs import BendCheck, gap_range, offset_pair
+from kibends.snapshot import LayerSnapshot
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -1907,11 +1930,43 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
         "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, 0, True
     )
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
-    report = pipeline.OptimizerReport((chain,), (via,), Termination.CONVERGED, 7)
+    report = pipeline.OptimizerReport((chain,), (via,), (), Termination.CONVERGED, 7)
 
     outcome = cli.format_statistics(report).splitlines()[-1]
 
     assert outcome == "Optimizer: converged after 7 iterations, 5 rejected edge moves"
+
+
+def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() -> None:
+    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    chain = pipeline.ChainReport(
+        "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, (), 1, 0, True
+    )
+    frozen = FrozenVertex((1.0, 2.0), -0.05)
+    pair = pipeline.PairReport(
+        nets=("USB_D+", "USB_D-"),
+        layer="F.Cu",
+        gap=0.15,
+        gap_after=(0.14, 0.16),
+        skew_before=0.0,
+        skew_after=0.1,
+        sections=1,
+        held=0,
+        frozen=(frozen,),
+        rejected_edges=3,
+        abnormal_bursts=2,
+    )
+    report = pipeline.OptimizerReport((chain,), (), (pair,), Termination.CONVERGED, 7)
+
+    outcome = cli.format_statistics(report).splitlines()[-1]
+    warnings = cli.report_warnings(report)
+
+    assert outcome == (
+        "Optimizer: converged after 7 iterations, 4 rejected edge moves, "
+        "2 abnormal bursts"
+    )
+    assert any("(1.000, 2.000)" in w and "0.050 mm inside" in w for w in warnings)
+    assert any("2 bursts of the pair USB_D+ and USB_D-" in w for w in warnings)
 
 
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
@@ -1920,3 +1975,1349 @@ def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
     run("--dry-run", "--no-drc")
 
     assert "INFO Optimizing 1 chain\n" in log
+
+
+PAIR_WIDTH = 0.2
+PAIR_GAP = 0.15
+PAIR_CLEARANCE = 0.1
+"""Below the gap, so that only coupling keeps the tracks at their gap."""
+PAIR_HALF_PITCH = (PAIR_GAP + PAIR_WIDTH) / 2
+PAIR_FAN = (-1.0, 1.0 + PAIR_HALF_PITCH)
+"""Where track P starts, fanned out at 45° from the coupled section; N
+starts mirrored in y."""
+SECOND_PAIR = 5.0
+"""How far, mm, a second pair runs below the first."""
+FAR = 100.0
+"""mm, beyond any track of a test board."""
+PRINTED = 1e-3
+"""The report's resolution, mm."""
+COUPLED_FROM = 0.5
+"""x beyond which the pair's tracks run coupled, clear of the fan-out."""
+TOO_TIGHT_RADIUS = 0.01
+OTHER_PAIR_GAP = 0.2
+ABANDONED = "a chain whose bursts all ended abnormally"
+PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
+
+
+USB = ("USB_D+", "USB_D-")
+
+
+def pair_tracks(
+    nets: tuple[str, str] = USB, at: float = 0.0, prefixes: tuple[str, str] = ("p", "n")
+) -> list[kbt.Track]:
+    """Pair USB_D+/USB_D-, or `nets`, fanned out at its start, coupled along
+    the centreline (0, 0) → (5, 0) → (8, 3) → (13, 3) with 45° corners,
+    moved down by `at`."""
+    h = PAIR_HALF_PITCH
+    mitre = math.tan(math.pi / 8) * h
+    tracks: list[kbt.Track] = []
+    for net, side, prefix in zip(nets, (1.0, -1.0), prefixes, strict=True):
+        points = [
+            (PAIR_FAN[0], at + side * PAIR_FAN[1]),
+            (0.0, at + side * h),
+            (5.0 - side * mitre, at + side * h),
+            (8.0 - side * mitre, at + 3.0 + side * h),
+            (13.0, at + 3.0 + side * h),
+        ]
+        tracks += [
+            kipy_track(f"{prefix}{k + 1}", net, start, end, width=PAIR_WIDTH)
+            for k, (start, end) in enumerate(itertools.pairwise(points))
+        ]
+    return tracks
+
+
+def pair_board(
+    *, diff_pair_gap: float = PAIR_GAP, extra: Sequence[kbt.Track] = ()
+) -> CommitBoard:
+    tracks = pair_tracks()
+    usb = netclass("USB", PAIR_CLEARANCE, diff_pair_gap)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=[*tracks, *extra],
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+PAIR_SECOND_TRACK = 5.0
+"""How far, mm, track USB_D- moves away to not pair."""
+PAIR_WIDER = 0.25
+
+
+def with_via_at_the_fan_out(board: CommitBoard) -> CommitBoard:
+    """`board` with a via where track USB_D+ fans out, joining it to a
+    selected track on B.Cu."""
+    down = kipy_track(
+        "down",
+        "USB_D+",
+        PAIR_FAN,
+        (-4.0, PAIR_FAN[1]),
+        width=PAIR_WIDTH,
+        layer=BL.BL_B_Cu,
+    )
+    via = kipy_via("v", "USB_D+", *PAIR_FAN)
+    board.selection = [*board.selection, down, via]
+    board.tracks = [*board.tracks, down]
+    board.vias = [via]
+    return board
+
+
+def by_net(
+    board: CommitBoard, nets: tuple[str, str] = USB
+) -> dict[str, list[LineString]]:
+    created = cast(list[kbt.Track], board.created)
+    return {net: [segment(t) for t in created if t.net.name == net] for net in nets}
+
+
+def coupled_gaps(p: list[LineString], n: list[LineString]) -> tuple[float, float]:
+    """The smallest and largest gap between two tracks of a pair made of
+    `p` and `n`, beyond the fan-out where they run coupled."""
+    beyond = box(COUPLED_FROM, -FAR, FAR, FAR)
+    a, b = (np.array(linemerge(lines).intersection(beyond).coords) for lines in (p, n))
+    return gap_range(a, b, PAIR_WIDTH)
+
+
+def row(out: str, label: str) -> list[str]:
+    """The before and after columns of a statistics row."""
+    line = next(line for line in out.splitlines() if line.startswith(label))
+    return line[len(label) :].split()
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestPairs:
+    def test_commits_both_tracks_in_one_commit_at_their_gap(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        board = connect.to(pair_board())
+
+        run()
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == list(PAIR_IDS)
+        gaps = coupled_gaps(*by_net(board).values())
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+        assert drc_runs(kicad_cli) == 2
+
+    def test_two_pairs_commit_each_joined_and_at_its_gap(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        eth = ("ETH_P", "ETH_N")
+        tracks = [
+            *pair_tracks(),
+            *pair_tracks(eth, at=SECOND_PAIR, prefixes=("q", "m")),
+        ]
+        pairs = netclass("DP", PAIR_CLEARANCE, PAIR_GAP)
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                netclasses={net: pairs for net in (*USB, *eth)},
+            )
+        )
+
+        run("--no-drc")
+
+        assert "INFO Optimizing 4 chains, 2 differential pairs among them\n" in log
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        for nets, at in ((USB, 0.0), (eth, SECOND_PAIR)):
+            lines = by_net(board, nets)
+            for net, side in zip(nets, (1.0, -1.0), strict=True):
+                joined = linemerge(lines[net])
+                assert isinstance(joined, LineString)
+                assert {joined.coords[0], joined.coords[-1]} == {
+                    (PAIR_FAN[0], at + side * PAIR_FAN[1]),
+                    (13.0, at + 3.0 + side * PAIR_HALF_PITCH),
+                }
+            gaps = coupled_gaps(*lines.values())
+            assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+
+    def test_reports_the_pair_its_gap_and_skew(
+        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        connect.to(pair_board())
+
+        run("--dry-run")
+
+        out = capsys.readouterr().out
+        assert "Differential pair USB_D+ and USB_D- on F.Cu" in out
+        gap_before, gap_after = row(out, "Gap (mm)")
+        assert gap_before == f"{PAIR_GAP:.3f}"
+        assert gap_after == f"{PAIR_GAP:.3f}-{PAIR_GAP:.3f}"
+        # The two corners turn opposite ways, so the tracks start equally long.
+        skew_before, _ = row(out, "Skew (mm)")
+        assert float(skew_before) == pytest.approx(0.0, abs=PRINTED)
+
+    def test_reports_the_skew_of_the_committed_tracks(
+        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        p, n = offset_pair(np.array(BENT_PAIR), PAIR_GAP, PAIR_WIDTH)
+        lines = {"USB_D+": vertices(p), "USB_D-": vertices(n)}
+        tracks = [
+            kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+            for net, points in lines.items()
+            for k, (start, end) in enumerate(itertools.pairwise(points))
+        ]
+        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                netclasses={"USB_D+": usb, "USB_D-": usb},
+            )
+        )
+
+        run("--no-drc")
+
+        before, after = (float(v) for v in row(capsys.readouterr().out, "Skew (mm)"))
+        given = (LineString(points).length for points in lines.values())
+        assert before == pytest.approx(abs(next(given) - next(given)), abs=PRINTED)
+        p_now, n_now = (unary_union(c).length for c in by_net(board).values())
+        assert after == pytest.approx(abs(p_now - n_now), abs=PRINTED)
+
+    def test_netclass_gap_like_the_measured_one_does_not_warn(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pair_board())
+
+        run("--dry-run", "--no-drc")
+
+        assert not any("netclass" in line for line in log)
+
+    def test_netclass_gap_of_either_net_is_checked(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = pair_board()
+        board.netclasses = {
+            "USB_D+": netclass("USB", PAIR_CLEARANCE),
+            "USB_D-": netclass("USB", PAIR_CLEARANCE, OTHER_PAIR_GAP),
+        }
+        connect.to(board)
+
+        run("--dry-run", "--no-drc")
+
+        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
+        assert f"{OTHER_PAIR_GAP:.3f}" in warning
+
+    def test_section_fields_leave_out_moving_vias(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        seen: list[set[str]] = []
+        real = pipeline.build_pair_obstacles
+
+        def spy(
+            snapshot: LayerSnapshot,
+            a: ChainCentreline,
+            b: ChainCentreline,
+            gap: float,
+            *,
+            edge_clearance: float,
+            hole_clearance: float,
+        ) -> Obstacles:
+            seen.append({v.id for v in snapshot.vias})
+            return real(
+                snapshot,
+                a,
+                b,
+                gap,
+                edge_clearance=edge_clearance,
+                hole_clearance=hole_clearance,
+            )
+
+        monkeypatch.setattr(pipeline, "build_pair_obstacles", spy)
+        top = kipy_track("top", "SIG", (2.0, -3.0), (8.0, -3.0), width=PAIR_WIDTH)
+        down = kipy_track(
+            "down",
+            "SIG",
+            (8.0, -3.0),
+            (12.0, -3.0),
+            width=PAIR_WIDTH,
+            layer=BL.BL_B_Cu,
+        )
+        moving, still = kipy_via("v", "SIG", 8.0, -3.0), kipy_via("w", "GND", 4.0, -5.0)
+        board = pair_board()
+        board.selection = [*board.selection, top, down, moving]
+        board.tracks = [*board.tracks, top, down]
+        board.vias = [moving, still]
+        connect.to(board)
+
+        run("--dry-run", "--no-drc")
+
+        assert any("1 moving via" in line for line in log)
+        assert seen == [{"w"}]
+
+    def test_section_with_copper_between_its_ends_is_held(
+        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stub = kipy_track(
+            "stub", "USB_D+", (2.5, PAIR_HALF_PITCH), (2.5, 2.0), width=PAIR_WIDTH
+        )
+        connect.to(pair_board(extra=[stub]))
+
+        run("--dry-run")
+
+        assert "1 coupled section held" in capsys.readouterr().out
+
+    def test_netclass_gap_unlike_the_measured_one_warns(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pair_board(diff_pair_gap=0.2))
+
+        run("--dry-run")
+
+        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
+        assert "0.150" in warning and "0.200" in warning
+
+    def test_via_on_a_pair_track_stays_fixed(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(with_via_at_the_fan_out(pair_board()))
+
+        run()
+
+        assert created_vias(board) == []
+        assert "v" not in board.deleted
+        (warning,) = [w for w in log if "Via v" in w]
+        assert "differential pair USB_D+ and USB_D-" in warning
+        assert all(by_net(board).values())
+
+    @pytest.mark.parametrize("unpaired", ["far", "wide"])
+    def test_via_on_a_chain_that_does_not_pair_may_move(
+        self, connect: Connector, log: list[str], unpaired: str
+    ) -> None:
+        board = pair_board()
+        apart = PAIR_SECOND_TRACK if unpaired == "far" else 0.0
+        width = PAIR_WIDTH if unpaired == "far" else PAIR_WIDER
+        board.tracks = [
+            t
+            if t.net.name == "USB_D+"
+            else kipy_track(
+                t.id.value,
+                "USB_D-",
+                (t.start.x / 1e6, t.start.y / 1e6 - apart),
+                (t.end.x / 1e6, t.end.y / 1e6 - apart),
+                width=width,
+            )
+            for t in board.tracks
+        ]
+        board.selection = list(board.tracks)
+        connect.to(with_via_at_the_fan_out(board))
+
+        run("--dry-run", "--no-drc")
+
+        assert not any("Via v" in w for w in log)
+        assert any("1 moving via" in line for line in log)
+
+    @pytest.mark.parametrize(
+        ("too_close", "hold"), [(0, Hold.CROWDING), (1, Hold.FOLDING)]
+    )
+    def test_section_left_bent_too_tightly_is_held_in_a_second_run(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        too_close: int,
+        hold: Hold,
+    ) -> None:
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        held: list[list[Hold | None]] = []
+
+        def too_tight(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            sections = cast(Sequence[PairInput], kwargs["pairs"])
+            held.append([s.hold for s in sections])
+            pairs = tuple(
+                p
+                if p.block.held
+                else replace(
+                    p,
+                    bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True),
+                    too_close=too_close,
+                )
+                for p in result.pairs
+            )
+            return replace(result, pairs=pairs)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
+        board = connect.to(pair_board())
+
+        run()
+
+        assert held == [[None], [hold]]
+        # Its fan-outs are straight already, so the pair stays as it was.
+        assert board.calls == []
+        (warning,) = [w for w in log if "too tight" in w]
+        assert warning.startswith("WARNING")
+        assert hold.value in warning and "again" in warning
+
+    def test_a_second_run_reports_only_its_own_abandoned_chains(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+
+        def gives_up(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            pairs = tuple(
+                p
+                if p.block.held
+                else replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
+                for p in result.pairs
+            )
+            abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
+            return replace(result, pairs=pairs, gave_up=(abandoned,))
+
+        monkeypatch.setattr(pipeline, "optimize_chains", gives_up)
+        connect.to(pair_board())
+
+        run("--dry-run", "--no-drc")
+
+        (warning,) = [w for w in log if "Gave up" in w]
+        assert warning.startswith("WARNING") and ABANDONED in warning
+
+    def test_dry_run_plot_shows_both_tracks_of_the_pair(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        drawn: list[str] = []
+
+        def render(path: Path, panels: Sequence[plot.Panel]) -> None:
+            drawn.extend(p.title for p in panels)
+
+        monkeypatch.setattr(plot, "render", render)
+        board = connect.to(pair_board())
+
+        run("--dry-run", f"--plot={tmp_path / 'pair.png'}")
+
+        assert len(drawn) == 2
+        assert all("pair with" in title for title in drawn)
+        assert board.calls == []
+
+
+ROUND_OFF = 1e-12
+
+
+PAIR_BOARD_TRACKS = 6
+"""Per net on `pair_board`, as measured at default and coarse settings: its
+fan-out and five through the S-bend."""
+
+
+def pair_tracks_at(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, clearance: float
+) -> tuple[dict[str, list[LineString]], list[Simplified]]:
+    """The tracks committed for `pair_board` with netclass `clearance`, and
+    the run's calls of `simplify_chains`."""
+    calls = spy_simplify(monkeypatch)
+    board = pair_board()
+    usb = netclass("USB", clearance, PAIR_GAP)
+    board.netclasses = {"USB_D+": usb, "USB_D-": usb}
+    connect.to(board)
+    run("--no-drc")
+    return by_net(board), calls
+
+
+@pytest.mark.parametrize(
+    "settings", [DEFAULT_SETTINGS, COARSE], ids=["default", "coarse"]
+)
+def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, settings: OptimizerSettings
+) -> None:
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
+    )
+
+    tracks, calls = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+
+    p, n = tracks.values()
+    assert len(p) <= PAIR_BOARD_TRACKS and len(n) <= PAIR_BOARD_TRACKS
+    gap = unary_union(p).distance(unary_union(n)) - PAIR_WIDTH
+    assert gap >= PAIR_GAP - NM_ROUNDING
+    # Offset from one simplified centreline, the tracks keep the optimised
+    # tracks' gap.
+    (call,) = calls
+    for i, result in zip(call.sections, call.run.pairs, strict=True):
+        assert gap_range(*call.tracks(i), PAIR_WIDTH) == pytest.approx(
+            gap_range(result.a, result.b, PAIR_WIDTH), abs=ROUND_OFF
+        )
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_a_clearance_equal_to_the_gap_costs_a_pair_no_tracks(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    below, _ = pair_tracks_at(connect, monkeypatch, PAIR_CLEARANCE)
+    equal, _ = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+
+    assert [len(lines) for lines in equal.values()] == [
+        len(lines) for lines in below.values()
+    ]
+
+
+@dataclass
+class Simplified:
+    """One call of `simplify_chains`: its run, sections, tolerance and result."""
+
+    run: RunResult
+    sections: Mapping[int, PairBlock]
+    tolerance: float
+    result: list[FloatArray]
+
+    def tracks(self, i: int) -> tuple[FloatArray, FloatArray]:
+        """Section i's tracks as simplified."""
+        return self.sections[i].offset_kept(self.run.chains[i].polyline, self.result[i])
+
+
+def spy_simplify(monkeypatch: pytest.MonkeyPatch) -> list[Simplified]:
+    calls: list[Simplified] = []
+    real = pipeline.simplify_chains
+
+    def spy(
+        chains: Sequence[ChainInput],
+        run: RunResult,
+        params: EnergyParams,
+        tolerance: float,
+        *,
+        sections: Mapping[int, PairBlock],
+    ) -> list[FloatArray]:
+        result = real(chains, run, params, tolerance, sections=sections)
+        calls.append(Simplified(run, sections, tolerance, result))
+        return result
+
+    monkeypatch.setattr(pipeline, "simplify_chains", spy)
+    return calls
+
+
+def unit(step: FloatArray) -> FloatArray:
+    return step / float(np.linalg.norm(step))
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_simplified_sections_meet_their_fan_outs_where_and_about_as_they_did(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = spy_simplify(monkeypatch)
+    connect.to(pair_board())
+
+    run("--dry-run", "--no-drc")
+
+    (call,) = calls
+    ((i, block),) = call.sections.items()
+    # A merged edge passes through the direction pin, a spacing in from the
+    # end along the end's direction, to within float round-off.
+    turn = math.asin(INSIDE_TOLERANCE / COARSE.spacing) + ROUND_OFF
+    for given, simplified in zip(
+        (block.given.a.points, block.given.b.points), call.tracks(i), strict=True
+    ):
+        np.testing.assert_array_equal(simplified[[0, -1]], given[[0, -1]])
+        for line, before in ((simplified, given), (simplified[::-1], given[::-1])):
+            cosine = float(unit(line[1] - line[0]) @ unit(before[1] - before[0]))
+            assert math.acos(min(cosine, 1.0)) <= turn
+
+
+SPLIT_SECTIONS = ((0.0, 4.0), (6.0, 11.0))
+"""x ranges of the two straight coupled sections of `split_pair_board`."""
+SPLIT_DETOUR = 1.2
+
+
+def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
+    """Pair USB_D+/USB_D- fanned out at both ends, coupled along y = 0 in
+    two straight sections, split by a detour of each track outward; the
+    second section at `second_gap`."""
+    h, h2 = PAIR_HALF_PITCH, (second_gap + PAIR_WIDTH) / 2
+    (start, split), (rejoin, end) = SPLIT_SECTIONS
+    tracks: list[kbt.Track] = []
+    for net, side, prefix in (("USB_D+", 1.0, "p"), ("USB_D-", -1.0, "n")):
+        points = [
+            (start - 1.0, side * (1.0 + h)),
+            (start, side * h),
+            (split, side * h),
+            (split + 0.5, side * SPLIT_DETOUR),
+            (rejoin - 0.5, side * SPLIT_DETOUR),
+            (rejoin, side * h2),
+            (end, side * h2),
+            (end + 1.0, side * (1.0 + h2)),
+        ]
+        tracks += [
+            kipy_track(f"{prefix}{k + 1}", net, a, b, width=PAIR_WIDTH)
+            for k, (a, b) in enumerate(itertools.pairwise(points))
+        ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_straight_coupled_sections_commit_as_one_track_per_net(
+    connect: Connector,
+) -> None:
+    board = connect.to(split_pair_board())
+
+    run("--no-drc")
+
+    for net, lines in by_net(board).items():
+        y = PAIR_HALF_PITCH if net == "USB_D+" else -PAIR_HALF_PITCH
+        coupled = sorted(
+            tuple(round(x, 6) for x, _ in line.coords)
+            for line in lines
+            if all(abs(ys - y) < NM_ROUNDING for _, ys in line.coords)
+        )
+        assert coupled == list(SPLIT_SECTIONS)
+
+
+BENT_PAIR = ((0.0, 0.0), (5.0, 0.0), (10.0, 5.0))
+"""Centreline of a pair turning once, so that its tracks differ in length."""
+
+
+def vertices(points: FloatArray) -> list[tuple[float, float]]:
+    return [(float(x), float(y)) for x, y in points]
+
+
+BUS_CENTRE = ((0.0, 0.0), (5.0, 0.0), (8.0, 3.0), (13.0, 3.0))
+BUS_NETS = (("USB_D+", "USB_D-"), ("ETH_P", "ETH_N"))
+BUS_MARGIN = 1e-4
+"""mm beyond clearance between the two pairs of `bus_board`."""
+
+
+def bus_board(margin: float = BUS_MARGIN) -> CommitBoard:
+    """Two pairs side by side along `BUS_CENTRE`, without fan-outs, `margin`
+    beyond a netclass clearance equal to their gap."""
+    apart = 2 * PAIR_WIDTH + PAIR_GAP + PAIR_GAP + margin
+    first = np.array(BUS_CENTRE)
+    second, _ = offset_pair(first, 2 * apart, 0.0)
+    tracks: list[kbt.Track] = []
+    for centre, nets in zip((first, second), BUS_NETS, strict=True):
+        pair = offset_pair(centre, PAIR_GAP, PAIR_WIDTH)
+        for net, track in zip(nets, pair, strict=True):
+            tracks += [
+                kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+                for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+            ]
+    bus = netclass("BUS", PAIR_GAP, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={net: bus for nets in BUS_NETS for net in nets},
+    )
+
+
+@pytest.mark.parametrize(
+    ("margin", "settings"),
+    [
+        (BUS_MARGIN, COARSE),
+        (0.02, COARSE),
+        # Slow: the default spacing takes about 9 s on this layout.
+        pytest.param(BUS_MARGIN, DEFAULT_SETTINGS, marks=pytest.mark.slow),
+    ],
+    ids=["coarse", "coarse-margin", "default"],
+)
+def test_two_pairs_at_clearance_both_smooth_and_simplify(
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    log: list[str],
+    margin: float,
+    settings: OptimizerSettings,
+) -> None:
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
+    )
+    board = connect.to(bus_board(margin))
+
+    run("--no-drc")
+
+    lines = {net: by_net(board, nets)[net] for nets in BUS_NETS for net in nets}
+    straight = len(BUS_CENTRE) - 1
+    assert all(len(tracks) > straight for tracks in lines.values())
+    for a, b in BUS_NETS:
+        assert len(lines[a]) == len(lines[b])
+    assert not any("unsimplified" in line or "inside" in line for line in log)
+    usb = unary_union([*lines["USB_D+"], *lines["USB_D-"]])
+    eth = unary_union([*lines["ETH_P"], *lines["ETH_N"]])
+    assert usb.distance(eth) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
+
+
+NARROWER_GAP = 0.14
+"""Of the second section of a split pair: within the pair's tolerance."""
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_reports_the_gap_range_over_every_section(
+    connect: Connector, capsys: pytest.CaptureFixture[str]
+) -> None:
+    connect.to(split_pair_board(NARROWER_GAP))
+
+    run("--dry-run", "--no-drc")
+
+    _, gap_after = row(capsys.readouterr().out, "Gap (mm)")
+    assert gap_after == f"{NARROWER_GAP:.3f}-{PAIR_GAP:.3f}"
+
+
+def routed_too_tightly_board() -> CommitBoard:
+    """Pair USB_D+/USB_D- turning 90° in a chamfer so short that its
+    centreline bends tighter than the inner track allows."""
+    turn = (5.0, 0.0)
+    centre = np.array(
+        [
+            (0.0, 0.0),
+            turn,
+            (turn[0] + SHORT_CHAMFER, SHORT_CHAMFER),
+            (turn[0] + SHORT_CHAMFER, 5.0),
+        ]
+    )
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, track in zip(
+            USB, offset_pair(centre, PAIR_GAP, PAIR_WIDTH), strict=True
+        )
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+    ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+SHORT_CHAMFER = 0.14
+"""mm along each axis: a bend radius of about 0.24 mm, below the 0.275 mm
+limit, with the inner track's chamfer still of positive length."""
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_a_section_routed_too_tightly_is_held_with_a_warning(
+    connect: Connector, log: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    connect.to(routed_too_tightly_board())
+
+    run("--dry-run", "--no-drc")
+
+    assert "1 coupled section held" in capsys.readouterr().out
+    (warning,) = [w for w in log if Hold.ROUTING.value in w]
+    assert warning.startswith("WARNING") and "radius of" in warning
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_a_chain_beside_a_pair_at_clearance_does_not_freeze_it(
+    connect: Connector, log: list[str]
+) -> None:
+    first = np.array(BUS_CENTRE)
+    apart = PAIR_WIDTH + PAIR_GAP / 2 + CLEARANCE + PAIR_WIDTH / 2 + BUS_MARGIN
+    side, _ = offset_pair(first, 2 * apart, 0.0)
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, points in (
+            *zip(USB, offset_pair(first, PAIR_GAP, PAIR_WIDTH), strict=True),
+            ("SIG", side),
+        )
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(points)))
+    ]
+    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    board = connect.to(
+        CommitBoard(
+            selection=list(tracks),
+            tracks=list(tracks),
+            netclasses={"USB_D+": usb, "USB_D-": usb},
+        )
+    )
+
+    run("--no-drc")
+
+    assert not any("inside" in line for line in log)
+    assert all(len(lines) > len(BUS_CENTRE) - 1 for lines in by_net(board).values())
+
+
+CROWDED_PAIR = ((0.0, 0.0), (3.0, 0.0), (4.8, 1.8), (7.8, 1.8), (7.8, 4.8))
+"""Centreline of a pair with an S-bend and then a sharp corner."""
+CROWDED_PAD = (7.175, 2.425)
+"""A GND pad inside the sharp corner, at the pair's clearance, which keeps
+the pair from rounding the corner that resampling cuts too tightly."""
+SIDE_CHAIN = ((0.6, 0.0), (3.0, 0.0), (4.8, 1.8), (7.2, 1.8))
+SIDE_OFFSET = 0.62
+"""Of the selected SIG chain beside the S-bend, outside the bend."""
+CROWDED_FAN = 0.6
+FINE = OptimizerSettings(spacing=0.15, burst_maxiter=30, max_iterations=30)
+"""Coarser settings round the corner cleanly."""
+
+
+@pytest.mark.slow
+def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # Slow: only spacings as fine as this cut the corner too tightly, and the
+    # run then repeats with the section held, about 2 s in all.
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", partial(optimize_chains, settings=FINE)
+    )
+    p, n = offset_pair(np.array(CROWDED_PAIR), PAIR_GAP, PAIR_WIDTH)
+    x, y = CROWDED_PAIR[0]
+    fanned = {
+        "USB_D+": [(x - CROWDED_FAN, y + PAIR_HALF_PITCH + CROWDED_FAN), *vertices(p)],
+        "USB_D-": [(x - CROWDED_FAN, y - PAIR_HALF_PITCH - CROWDED_FAN), *vertices(n)],
+    }
+    _, side = offset_pair(np.array(SIDE_CHAIN), 2 * SIDE_OFFSET, 0.0)
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, points in (*fanned.items(), ("SIG", vertices(side)))
+        for k, (start, end) in enumerate(itertools.pairwise(points))
+    ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    board = connect.to(
+        CommitBoard(
+            selection=list(tracks),
+            tracks=list(tracks),
+            pads=[kipy_pad("pad", "GND", *CROWDED_PAD)],
+            netclasses={"USB_D+": usb, "USB_D-": usb},
+        )
+    )
+
+    run("--no-drc")
+
+    assert any(Hold.CROWDING.value in line for line in log)
+    created = cast(list[kbt.Track], board.created)
+    final = {
+        net: unary_union([segment(t) for t in created if t.net.name == net])
+        or LineString(points)
+        for net, points in (*fanned.items(), ("SIG", vertices(side)))
+    }
+    # The section's tracks stay as routed; at most the fan-outs change.
+    for net, points in fanned.items():
+        coupled = LineString(points[1:])
+        assert coupled.difference(final[net].buffer(NM_ROUNDING)).is_empty
+    assert not final["SIG"].equals(LineString(vertices(side)))
+    pair = unary_union([final[net] for net in fanned])
+    assert final["SIG"].distance(pair) - PAIR_WIDTH >= CLEARANCE - NM_ROUNDING
+
+
+STUB_GAP = 0.138
+"""The gap of a pair's 1 mm end stubs, unlike the 0.150 mm between them."""
+STUB = 1.0
+STUBBED_LENGTH = 10.0
+STUB_JOG = 0.1
+"""How long, along the pair, each track takes to step between the gaps."""
+TAPER_REACH = 2.0
+TAPER_SAMPLES = 50
+"""mm from each end within which the gap may still follow the stubs':
+the stub, the jog and the taper the optimizer turns the step into."""
+
+
+def stubbed_pair_board() -> CommitBoard:
+    """Pair USB_D+/USB_D- along y = 0, at `STUB_GAP` over `STUB` at each end
+    and at `PAIR_GAP` between."""
+    end, middle = (STUB_GAP + PAIR_WIDTH) / 2, PAIR_HALF_PITCH
+    far = STUBBED_LENGTH
+    tracks: list[kbt.Track] = []
+    for net, side in zip(USB, (1.0, -1.0), strict=True):
+        points = [
+            (0.0, side * end),
+            (STUB, side * end),
+            (STUB + STUB_JOG, side * middle),
+            (far - STUB - STUB_JOG, side * middle),
+            (far - STUB, side * end),
+            (far, side * end),
+        ]
+        tracks += [
+            kipy_track(f"{net}{k}", net, a, b, width=PAIR_WIDTH)
+            for k, (a, b) in enumerate(itertools.pairwise(points))
+        ]
+    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
+    connect: Connector,
+) -> None:
+    board = connect.to(stubbed_pair_board())
+
+    run("--no-drc")
+
+    p, n = (unary_union(lines) for lines in by_net(board).values())
+    middle = box(TAPER_REACH, -FAR, STUBBED_LENGTH - TAPER_REACH, FAR)
+    inner = p.intersection(middle)
+    assert not inner.is_empty
+    gaps = [
+        n.distance(inner.interpolate(d)) - PAIR_WIDTH
+        for d in np.linspace(0.0, inner.length, TAPER_SAMPLES)
+    ]
+    assert gaps == pytest.approx([PAIR_GAP] * len(gaps), abs=NM_ROUNDING)
+
+
+PARALLEL = 1e-6
+"""rad: the most a segment of one track may turn from the other's."""
+
+
+def corner_board(*centre: tuple[float, float]) -> CommitBoard:
+    """Pair USB_D+/USB_D- along `centre`, at clearance below its gap."""
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, track in zip(
+            USB, offset_pair(np.array(centre), PAIR_GAP, PAIR_WIDTH), strict=True
+        )
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+    ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+PAIRED_BOARDS: dict[str, Callable[[], CommitBoard]] = {
+    "bus": bus_board,
+    "pair_board": pair_board,
+    "90": partial(corner_board, (0.0, 0.0), (5.0, 0.0), (5.0, 5.0)),
+    "135": partial(corner_board, (0.0, 0.0), (5.0, 0.0), (1.5, 3.5)),
+}
+
+
+@pytest.mark.parametrize(
+    ("layout", "settings"),
+    [
+        *((name, COARSE) for name in PAIRED_BOARDS),
+        *(
+            (name, DEFAULT_SETTINGS)
+            if name != "bus"
+            # Slow: the bus takes about 9 s at the default spacing.
+            else pytest.param(name, DEFAULT_SETTINGS, marks=pytest.mark.slow)
+            for name in PAIRED_BOARDS
+        ),
+    ],
+    ids=[
+        *(f"{n}-coarse" for n in PAIRED_BOARDS),
+        *(f"{n}-default" for n in PAIRED_BOARDS),
+    ],
+)
+def test_coupled_tracks_commit_segment_for_segment_in_parallel(
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    layout: str,
+    settings: OptimizerSettings,
+) -> None:
+    # As KiCad's router expects of a pair: otherwise a later edit of it in
+    # KiCad no longer treats it as coupled.
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", partial(optimize_chains, settings=settings)
+    )
+    calls = spy_simplify(monkeypatch)
+    board = connect.to(PAIRED_BOARDS[layout]())
+
+    run("--no-drc")
+
+    (call,) = calls
+    created = cast(list[kbt.Track], board.created)
+    for i, block in call.sections.items():
+        a, b = call.tracks(i)
+        assert len(a) == len(b)
+        optimised = call.run.chains[i].polyline
+        gaps = block.gaps.at(optimised)[
+            [
+                int(np.flatnonzero((optimised == v).all(axis=1))[0])
+                for v in call.result[i]
+            ]
+        ]
+        for k in np.flatnonzero(np.diff(gaps) == 0.0):
+            turn = unit(a[k + 1] - a[k]) @ unit(b[k + 1] - b[k])
+            assert math.acos(min(float(turn), 1.0)) <= PARALLEL
+        for track, net in ((a, block.given.a.net), (b, block.given.b.net)):
+            on_track = [
+                t
+                for t in created
+                if t.net.name == net
+                and all(
+                    np.hypot(*(track - point).T).min() <= NM_ROUNDING
+                    for point in segment(t).coords
+                )
+            ]
+            assert len(on_track) == len(track) - 1
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_a_pair_whose_tracks_cross_is_not_committed(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    real = pipeline.simplify_chains
+
+    def folded(
+        chains: Sequence[ChainInput],
+        run: RunResult,
+        params: EnergyParams,
+        tolerance: float,
+        *,
+        sections: Mapping[int, PairBlock],
+    ) -> list[FloatArray]:
+        result = real(chains, run, params, tolerance, sections=sections)
+        for i, block in sections.items():
+            optimised = run.chains[i].polyline
+            last = len(optimised) - 1
+            # Some order of a few of its vertices where its tracks cross.
+            result[i] = next(
+                kept
+                for j, k in itertools.permutations(range(1, last), 2)
+                if LineString(
+                    (
+                        tracks := block.offset_kept(
+                            optimised, kept := optimised[[0, j, k, last]]
+                        )
+                    )[0]
+                ).intersects(LineString(tracks[1]))
+            )
+        return result
+
+    monkeypatch.setattr(pipeline, "simplify_chains", folded)
+    board = connect.to(pair_board())
+
+    message = exit_message(log, "--no-drc")
+
+    assert "USB_D+ and USB_D-" in message and "come within" in message
+    assert board.calls == []
+
+
+V_LEG = 5.0
+"""mm of the leg the pair turns back along."""
+V_REPULSION = "0.5"
+
+
+def v_board(turn: float) -> CommitBoard:
+    """Pair USB_D+/USB_D- turning back by `turn` degrees, with a GND pad
+    inside the V halfway along its legs."""
+    apex = np.array([4.0, 0.0])
+    angle = math.radians(turn)
+    back = np.array([math.cos(angle), math.sin(angle)])
+    centre = np.array([(0.0, 0.0), tuple(apex), tuple(apex + V_LEG * back)])
+    pad = apex + V_LEG / 2 * (np.array([-1.0, 0.0]) + back) / 2
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, track in zip(
+            USB, offset_pair(centre, PAIR_GAP, PAIR_WIDTH), strict=True
+        )
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+    ]
+    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        pads=[kipy_pad("pad", "GND", float(pad[0]), float(pad[1]))],
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+@pytest.mark.slow
+def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
+    connect: Connector, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Slow: only the default spacing collapsed the V, in about 4 s.
+    board = connect.to(v_board(150.0))
+
+    run("--no-drc", f"--repulsion={V_REPULSION}")
+
+    _, gap_after = row(capsys.readouterr().out, "Gap (mm)")
+    assert gap_after == f"{PAIR_GAP:.3f}-{PAIR_GAP:.3f}"
+    p, n = (unary_union(lines) for lines in by_net(board).values())
+    assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
+
+
+@pytest.mark.slow
+def test_a_pair_left_closer_than_it_keeps_is_not_committed(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # Slow: without its self-clearance the V collapses only at the default
+    # spacing, in about 13 s.
+    def unchecked(points: FloatArray, apart: float) -> tuple[IntArray, FloatArray]:
+        return np.empty((0, 2), dtype=np.intp), np.empty(0)
+
+    monkeypatch.setattr(optimize_module, "close_to_itself", unchecked)
+    board = connect.to(v_board(170.0))
+
+    message = exit_message(log, "--no-drc", f"--repulsion={V_REPULSION}")
+
+    assert "USB_D+ and USB_D-" in message and "come within" in message
+    assert board.calls == []
+
+
+@pytest.mark.slow
+def test_a_pair_turning_back_closely_is_left_as_routed(
+    connect: Connector, log: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Slow: about 13 s at the default spacing, where its legs drew together.
+    real: Callable[..., tuple[BoolArray, int]] = optimize_module.revert_until_clear
+    fallbacks: list[int] = []
+
+    def watched(
+        candidate: FloatArray, start: FloatArray, crossings: Crossings
+    ) -> tuple[BoolArray, int]:
+        moved_back = np.zeros(len(candidate), dtype=bool)
+
+        def watching(points: FloatArray) -> tuple[int, BoolArray]:
+            count, back = crossings(points)
+            if count and not (back & ~moved_back).any():
+                fallbacks.append(count)
+            moved_back[:] |= back
+            return count, back
+
+        return real(candidate, start, watching)
+
+    monkeypatch.setattr(optimize_module, "revert_until_clear", watched)
+    board = connect.to(v_board(170.0))
+
+    with contextlib.suppress(SystemExit):
+        run("--no-drc", f"--repulsion={V_REPULSION}")
+
+    # Every pair that comes too close is clear again once moved back, so
+    # no burst is undone whole.
+    assert fallbacks == []
+
+    assert board.calls == []
+    assert any(
+        "USB_D+" in line and ("come within" in line or "as they are" in line)
+        for line in log
+    )
+
+
+SPIRAL_GAP = 0.1
+SPIRAL_CLEARANCE = 0.2
+"""Above the pair's gap, as custom rules let a pair route closer than its
+nets' clearance."""
+SPIRAL_LAP = 2 * PAIR_WIDTH + SPIRAL_GAP + SPIRAL_CLEARANCE
+"""mm between the laps' centrelines: one lap's tracks keep exactly their
+clearance from the next's."""
+SPIRAL_SIDE = 6.0
+SPIRAL_ALONG = 5.0
+"""mm along the tracks within which they face each other as a pair, not
+across laps: well under a lap."""
+SPIRAL_SAMPLE = 0.02
+
+
+def spiral(lap: float) -> FloatArray:
+    """Two laps of a square spiral winding inwards, `lap` apart."""
+    corners = [(0.0, 0.0)]
+    for k in range(2):
+        near, far = k * lap, SPIRAL_SIDE - k * lap
+        corners += [(far, near), (far, far), (near, far), (near, near + lap)]
+    return np.array(corners)
+
+
+def spiral_board() -> CommitBoard:
+    """Pair USB_D+/USB_D- winding two laps of a square spiral inwards."""
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
+        for net, track in zip(
+            USB, offset_pair(spiral(SPIRAL_LAP), SPIRAL_GAP, PAIR_WIDTH), strict=True
+        )
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+    ]
+    usb = netclass("USB", SPIRAL_CLEARANCE, SPIRAL_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={"USB_D+": usb, "USB_D-": usb},
+    )
+
+
+def across_laps(p: LineString, n: LineString) -> float:
+    """The smallest edge-to-edge gap between p and n where they lie more
+    than SPIRAL_ALONG apart along themselves, sampled."""
+    lines = [shapely.segmentize(line, SPIRAL_SAMPLE) for line in (p, n)]
+    a, b = (shapely.get_coordinates(line) for line in lines)
+    along_a, along_b = (
+        np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
+        for c in (a, b)
+    )
+    distance = np.hypot(*(a[:, None] - b[None]).transpose(2, 0, 1))
+    beyond = np.abs(along_a[:, None] - along_b[None]) > SPIRAL_ALONG
+    return float(distance[beyond].min()) - PAIR_WIDTH
+
+
+@pytest.mark.parametrize("chord", ["0.025", "0.1"])
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_a_spiral_pair_keeps_its_clearance_across_laps(
+    connect: Connector, log: list[str], chord: str
+) -> None:
+    board = connect.to(spiral_board())
+
+    with contextlib.suppress(SystemExit):
+        run("--no-drc", f"--chord-tolerance={chord}")
+
+    # Refused, or held as routed, it commits nothing; which one depends on
+    # the platform's floating point.
+    committed = by_net(board)
+    if not any(committed.values()):
+        assert board.calls == []
+        return
+    p, n = (linemerge(lines) for lines in committed.values())
+    assert isinstance(p, LineString) and isinstance(n, LineString)
+    assert across_laps(p, n) >= SPIRAL_CLEARANCE - NM_ROUNDING
+
+
+PINCH_LEG = 10.0
+PINCH_APART = 2 * PAIR_WIDTH + SPIRAL_GAP + SPIRAL_CLEARANCE
+"""How far apart the run keeps a section's parts beyond a turn: its outer
+extent plus clearance."""
+PINCH_MARGIN = 0.001
+"""mm by which a result's gap misses its floor, well above round-off."""
+
+
+def section(
+    gap: float, clearance: float, other_clearance: float | None = None
+) -> PairInput:
+    """A straight section of pair USB_D+/USB_D- routed at `gap`."""
+    a, b = offset_pair(np.array([(0.0, 0.0), (PINCH_LEG, 0.0)]), gap, PAIR_WIDTH)
+    fixed = np.zeros(len(a), dtype=bool)
+    return PairInput(
+        ChainCentreline("P", USB[0], PAIR_WIDTH, clearance, a),
+        ChainCentreline("N", USB[1], PAIR_WIDTH, other_clearance or clearance, b),
+        fixed,
+        fixed,
+        gap,
+        "F.Cu",
+        FreeSpace(),
+    )
+
+
+def pinched(
+    given: PairInput, *centreline: tuple[float, float], gap: float
+) -> str | None:
+    tracks = offset_pair(np.array(centreline), gap, PAIR_WIDTH)
+    return pipeline._pinched([given], [PINCH_APART], [tracks])  # pyright: ignore[reportPrivateUsage]
+
+
+STRAIGHT = ((0.0, 0.0), (PINCH_LEG, 0.0))
+
+
+def test_a_pair_may_come_closer_than_routed_down_to_its_clearance() -> None:
+    given = section(PAIR_GAP, PAIR_CLEARANCE)
+
+    assert pinched(given, *STRAIGHT, gap=PAIR_CLEARANCE) is None
+
+
+def test_a_pair_may_not_come_closer_than_the_larger_of_its_clearances() -> None:
+    wide = SPIRAL_CLEARANCE + PAIR_GAP
+    given = section(wide, PAIR_CLEARANCE, SPIRAL_CLEARANCE)
+
+    message = pinched(given, *STRAIGHT, gap=SPIRAL_CLEARANCE - PINCH_MARGIN)
+
+    assert message is not None and f"{SPIRAL_CLEARANCE:.4f} mm" in message
+
+
+def test_a_pair_routed_below_its_clearance_may_not_come_closer_still() -> None:
+    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
+
+    message = pinched(given, *STRAIGHT, gap=SPIRAL_GAP - PINCH_MARGIN)
+
+    assert message is not None and f"{SPIRAL_GAP:.4f} mm" in message
+
+
+def test_a_pair_routed_below_its_clearance_keeps_it_across_a_turn() -> None:
+    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
+    # Each leg's inner track lies as far from the other leg's outer track,
+    # of the other net, as the legs' centrelines lie apart.
+    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - PINCH_MARGIN
+    u_turn = ((0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (0.0, legs))
+
+    message = pinched(given, *u_turn, gap=SPIRAL_GAP)
+
+    assert message is not None and "across a turn" in message
+
+
+@pytest.mark.parametrize(
+    ("turn", "width", "gap", "clearance"),
+    [(150.0, 0.2, 0.1, 0.2), (135.0, 0.1, 0.1, 0.3), (150.0, 0.1, 0.1, 0.3)],
+)
+def test_a_sharp_pair_held_as_routed_is_not_refused(
+    connect: Connector,
+    log: list[str],
+    turn: float,
+    width: float,
+    gap: float,
+    clearance: float,
+) -> None:
+    angle = math.radians(turn)
+    centre = np.array(
+        [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0 + V_LEG * math.cos(angle), V_LEG * math.sin(angle)),
+        ]
+    )
+    p, n = offset_pair(centre, gap, width)
+    tracks = [
+        kipy_track(f"{net}{k}", net, start, end, width=width)
+        for net, track in zip(USB, (p, n), strict=True)
+        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
+    ]
+    # Same-net copper on P between the section's ends holds it as routed.
+    held_by = kipy_pad("pad", USB[0], 1.0, float(p[0, 1]))
+    usb = netclass("USB", clearance, gap)
+    board = connect.to(
+        CommitBoard(
+            selection=list(tracks),
+            tracks=list(tracks),
+            pads=[held_by],
+            netclasses={"USB_D+": usb, "USB_D-": usb},
+        )
+    )
+
+    run("--no-drc")
+
+    assert not any(line.startswith("ERROR") for line in log)
+    assert board.calls == []
+
+
+def test_a_pair_routed_closer_than_its_clearance_across_a_turn_may_stay_so() -> None:
+    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - PINCH_MARGIN
+    given, u_turn = u_section(legs, SPIRAL_GAP, SPIRAL_CLEARANCE)
+    shift = np.array([PINCH_MARGIN, 0.0])
+
+    assert pinched(given, *(u_turn + shift), gap=SPIRAL_GAP) is None
+
+
+def u_section(
+    legs: float, gap: float, clearance: float
+) -> tuple[PairInput, FloatArray]:
+    """A section routed as a 10 mm U with its legs `legs` apart, and that U."""
+    u_turn = np.array([(0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (0.0, legs)])
+    a, b = offset_pair(u_turn, gap, PAIR_WIDTH)
+    straight = section(gap, clearance)
+    return (
+        replace(
+            straight,
+            a=replace(straight.a, points=a),
+            b=replace(straight.b, points=b),
+        ),
+        u_turn,
+    )
+
+
+HOOK_BACK = 0.2
+"""mm a hook runs back beside itself before turning away."""
+HOOK_SHORT = 0.01
+"""mm by which the hook's legs fall short of clearance across."""
+
+
+def test_a_hook_s_turn_is_side_by_side_within_half_a_circle() -> None:
+    # Its two short legs lie farther apart along it than its outer extent
+    # plus clearance, but within the half circle of that width.
+    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
+    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - HOOK_SHORT
+    back = PINCH_LEG - HOOK_BACK
+    hook = ((0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (back, legs), (back, 5.0))
+
+    assert pinched(given, *hook, gap=SPIRAL_GAP) is None
+
+
+def test_a_pair_keeps_its_side_by_side_gap_though_closer_across_a_turn() -> None:
+    wide = 3 * SPIRAL_GAP
+    clearance = 2 * wide
+    # One lap's tracks face the next's closer than each other.
+    laps = spiral(2 * PAIR_WIDTH + 2 * wide - SPIRAL_GAP)
+    a, b = offset_pair(laps, wide, PAIR_WIDTH)
+    straight = section(wide, clearance)
+    given = replace(
+        straight, a=replace(straight.a, points=a), b=replace(straight.b, points=b)
+    )
+
+    message = pinched(given, *laps, gap=wide - PINCH_MARGIN)
+
+    assert message is not None and "across" not in message
