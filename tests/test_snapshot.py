@@ -185,6 +185,18 @@ class TestCopperOnLayer:
         assert back.shape is None
         assert back.drill == 0
 
+    def test_pad_shapes_are_read_for_the_snapshot_layer(self) -> None:
+        pads = [
+            kipy_pad("front", "GND", 2, 3),
+            kipy_pad("back", "GND", 5, 5, layers=(BL.BL_B_Cu,)),
+        ]
+
+        front, back = layer_snapshot(FakeBoard(pads=pads), "B.Cu").pads
+
+        assert front.shape is None
+        assert back.shape is not None
+        assert back.shape.centroid.coords[0] == pytest.approx((5, 5))
+
     def test_pad_shape_fallback_fills_every_pad_when_the_batch_drops_one(
         self,
     ) -> None:

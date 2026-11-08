@@ -374,10 +374,13 @@ class FakeBoard:
 
     def get_pad_shapes_as_polygons(
         self, pads: kbt.Pad | Sequence[kbt.Pad], layer: int
-    ) -> PolygonWithHoles | list[PolygonWithHoles]:
+    ) -> PolygonWithHoles | list[PolygonWithHoles] | None:
+        """A square around each pad on the layers its padstack lists."""
         self.reads["get_pad_shapes_as_polygons"] += 1
 
-        def shape(p: kbt.Pad) -> PolygonWithHoles:
+        def shape(p: kbt.Pad) -> PolygonWithHoles | None:
+            if layer not in p.padstack.layers:
+                return None
             x, y = p.position.x / NM_PER_MM, p.position.y / NM_PER_MM
             h = PAD_HALF_SIZE
             return kipy_rect(x - h, y - h, x + h, y + h)
@@ -385,7 +388,8 @@ class FakeBoard:
         if isinstance(pads, kbt.Pad):
             return shape(pads)
         # KiCad silently leaves out pads it has no shape for.
-        return [shape(p) for p in pads[: -1 if self.drops_pads else None]]
+        shapes = [shape(p) for p in pads[: -1 if self.drops_pads else None]]
+        return [s for s in shapes if s is not None]
 
     def get_vias(self) -> list[kbt.Via]:
         self.reads["get_vias"] += 1
