@@ -625,3 +625,107 @@ def test_extract_chain_gives_a_branch_in_the_frame() -> None:
 
     with pytest.raises(ChainError, match=r"branch at \(-5\.000, -20\.000\) mm: tee"):
         extract_chain(segments, frame=GRID_FRAME)
+
+
+def tee_segments() -> list[Segment]:
+    """The L-Z route with a branch "d" leaving its corner at (10, 0)."""
+    return [*l_z_segments(), seg("d", (10, 0), (15, -5))]
+
+
+class TestBranches:
+    def test_a_tee_splits_into_chains_ending_loose_at_the_junction(self) -> None:
+        a, bc, d = extract_chains(tee_segments(), frame=BOARD_FRAME, branches=True)
+
+        assert_points(a, [(0, 0), (10, 0)])
+        assert_points(bc, [(10, 0), (10, 5), (20, 5)])
+        assert_points(d, [(10, 0), (15, -5)])
+        assert a.pinned == (True, False)
+        assert bc.pinned == (False, False, True)
+        assert d.pinned == (False, True)
+        assert a.points[-1] == bc.points[0] == d.points[0]
+        assert [a.segment_ids, sorted(bc.segment_ids), d.segment_ids] == [
+            ("a",),
+            ["b", "c"],
+            ("d",),
+        ]
+
+    def test_the_split_does_not_depend_on_the_input_order(self) -> None:
+        segments = [
+            *tee_segments(),
+            seg("e", (10, 0), (5, -5)),
+            seg("f", (5, -5), (0, -5)),
+        ]
+        reordered = [
+            Segment(s.id, s.end, s.start, s.width, s.layer, s.net)
+            for s in reversed(segments)
+        ]
+
+        chains = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+        again = extract_chains(reordered, frame=BOARD_FRAME, branches=True)
+
+        assert [(c.points, c.pinned) for c in chains] == [
+            (c.points, c.pinned) for c in again
+        ]
+        assert [c.points[0] for c in chains] == [(0, -5), (0, 0), (10, 0), (10, 0)]
+
+    def test_a_pad_on_the_junction_pins_every_branch(self) -> None:
+        pad = Point(10, 0).buffer(0.3)
+
+        chains = extract_chains(
+            tee_segments(), lambda _l, _n: [pad], frame=BOARD_FRAME, branches=True
+        )
+
+        for chain in chains:
+            assert (10.0, 0.0) in pinned_points(chain)
+
+    def test_a_locked_track_ending_at_the_junction_pins_it(self) -> None:
+        segments = [*tee_segments(), seg("lock", (10, 0), (10, -5), locked=True)]
+
+        chains = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+
+        assert len(chains) == 3
+        for chain in chains:
+            assert (10.0, 0.0) in pinned_points(chain)
+
+    def test_branches_of_different_widths_meet_loose(self) -> None:
+        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5), width=500_000)]
+
+        a, bc, d = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+
+        assert (a.width, bc.width, d.width) == (
+            pytest.approx(0.25),
+            pytest.approx(0.25),
+            pytest.approx(0.5),
+        )
+        assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (False, False, False)
+
+    def test_copper_reaching_only_the_widest_branch_pins_every_branch(self) -> None:
+        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5), width=500_000)]
+        # 0.2 mm from the junction: within the wide track's half width only.
+        pad = Point(10, -0.5).buffer(0.3)
+
+        a, bc, d = extract_chains(
+            segments, lambda _l, _n: [pad], frame=BOARD_FRAME, branches=True
+        )
+
+        assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (True, True, True)
+
+    def test_a_neck_down_stays_pinned(self) -> None:
+        segments = [
+            seg("wide", (10, 0), (20, 0), width=500_000),
+            seg("thin", (0, 0), (10, 0)),
+        ]
+
+        thin, wide = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+
+        assert thin.pinned == wide.pinned == (True, True)
+
+    def test_a_track_ending_mid_segment_is_still_refused(self) -> None:
+        segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0))]
+
+        with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\).*tee"):
+            extract_chains(segments, frame=BOARD_FRAME, branches=True)
+
+    def test_without_branches_a_tee_is_refused(self) -> None:
+        with pytest.raises(ChainError, match=r"branch at \(10\.000, 0\.000\) mm"):
+            extract_chains(tee_segments(), frame=BOARD_FRAME)
