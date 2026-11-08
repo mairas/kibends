@@ -263,3 +263,25 @@ class TestCommitChains:
             run_commit_chains(board, [], selected)
 
         assert board.calls == []
+
+
+class TestSnappedPath:
+    def test_drops_vertices_that_do_not_bend_the_path(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 1.0]])
+
+        assert commit.snapped_path(polyline) == [(0, 0), (nm(2), 0), (nm(2), nm(1))]
+
+    def test_drops_a_vertex_one_nanometre_off_the_line(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 1e-6], [2.0, 0.0]])
+
+        assert commit.snapped_path(polyline) == [(0, 0), (nm(2), 0)]
+
+    def test_keeps_a_vertex_two_nanometres_off_the_line(self) -> None:
+        polyline = np.array([[0.0, 0.0], [1.0, 2e-6], [2.0, 0.0]])
+
+        assert len(commit.snapped_path(polyline)) == 3
+
+    def test_keeps_a_reversal(self) -> None:
+        polyline = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 0.0]])
+
+        assert len(commit.snapped_path(polyline)) == 3

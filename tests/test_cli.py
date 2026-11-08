@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import NoReturn, cast
 
 import kipy.board_types as kbt
+import numpy as np
 import pytest
 from conftest import (
     PAD_HALF_SIZE,
@@ -861,6 +862,24 @@ class TestSeveralChains:
         assert "Unchanged: left out of the DRC check and the commit" in (
             capsys.readouterr().out
         )
+
+    def test_chain_that_only_gains_straight_vertices_stays_unchanged(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        board = connect.to(two_l_board(inner=far_straight()))
+        real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
+
+        def with_midpoints(*args: object, **kwargs: object) -> list[FloatArray]:
+            outer, straight = real(*args, **kwargs)
+            midpoints = (straight[:-1] + straight[1:]) / 2
+            split = np.insert(straight, range(1, len(straight)), midpoints, axis=0)
+            return [outer, split]
+
+        monkeypatch.setattr(pipeline, "simplify_chains", with_midpoints)
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == list(OUTER)
 
     def test_all_unchanged_commits_nothing(
         self, connect: Connector, kicad_cli: Path, log: list[str]

@@ -19,7 +19,7 @@ from loguru import logger
 
 from kibends import drc
 from kibends.chain import Chain, extract_chains
-from kibends.commit import commit_chains, snapped_points
+from kibends.commit import commit_chains, snapped_path, snapped_points
 from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import (
     ChainCentreline,
@@ -254,8 +254,8 @@ def _chain_reports(
                 frozen=result.frozen,
                 rejected_edges=result.rejected_edges,
                 abnormal_bursts=result.abnormal_bursts,
-                changed=snapped_points(simplified[i])
-                != snapped_points(given.centreline.points),
+                changed=snapped_path(simplified[i])
+                != snapped_path(given.centreline.points),
             )
         )
     return tuple(reports)

@@ -27,11 +27,13 @@ from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
 
-from kibends.chain import NM_PER_MM, Chain, Point2, Segment
+from kibends.chain import NM_PER_MM, Chain, NmPoint, Point2, Segment
 from kibends.energy import FloatArray
 from kibends.snapshot import segment_from_track
 
 COMMIT_PREFIX = "kibends"
+# Rounding to KiCad's grid may move a point of a straight path this far off it.
+STRAIGHT_TOLERANCE_NM = 1
 
 
 class BoardChangedError(RuntimeError):
@@ -156,6 +158,36 @@ def snapped_points(polyline: FloatArray) -> list[Point2]:
         if not points or p != points[-1]:
             points.append(p)
     return points
+
+
+def snapped_path(polyline: FloatArray) -> list[NmPoint]:
+    """`polyline` on KiCad's 1 nm grid, less the vertices that do not bend it.
+
+    A vertex goes when it lies between its neighbours, within
+    `STRAIGHT_TOLERANCE_NM` of the line through them, so two polylines with
+    the same path compare equal however many vertices each has.
+    """
+    path: list[NmPoint] = []
+    for x, y in polyline:
+        p = (_nm(x), _nm(y))
+        if path and p == path[-1]:
+            continue
+        if len(path) > 1 and _between(path[-2], path[-1], p):
+            path.pop()
+        path.append(p)
+    return path
+
+
+def _between(a: NmPoint, q: NmPoint, b: NmPoint) -> bool:
+    """Whether `q` lies on the segment from `a` to `b`, within tolerance."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    qx, qy = q[0] - a[0], q[1] - a[1]
+    length_sq = dx * dx + dy * dy
+    cross = dx * qy - dy * qx
+    return (
+        0 <= qx * dx + qy * dy <= length_sq
+        and cross * cross <= STRAIGHT_TOLERANCE_NM**2 * length_sq
+    )
 
 
 def _nm(v: float) -> int:
