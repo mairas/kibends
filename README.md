@@ -6,16 +6,16 @@ plain straight segments that keeps clearance to other copper, including the
 other selected chains. The result is not made of KiCad native arcs, so the
 tracks stay editable.
 
-The new path minimises a weighted sum of three goals:
+The new path minimises a weighted sum of two goals:
 
 - **length**: in free space, two endpoints give a straight track;
-- **bending**: sharp corners cost more than gentle ones;
 - **closeness to other copper**: the track drifts toward the middle of the
   free space around it.
 
 The original route is only the starting point. Bends remain where other
-copper or the board edge forces them, and the track stays on the same side
-of every obstacle it started next to.
+copper or the board edge forces them, rounded by the track keeping away
+from the copper it turns around, and the track stays on the same side of
+every obstacle it started next to.
 
 Uses the KiCad IPC API through
 [kicad-python](https://pypi.org/project/kicad-python/).
@@ -186,7 +186,6 @@ into coupling.
 
 | Option | Default | Effect |
 |---|---|---|
-| `--stiffness MM` | 0.3 | Weight of bending, as a length. Larger values give wider, rounder bends at the cost of length. Obstacles can still force tighter bends. |
 | `--repulsion WEIGHT` | 0.5 | Weight of keeping away from other copper, relative to length. 0 disables it, so the track pulls tight against obstacles at exactly the clearance. |
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
@@ -206,11 +205,13 @@ into coupling.
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 
-The defaults give a modest rounding: in the test geometries, a 90° corner
-wrapped around a pad gets a bend radius of roughly 0.7 to 1.4 mm. Bending
-enters with stiffness squared, so the bends widen quickly; try steps such as
-0.5 or 1.0 before larger values. A longer `--range` spreads tracks further
-from their neighbours where space allows.
+Repulsion alone rounds the bends: with the defaults, a 90° corner wrapped
+around a pad in the test geometries gets a bend radius of about 1.3 mm.
+More `--repulsion` or a longer `--range` widens it and spreads tracks
+further from their neighbours where space allows; with `--repulsion 0` a
+track bends at the corner of the clearance around the pad. A track is
+straight between the copper it turns around, so it may leave a pinned end,
+such as the end of a differential pair's coupled section, at a corner.
 
 ### Clearances
 
