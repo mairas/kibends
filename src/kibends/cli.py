@@ -402,16 +402,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_SETTINGS.settled_change,
         metavar="MM",
-        help="A chain settles when a burst moves its shape by less than this "
-        f"(default: {DEFAULT_SETTINGS.settled_change:g})",
+        help="A problem, the chains of one layer or of the layers moving vias "
+        "tie together, settles when its burst moves no chain and no via by "
+        f"this much (default: {DEFAULT_SETTINGS.settled_change:g})",
     )
     smooth_parser.add_argument(
         "--stall-tolerance",
         type=_positive,
         default=DEFAULT_SETTINGS.stall_tolerance,
         metavar="MM",
-        help="A chain also settles when its energy, in mm of track length, "
-        "improves by less than this over --stall-window iterations "
+        help="A problem also settles when its energy, in mm of track length, "
+        "improves by less than this over --stall-window of its bursts "
         f"(default: {DEFAULT_SETTINGS.stall_tolerance:g})",
     )
     smooth_parser.add_argument(
@@ -419,7 +420,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.stall_window,
         metavar="N",
-        help=f"Iterations the stall check looks back over "
+        help=f"Bursts of a problem the stall check looks back over "
         f"(default: {DEFAULT_SETTINGS.stall_window})",
     )
     smooth_parser.add_argument(
@@ -427,16 +428,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.max_iterations,
         metavar="N",
-        help="Outer iterations after which the optimizer stops with the best "
-        f"result found (default: {DEFAULT_SETTINGS.max_iterations})",
+        help="Outer iterations, each one burst of every problem not yet "
+        "settled, after which the optimizer stops with the best result found "
+        f"(default: {DEFAULT_SETTINGS.max_iterations})",
     )
     smooth_parser.add_argument(
         "--burst-iterations",
         type=_positive_int,
         default=DEFAULT_SETTINGS.burst_maxiter,
         metavar="N",
-        help="L-BFGS-B iterations per burst; fewer are faster but may leave "
-        f"a different result (default: {DEFAULT_SETTINGS.burst_maxiter})",
+        help="L-BFGS-B iterations per burst, which moves every chain and via "
+        "of a problem at once; fewer are faster but may leave a different "
+        f"result (default: {DEFAULT_SETTINGS.burst_maxiter})",
     )
     smooth_parser.add_argument(
         "--lbfgs-ftol",
