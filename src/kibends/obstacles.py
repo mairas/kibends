@@ -10,7 +10,7 @@ outside of the Edge.Cuts outline, inflated the same way.
 
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,10 +22,13 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
+from kibends.chain import Point2
 from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.snapshot import (
     LayerSnapshot,
+    Pad,
     PadKind,
+    Via,
     edge_paths_closed,
     outline_from_edge_paths,
 )
@@ -541,6 +544,112 @@ def chain_obstacles(
     )
 
 
+@dataclass(frozen=True)
+class _Keeper:
+    """What keeps clear of the board's items: the copper disc around each
+    point of a track's centreline.
+
+    Each method gives the inflation of another item's raw geometry, or None
+    where no rule applies between the two.
+    """
+
+    net: str
+    radius: float
+    """Half the track width, mm."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
+    hole_clearance: float
+
+    def copper(self, net: str, extent: float, clearance: float) -> float | None:
+        """For copper of `net` reaching `extent` mm beyond its geometry, with
+        `clearance` its own clearance."""
+        if net == self.net:
+            return None
+        return extent + max(self.clearance, clearance) + self.radius
+
+    def hole(self, net: str, radius: float, *, plated: bool) -> float | None:
+        """For a hole of `radius` mm of `net`; same-net plated holes are part
+        of the connection."""
+        if net == self.net and plated:
+            return None
+        return radius + self.hole_clearance + self.radius
+
+
+def _copper_items(snapshot: LayerSnapshot, keeper: _Keeper) -> list[Obstacle]:
+    """The snapshot layer's copper and track keepouts, holes left out."""
+    candidates: list[tuple[str, BaseGeometry, float | None]] = []
+    for pad in snapshot.pads:
+        if pad.shape is not None:
+            clearance = (
+                pad.clearance_override
+                if pad.clearance_override is not None
+                else snapshot.clearance(pad.net)
+            )
+            candidates.append(
+                (f"pad {pad.name}", pad.shape, keeper.copper(pad.net, 0.0, clearance))
+            )
+    candidates += [
+        (
+            f"track {t.id}",
+            t.centreline,
+            keeper.copper(t.net, t.width / 2, snapshot.clearance(t.net)),
+        )
+        for t in snapshot.tracks
+    ]
+    candidates += [
+        (
+            f"via {v.id}",
+            Point(v.position),
+            keeper.copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
+        )
+        for v in snapshot.vias
+    ]
+    candidates += [
+        (
+            g.description,
+            g.geometry,
+            keeper.copper(g.net, 0.0, snapshot.clearance(g.net)),
+        )
+        for g in snapshot.graphics
+    ]
+    candidates += [("track keepout", k, keeper.radius) for k in snapshot.keepouts]
+    return [Obstacle(d, g, i) for d, g, i in candidates if i is not None]
+
+
+def _hole_items(
+    pads: Iterable[Pad], vias: Iterable[Via], keeper: _Keeper
+) -> list[Obstacle]:
+    candidates = [
+        (
+            f"hole of pad {pad.name}",
+            Point(pad.position),
+            keeper.hole(pad.net, pad.drill / 2, plated=pad.kind is not PadKind.NPTH),
+        )
+        for pad in pads
+        if pad.drill > 0
+    ]
+    candidates += [
+        (
+            f"hole of via {v.id}",
+            Point(v.position),
+            keeper.hole(v.net, v.drill / 2, plated=True),
+        )
+        for v in vias
+    ]
+    return [Obstacle(d, g, i) for d, g, i in candidates if i is not None]
+
+
+def _board_outline(edge_paths: Sequence[Sequence[Point2]]) -> BaseGeometry | None:
+    """The board area, or None, warning, if Edge.Cuts is not closed."""
+    if edge_paths_closed(edge_paths):
+        return outline_from_edge_paths(edge_paths)
+    logger.warning(
+        "Edge.Cuts has no closed outline; the board edge is not kept clear "
+        "while smoothing, only the DRC check covers it"
+    )
+    return None
+
+
 def build_obstacles(
     snapshot: LayerSnapshot,
     net: str,
@@ -555,61 +664,12 @@ def build_obstacles(
     pad's own override replacing its netclass. Copper of `net` is never an
     obstacle; its holes are not either, except unplated ones.
     """
-    half_width = width / 2
-    own = snapshot.clearance(net)
-
-    def copper(other_clearance: float) -> float:
-        return max(own, other_clearance) + half_width
-
-    items: list[Obstacle] = []
-    for pad in snapshot.pads:
-        other_net = pad.net != net
-        if other_net and pad.shape is not None:
-            clearance = (
-                pad.clearance_override
-                if pad.clearance_override is not None
-                else snapshot.clearance(pad.net)
-            )
-            items.append(Obstacle(f"pad {pad.name}", pad.shape, copper(clearance)))
-        if pad.drill > 0 and (other_net or pad.kind is PadKind.NPTH):
-            items.append(
-                Obstacle(
-                    f"hole of pad {pad.name}",
-                    Point(pad.position),
-                    pad.drill / 2 + hole_clearance + half_width,
-                )
-            )
-    for t in snapshot.tracks:
-        if t.net != net:
-            inflation = t.width / 2 + copper(snapshot.clearance(t.net))
-            items.append(Obstacle(f"track {t.id}", t.centreline, inflation))
-    for v in snapshot.vias:
-        if v.net != net:
-            centre = Point(v.position)
-            inflation = v.diameter / 2 + copper(snapshot.clearance(v.net))
-            items.append(Obstacle(f"via {v.id}", centre, inflation))
-            items.append(
-                Obstacle(
-                    f"hole of via {v.id}",
-                    centre,
-                    v.drill / 2 + hole_clearance + half_width,
-                )
-            )
-    for g in snapshot.graphics:
-        if g.net != net:
-            items.append(
-                Obstacle(g.description, g.geometry, copper(snapshot.clearance(g.net)))
-            )
-    items.extend(Obstacle("track keepout", k, half_width) for k in snapshot.keepouts)
-
-    if not edge_paths_closed(snapshot.edge_paths):
-        logger.warning(
-            "Edge.Cuts has no closed outline; the board edge is not kept clear "
-            "while smoothing, only the DRC check covers it"
-        )
+    keeper = _Keeper(net, width / 2, snapshot.clearance(net), hole_clearance)
+    items = [
+        *_copper_items(snapshot, keeper),
+        *_hole_items(snapshot.pads, snapshot.vias, keeper),
+    ]
+    outline = _board_outline(snapshot.edge_paths)
+    if outline is None:
         return Obstacles(items)
-    return Obstacles(
-        items,
-        outline_from_edge_paths(snapshot.edge_paths),
-        edge_clearance + half_width,
-    )
+    return Obstacles(items, outline, edge_clearance + keeper.radius)
