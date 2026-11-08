@@ -1,6 +1,6 @@
 # kibends
 
-`kibends smooth` replaces the chain of track segments selected in KiCad's PCB editor with a short, smooth path of straight segments that keeps clearance to other copper. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README is the user documentation.
+`kibends smooth` replaces each chain of track segments selected in KiCad's PCB editor (several chains per run, on one layer) with a short, smooth path of straight segments that keeps clearance to other copper and to the other selected chains. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README is the user documentation.
 
 The repository is public. Never write host names, addresses or other details of the author's machines into files, commits, issues or PRs.
 
@@ -17,22 +17,23 @@ Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.y
 
 ## Pipeline
 
-`cli.smooth` runs the stages in this order:
+`run.run_smooth` runs the stages in this order and returns a `RunReport` (per-chain statistics, frozen vertices, abnormal bursts, unchanged chains, DRC verdict, termination, refusal) without printing; `cli.smooth` formats and prints it, and a GUI is meant to call the same function.
 
-1. `snapshot.read_selection` and `LayerSnapshot.from_board` read the selection and the chain's copper layer. Everything they return is free of kipy.
-2. `chain.extract_chain` orders the selected segments into one chain and pins its ends and every point where same-net copper (pads, vias, tracks, copper shapes) touches it.
-3. `obstacles.build_obstacles` turns other-net copper, holes, keepouts and the board edge into obstacles inflated by the required clearance.
-4. `optimize.optimize` minimises length + stiffness² × bending + repulsion with L-BFGS-B. Free vertices move only inside their bubble, a box in the free space around them, and an edge check rejects edges that newly cross an obstacle. Together these keep the chain on the same side of every obstacle.
-5. `simplify.simplify` merges the optimised polyline back into few straight segments within `--chord-tolerance`, re-checking each merged edge.
-6. `drc` runs `kicad-cli pcb drc` on the board text before and after the replacement and refuses the commit if violations rise. `--no-drc` skips it.
-7. `commit.commit_chain` deletes the old tracks and creates the new ones in one KiCad commit.
+1. `snapshot.read_selection` and `LayerSnapshot.from_board` read the selection and its copper layer once per run. Everything they return is free of kipy.
+2. `chain.extract_chains` splits the selection into chains, one per connected piece of one net and width, and pins each chain's ends and every point where same-net copper (pads, vias, tracks, copper shapes) touches it. Mixed layers are refused.
+3. `obstacles.build_obstacles` turns other-net copper, holes, keepouts and the board edge into obstacles inflated by the required clearance: one static field per (net, width), with every selected track removed.
+4. `optimize.optimize_chains` minimises length + stiffness² × bending + repulsion with L-BFGS-B, in alternating bursts, one chain at a time. Each burst sees its chain's static field plus the other chains on the layer at their current shapes (`obstacles.CompositeField`, `ChainField`). Free vertices move only inside their bubble, a box in the free space around them, and an edge check rejects edges that newly cross an obstacle. Together these keep every chain on the same side of every obstacle and of every other chain.
+5. `simplify.simplify_chains` merges each optimised polyline back into few straight segments within `--chord-tolerance`, re-checking each merged edge against the static field and the other chains.
+6. A chain whose result equals its selected tracks is unchanged: it is left out of the DRC check and the commit, and if every chain is unchanged nothing is committed.
+7. `drc.check` runs `kicad-cli pcb drc` once on the board text as it is and once with every changed chain replaced, and the run is refused if violations rise. `--no-drc` skips it.
+8. `commit.commit_chains` deletes the old tracks and creates the new ones of every changed chain in one KiCad commit.
 
 ## Invariants
 
 - One run is one undo step in KiCad. kibends never refills zones; the user refills them or lets KiCad's DRC do it.
 - Locked tracks, other nets' copper, vias and pads are never modified.
 - Pinned points stay where they are. KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline, so pinning uses both tracks' half widths.
-- Any failure before the push drops the commit. A connection loss during the push is reported as "may have landed", never as success.
+- Any failure before the push, in any chain, drops the whole commit. A connection loss during the push is reported as "may have landed", never as success.
 - Arc tracks are refused; output is always straight tracks.
 
 ## Units and coordinates
