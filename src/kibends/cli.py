@@ -48,7 +48,6 @@ from kibends.run import (
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.snapshot import SelectionError
 
-DEFAULT_STIFFNESS = 0.3
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
 # Not user-facing: the clearance hinge only shapes the approach to the
@@ -345,16 +344,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Smooth the track chains selected in the PCB editor",
         description="Replace each selected chain of tracks with a short, smooth "
         "path of straight tracks that keeps clearance to other copper and to "
-        "the other selected chains. The result minimises length + bending "
-        "weighted by stiffness squared + repulsion from nearby copper.",
-    )
-    smooth_parser.add_argument(
-        "--stiffness",
-        type=_non_negative,
-        default=DEFAULT_STIFFNESS,
-        metavar="MM",
-        help="Weight of bending, as a length: larger values give wider, rounder "
-        f"bends (default: {DEFAULT_STIFFNESS:g})",
+        "the other selected chains. The result minimises length + "
+        "repulsion from nearby copper.",
     )
     smooth_parser.add_argument(
         "--repulsion",
@@ -502,7 +493,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def smooth_options(args: argparse.Namespace) -> SmoothOptions:
     return SmoothOptions(
         params=EnergyParams(
-            stiffness=args.stiffness,
             repulsion=args.repulsion,
             falloff_range=args.range,
             clearance_weight=CLEARANCE_WEIGHT,

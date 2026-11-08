@@ -598,7 +598,6 @@ class TestAsDistanceField:
 
     def test_energy_is_finite_with_no_obstacles_at_all(self) -> None:
         params = EnergyParams(
-            stiffness=1.0,
             repulsion=1.0,
             falloff_range=1.0,
             clearance_weight=10.0,

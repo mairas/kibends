@@ -851,7 +851,7 @@ class TestJunctionEnergy:
     def params(self) -> EnergyParams:
         return replace(scenarios.PARAMS, repulsion=1.0, falloff_range=0.5)
 
-    def test_has_no_bending_term_at_the_junction(self) -> None:
+    def test_straight_branches_pull_the_junction_along_themselves(self) -> None:
         # Straight branches meeting at right angles: only their lengths
         # count, and each pulls the junction straight along itself.
         chains = pinned_at_junctions(

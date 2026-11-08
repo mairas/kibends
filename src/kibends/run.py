@@ -93,7 +93,7 @@ PLOT_EXTRA_MESSAGE = (
 ABNORMAL_MESSAGE = (
     "The optimizer terminated abnormally without improving the track; "
     "nothing committed. "
-    "Try other --stiffness, --repulsion or --range values"
+    "Try other --repulsion or --range values"
 )
 
 

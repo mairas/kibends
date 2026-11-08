@@ -56,7 +56,7 @@ from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 CORNER = OptimizerSettings(burst_maxiter=30)
-"""The default spacing, at which a soft centreline pulled taut against its
+"""The default spacing, at which a centreline pulled taut against its
 direction pins bends tighter than the limit, with short bursts."""
 
 GAP_SLACK = GAP_TOLERANCE * DP_GAP
@@ -396,10 +396,10 @@ class TestTightCorner:
             return 0.0, np.zeros_like(points)
 
         monkeypatch.setattr(optimize_module, "bend_radius_energy", unhinged)
-        # Softer than the others' corner, so that without the hinge it
-        # presses on the limit.
-        (pair,) = run(scenarios.pair_corner(stiffness=SOFTER), CORNER).pairs
-        assert length(pair.centreline) < pair.before.length - CORNER_SHORTCUT
+        # Routed wider than the limit: length alone would pull it into the
+        # corner, below the limit, and only the self check holds it back.
+        (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs
+        assert length(pair.centreline) <= pair.before.length
         assert pair.bend is not None and not pair.bend.too_tight
         assert pair.rejected_edges > pair.too_close == 0
 
@@ -411,12 +411,6 @@ class TestTightCorner:
         assert_gap_kept(pair)
         (given,) = scenarios.pair_corner().pairs
         assert_within_extent(pair, given, CORNER)
-
-
-CORNER_SHORTCUT = 0.05
-"""mm: a centreline rounding the corner at the limit is at least this much
-shorter."""
-SOFTER = 0.03
 
 
 @pytest.mark.parametrize(
@@ -581,7 +575,13 @@ class TestResume:
             layer="B.Cu",
         )
         chains = (*scenario.chains, back)
-        first = optimize_chains(chains, scenario.params, COARSE, pairs=scenario.pairs)
+        # Stopped early, so that the resumed run's problems have work left.
+        first = optimize_chains(
+            chains,
+            scenario.params,
+            replace(COARSE, max_iterations=1),
+            pairs=scenario.pairs,
+        )
         limited = replace(COARSE, time_limit=0.0)
 
         again = optimize_chains(

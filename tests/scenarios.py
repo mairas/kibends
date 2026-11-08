@@ -25,7 +25,6 @@ ENVELOPE = 0.35
 """Clearance plus half track width, mm: the corner radius of inflated boxes."""
 
 PARAMS = EnergyParams(
-    stiffness=0.3,
     repulsion=0.0,
     falloff_range=1.0,
     clearance_weight=50.0,
@@ -63,16 +62,10 @@ def chain(*vertices: tuple[float, float]) -> tuple[FloatArray, BoolArray]:
 WRAP_BOX = Box(6.5, 3.5, 2.0, 2.0, corner_radius=ENVELOPE)
 
 
-def wrap(stiffness: float = PARAMS.stiffness) -> Scenario:
+def wrap() -> Scenario:
     """L-shaped path around a box sitting in the inner corner of the L."""
     polyline, fixed = chain((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
-    return Scenario(
-        f"wrap-stiffness-{stiffness}",
-        polyline,
-        fixed,
-        WRAP_BOX,
-        replace(PARAMS, stiffness=stiffness),
-    )
+    return Scenario("wrap", polyline, fixed, WRAP_BOX)
 
 
 CHANNEL_HALF_GAP = 1.0
@@ -722,13 +715,34 @@ def pair_tent() -> PairsScenario:
     )
 
 
-def pair_corner(stiffness: float = 0.1) -> PairsScenario:
-    """A pair turning a sharp corner, so soft that its centreline would bend
-    tighter than the inner track allows."""
+def pair_corner() -> PairsScenario:
+    """A pair turning a sharp corner in free space, where length alone would
+    bend its centreline tighter than the inner track allows."""
     return PairsScenario(
-        f"pair-corner-stiffness-{stiffness}",
+        "pair-corner",
         (coupled(FreeSpace(), (0.0, 0.0), (2.0, 0.0), (2.0, 2.0)),),
-        params=replace(PARAMS, stiffness=stiffness),
+    )
+
+
+ROUND_CORNER_RADIUS = 0.5
+"""Wider than the inner track's limit of `pair_round_corner`, mm."""
+
+
+def pair_round_corner() -> PairsScenario:
+    """The pair of `pair_corner` routed round its corner on an arc of
+    ROUND_CORNER_RADIUS, which length alone would pull into the corner."""
+    corner = 2.0
+    angles = np.linspace(-math.pi / 2, 0.0, 7)
+    arc = [
+        (
+            corner - ROUND_CORNER_RADIUS * (1.0 - math.cos(a)),
+            ROUND_CORNER_RADIUS * (1.0 + math.sin(a)),
+        )
+        for a in angles
+    ]
+    return PairsScenario(
+        "pair-round-corner",
+        (coupled(FreeSpace(), (0.0, 0.0), *arc, (corner, corner)),),
     )
 
 

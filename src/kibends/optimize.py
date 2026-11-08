@@ -17,9 +17,8 @@ shows them: inflated by their half widths alone, as they may touch, and
 left out near where their copper touches at fixed points
 (`neighbours.kept_spans`). A selection that branches is split at each
 junction into chains that end there, loose (`junctions`): those ends are
-one shared variable, with no bending term, as bending is counted at
-interior vertices only, and the branches leave each other out near it as
-at any touch.
+one shared variable, and the branches leave each other out near it as at
+any touch.
 
 A coupled section of a differential pair (`kibends.pair_blocks`) is a
 member of its layer's problem as its centreline: its free vertices are
@@ -535,8 +534,9 @@ def shape_change(before: FloatArray, after: FloatArray) -> float:
     """Local symmetric distance between two polylines, mm.
 
     Vertices sliding along an unchanged shape do not count: resampling to
-    uniform spacing and the bending term's spreading of vertices at bends
-    would otherwise keep moving vertices forever without changing the track.
+    uniform spacing and the energy's indifference to where along the track
+    a vertex sits would otherwise keep moving vertices forever without
+    changing the track.
     """
     return max(_local_distance(after, before), _local_distance(before, after))
 
@@ -1069,7 +1069,7 @@ def members_energy(
         obstacle, obstacle_gradient, slopes = edge_integral(
             points, distance, direction, integrand, k
         )
-        shape, shape_gradient = shape_energy(points, masks[i], params, short_edge)
+        shape, shape_gradient = shape_energy(points, masks[i], short_edge)
         value += shape + obstacle
         gradient = shape_gradient + obstacle_gradient
         if isinstance(member, PairBlock):
