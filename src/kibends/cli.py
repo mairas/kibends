@@ -29,6 +29,7 @@ from kibends.commit import (
     CreateItemsError,
     DeleteItemsError,
 )
+from kibends.coords import BOARD_FRAME
 from kibends.energy import EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
 from kibends.optimize import FrozenVertex, Termination
@@ -309,7 +310,7 @@ def _verdict(found: drc.Introduced) -> str:
     return "\n".join(
         [
             f"DRC: {new_violations(len(found.violations))}",
-            *(f"  {v}" for v in found.violations),
+            *(f"  {v.describe(BOARD_FRAME)}" for v in found.violations),
             *(
                 f"  More connectivity violations on {net}: the new path may "
                 f"split a pour of {net}"
