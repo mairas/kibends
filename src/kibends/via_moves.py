@@ -1,13 +1,9 @@
-"""Moving vias in the optimizer: the chain ends they carry, the fields they
-make and see, and the contact between a via and a chain pressing on it.
+"""Moving vias in the optimizer: the chain ends they carry, and the fields
+they make and see.
 
 The optimizer (`kibends.optimize`) makes each moving via's centre a
 variable of its problem and carries the chain ends it joins at their
-offsets from it. A chain that presses on a via without ending at it is
-left out of the via's bubble and the via out of the chain's, so that the
-two move together instead of creeping after each other by the clearance
-hinge's give; a check that neither passed through the other (`Contact`)
-replaces them.
+offsets from it.
 """
 
 from collections.abc import Callable, Sequence
@@ -16,17 +12,14 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from kibends.bursts import (
-    INSIDE_TOLERANCE,
     point_distance,
 )
 from kibends.energy import (
-    BoolArray,
     FloatArray,
     ObstacleField,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
-    ChainField,
     CompositeField,
     chain_obstacles_for_via,
     moving_via_obstacles,
@@ -176,68 +169,3 @@ class MovingVias:
         self, v: int, positions: Positions, polylines: Sequence[FloatArray]
     ) -> float:
         return point_distance(self.field(v, positions, polylines), positions[v])
-
-
-def presses(
-    position: FloatArray, points: FloatArray, ring: float, limit: float
-) -> bool:
-    """Whether a chain at `points`, its centreline keeping `ring` from the
-    centre of a via at `position`, presses on it: clear of it, yet within
-    `limit`. A chain with an edge as long as the ring is wide does not, as
-    the check that neither passed through the other (`Contact.kept`) relies
-    on the via not fitting between two of its vertices."""
-    if np.linalg.norm(np.diff(points, axis=0), axis=1).max() >= 2 * ring:
-        return False
-    gap = ChainField(
-        points[:-1], points[1:], np.full(len(points) - 1, ring)
-    ).signed_distance(position[None])[0][0]
-    return 0.0 <= gap < limit
-
-
-@dataclass(frozen=True)
-class Contact:
-    """A chain and a via in contact as a burst found them, to tell whether
-    either passed through the other."""
-
-    via: FloatArray
-    points: FloatArray
-    ring: float
-    edges_clear: BoolArray
-    """Which edges were clear of the via's ring."""
-    vertices_clear: BoolArray
-    """Which vertices were clear of it."""
-
-    @staticmethod
-    def before(via: FloatArray, points: FloatArray, ring: float) -> Contact:
-        disc = _ring_field(via, ring)
-        return Contact(
-            via,
-            points,
-            ring,
-            disc.segments_clear(points[:-1], points[1:], INSIDE_TOLERANCE),
-            disc.segments_clear(points, points, INSIDE_TOLERANCE),
-        )
-
-    def kept(self, via: FloatArray, points: FloatArray) -> bool:
-        """Whether neither passed through the other on the way to `via` and
-        `points`, both moving in straight lines: each vertex clear of the
-        ring before stays clear of it all the way, as seen from the via, and
-        so does each edge clear before at the end. The via cannot pass
-        between two vertices only while the edge between them is shorter
-        than the ring is wide, so an edge stretched that far counts as
-        passed through."""
-        if np.linalg.norm(np.diff(points, axis=0), axis=1).max() >= 2 * self.ring:
-            return False
-        clear = self.vertices_clear
-        paths = _ring_field(np.zeros(2), self.ring).segments_clear(
-            self.points[clear] - self.via, points[clear] - via, INSIDE_TOLERANCE
-        )
-        edges = _ring_field(via, self.ring).segments_clear(
-            points[:-1], points[1:], INSIDE_TOLERANCE
-        )
-        return bool(paths.all() and np.all(edges | ~self.edges_clear))
-
-
-def _ring_field(centre: FloatArray, ring: float) -> ChainField:
-    """The disc of radius `ring` around `centre`, as a field."""
-    return ChainField(centre[None], centre[None], np.array([ring]))

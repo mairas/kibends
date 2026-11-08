@@ -21,9 +21,14 @@ from kibends.energy import BoolArray, DistanceField, FloatArray
 # 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
 INSIDE_TOLERANCE = 1e-7
 
-# Halving the bounds of rejected vertices this many times within one outer
-# iteration shrinks their step to 1/16; beyond that they wait for the next one.
-MAX_BOUND_HALVINGS = 4
+# The bounds of rejected vertices are halved, within one outer iteration,
+# until each is at most its `bounded_burst` retry bound, at most this many
+# times: enough to bring any step the optimizer's floor allows below a µm.
+# Beyond that they wait for the next one.
+MAX_BOUND_HALVINGS = 8
+
+# A retry's bounds need shrink no further than this share of a bubble.
+RETRY_SHARE = 16
 
 LBFGSB_ABNORMAL = 2
 
@@ -137,16 +142,21 @@ def bounded_burst(
     half_sides: FloatArray,
     revert: Revert,
     settings: OptimizerSettings,
+    retry_bounds: FloatArray | None = None,
 ) -> Burst:
     """Minimise `objective` from `start` with each coordinate within its
     `half_sides` of it, retried with halved bounds where edges crossed.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns which it moved and how many edges crossed. A
-    run L-BFGS-B ends abnormally is taken as its check leaves it. Where every
-    coordinate's bounds coincide in floating point, nothing can move, and
-    the burst ends where it is.
+    run L-BFGS-B ends abnormally is taken as its check leaves it, and so is
+    one whose moved-back coordinates all have bounds at most their
+    `retry_bounds` once halved, by default a sixteenth of their
+    `half_sides`. Where every coordinate's bounds coincide in floating
+    point, nothing can move, and the burst ends where it is.
     """
+    if retry_bounds is None:
+        retry_bounds = half_sides / RETRY_SHARE
     scale = np.ones(len(start))
     current = start.copy()
     rejected_edges = 0
@@ -176,4 +186,6 @@ def bounded_burst(
             break
         rejected_edges += crossings
         scale[reverted] /= 2
+        if np.all(half_sides[reverted] * scale[reverted] <= retry_bounds[reverted]):
+            break
     return Burst(current, rejected_edges, abnormal)

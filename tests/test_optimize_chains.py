@@ -241,6 +241,29 @@ def test_chains_racing_toward_each_other_head_on_stop_at_their_clearance(
     assert y_at(a, 5.0) > y_at(b, 5.0)
 
 
+def test_chains_close_together_straighten_together_by_the_step_floor() -> None:
+    # Nested arches 20 µm apart flatten together: their bubbles against
+    # each other would let the apexes move about 15 µm in a burst, the step
+    # floor lets them move half the inflation less δ.
+    free = FreeSpace()
+    # 20 µm apart square to their legs, which rise 2 in 5.
+    apart = (scenarios.PAIR_INFLATION + 0.02) * math.hypot(1.0, 0.4)
+    lower = selected("lower", "A", free, (0.0, 0.0), (5.0, 2.0), (10.0, 0.0))
+    upper = selected(
+        "upper", "B", free, (0.0, apart), (5.0, 2.0 + apart), (10.0, apart)
+    )
+    floor = 0.5 * (scenarios.PAIR_INFLATION - COARSE.bubble_tolerance)
+
+    result = optimize_chains(
+        [lower, upper], scenarios.PARAMS, replace(COARSE, max_iterations=1)
+    )
+
+    a, b = (c.polyline for c in result.chains)
+    for start, shape in ((2.0, a), (2.0 + apart, b)):
+        assert floor / 2 < start - y_at(shape, 5.0) <= floor + INSIDE_TOLERANCE
+    assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+
+
 SPARSE = replace(COARSE, spacing=3.0, settled_change=0.03)
 
 
@@ -487,8 +510,9 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
         half_sides: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        retry_bounds: FloatArray | None = None,
     ) -> Burst:
-        burst = real(objective, start, half_sides, revert, settings)
+        burst = real(objective, start, half_sides, revert, settings, retry_bounds)
         bursts.append(burst)
         return replace(burst, abnormal=True)
 

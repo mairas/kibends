@@ -71,45 +71,53 @@ when any of their edges at it does.
 
 The other chains move in the same burst. A vertex p at free distance D from
 them, its distance to their centrelines less the inflation I, has a bubble
-of CROSS_SHARE times D: it moves at most D/4 + δ/2 for a share of 1/2 and the
-bubble tolerance δ, and not at all below D = -2δ. For p to pass through
-another chain's edge and come out clear beyond it, p must move at least
-D + 2I relative to that edge. The edge's ends start within D + I + l of p,
-l its length, so they are at most D + l from p's chain and move at most
-(D + l)/4 + δ/2 each. Together that is at most D/2 + l/4 + δ, less than
-D + 2I for every D ≥ -2δ whenever l < 8(I - δ); resampled edges are at
-most one spacing long, far below that for any real track. So no vertex
-passes through another chain's edge within a burst, nor an edge across
-another chain's vertex: the bubbles alone rule out a swap, which the check
-at the end could not see, as both chains end clear. Between chains of one
-net I is their half widths, still far above a spacing for real tracks; the
-parts left out near a touch are not seen at all, as there the chains
-connect and may overlap. A junction's branches take no bubble against each
-other (`_Problem.siblings`): one net, they connect whichever side of each
-other they end up on, so only the edge check keeps them from overlapping.
+of CROSS_SHARE times D, or the step floor c where that is larger: it moves
+at most max(D/4 + δ/2, c) for a share of 1/2 and the bubble tolerance δ. c
+is STEP_FLOOR, a half, of the smallest inflation I_min between any two
+members or vias of the problem, less δ (`_Problem.step_floor`), so
+2c ≤ I - δ for any two of them; only a vertex whose edges all start clear
+of the others takes it, and one deeper than δ inside does not move at all.
+Every point of an edge moves in a straight line, no farther than the
+farther of the edge's ends. For a point a of one chain to pass through
+another chain, it must meet a point b of it on the way, so the two together
+moved at least R, their distance at the burst's start. Where either of
+their edges starts clear of the other chain, R ≥ I; where neither does,
+neither takes the floor, and the last paragraph covers them. Two floors
+move at most 2c < R. A vertex on its bubble lies within R + l of
+the other point, l its edge's length, so its free distance is at most
+R + l - I and it moves at most (R + l - I)/4 + δ/2: with a floor, less than
+R whenever l < 2I, and with another bubble whenever l < 2I - 2δ. Resampled
+edges are at most one spacing long, below that for any real track. So no
+point of a chain passes through another within a burst: the boxes alone
+rule out a swap, which the check at the end could not see, as both chains
+end clear. Between chains of one net I is their half widths, still above
+the spacing for real tracks; the parts left out near a touch are not seen
+at all, as there the chains connect and may overlap. A junction's branches
+take neither bubble nor floor against each other, nor count towards I_min
+(`_Problem.siblings`): one net, they connect whichever side of each other
+they end up on, so only the edge check keeps them from overlapping.
 
 A section moves as its centreline and is seen as its two tracks, which lie
 within H of it, H its half pitch widened at mitred corners, and every point
 of the centreline lies within H of each track. A track's vertex can move
 farther than the centreline's vertex it is offset from, as the mitre turns
-with the edges either side, so the bubbles do not bound the tracks' moves;
+with the edges either side, so the boxes do not bound the tracks' moves;
 the argument needs no such bound, as it is about the centreline. Another
 member that ends on the far side of a section without crossing its
 centreline lies within H of it, inside the extent I_s the section keeps
 clear of it, which is more than H, and the section's own edge check sees it.
-So it is enough that no vertex crosses a centreline and no centreline vertex
-crosses an edge, with I_s for I above. A chain's vertex p measures its free
-distance to the tracks, which it keeps at I_t: at most D + I_s - I_t + H,
-less than D + 2I_s, D its free distance to the centreline as the section
-keeps it, so p moves at most D/4 + I_s/2 + δ/2. The centreline edge's ends
-start within D + I_s + l of p and move at most (D + l)/4 + δ/2 each.
-Together that is at most D/2 + I_s/2 + l/4 + δ, less than D + 2I_s for every
-D ≥ -I_s whenever l < 4(I_s - δ). The other way round, a centreline vertex
-at free distance D from a chain moves at most D/4 + δ/2, and the ends of the
-chain's edge, within D + I_s + l of it, have free distances to the tracks of
-at most D + l + 2I_s and move at most (D + l)/4 + I_s/2 + δ/2 each: the same
-bound. Between two sections each measures the other's tracks, and the same
-holds with H on both sides.
+So it is enough that no point of another member meets the centreline. A
+centreline edge that starts clear of a chain lies at least I_s from it,
+and a chain's edge that starts clear of the tracks, which it keeps at I_t,
+at least I_t - H from the centreline; I_min is at most I_t. Two floors
+again move less than R. A chain's vertex on its bubble has a free distance
+to the tracks of at most R + l + H - I_t, a centreline vertex on its bubble
+one to the chain of at most R + l - I_s. With I_s = I_t + H, as for tracks
+of one width and clearance, a bubble and a floor together move less than R
+whenever l < 2(I_t - H), which is the chain's width plus twice the
+clearance less the pair's gap, and two bubbles whenever l < 2I_t - 2δ.
+Between two sections each measures the other's tracks, and the same holds
+with H on both sides.
 
 A moving via is a member whose one vertex is its centre, inflated by
 I = `via_chain_inflation` against another member and seen by it so, and
@@ -118,30 +126,21 @@ l = 0 for the via's own edge of no length: a chain edge's ends see the
 via's centre at the same inflation as it sees them, so the via passes
 through no edge and no vertex passes through the via, and two vias do not
 pass each other. Its box is the smallest of its own, from its free
-distance to static copper and CROSS_SHARE of that to the members near it
-and the other vias, and the boxes of the ends it carries, which move with
-it: so each carried end moves inside its own box too, and the chain ends
-it carries keep their topology as any vertex does. One exception follows
-`via_moves.Contact`: a chain or a section's centreline that
-presses on the via at a burst's start, clear of it but within reach of the
-energy terms, and with no edge as long as the ring is wide
-(`via_moves.presses`), is left out of the via's box and the via out of its
-boxes. Held to half their gap each, the two would creep after each other
-by the clearance hinge's give, burst after burst, where one burst can move
-them together. In their place the check at the end moves both back where
-either passed through the other, a vertex crossing the ring or an edge
-clear of it at the start ending across it. Both move in straight lines
-within the burst, so an edge is never as long as the ring is wide on the
-way either, and the via cannot pass between two vertices unseen.
+distance to static copper and the larger of CROSS_SHARE of that to the
+members near it and the other vias and the floor, which it takes only when
+it starts clear of its clearance, and the boxes of the ends it carries,
+which move with it: so each carried end moves inside its own box too, and
+the chain ends it carries keep their topology as any vertex does. The
+chains a via carries are siblings, as a junction's branches are.
 
-What the bubbles allow is coming too close: ending inside another chain's
+What the boxes allow is coming too close: ending inside another chain's
 clearance, or an edge ending across one. The check after each run catches
 that. An edge clear of the other chains at the burst's start that is not
 clear of their new shapes moves its free ends back, and the check repeats,
 as moving one chain's vertex back can put another chain's moved edge
 across it; moved back whole, every chain is at its start, clear. An edge
 that starts inside another chain's clearance is not checked: its ends lie
-within δ (deeper ones are frozen), so they barely move,
+within δ (deeper ones are frozen) and take no floor, so they barely move,
 and the violation guard on the best state counts it. A via clear at the
 burst's start that ends inside its clearance, of static copper, a member or
 another via, moves back with the ends it carries; the guard on the best
@@ -151,7 +150,7 @@ members' violations.
 
 import math
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from itertools import pairwise
@@ -163,6 +162,7 @@ from scipy.spatial import cKDTree
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
+    RETRY_SHARE,
     OptimizerSettings,
     bounded_burst,
     half_side,
@@ -201,7 +201,7 @@ from kibends.obstacles import (
 )
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.pairs import BendCheck, bend_radii, too_tight
-from kibends.via_moves import Contact, MovingVias, presses
+from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
 
 # A span only slightly longer than a multiple of the spacing gets no extra
@@ -652,6 +652,13 @@ LIST_SKIN = 0.05
 # burst, that a vertex's bubble takes: at 1/2 two vertices closing on each
 # other cover at most half the distance between them.
 CROSS_SHARE = 0.5
+
+# The share of the smallest inflation between two members or vias, less δ,
+# that every variable starting clear of them may move however close they
+# are: at 1/2 two such points closing on each other never meet. Measured
+# against 1/4 and 0.9 on a DIN-like bundle in
+# https://github.com/mairas/kibends/issues/28.
+STEP_FLOOR = 0.5
 
 End = tuple[int, int]
 """A chain end: the chain's index and 0 or -1."""
@@ -1485,8 +1492,7 @@ class _JointBurst:
     too close to each other (`optimize.close_to_itself`)."""
     via_rejected: list[int]
     """Per via, the edges at the ends it carries that newly crossed, and
-    the times it ended newly inside its clearance or passed through a chain
-    pressing on it, over every retry."""
+    the times it ended newly inside its clearance, over every retry."""
     abnormal: bool
 
 
@@ -1514,11 +1520,12 @@ class _Problem:
         self.loose: list[list[int]] = [[] for _ in range(count)]
         # Branches of one junction leave each other out near it, so what
         # each sees of the others there begins about their half widths plus
-        # the reach away: as bubbles, that would hold the vertices near the
-        # junction, and with them the junction, to a fraction of the reach
-        # per burst. They are one net, so a branch passing through another
-        # changes no connection, and the edge check still keeps their edges
-        # from newly crossing. So with the chains a via carries.
+        # the reach away: as bubbles, or as the step floor their half widths
+        # set, that would hold the vertices near the junction, and with them
+        # the junction, to a fraction of the reach per burst. They are one
+        # net, so a branch passing through another changes no connection,
+        # and the edge check still keeps their edges from newly crossing. So
+        # with the chains a via carries.
         self.siblings: list[list[int]] = [[] for _ in range(count)]
         for group in self.groups:
             for i, end in group:
@@ -1713,10 +1720,9 @@ class _Problem:
         k: int,
         polylines: Sequence[FloatArray],
         positions: Sequence[FloatArray],
-        without: Collection[int] = (),
     ) -> _ViaView:
-        """What via k sees of the members near it at `polylines`, but those
-        in `without`, and of the other vias at `positions`."""
+        """What via k sees of the members near it at `polylines` and of the
+        other vias at `positions`."""
         via = self.vias[k]
         starts: list[FloatArray] = [np.empty((0, 2))]
         ends: list[FloatArray] = [np.empty((0, 2))]
@@ -1724,8 +1730,6 @@ class _Problem:
         member: list[IntArray] = [np.empty(0, dtype=np.intp)]
         vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
         for j, ring in via.rings.items():
-            if j in without:
-                continue
             points = polylines[j]
             starts.append(points[:-1])
             ends.append(points[1:])
@@ -2004,27 +2008,12 @@ class _Problem:
 
         return objective
 
-    def contacts(
-        self, starts: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[tuple[int, int]]:
-        """The moving vias and the chains and sections that press on them
-        at the burst's start (`via_moves.presses`), a section as its
-        centreline, as pairs of the via's and the member's index."""
-        limit = self.reach + self.settings.bubble_tolerance
-        return [
-            (k, j)
-            for k in self.free_vias
-            for j, ring in self.rings[k].items()
-            if j in self.free and presses(positions[k], starts[j], ring, limit)
-        ]
-
     def burst(self, starts: list[FloatArray]) -> _JointBurst:
         """One bounded L-BFGS-B run over every free vertex and moving via
         of the problem, retried with halved bounds where edges newly crossed
         static copper or another member's new shape, a section newly bent
         below its limit or brought its parts beyond a turn too close
-        (`optimize.SelfCheck`), a via ended newly inside its clearance, or a
-        via and a chain pressing on it passed through each other."""
+        (`optimize.SelfCheck`) or a via ended newly inside its clearance."""
         members = self.members
         positions = self.positions
         layout = self.layout(starts)
@@ -2054,11 +2043,6 @@ class _Problem:
                 self.free_vias, self.via_distances(starts, positions), strict=True
             )
         }
-        contacts = self.contacts(starts, positions)
-        passages = [
-            (k, j, Contact.before(positions[k], starts[j], self.rings[k][j]))
-            for k, j in contacts
-        ]
 
         def crossings(x: FloatArray) -> tuple[_Round, BoolArray]:
             """What `_Round` counts at `x`, and the coordinates of the
@@ -2094,11 +2078,6 @@ class _Problem:
                 ):
                     back[layout.via_index[k]] = True
                     via_counts[k] += 1
-            for k, j, passage in passages:
-                if not passage.kept(centres[k], polylines[j]):
-                    back[layout.via_index[k]] = True
-                    back[index[j][free[j]]] = True
-                    via_counts[k] += 1
             return _Round(counts, via_counts), np.repeat(back, 2)
 
         rounds: list[_Round] = []
@@ -2116,8 +2095,17 @@ class _Problem:
             rounds.append(found[0])
             return reverted, total
 
-        sides = np.repeat(self.half_sides(layout, seen, contacts), 2)
-        result = bounded_burst(objective, x0, sides, revert, self.settings)
+        sides, bubbles = self.half_sides(
+            layout, seen, others_before, list(clear_before.values())
+        )
+        result = bounded_burst(
+            objective,
+            x0,
+            np.repeat(sides, 2),
+            revert,
+            self.settings,
+            np.repeat(bubbles / RETRY_SHARE, 2),
+        )
         # An abnormally ended burst stops at its last check without counting it.
         counted = rounds[:-1] if result.abnormal else rounds
         polylines, centres = layout.unflatten(result.points)
@@ -2134,52 +2122,88 @@ class _Problem:
         self,
         layout: _Layout,
         seen: Sequence[SeenParts],
-        contacts: Sequence[tuple[int, int]],
-    ) -> FloatArray:
+        edges_clear: Sequence[BoolArray],
+        vias_clear: Sequence[bool],
+    ) -> tuple[FloatArray, FloatArray]:
         """Per variable, the half side of its box: that of the smallest, over
         the vertices and via it moves, of their free distance to static
-        copper and CROSS_SHARE of their free distance to the other members
-        and vias as each sees them, less the other branches of its chain's
-        junctions and the chains its vias carry (`_Problem.siblings`), and
-        a via and a chain pressing on it each other (`contacts`)."""
+        copper and of the larger of CROSS_SHARE of their free distance to
+        the other members and vias as each sees them, less the other
+        branches of its chain's junctions and the chains its vias carry
+        (`_Problem.siblings`), and the step floor (`step_floor`). Only a
+        variable whose vertices' edges (`edges_clear`, per member) and via
+        (`vias_clear`, per moving via) all start clear of the others takes
+        the floor. Also the half side of its bubble alone, without the
+        floor, by which a burst's retries shrink its box no further than
+        they always did."""
         starts, positions = layout.starts, layout.positions
         flat = _shown_flat(self.members, starts, positions)
-        owner = np.concatenate(
-            [
-                np.repeat(
-                    np.arange(len(starts)),
-                    [
-                        sum(len(points) for _, points in shown(member, line))
-                        for member, line in zip(self.members, starts, strict=True)
-                    ],
-                ),
-                np.repeat(-1 - np.arange(len(positions)), 2),
-            ]
-        )
-        distance = np.full(layout.count, np.inf)
+        apart = self.apart(seen, starts)
+        static = np.full(layout.count, np.inf)
+        cross = np.full(layout.count, np.inf)
+        clear = np.ones(layout.count, dtype=bool)
         for i, (body, points) in enumerate(zip(self.bodies, starts, strict=True)):
             free = layout.index[i] >= 0
-            static, _ = body.field.signed_distance(points[free])
-            apart = ~np.isin(
-                owner[seen[i].vertex],
-                [*self.siblings[i], *(-1 - k for k, j in contacts if j == i)],
-            )
-            others = _others(_subset(seen[i], apart), flat).field
-            cross, _ = others.signed_distance(points[free])
-            np.minimum.at(
-                distance, layout.index[i][free], np.minimum(static, CROSS_SHARE * cross)
-            )
-        for k in self.free_vias:
+            index = layout.index[i][free]
+            np.minimum.at(static, index, body.field.signed_distance(points[free])[0])
+            others = _others(_subset(seen[i], apart[i]), flat).field
+            np.minimum.at(cross, index, others.signed_distance(points[free])[0])
+            ends = np.ones(len(points), dtype=bool)
+            ends[:-1] &= edges_clear[i]
+            ends[1:] &= edges_clear[i]
+            np.logical_and.at(clear, index, ends[free])
+        for k, via_clear in zip(self.free_vias, vias_clear, strict=True):
             at = positions[k]
-            pressing = [j for v, j in contacts if v == k]
-            view = self.via_view(k, starts, positions, without=pressing)
             v = layout.via_index[k]
-            distance[v] = min(
-                distance[v],
-                point_distance(self.vias[k].given.field, at),
-                CROSS_SHARE * point_distance(view.field, at),
-            )
-        return half_side(distance, self.settings)
+            static[v] = min(static[v], point_distance(self.vias[k].given.field, at))
+            view = self.via_view(k, starts, positions)
+            cross[v] = min(cross[v], point_distance(view.field, at))
+            clear[v] &= via_clear
+        floor = np.where(clear, self.step_floor(seen, apart) / math.sqrt(2), 0.0)
+        static_side = half_side(static, self.settings)
+        cross_side = half_side(CROSS_SHARE * cross, self.settings)
+        return (
+            np.minimum(static_side, np.maximum(cross_side, floor)),
+            np.minimum(static_side, cross_side),
+        )
+
+    def apart(
+        self, seen: Sequence[SeenParts], polylines: Sequence[FloatArray]
+    ) -> list[BoolArray]:
+        """Per member, which pieces of `seen`, made at `polylines`, are not
+        its siblings'."""
+        owner = np.repeat(
+            np.arange(len(self.members) + len(self.vias)),
+            [
+                *(
+                    sum(len(points) for _, points in shown(member, line))
+                    for member, line in zip(self.members, polylines, strict=True)
+                ),
+                *(2 for _ in self.vias),
+            ],
+        )
+        return [
+            ~np.isin(owner[part.vertex], siblings)
+            for part, siblings in zip(seen, self.siblings, strict=True)
+        ]
+
+    def step_floor(
+        self, seen: Sequence[SeenParts], apart: Sequence[BoolArray]
+    ) -> float:
+        """How far, mm, every variable may move in a burst however close the
+        other members and vias are: STEP_FLOOR of the smallest inflation
+        between any two of them but siblings, less δ."""
+        inflations = [
+            *(
+                float(part.inflation[keep].min(initial=math.inf))
+                for part, keep in zip(seen, apart, strict=True)
+            ),
+            *(gap for via in self.vias for gap in via.apart.values()),
+        ]
+        smallest = min(inflations, default=math.inf)
+        if not math.isfinite(smallest):
+            return 0.0
+        return max(STEP_FLOOR * (smallest - self.settings.bubble_tolerance), 0.0)
 
 
 def _description(layers: Sequence[str], vias: bool) -> str:

@@ -11,7 +11,7 @@ from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
-from kibends.energy import ObstacleField, obstacle_reach
+from kibends.energy import ObstacleField
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.optimize import (
     INSIDE_TOLERANCE,
@@ -21,7 +21,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.pair_blocks import PairInput, pair_block
-from kibends.via_moves import Contact, MovingVias, presses
+from kibends.via_moves import MovingVias
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -185,27 +185,14 @@ def first_revert(
         half_sides: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        retry_bounds: FloatArray | None = None,
     ) -> Burst:
         captured.append((revert, start.copy()))
-        return real(objective, start, half_sides, revert, settings)
+        return real(objective, start, half_sides, revert, settings, retry_bounds)
 
     monkeypatch.setattr(optimize_module, "bounded_burst", capturing)
     run(scenario, replace(COARSE, max_iterations=1))
     return captured[0]
-
-
-def pressed() -> ViasScenario:
-    """The detour route and a chain of another net on an inner layer,
-    straight under the via, pressing on it."""
-    level = scenarios.DETOUR_VIA[1] - scenarios.VIA_TO_CHAIN - 0.01
-    neighbour = selected(
-        "C", "C", FreeSpace(), (3.0, level), (7.0, level), layer="In1.Cu"
-    )
-    return ViasScenario(
-        "via-pressed",
-        (*scenarios.route("N", scenarios.DETOUR_VIA), neighbour),
-        (scenarios.joining(scenarios.through_via("v", "N", scenarios.DETOUR_VIA), 0),),
-    )
 
 
 @pytest.mark.parametrize(
@@ -215,10 +202,8 @@ def pressed() -> ViasScenario:
         (scenarios.via_detour_over(Box(4.9, 2.0, 0.05, 0.05)), (5.0, 1.5)),
         # Onto the pinned chain of its net on In1.Cu.
         (scenarios.via_over_same_net(), (5.0, scenarios.SAME_NET_LEVEL)),
-        # Through the chain pressing on it, ending clear beyond.
-        (pressed(), (5.0, 1.5)),
     ],
-    ids=["end-edge-crossing", "newly-inside", "through-a-pressing-chain"],
+    ids=["end-edge-crossing", "newly-inside"],
 )
 def test_a_burst_moves_the_via_and_its_ends_back(
     monkeypatch: pytest.MonkeyPatch, scenario: ViasScenario, to: tuple[float, float]
@@ -426,8 +411,9 @@ def test_two_layers_joined_by_a_via_are_one_problem(
         half_sides: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        retry_bounds: FloatArray | None = None,
     ) -> Burst:
-        burst = real(objective, start, half_sides, revert, settings)
+        burst = real(objective, start, half_sides, revert, settings, retry_bounds)
         bursts.append(burst)
         return replace(burst, abnormal=True)
 
@@ -635,55 +621,6 @@ class TestResume:
         (moved,) = resumed.vias
         assert math.dist(moved.position, via.position) > 0.5 - INSIDE_TOLERANCE
         assert moved.position[1] > 2.0
-
-
-class TestPresses:
-    def test_a_chain_with_edges_as_long_as_the_ring_is_wide_does_not(
-        self,
-    ) -> None:
-        scenario = scenarios.via_beside_chain()
-        ring = moving_vias(scenario).ring(0, 2)
-        via = np.array([5.0, 0.0])
-        limit = obstacle_reach(scenario.params) + COARSE.bubble_tolerance
-        below = -(ring + 0.01)
-        fine = np.column_stack([np.linspace(3.0, 7.0, 41), np.full(41, below)])
-        coarse = np.array([(3.0, below), (7.0, below)])
-
-        assert presses(via, fine, ring, limit)
-        assert not presses(via, coarse, ring, limit)
-
-
-class TestContactPassage:
-    """A burst leaves a via and a chain pressing on it out of each other's
-    bubbles, so a check catches either passing through the other."""
-
-    RING = 0.6
-    CHAIN = np.array([(3.0, -0.65), (4.0, -0.62), (5.0, -0.61), (6.0, -0.62)])
-    VIA = np.array([5.0, 0.0])
-
-    def kept(self, via_step: tuple[float, float], chain_step: float) -> bool:
-        contact = Contact.before(self.VIA, self.CHAIN, self.RING)
-        moved = self.CHAIN + np.array([0.0, chain_step])
-        return contact.kept(self.VIA + np.array(via_step), moved)
-
-    def test_pushing_together_is_kept(self) -> None:
-        assert self.kept((0.0, 0.3), 0.3)
-
-    def test_the_via_jumping_the_chain_is_caught(self) -> None:
-        assert not self.kept((0.0, -2.0), 0.0)
-
-    def test_the_chain_jumping_the_via_is_caught(self) -> None:
-        assert not self.kept((0.0, 0.0), 2.0)
-
-    def test_the_two_swapping_is_caught(self) -> None:
-        assert not self.kept((0.0, -1.0), 1.0)
-
-    def test_a_chain_stretched_wider_than_the_ring_is_caught(self) -> None:
-        contact = Contact.before(self.VIA, self.CHAIN, self.RING)
-        stretched = self.CHAIN.copy()
-        stretched[2] = (5.0, -3.0)
-
-        assert not contact.kept(self.VIA, stretched)
 
 
 def test_chains_straightened_in_one_burst_are_kept() -> None:
