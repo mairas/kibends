@@ -1,18 +1,18 @@
 """Decide which selected vias may move with the chains they join.
 
 A selected via moves only when it is an unlocked through via, every copper
-item touching it on any layer is the end of a selected chain or the fill
-of a zone of its net, no other copper touches those ends, and at least two
-such ends meet it. A via that moves stays inside the region of every zone
-of its net whose fill touches it, on each layer where it does, with its
-centre at least `ViaZone.margin` inside, so that the next refill reconnects
-it; one whose centre does not start that deep inside that region stays
-fixed, with a debug line naming the zone and layer. One that starts closer
-to other nets' copper than the zone's clearance and the margin is left to
-the optimizer, which keeps it where it is as it keeps any via starting
-inside its clearance. Every other selected via stays
-fixed, with a debug line naming the reason, and pins the chains it touches
-like an unselected via.
+item touching it on any layer is the end of a selected chain or a zone of
+its net, no other copper touches those ends, and at least two such ends
+meet it. A via that moves stays inside the region of every zone of its net
+whose region reaches its ring, on each layer where it does, with its
+centre at least `ViaZone.margin` inside, so that the next refill
+reconnects it; one whose centre does not start that deep inside, and may
+be connected only now, stays fixed, with a debug line naming the zone and
+layer. One that starts closer to other nets' copper than the zone's
+clearance and the margin is left to the optimizer, which keeps it where it
+is as it keeps any via starting inside its clearance. Every other selected
+via stays fixed, with a debug line naming the reason, and pins the chains
+it touches like an unselected via.
 """
 
 import math
@@ -45,7 +45,8 @@ class MovableVia:
     ends: tuple[ChainEnd, ...]
     """The chain ends whose copper overlaps the via, in chain order."""
     zones: tuple[ViaZone, ...]
-    """The zones of its net whose fill touches it, which it stays inside."""
+    """The zones of its net whose region reaches its ring, which it stays
+    inside."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -109,9 +110,9 @@ def movable_vias(
 
     `contacts` gives the same-net copper touching each via or the chain ends
     it carries, as `BoardSnapshot.read` finds it from `carried_copper`, and
-    `zones` the zones of its net whose fill touches each, which keep it
-    from moving only when its centre does not start `ViaZone.margin` inside
-    their regions.
+    `zones` the zones of its net whose region reaches each one's ring,
+    which keep it from moving only when its centre does not start
+    `ViaZone.margin` inside their regions.
     """
     chains_of: dict[str, set[int]] = defaultdict(set)
     for k, c in enumerate(chains):

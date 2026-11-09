@@ -993,15 +993,14 @@ def build_via_obstacles(
 
 
 def zone_containment(zone: ViaZone) -> list[Obstacles]:
-    """The outside of `zone`'s region on each layer where its fill touches
-    the via, as an obstacle to the via's centre inflated as the board edge
+    """The outside of `zone`'s region on each layer where it reaches the
+    via's ring, as an obstacle to the via's centre inflated as the board edge
     is, by `ViaZone.margin`, so that the next refill connects the via again.
 
-    The region, not the current fill: the fill holds where other copper
-    stood at the last refill, which the run may move, and is a polygon with
-    a hole for every other net's item in the zone. The clearance the refill
-    keeps from that copper is the via's to keep instead, at the copper's
-    current place (`_zone_inflation`).
+    The region is built from outlines alone; kibends never reads a fill.
+    The clearance the refill keeps from other nets' copper in the zone is
+    the via's to keep instead, at the copper's current place
+    (`_zone_inflation`).
     """
     return [Obstacles((), region, zone.margin) for region in zone.regions.values()]
 

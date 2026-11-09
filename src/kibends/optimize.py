@@ -133,7 +133,7 @@ it starts clear of its clearance, and the boxes of the ends it carries,
 which move with it: so each carried end moves inside its own box too, and
 the chain ends it carries keep their topology as any vertex does. A zone
 the via stays inside is part of its static field as the board edge is,
-the outside of the zone's region on each layer its fill touches, inflated
+the outside of the zone's region on each layer it reaches the via's ring, inflated
 by the margin the refill needs (`obstacles.zone_containment`): its box
 lies within its free distance to that boundary, so it does not leave the
 region within a burst, and the check below moves it back if it ends

@@ -17,8 +17,8 @@ from conftest import (
     kipy_bezier,
     kipy_board_arc,
     kipy_circle,
+    kipy_copper_zone,
     kipy_field,
-    kipy_filled_zone,
     kipy_footprint,
     kipy_pad,
     kipy_rect,
@@ -41,6 +41,7 @@ from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
+from kibends import snapshot as snapshot_module
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import (
@@ -824,13 +825,14 @@ class TestViaContacts:
             ],
             shapes=[kipy_segment(self.VIA, (7, y), BL.BL_B_Cu, net="SIG")],
             zones=[
-                kipy_filled_zone("fill", "SIG", {BL.BL_In2_Cu: kipy_rect(4, 4, 6, 6)}),
-                kipy_filled_zone("away", "SIG", {BL.BL_In3_Cu: kipy_rect(0, 0, 1, 1)}),
-                kipy_filled_zone("gnd", "GND", {BL.BL_F_Cu: kipy_rect(4, 4, 6, 6)}),
-                kipy_filled_zone(
+                kipy_copper_zone("near", "SIG", kipy_rect(4, 4, 6, 6), [BL.BL_In2_Cu]),
+                kipy_copper_zone("away", "SIG", kipy_rect(0, 0, 1, 1), [BL.BL_In3_Cu]),
+                kipy_copper_zone("gnd", "GND", kipy_rect(4, 4, 6, 6), [BL.BL_F_Cu]),
+                kipy_copper_zone(
                     "drop",
                     "SIG",
-                    {BL.BL_F_Cu: kipy_rect(4, 4, 6, 6)},
+                    kipy_rect(4, 4, 6, 6),
+                    [BL.BL_F_Cu],
                     ZoneType.ZT_TEARDROP,
                 ),
             ],
@@ -855,14 +857,14 @@ class TestViaContacts:
     def test_copper_touching_what_a_via_carries_counts(self) -> None:
         fake = self.contact_board()
         (via,) = read_selection(board(fake)).vias
-        # Clear of the via, 0.1 mm from the far track and the far fill.
+        # Clear of the via, 0.1 mm from the far track and the far zone.
         end = Disc((1.1, 0.0), 0.2)
 
         snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via], carried={"v": [end]})
 
         assert ViaContact("track far on F.Cu", "far") in snap.via_contacts["v"]
         # A zone touching only a carried end is no zone the via connects to.
-        assert [z.name for z in snap.via_zones["v"]] == ["fill"]
+        assert [z.name for z in snap.via_zones["v"]] == ["near"]
 
     def via_zones(self, *zones: kbt.Zone) -> tuple[ViaZone, ...]:
         """The zones recorded for the via, with `zones` added to the board."""
@@ -874,20 +876,19 @@ class TestViaContacts:
     def test_same_net_zones_are_recorded_by_their_outline_on_each_layer(
         self,
     ) -> None:
-        x, y = self.VIA
-        fills = {
-            BL.BL_In1_Cu: kipy_rect(x - 1, y - 1, x + 1, y + 1),
-            BL.BL_In2_Cu: kipy_rect(x - 2, y - 2, x + 2, y + 2),
-        }
-        drawn = kipy_filled_zone(
-            "plane", "SIG", fills, outline=kipy_rect(0, 0, 9, 9), min_width=0.25
+        drawn = kipy_copper_zone(
+            "plane",
+            "SIG",
+            kipy_rect(0, 0, 9, 9),
+            [BL.BL_In1_Cu, BL.BL_In2_Cu],
+            min_width=0.25,
         )
         drawn.clearance = nm(0.3)
 
-        fill, plane = self.via_zones(drawn)
+        near, plane = self.via_zones(drawn)
 
-        assert (fill.name, fill.layers, fill.min_width) == ("fill", ("In2.Cu",), 0.0)
-        assert fill.regions["In2.Cu"].equals(box(4, 4, 6, 6))
+        assert (near.name, near.layers, near.min_width) == ("near", ("In2.Cu",), 0.0)
+        assert near.regions["In2.Cu"].equals(box(4, 4, 6, 6))
         assert (plane.name, plane.layers, plane.min_width, plane.clearance) == (
             "plane",
             ("In1.Cu", "In2.Cu"),
@@ -903,50 +904,114 @@ class TestViaContacts:
         outline.add_hole(kipy_rect(5.5, 4, 6.5, 6).outline)
 
         (_, plane) = self.via_zones(
-            kipy_filled_zone(
-                "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(4, 4, 6, 6)}, outline=outline
-            )
+            kipy_copper_zone("plane", "SIG", outline, [BL.BL_In1_Cu])
         )
 
         hole = box(5.5, 4, 6.5, 6)
         assert plane.regions["In1.Cu"].equals(box(2, 2, 8, 8).difference(hole))
 
-    def test_holes_and_other_pieces_of_the_fill_are_left_out(self) -> None:
-        # The fill holds where other copper stood at the last refill, which
-        # the run may move; only the outline bounds the next refill.
-        holed = kipy_rect(4, 4, 6, 6)
-        holed.add_hole(kipy_rect(5.5, 4.5, 5.8, 5.5).outline)
-        pieces = [holed, kipy_rect(7, 4, 9, 6)]
+    def test_a_fill_is_never_read(self) -> None:
+        # The fill holds where other copper stood at the last refill: one
+        # that misses the via inside the outline still connects it, and one
+        # reaching it outside the outline does not.
+        x = self.VIA[0]
+        missing = kipy_copper_zone("missing", "SIG", kipy_rect(0, 0, 9, 9), [])
+        stray = kipy_copper_zone("stray", "SIG", kipy_rect(7, 7, 9, 9), [])
+        for zone, fill in (
+            (missing, kipy_rect(x + 1, 0, 9, 9)),
+            (stray, kipy_rect(0, 0, 9, 9)),
+        ):
+            zone.proto.layers.append(BL.BL_In1_Cu)
+            zone.proto.filled = True
+            filled = zone.proto.filled_polygons.add()
+            filled.layer = BL.BL_In1_Cu
+            filled.shapes.polygons.add().CopyFrom(fill.proto)
 
-        (_, plane) = self.via_zones(
-            kipy_filled_zone(
-                "plane",
-                "SIG",
-                {BL.BL_In1_Cu: pieces},
-                outline=kipy_rect(0, 0, 10, 10),
-            )
+        found = self.via_zones(missing, stray)
+
+        assert [(z.name, z.layers) for z in found] == [
+            ("near", ("In2.Cu",)),
+            ("missing", ("In1.Cu",)),
+        ]
+
+    @pytest.mark.parametrize(
+        ("short", "zoned"),
+        [(-0.001, True), (0.1, True), (0.299, True), (0.301, False)],
+        ids=["centre inside", "centre outside", "ring touching", "ring outside"],
+    )
+    def test_a_zone_counts_when_its_region_reaches_the_via_ring(
+        self, short: float, zoned: bool
+    ) -> None:
+        # The region ends `short` of the centre of the via, of radius 0.3.
+        # However close to the edge: whether it is deep enough to move is
+        # `movable_vias`'s to judge.
+        edge = self.VIA[0] - short
+        zone = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, edge, 9), [BL.BL_In1_Cu]
         )
 
-        assert plane.regions["In1.Cu"].equals(box(0, 0, 10, 10))
+        found = self.via_zones(zone)
 
-    def test_a_fill_touching_the_via_at_its_ring_counts(self) -> None:
+        assert [z.name for z in found] == (["near", "plane"] if zoned else ["near"])
+
+    @pytest.mark.parametrize(
+        ("layer", "zoned"), [(BL.BL_In1_Cu, True), (BL.BL_In2_Cu, False)]
+    )
+    def test_only_layers_the_via_spans_count(
+        self, layer: BL.ValueType, zoned: bool
+    ) -> None:
         x, y = self.VIA
-        ring = kipy_via("v", "SIG", x, y).diameter / NM_PER_MM / 2
-
-        (_, plane) = self.via_zones(
-            kipy_filled_zone(
-                "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(x + ring, 0, 9, 9)}
-            )
+        blind = kipy_via(
+            "v",
+            "SIG",
+            x,
+            y,
+            via_type=ViaType.VT_BLIND,
+            span=(BL.BL_F_Cu, BL.BL_In1_Cu),
         )
+        fake = FakeBoard(
+            selection=[blind, kipy_track("t", "SIG", (0, y), self.VIA)],
+            vias=[blind],
+            zones=[kipy_copper_zone("plane", "SIG", kipy_rect(0, 0, 9, 9), [layer])],
+        )
+        (via,) = read_selection(board(fake)).vias
 
-        assert plane.layers == ("In1.Cu",)
+        found = BoardSnapshot.read(board(fake), ["F.Cu"], [via]).via_zones["v"]
+
+        assert [z.layers for z in found] == ([("In1.Cu",)] if zoned else [])
+
+    def test_each_region_is_built_once_per_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built: list[tuple[str, str]] = []
+
+        def spy(zones: Sequence[kbt.Zone], zone: kbt.Zone, layer: str) -> BaseGeometry:
+            built.append((zone.id.value, layer))
+            return box(0, 0, 9, 9)
+
+        monkeypatch.setattr(snapshot_module, "_zone_region", spy)
+        vias = [kipy_via(f"v{k}", "SIG", 2 + k, 5) for k in range(3)]
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 9, 9), [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        )
+        fake = FakeBoard(
+            selection=[*vias, kipy_track("t", "SIG", (2, 5), (4, 5))],
+            vias=list(vias),
+            zones=[plane],
+        )
+        selected = read_selection(board(fake)).vias
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"], selected)
+
+        assert all(len(snap.via_zones[v.id]) == 1 for v in selected)
+        assert sorted(built) == [("plane", "In1.Cu"), ("plane", "In2.Cu")]
 
     def plane_region(self, *others: kbt.Zone, priority: int = 1) -> BaseGeometry:
-        """The region on In1.Cu of a SIG plane with clearance 0.2 and
-        `priority` whose stale fill covers its whole outline, with `others`
-        on the board."""
-        whole = {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}
-        plane = kipy_filled_zone("plane", "SIG", whole)
+        """The region on In1.Cu of a SIG plane over the whole board with
+        clearance 0.2 and `priority`, with `others` on the board."""
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu]
+        )
         plane.clearance = nm(0.2)
         plane.priority = priority
         (_, found) = self.via_zones(plane, *others)
@@ -954,10 +1019,14 @@ class TestViaContacts:
 
     @staticmethod
     def drawn_zone(
-        net: str, priority: int, clearance: float = 0.0, layer: int = BL.BL_In1_Cu
+        net: str,
+        priority: int,
+        clearance: float = 0.0,
+        layer: int = BL.BL_In1_Cu,
+        top: float = 3,
     ) -> kbt.Zone:
-        """An unfilled copper zone over y < 3."""
-        z = kipy_zone(kipy_rect(0, 0, 10, 3), [layer], rule_area=False, net=net)
+        """An unfilled copper zone over y < `top`."""
+        z = kipy_zone(kipy_rect(0, 0, 10, top), [layer], rule_area=False, net=net)
         z.priority = priority
         z.clearance = nm(clearance)
         return z
@@ -973,6 +1042,23 @@ class TestViaContacts:
 
         _, top, _, _ = region.bounds
         assert top == pytest.approx(3 + max(clearance, 0.2))
+
+    @pytest.mark.parametrize(
+        ("priority", "layers"),
+        [(2, ("In2.Cu",)), (1, ("In2.Cu",)), (0, ("In1.Cu", "In2.Cu"))],
+        ids=["higher", "equal", "lower"],
+    )
+    def test_a_zone_of_another_net_filling_first_over_the_via_leaves_out_its_layer(
+        self, priority: int, layers: tuple[str, ...]
+    ) -> None:
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        )
+        plane.priority = 1
+
+        (_, found) = self.via_zones(plane, self.drawn_zone("PWR", priority, top=10))
+
+        assert found.layers == layers
 
     @pytest.mark.parametrize(
         ("net", "priority", "layer"),

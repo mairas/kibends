@@ -103,7 +103,7 @@ class MovingVias:
     def standing(self, still: Collection[int]) -> MovingVias:
         """These vias with those in `still`, which stay where they are, as
         unselected vias: without the zones they would keep the clearance of
-        if they moved, since their fill as it is connects them."""
+        if they moved: standing still, they connect as they do now."""
         return MovingVias(
             self.chains,
             [
