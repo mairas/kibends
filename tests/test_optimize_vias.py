@@ -1074,3 +1074,135 @@ class TestStitchingVia:
         (via,) = result.vias
         assert via.frozen
         assert via.position == (STITCH_X, start)
+
+
+def reference_via_energy(
+    problem: optimize_module._Problem,
+    polylines: Sequence[FloatArray],
+    positions: Sequence[FloatArray],
+) -> tuple[float, list[FloatArray], FloatArray]:
+    """The moving vias' own terms built via by via: the full integrand for
+    the nearest of the via's static field and what `via_repel` finds, and
+    the hinge alone for the nearest of its stops and what `via_stop` finds."""
+    gradients = [np.zeros_like(points) for points in polylines]
+    via_gradients = np.zeros((len(problem.vias), 2))
+    value = 0.0
+    sights = (
+        problem.via_repel.nearest(polylines, positions, problem.reach),
+        problem.via_stop.nearest(polylines, positions, problem.reach),
+    )
+    for n, k in enumerate(problem.free_vias):
+        given = problem.vias[k].given
+        at = positions[k]
+        for static, near, integrand in (
+            (given.field, sights[0], problem.integrand),
+            (given.stops, sights[1], problem.limit),
+        ):
+            distance, direction = math.inf, np.zeros(2)
+            if static is not None:
+                d, g = static.signed_distance(at[None], problem.reach)
+                distance, direction = float(d[0]), g[0]
+            nearer = float(near.distance[n]) < distance
+            if nearer:
+                distance, direction = float(near.distance[n]), near.gradient[n]
+            term, slope = integrand(np.array([distance]))
+            value += given.via.diameter * float(term[0])
+            push = given.via.diameter * slope[0] * direction
+            via_gradients[k] += push
+            if not nearer:
+                continue
+            j, first = int(near.member[n]), int(near.vertex[n])
+            if j < 0:
+                via_gradients[first] -= push
+                continue
+            start, along = near.starts[n], near.ends[n] - near.starts[n]
+            squared = float(along @ along)
+            t = float(np.clip((at - start) @ along / squared, 0, 1)) if squared else 0
+            gradients[j][first] -= (1 - t) * push
+            gradients[j][first + 1] -= t * push
+    return value, gradients, via_gradients
+
+
+FROZEN_X = STITCH_X + 2.5
+FROZEN_X_ABOVE = 1.2
+"""The height of the G via above the frozen one, nearer to it than to the
+chain below."""
+
+
+def stitched_grid() -> ViasScenario:
+    """Stitching vias of nets G and H in rows between `stitched`'s chain and
+    a pinned chain of net T above its zone, close enough to stop and repel
+    each other and to meet their zone's edge, the bottom row seeing the
+    chain below and the top row the chain above; an unselected G via
+    standing still among them; and, first of all, an H via frozen inside the
+    lower chain's clearance, nearer than that chain to a G via above it."""
+    heights = [0.9 + 0.55 * row for row in range(4)]
+    top = heights[-1] + STITCH_MARGIN + 0.005
+    scenario = stitched(*heights, FROZEN_X_ABOVE, top=top)
+    still = scenarios.through_via("u", "G", (STITCH_X + HOLES_APART + 0.005, 0.9))
+    frozen = scenarios.through_via("f", "H", (FROZEN_X, 0.2))
+    vias = [ViaInput(frozen, (), FreeSpace(), scenarios.PAIR_CLEARANCE)]
+    for k, given in enumerate(scenario.vias):
+        x = STITCH_X + (0.6 if k % 2 else 0.0)
+        if given.via.position[1] == FROZEN_X_ABOVE:
+            x = FROZEN_X
+        net = "H" if k == 2 else "G"
+        via = replace(given.via, net=net, position=(x, given.via.position[1]))
+        layers = [replace(layer(name), vias=(still,)) for name in via.span]
+        vias.append(replace(given, via=via, own_net=own_net_vias(layers, via)))
+    vertices = [(float(x), top + 0.5) for x in np.linspace(0.0, 10.0, 41)]
+    above = selected("T", "T", FreeSpace(), *vertices)
+    chains = (*scenario.chains, replace(above, fixed=np.ones(len(vertices), bool)))
+    return replace(scenario, chains=chains, vias=tuple(vias))
+
+
+VIA_ENERGY_SCENARIOS = {
+    "detour": scenarios.via_detour,
+    "fermat": scenarios.via_fermat,
+    "hemmed": scenarios.via_hemmed,
+    "beside-chain": scenarios.via_beside_chain,
+    "pair": scenarios.via_pair,
+    "over-same-net": scenarios.via_over_same_net,
+    "zoned-beside-chain": lambda: zoned(scenarios.via_beside_chain(), 0, "In1.Cu"),
+    "in-zone": lambda: in_zone(0.0),
+    "below-keepout": lambda: below_keepout(2.0),
+    "stitched-two-nets": lambda: stitched(1.5, 2.6, top=5.0, nets=("G", "H")),
+    "stitched-holes-apart": lambda: stitched(0.9, 0.9 + HOLES_APART + 0.005, top=5.0),
+    "beside-still": lambda: beside_still(0.9, 0.9 + HOLES_APART + 0.005),
+    "stitched-grid": stitched_grid,
+    "grid": lambda: scenarios.via_grid(3, 4),
+}
+
+
+class TestViaEnergy:
+    """The vias' own terms equal those built via by via, at the start and
+    with every vertex and via jittered."""
+
+    @pytest.mark.parametrize("jitter", [0.0, 0.05])
+    @pytest.mark.parametrize("name", VIA_ENERGY_SCENARIOS)
+    def test_matches_the_via_by_via_reference(self, name: str, jitter: float) -> None:
+        scenario = VIA_ENERGY_SCENARIOS[name]()
+        params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
+        placed = optimize_module._problems(
+            scenario.chains, [], moving_vias(scenario), params, COARSE, None
+        )
+        problems = [p.problem for p in placed if p.problem.free_vias]
+        assert problems
+        rng = np.random.default_rng(7)
+        for problem in problems:
+            polylines = [
+                p + rng.normal(scale=jitter, size=p.shape) for p in problem.points
+            ]
+            positions = [
+                p + rng.normal(scale=jitter, size=2) for p in problem.positions
+            ]
+
+            value, gradients, via_gradients = problem.via_energy(polylines, positions)
+
+            want, want_gradients, want_vias = reference_via_energy(
+                problem, polylines, positions
+            )
+            assert value == pytest.approx(want, rel=1e-12, abs=1e-12)
+            for got, expected in zip(gradients, want_gradients, strict=True):
+                np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
+            np.testing.assert_allclose(via_gradients, want_vias, rtol=1e-12, atol=1e-12)
