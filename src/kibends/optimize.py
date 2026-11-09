@@ -2169,7 +2169,10 @@ class _Problem:
         (`vias_clear`, per moving via) all start clear of the others takes
         the floor. Also the half side of its bubble alone, without the
         floor, by which a burst's retries shrink its box no further than
-        they always did."""
+        they always did. Both are infinite without `move_bounds`."""
+        if not self.settings.move_bounds:
+            unbounded = np.full(layout.count, np.inf)
+            return unbounded, unbounded
         starts, positions = layout.starts, layout.positions
         flat = _shown_flat(self.members, starts, positions)
         apart = self.apart(seen, starts)

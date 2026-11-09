@@ -671,6 +671,11 @@ class TestSmooth:
         assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 50, 60.0)
         assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
 
+    def test_no_move_bounds_reaches_the_settings(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", "--no-move-bounds"]))
+
+        assert options.settings == replace(DEFAULT_SETTINGS, move_bounds=False)
+
     def test_stop_rules_default_to_the_optimizers(self) -> None:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 

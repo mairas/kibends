@@ -13,7 +13,7 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point, Polygon
 
 import kibends.optimize as optimize_module
-from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
+from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, half_side
 from kibends.commit import snapped_points
 from kibends.energy import (
     EnergyParams,
@@ -282,6 +282,24 @@ def test_a_chain_cannot_jump_through_another_in_one_burst(height: float) -> None
     a, b = (c.polyline for c in result.chains)
     assert y_at(a, 5.0) > y_at(b, 5.0)
     assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+
+
+def test_without_move_bounds_a_vertex_leaves_its_box_in_one_burst() -> None:
+    # The disc above the arch's apex gives the vertices near it boxes far
+    # smaller than their drop to the straightened shape.
+    above = Disc(5.0, 4.5, 0.5)
+    arch = selected("arch", "A", above, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
+    start = resample(arch.centreline.points, arch.fixed, COARSE.spacing)[0]
+    box = half_side(above.signed_distance(start)[0], COARSE)
+    one = replace(COARSE, max_iterations=1)
+
+    def beyond_box(settings: OptimizerSettings) -> bool:
+        moved = optimize_chains([arch], scenarios.PARAMS, settings).chains[0].polyline
+        assert len(moved) == len(start)
+        return bool(np.any(np.abs(moved - start).max(axis=1) > box + 1e-9))
+
+    assert not beyond_box(one)
+    assert beyond_box(replace(one, move_bounds=False))
 
 
 # Pulled onto each other against a weak clearance hinge, the chains end

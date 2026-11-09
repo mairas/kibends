@@ -66,6 +66,10 @@ class OptimizerSettings:
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
     """L-BFGS-B's projected gradient below which a burst ends."""
+    move_bounds: bool = True
+    """Bound each variable to its bubble or the step floor in a burst. Without
+    the bounds only the edge check stops a track or via passing through
+    another within a burst, and it does not catch every such pass."""
     time_limit: float | None = None
     """Seconds after which the run stops at the next burst's end and keeps
     its best state, as at the iteration cap; None for no limit."""

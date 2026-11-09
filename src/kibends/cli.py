@@ -449,6 +449,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
     )
     smooth_parser.add_argument(
+        "--no-move-bounds",
+        action="store_true",
+        help="Let every vertex and via move without bounds in a burst. Tracks "
+        "and vias may then pass through each other, which the optimizer does "
+        "not always catch; the DRC check catches only clearance and broken "
+        "connections, so inspect the result",
+    )
+    smooth_parser.add_argument(
         "--time-limit",
         type=_positive,
         metavar="SECONDS",
@@ -516,6 +524,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
             burst_maxiter=args.burst_iterations,
             lbfgs_ftol=args.lbfgs_ftol,
             lbfgs_gtol=args.lbfgs_gtol,
+            move_bounds=not args.no_move_bounds,
             time_limit=args.time_limit,
         ),
     )
