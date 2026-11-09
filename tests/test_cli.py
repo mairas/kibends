@@ -22,9 +22,8 @@ from conftest import (
     FakeKiCad,
     Ticking,
     kipy_arc,
-    kipy_filled_zone,
+    kipy_copper_zone,
     kipy_pad,
-    kipy_polygon,
     kipy_rect,
     kipy_track,
     kipy_via,
@@ -35,7 +34,6 @@ from conftest import (
 from distance_fields import FreeSpace
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
-from kipy.geometry import PolygonWithHoles
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
@@ -1640,52 +1638,16 @@ class TestMovingVias:
         self, connect: Connector, log: list[str], unfilled: str
     ) -> None:
         # Without the zone, the via ends below y = 1, in the part of the
-        # outline that the higher-priority PWR pour or the keepout leaves
-        # unfilled; the fill is as the refill left it.
-        board = moving_via_board()
-        unfilled_area = kipy_rect(-2, -3, 10, 2.5)
-        if unfilled == "pwr pour":
-            other = kipy_filled_zone("pwr", "PWR", {BL.BL_In1_Cu: unfilled_area})
-            other.priority = 1
-            other.clearance = nm(0.3)
-            refill_top = 2.5 + 0.3
-        else:
-            other = kipy_zone(unfilled_area, [BL.BL_In1_Cu], keepout_tracks=False)
-            other.proto.rule_area_settings.keepout_copper = True
-            refill_top = 2.5
-        board.zones = [
-            kipy_filled_zone(
-                "plane",
-                "SIG",
-                {BL.BL_In1_Cu: kipy_rect(0, refill_top, 10, 10)},
-                outline=kipy_rect(-2, -3, 10, 10),
-            ),
-            other,
-        ]
-        connect.to(board)
-
-        run()
-
-        assert "stays fixed" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
-        (via,) = created_vias(board)
-        y = via.position.y / 1e6
-        assert refill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
-
-    @pytest.mark.parametrize("unfillable", ["pwr pour", "pour keepout"])
-    def test_a_stale_fill_does_not_lead_the_via_into_what_the_refill_leaves_out(
-        self, connect: Connector, log: list[str], unfillable: str
-    ) -> None:
-        # The plane's fill predates a higher-priority PWR zone or a pour
-        # keepout over y < 2.5, drawn since the last refill: the fill covers
-        # the whole outline, and the via would end below y = 1 within it.
+        # outline that the higher-priority PWR zone or the keepout leaves
+        # unfilled.
         board = moving_via_board()
         area = kipy_rect(-2, -3, 10, 2.5)
-        stale = {BL.BL_In1_Cu: kipy_rect(-2, -3, 10, 10)}
-        plane = kipy_filled_zone("plane", "SIG", stale)
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(-2, -3, 10, 10), [BL.BL_In1_Cu]
+        )
         plane.clearance = nm(0.2)
-        if unfillable == "pwr pour":
-            other = kipy_zone(area, [BL.BL_In1_Cu], rule_area=False, net="PWR")
+        if unfilled == "pwr pour":
+            other = kipy_copper_zone("pwr", "PWR", area, [BL.BL_In1_Cu])
             other.priority = 1
             other.clearance = nm(0.3)
             refill_top = 2.5 + 0.3
@@ -1699,6 +1661,7 @@ class TestMovingVias:
         run()
 
         assert "stays fixed" not in "".join(log)
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         (via,) = created_vias(board)
         y = via.position.y / 1e6
         assert refill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
@@ -1711,8 +1674,8 @@ class TestMovingVias:
         board = moving_via_board()
         other = kipy_track("o", "OTHER", (0, 1), (10, 1), layer=BL.BL_In1_Cu)
         board.tracks = [*board.tracks, other]
-        plane = kipy_filled_zone(
-            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu], min_width=0.25
         )
         plane.clearance = nm(0.5)
         board.zones = [plane]
@@ -1740,8 +1703,8 @@ class TestMovingVias:
         ]
         board.selection = [*board.selection, *route]
         board.tracks = [*board.tracks, *route]
-        plane = kipy_filled_zone(
-            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu], min_width=0.25
         )
         plane.clearance = nm(0.5)
         board.zones = [plane]
@@ -1767,8 +1730,8 @@ class TestMovingVias:
     ) -> None:
         # The selected OTHER route bends 0.625 mm from the via, at the
         # netclass spacing and inside the plane's 0.5 mm zone clearance plus
-        # margin. The via stays, connected by its fill as it is, and the
-        # route sees it as an unselected via.
+        # margin. The via stays, connected as it is, and the route sees it as
+        # an unselected via.
         board = moving_via_board()
         bend = (VIA[0], VIA[1] + 0.3 + 0.2 + 0.25 / 2)
         route = [
@@ -1777,8 +1740,8 @@ class TestMovingVias:
         ]
         board.selection = [*board.selection, *route]
         board.tracks = [*board.tracks, *route]
-        plane = kipy_filled_zone(
-            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        plane = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu], min_width=0.25
         )
         plane.clearance = nm(0.5)
         board.zones = [plane]
@@ -1794,19 +1757,21 @@ class TestMovingVias:
         assert created_vias(board) == [] and "v" not in board.deleted
         assert {"o1", "o2"} <= set(board.deleted)
 
-    def test_a_via_at_the_edge_of_a_fill_stays_naming_the_zone(
+    def test_a_via_at_the_edge_of_a_zone_stays_naming_the_zone(
         self, connect: Connector, log: list[str]
     ) -> None:
-        # The edge fill ends 0.1 mm below the via's centre, short of the
-        # 0.13 mm that half its minimum width and the arc error ask for; the
-        # plane holds it deep inside.
+        # The edge zone ends 0.1 mm below the via's centre, short of the
+        # 0.13 mm that half its minimum width and the arc error ask for: the
+        # via may be connected now, and moving could lose that. The plane
+        # holds it deep inside.
         board = moving_via_board()
         board.zones = [
-            kipy_filled_zone("plane", "SIG", {BL.BL_In2_Cu: kipy_rect(0, 0, 10, 10)}),
-            kipy_filled_zone(
+            kipy_copper_zone("plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In2_Cu]),
+            kipy_copper_zone(
                 "edge",
                 "SIG",
-                {BL.BL_In1_Cu: kipy_rect(0, 3.9, 10, 10)},
+                kipy_rect(0, 3.9, 10, 10),
+                [BL.BL_In1_Cu],
                 min_width=0.25,
             ),
         ]
@@ -2070,32 +2035,8 @@ class TestMovingVias:
         assert marks == {"SIG on B.Cu": 1, "SIG on F.Cu": 1, "SIG2 on In1.Cu": 0}
 
 
-ZONE_BOARD = Path(__file__).parent / "fixtures" / "zone" / "zone.kicad_pcb"
-ZONE_FILL = re.compile(
-    r'\(filled_polygon\s*\(layer "In2\.Cu"\)\s*\(pts(.*?)\)\s*\)', re.DOTALL
-)
-XY = re.compile(r"\(xy (\S+) (\S+)\)")
-
-
-def fixture_id(tail: str) -> str:
-    return f"00000000-0000-0000-0000-{tail:0>12}"
-
-
-def refilled_sig_fill() -> list[PolygonWithHoles]:
-    """The SIG zone's fill on In2.Cu as KiCad refilled the zone fixture: the
-    first zone the board text lists. KiCad saved it with a Default clearance
-    of 0.127 mm, which `zone_fixture_board` mirrors, so after any edit to the
-    fixture refill it with that clearance."""
-    text = ZONE_BOARD.read_text(encoding="utf-8")
-    sig_zone = text.split('(net "OTHER")\n\t\t(layer')[0]
-    return [
-        kipy_polygon([(float(x), float(y)) for x, y in XY.findall(pts)])
-        for pts in ZONE_FILL.findall(sig_zone)
-    ]
-
-
 ZONE_MIN_WIDTH = 0.2
-"""The SIG zone's minimum fill width in the zone fixture, mm."""
+"""The SIG plane's minimum fill width in `plane_board`, mm."""
 ZONE_MARGIN = ZONE_MIN_WIDTH / 2 + KICAD_MAX_ERROR
 """How far inside its region the SIG zone keeps a via's centre, mm."""
 ZONE_REGION_TOP = 8 + 0.2
@@ -2103,19 +2044,23 @@ ZONE_REGION_TOP = 8 + 0.2
 OTHER zone over y < 8, grown by the zones' 0.2 mm clearance."""
 
 
-def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
-    """The zone fixture as KiCad would give it, with the SIG zone filled with
-    `sig_fill` and the route and the via at (10, 10) selected."""
+def plane_board() -> CommitBoard:
+    """A SIG route bending at the via at (10, 10) in the SIG plane on
+    In2.Cu, which pulls the via toward (6, 6), into the higher-priority
+    OTHER zone over y < 8. An OTHER track on In2.Cu ends at the zone's
+    clearance from the via's ring. A second SIG via, at (12, 13), reaches
+    the route only through the plane. The route and the via at (10, 10)
+    are selected."""
     route = [
-        kipy_track(fixture_id("11"), "SIG", (2, 10), (10, 10)),
-        kipy_track(fixture_id("12"), "SIG", (10, 10), (10, 2), layer=BL.BL_B_Cu),
+        kipy_track("11", "SIG", (2, 10), (10, 10)),
+        kipy_track("12", "SIG", (10, 10), (10, 2), layer=BL.BL_B_Cu),
     ]
-    via = kipy_via(fixture_id("e1"), "SIG", 10, 10)
-    plane = kipy_filled_zone(
-        fixture_id("d1"),
+    via = kipy_via("e1", "SIG", 10, 10)
+    plane = kipy_copper_zone(
+        "d1",
         "SIG",
-        {BL.BL_In2_Cu: sig_fill},
-        outline=kipy_rect(6, 6, 14, 14),
+        kipy_rect(6, 6, 14, 14),
+        [BL.BL_In2_Cu],
         min_width=ZONE_MIN_WIDTH,
     )
     plane.clearance = nm(0.2)
@@ -2123,7 +2068,7 @@ def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
         kipy_rect(6, 6, 14, 8),
         [BL.BL_In2_Cu],
         rule_area=False,
-        zone_id=fixture_id("d2"),
+        zone_id="d2",
         net="OTHER",
     )
     other.priority = 1
@@ -2132,12 +2077,10 @@ def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
         selection=[*route, via],
         tracks=[
             *route,
-            kipy_track(fixture_id("13"), "SIG", (12, 13), (16, 16)),
-            kipy_track(
-                fixture_id("14"), "OTHER", (10.625, 10), (18, 10), layer=BL.BL_In2_Cu
-            ),
+            kipy_track("13", "SIG", (12, 13), (16, 16)),
+            kipy_track("14", "OTHER", (10.625, 10), (18, 10), layer=BL.BL_In2_Cu),
         ],
-        vias=[via, kipy_via(fixture_id("e2"), "SIG", 12, 13)],
+        vias=[via, kipy_via("e2", "SIG", 12, 13)],
         zones=[plane, other],
         enabled_layers=[BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu],
         default_clearance=0.127,
@@ -2145,44 +2088,18 @@ def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-class TestZoneFixture:
-    """The zone fixture as KiCad fills it: the SIG route bends
-    at the via at (10, 10) in the SIG plane on In2.Cu, and pulls it toward
-    (6, 6), into the higher-priority OTHER zone over y < 8. An OTHER track
-    on In2.Cu ends at the zone's clearance from the via's ring, so the fill
-    cuts through the ring there. A second SIG via, at (12, 13), reaches the
-    route only through the plane."""
+def test_a_via_in_a_plane_moves_within_its_region_and_commits(
+    connect: Connector, log: list[str]
+) -> None:
+    board = connect.to(plane_board())
 
-    def smooth(
-        self, connect: Connector, sig_fill: Sequence[PolygonWithHoles]
-    ) -> CommitBoard:
-        board = connect.to(zone_fixture_board(sig_fill))
-        run()
-        return board
+    run()
 
-    def test_a_via_the_fill_reaches_short_of_its_ring_moves_and_commits(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        fill = refilled_sig_fill()
-        assert fill
-        board = self.smooth(connect, fill)
-
-        assert "stays fixed" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
-        (via,) = created_vias(board)
-        y = via.position.y / 1e6
-        assert ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING <= y < 9.5
-
-    def test_a_stale_fill_keeps_the_via_out_of_a_newer_zone(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        # The fill predates the OTHER zone and covers the whole outline.
-        board = self.smooth(connect, [kipy_rect(6, 6, 14, 14)])
-
-        assert "stays fixed" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
-        (via,) = created_vias(board)
-        assert via.position.y / 1e6 >= ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING
+    assert "stays fixed" not in "".join(log)
+    assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+    (via,) = created_vias(board)
+    y = via.position.y / 1e6
+    assert ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING <= y < 9.5
 
 
 def test_outcome_counts_the_vias_rejected_edge_moves() -> None:

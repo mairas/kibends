@@ -5,7 +5,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -335,31 +335,19 @@ def kipy_zone(
     return z
 
 
-def kipy_filled_zone(
+def kipy_copper_zone(
     zone_id: str,
     net: str,
-    fills: Mapping[BL.ValueType, PolygonWithHoles | Sequence[PolygonWithHoles]],
+    outline: PolygonWithHoles,
+    layers: Sequence[BL.ValueType],
     zone_type: ZoneType.ValueType = ZoneType.ZT_COPPER,
     *,
-    outline: PolygonWithHoles | None = None,
     min_width: float = 0.0,
 ) -> kbt.Zone:
-    """A copper zone of `net` filled with a polygon, or several, on each of
-    its layers, within `outline`, the first fill unless given."""
-    pieces = {
-        layer: [fill] if isinstance(fill, PolygonWithHoles) else list(fill)
-        for layer, fill in fills.items()
-    }
-    outline = outline or next(iter(pieces.values()))[0]
-    z = kipy_zone(outline, list(fills), rule_area=False, zone_id=zone_id, net=net)
+    """A copper zone of `net` drawn as `outline` on `layers`, unfilled."""
+    z = kipy_zone(outline, list(layers), rule_area=False, zone_id=zone_id, net=net)
     z.proto.type = zone_type
     z.proto.copper_settings.min_thickness.value_nm = round(min_width * NM_PER_MM)
-    z.proto.filled = True
-    for layer, polygons in pieces.items():
-        filled = z.proto.filled_polygons.add()
-        filled.layer = layer
-        for polygon in polygons:
-            filled.shapes.polygons.add().CopyFrom(polygon.proto)
     return z
 
 

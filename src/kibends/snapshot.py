@@ -22,7 +22,7 @@ import shapely
 from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
-from kipy.geometry import Box2, PolygonWithHoles, PolyLine, Vector2
+from kipy.geometry import PolygonWithHoles, PolyLine, Vector2
 from kipy.proto.board.board_commands_pb2 import BoardOriginType
 from kipy.proto.board.board_types_pb2 import (
     BoardLayer,
@@ -142,11 +142,12 @@ expose the board's setting."""
 
 @dataclass(frozen=True)
 class ViaZone:
-    """A copper zone of a via's net whose fill touches the via."""
+    """A copper zone of a via's net that may connect to the via: on a layer
+    the via spans, its region reaches the via's ring."""
 
     name: str
     regions: Mapping[str, BaseGeometry]
-    """By layer, for the layers on which its fill touches the via: where the
+    """By layer, for the layers on which it reaches the via's ring: where the
     next refill may fill it, before it keeps clear of other nets' copper
     (`_zone_region`)."""
     min_width: float
@@ -164,7 +165,7 @@ class ViaZone:
 
     @property
     def margin(self) -> float:
-        """How far inside the fill a via's centre stays for the next refill
+        """How far inside the region a via's centre stays for the next refill
         to connect it: half the zone's minimum width, so that the fill there
         is as wide as the refill keeps, plus KiCad's arc error, which the
         refill's rounded edges may take back.
@@ -270,8 +271,9 @@ class BoardSnapshot:
     or the copper it carries, on any copper layer, the via itself and
     copper zones left out."""
     via_zones: Mapping[str, tuple[ViaZone, ...]]
-    """By via id, for the vias asked for: the copper zones of its net whose
-    fill touches it, with the regions it stays inside."""
+    """By via id, for the vias asked for: the copper zones of its net that
+    may connect to it, with the regions it stays inside; empty when none
+    does."""
 
     @classmethod
     def read(
@@ -366,7 +368,7 @@ class BoardSnapshot:
                 ),
                 enabled,
             ),
-            via_zones={v.id: _via_zones(zones, v) for v in selected_vias},
+            via_zones=_via_zones(zones, selected_vias),
         )
 
     def slice(self, layer: str, replaced_ids: Collection[str]) -> LayerSnapshot:
@@ -891,57 +893,74 @@ def _via_contacts(
     }
 
 
-def _via_zones(zones: Sequence[kbt.Zone], via: Via) -> tuple[ViaZone, ...]:
-    """The copper zones of `via`'s net whose fill touches the via itself,
-    each with its region on the layers where it does (`_zone_region`).
+def _via_zones(
+    zones: Sequence[kbt.Zone], vias: Sequence[Via]
+) -> dict[str, tuple[ViaZone, ...]]:
+    """By via id, the copper zones of each via's net that may connect to
+    it, each with its region on the layers where it may: those the via
+    spans on which the region reaches its ring (`_zone_region`). Whether
+    its centre lies deep enough inside to move is `vias.movable_vias`'s to
+    judge.
 
-    The fill only tells which zones the via connects to now. A zone touching
-    only a chain end the via carries is left out: the via does not connect
-    to it.
+    Fills are never read: a fill holds where other copper stood at the last
+    refill. Teardrops are not copper zones: KiCad reapplies them on the next
+    refill. Each region is built once, when a via its outline reaches first
+    asks for it.
     """
-    # A plane's fill is large and mostly far away; converting only the pieces
-    # whose bounding box comes near the via keeps a selected GND via cheap.
-    # Teardrops are not copper zones: KiCad reapplies them on the next refill.
-    disc = {via: (Disc(via.position, via.diameter / 2),)}
-    centre = Point(via.position)
-    found: list[ViaZone] = []
-    for z in zones:
-        if z.type != ZoneType.ZT_COPPER or z.net is None or z.net.name != via.net:
-            continue
-        regions: dict[str, BaseGeometry] = {}
-        for layer_id, pieces in sorted(z.filled_polygons.items()):
-            if any(
-                _polygon(piece).distance(centre) <= via.diameter / 2
-                for piece in pieces
-                if _box_near(piece.bounding_box(), via.net, disc)
+    outlines: dict[int, BaseGeometry] = {}
+    regions: dict[tuple[int, str], BaseGeometry] = {}
+
+    def outline(k: int) -> BaseGeometry:
+        if k not in outlines:
+            outlines[k] = _outline(zones[k])
+        return outlines[k]
+
+    def region(k: int, layer: str) -> BaseGeometry:
+        if (k, layer) not in regions:
+            regions[k, layer] = _zone_region(zones, zones[k], layer)
+        return regions[k, layer]
+
+    found: dict[str, tuple[ViaZone, ...]] = {}
+    for via in vias:
+        centre = Point(via.position)
+        ring = via.diameter / 2
+        connected: list[ViaZone] = []
+        for k, z in enumerate(zones):
+            if (
+                z.type != ZoneType.ZT_COPPER
+                or z.net is None
+                or z.net.name != via.net
+                or outline(k).distance(centre) > ring
             ):
-                layer = canonical_name(layer_id)
-                regions[layer] = _zone_region(zones, z, via.net, layer)
-        if regions:
-            found.append(
-                ViaZone(
-                    z.name or z.id.value,
-                    regions,
-                    (z.min_thickness or 0) / NM_PER_MM,
-                    (z.clearance or 0) / NM_PER_MM,
+                continue
+            reached = {
+                layer: region(k, layer)
+                for layer in (canonical_name(L) for L in sorted(z.layers))
+                if via.reaches(layer) and region(k, layer).distance(centre) <= ring
+            }
+            if reached:
+                connected.append(
+                    ViaZone(
+                        z.name or z.id.value,
+                        reached,
+                        (z.min_thickness or 0) / NM_PER_MM,
+                        (z.clearance or 0) / NM_PER_MM,
+                    )
                 )
-            )
-    return tuple(found)
+        found[via.id] = tuple(connected)
+    return found
 
 
-def _zone_region(
-    zones: Sequence[kbt.Zone], zone: kbt.Zone, net: str, layer: str
-) -> BaseGeometry:
-    """Where the next refill may fill `zone`, of `net`, on `layer`, before it
-    keeps clear of other nets' copper: its outline, with its own cut-outs,
-    less the outline of each copper zone of another net that may fill
-    first, having the higher or the same priority (KiCad breaks a tie by
-    uuid), grown by the larger of the two zones' clearances, and the outline
-    of each rule area keeping out copper pour.
+def _zone_region(zones: Sequence[kbt.Zone], zone: kbt.Zone, layer: str) -> BaseGeometry:
+    """Where the next refill may fill `zone` on `layer`, before it keeps
+    clear of other nets' copper: its outline, with its own cut-outs, less
+    the outline of each copper zone of another net that may fill first,
+    having the higher or the same priority (KiCad breaks a tie by uuid),
+    grown by the larger of the two zones' clearances, and the outline of
+    each rule area keeping out copper pour.
 
-    Outlines alone, which the run does not move: the current fill holds
-    where other copper stood at the last refill, and may predate those
-    zones."""
+    Outlines alone, which the run does not move."""
+    net = zone.net.name if zone.net else ""
     own_clearance = (zone.clearance or 0) / NM_PER_MM
     areas: list[BaseGeometry] = []
     for z in zones:
@@ -958,18 +977,13 @@ def _zone_region(
         ):
             gap = max(own_clearance, (z.clearance or 0) / NM_PER_MM)
             areas.extend(o.buffer(gap) for o in outline)
-    own = [_polygon(PolygonWithHoles(p)) for p in zone.proto.outline.polygons]
-    return unary_union(own).difference(unary_union(areas))
+    return _outline(zone).difference(unary_union(areas))
 
 
-def _box_near(box: Box2, net: str, selected: Mapping[Via, Sequence[Disc]]) -> bool:
-    """Whether copper inside `box` may touch a disc of a selected via on `net`."""
-    x0, y0 = box.pos.x / NM_PER_MM, box.pos.y / NM_PER_MM
-    x1, y1 = x0 + box.size.x / NM_PER_MM, y0 + box.size.y / NM_PER_MM
-    return any(
-        v.net == net and x0 - r <= x <= x1 + r and y0 - r <= y <= y1 + r
-        for v, discs in selected.items()
-        for (x, y), r in discs
+def _outline(zone: kbt.Zone) -> BaseGeometry:
+    """`zone`'s outline, with its own cut-outs."""
+    return unary_union(
+        [_polygon(PolygonWithHoles(p)) for p in zone.proto.outline.polygons]
     )
 
 
