@@ -14,7 +14,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn, assert_never
 
-import numpy as np
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
@@ -35,13 +34,10 @@ from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
 from kibends.optimize import FrozenVertex, Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
-    ChainReport,
     NoBoardError,
     OptimizerReport,
-    PairReport,
     PlotUnavailableError,
     SmoothOptions,
-    ViaReport,
     new_violations,
     run_smooth,
 )
@@ -118,11 +114,11 @@ def _exit_on_failure() -> Generator[None]:
 
 
 def smooth(options: SmoothOptions) -> None:
-    """Smooth the chains selected in KiCad, print the report and, unless
-    dry-running, commit them."""
+    """Smooth the chains selected in KiCad, print the optimizer's outcome and
+    the DRC verdict and, unless dry-running, commit them."""
 
     def show(optimized: OptimizerReport) -> None:
-        print(format_statistics(optimized))
+        print(format_outcome(optimized))
         for warning in report_warnings(optimized):
             logger.warning(warning)
 
@@ -139,44 +135,28 @@ def smooth(options: SmoothOptions) -> None:
         logger.info("Dry run: nothing committed")
 
 
-def format_statistics(report: OptimizerReport) -> str:
-    """One statistics block per chain and per differential pair, a line per
-    movable via and the optimizer's outcome, positions in the report's frame."""
-    some_changed = any(c.changed for c in report.chains)
-    blocks = [_chain_block(c, some_changed) for c in report.chains]
-    blocks += [_pair_block(p) for p in report.pairs]
-    if report.vias:
-        blocks.append("\n".join(_via_line(v, report.frame) for v in report.vias))
-    several = len(report.chains) > 1
+def format_outcome(report: OptimizerReport) -> str:
+    """How the optimizer ended, after how many iterations and seconds, with
+    the rejected edge moves and abnormal bursts it counted."""
     rejected = (
         sum(c.rejected_edges for c in report.chains)
         + sum(v.rejected_edges for v in report.vias)
         + sum(p.rejected_edges for p in report.pairs)
     )
+    several = len(report.chains) > 1
     # A run can converge while a problem gave up after abnormal bursts.
     abnormal = [
         f"{n} abnormal burst{'' if n == 1 else 's'}"
         + (f" in {description}" if several else "")
         for description, n in report.abnormal
     ]
-    outcome = ", ".join(
+    return ", ".join(
         [
             f"Optimizer: {report.termination.value} after {report.iterations} "
             f"iterations in {report.elapsed:.1f} s",
             f"{rejected} rejected edge moves",
             *abnormal,
         ]
-    )
-    return ("\n\n" if several else "\n").join([*blocks, outcome])
-
-
-def _via_line(v: ViaReport, frame: UserFrame) -> str:
-    if not v.moved:
-        return f"Via {v.id} stays at {frame.point(v.start)}"
-    distance = math.dist(v.start, v.end)
-    return (
-        f"Via {v.id} moved {distance:.3f} mm, "
-        f"from {frame.point(v.start)} to {frame.point(v.end)}"
     )
 
 
@@ -223,69 +203,6 @@ def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
     return message
 
 
-def _chain_block(chain: ChainReport, some_changed: bool) -> str:
-    before, after = chain.before, chain.after
-    rows = [
-        ("Length (mm)", f"{before.length:.3f}", f"{after.length:.3f}"),
-        ("Tracks", str(before.segment_count), str(after.segment_count)),
-        (
-            "Tightest bend radius (mm)",
-            _radius(before.tightest_bend_radius),
-            _radius(after.tightest_bend_radius),
-        ),
-        (
-            "Min clearance margin (mm)",
-            f"{before.min_clearance:.4f}",
-            f"{after.min_clearance:.4f}",
-        ),
-        (
-            "Mean clearance margin (mm)",
-            f"{before.mean_clearance:.4f}",
-            f"{after.mean_clearance:.4f}",
-        ),
-    ]
-    lines = [
-        f"{chain.tracks} tracks of {chain.net} on {chain.layer}, "
-        f"{chain.width:g} mm wide",
-        *_table(rows),
-        f"Frozen vertices: {len(chain.frozen)}",
-    ]
-    if some_changed and not chain.changed:
-        lines.append("Unchanged: left out of the DRC check and the commit")
-    return "\n".join(lines)
-
-
-def _pair_block(pair: PairReport) -> str:
-    low, high = pair.gap_after
-    rows = [
-        ("Gap (mm)", f"{pair.gap:.3f}", f"{low:.3f}-{high:.3f}"),
-        ("Skew (mm)", f"{pair.skew_before:.3f}", f"{pair.skew_after:.3f}"),
-    ]
-    sections = f"{pair.sections} coupled section{'' if pair.sections == 1 else 's'}"
-    lines = [
-        f"Differential pair {' and '.join(pair.nets)} on {pair.layer}, {sections}",
-        *_table(rows),
-    ]
-    if pair.held:
-        one = pair.held == 1
-        lines.append(
-            f"{pair.held} coupled section{'' if one else 's'} held as routed, "
-            "for same-net copper between its ends, routing that bends too "
-            "tightly, or copper or its own parts beyond a turn that kept it "
-            "from rounding a corner"
-        )
-    return "\n".join(lines)
-
-
-def _table(rows: Sequence[tuple[str, str, str]]) -> list[str]:
-    """Labelled before and after columns."""
-    label_width = max(len(r[0]) for r in rows)
-    return [
-        f"{'':{label_width}}  {'before':>10}  {'after':>10}",
-        *(f"{name:{label_width}}  {b:>10}  {a:>10}" for name, b, a in rows),
-    ]
-
-
 def _verdict(found: drc.Introduced, frame: UserFrame) -> str:
     if not found:
         return "DRC: no new violations"
@@ -300,10 +217,6 @@ def _verdict(found: drc.Introduced, frame: UserFrame) -> str:
             ),
         ]
     )
-
-
-def _radius(r: float) -> str:
-    return "straight" if np.isinf(r) else f"{r:.3f}"
 
 
 def _finite(text: str) -> float:
@@ -467,7 +380,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         "-n",
         action="store_true",
-        help="Print the statistics without changing the board",
+        help="Optimize and run the DRC check without changing the board",
     )
     smooth_parser.add_argument(
         "--plot",

@@ -275,6 +275,24 @@ def run(*args: str) -> None:
     cli.main(["smooth", *args])
 
 
+@pytest.fixture
+def reports(monkeypatch: pytest.MonkeyPatch) -> list[pipeline.RunReport]:
+    """The report of each run the command makes, which it does not print."""
+    captured: list[pipeline.RunReport] = []
+    real = cli.run_smooth
+
+    def spy(
+        options: pipeline.SmoothOptions,
+        on_optimized: Callable[[pipeline.OptimizerReport], None],
+    ) -> pipeline.RunReport:
+        report = real(options, on_optimized)
+        captured.append(report)
+        return report
+
+    monkeypatch.setattr(cli, "run_smooth", spy)
+    return captured
+
+
 def exit_message(log: list[str], *args: str) -> str:
     """The one error a failing run logs."""
     with pytest.raises(SystemExit) as raised:
@@ -421,27 +439,7 @@ class TestSmooth:
             assert c.frozen == ()
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_prints_statistics(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        connect.to(l_board())
-
-        run()
-
-        out = capsys.readouterr().out
-        for label in (
-            "Length",
-            "Tracks",
-            "Tightest bend",
-            "Min clearance margin",
-            "Mean clearance margin",
-            "Frozen vertices",
-            "converged",
-        ):
-            assert label in out
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_dry_run_prints_statistics_and_commits_nothing(
+    def test_dry_run_prints_the_outcome_and_commits_nothing(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:
         board = connect.to(l_board())
@@ -449,7 +447,7 @@ class TestSmooth:
         run("--dry-run")
 
         assert board.calls == []
-        assert "Length" in capsys.readouterr().out
+        assert "Optimizer: converged" in capsys.readouterr().out
 
     def test_nothing_to_do_begins_no_commit(
         self, connect: Connector, log: list[str]
@@ -1054,13 +1052,13 @@ sys.exit(3)
 
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestFailureAfterOptimizing:
-    """The statistics and warnings still reach the user before the error."""
+    """The optimizer's outcome and warnings still reach the user before the
+    error."""
 
     def assert_reported_before(
         self, error: str, log: list[str], capsys: pytest.CaptureFixture[str]
     ) -> None:
         out = capsys.readouterr().out
-        assert "2 tracks of SIG on F.Cu, 0.25 mm wide" in out
         assert re.search(r"^Optimizer: converged after", out, re.MULTILINE)
         (warning,) = [i for i, line in enumerate(log) if "abnormally" in line]
         assert warning < log.index(error)
@@ -1142,8 +1140,12 @@ SIG2_TRACK_CLEARANCE: drc.ReportViolation = {
 
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestSeveralChains:
-    def test_commits_both_in_one_commit_and_prints_a_block_for_each(
-        self, connect: Connector, kicad_cli: Path, capsys: pytest.CaptureFixture[str]
+    def test_commits_both_in_one_commit_and_reports_each(
+        self,
+        connect: Connector,
+        kicad_cli: Path,
+        capsys: pytest.CaptureFixture[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         board = connect.to(two_l_board())
 
@@ -1164,28 +1166,30 @@ class TestSeveralChains:
             for b in by_net["SIG2"]
         )
         assert drc_runs(kicad_cli) == 2
-        out = capsys.readouterr().out
-        assert "2 tracks of SIG on F.Cu, 0.25 mm wide" in out
-        assert "2 tracks of SIG2 on F.Cu, 0.25 mm wide" in out
-        assert out.count("Frozen vertices: 0") == 2
-        assert out.count("Optimizer: ") == 1
+        (report,) = reports
+        assert [(c.net, c.layer, c.width, c.tracks) for c in report.chains] == [
+            ("SIG", "F.Cu", WIDTH, 2),
+            ("SIG2", "F.Cu", WIDTH, 2),
+        ]
+        assert all(c.frozen == () for c in report.chains)
+        assert capsys.readouterr().out.count("Optimizer: ") == 1
 
-    def test_dry_run_prints_both_and_commits_nothing(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+    def test_dry_run_reports_both_and_commits_nothing(
+        self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         board = connect.to(two_l_board())
 
         run("--dry-run")
 
-        out = capsys.readouterr().out
-        assert "of SIG on" in out and "of SIG2 on" in out
+        (report,) = reports
+        assert [c.net for c in report.chains] == ["SIG", "SIG2"]
         assert board.calls == []
 
     def test_unchanged_chain_is_neither_checked_nor_committed(
         self,
         connect: Connector,
         kicad_cli: Path,
-        capsys: pytest.CaptureFixture[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         board = connect.to(two_l_board(inner=far_straight()))
 
@@ -1195,15 +1199,14 @@ class TestSeveralChains:
         assert {t.net.name for t in cast(list[kbt.Track], board.created)} == {"SIG"}
         candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
         assert '(uuid "s")' in candidate
-        assert "Unchanged: left out of the DRC check and the commit" in (
-            capsys.readouterr().out
-        )
+        (report,) = reports
+        assert [c.changed for c in report.chains] == [True, False]
 
     def test_chain_that_only_gains_straight_vertices_stays_unchanged(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         board = connect.to(two_l_board(inner=far_straight()))
         real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
@@ -1219,8 +1222,10 @@ class TestSeveralChains:
         run("--no-drc")
 
         assert sorted(board.deleted) == list(OUTER)
-        straight = capsys.readouterr().out.split("\n\n")[1]
-        assert re.search(r"^Tracks +1 +1$", straight, re.MULTILINE)
+        (report,) = reports
+        straight = report.chains[1]
+        assert not straight.changed
+        assert (straight.before.segment_count, straight.after.segment_count) == (1, 1)
 
     def test_all_unchanged_commits_nothing(
         self, connect: Connector, kicad_cli: Path, log: list[str]
@@ -1439,30 +1444,20 @@ class TestAbnormalBursts:
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_single_chain_report_keeps_its_layout(
+def test_prints_only_the_outcome_and_the_drc_verdict(
     connect: Connector, capsys: pytest.CaptureFixture[str]
 ) -> None:
     connect.to(l_board())
 
     run("--dry-run")
 
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "2 tracks of SIG on F.Cu, 0.25 mm wide"
-    assert lines[1].split() == ["before", "after"]
-    assert [line.split("  ")[0] for line in lines[2:7]] == [
-        "Length (mm)",
-        "Tracks",
-        "Tightest bend radius (mm)",
-        "Min clearance margin (mm)",
-        "Mean clearance margin (mm)",
-    ]
-    assert lines[7] == "Frozen vertices: 0"
+    outcome, *rest = capsys.readouterr().out.splitlines()
     assert re.fullmatch(
         r"Optimizer: converged after \d+ iterations in \d+\.\d s, "
         r"\d+ rejected edge moves",
-        lines[8],
+        outcome,
     )
-    assert lines[9:] == ["DRC: no new violations"]
+    assert rest == ["DRC: no new violations"]
 
 
 VIA = (4.0, 4.0)
@@ -1945,7 +1940,7 @@ class TestMovingVias:
         self,
         connect: Connector,
         log: list[str],
-        capsys: pytest.CaptureFixture[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         # The pad's edge is 0.1 mm from the via's ring, inside its clearance,
         # and clear of both chains.
@@ -1959,7 +1954,9 @@ class TestMovingVias:
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         assert created_vias(board) == []
         assert "WARNING Left via v at (3.000, 2.000) in place" in "".join(log)
-        assert "Via v stays at (3.000, 2.000)" in capsys.readouterr().out.splitlines()
+        (report,) = reports
+        (via,) = report.vias
+        assert (via.id, via.start, via.frozen, via.moved) == ("v", VIA, True, False)
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
@@ -1988,10 +1985,8 @@ class TestMovingVias:
             in log
         )
 
-    def test_reports_the_move(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        board = connect.to(off_grid(moving_via_board()))
+    def test_reports_the_move(self, connect: Connector) -> None:
+        board = connect.to(moving_via_board())
         options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
 
         report = pipeline.run_smooth(options)
@@ -2000,15 +1995,6 @@ class TestMovingVias:
         assert (via.id, via.start, via.moved) == ("v", VIA, True)
         assert via.end[1] < 1.0
         assert board.calls == []
-        cli.smooth(options)
-        out = capsys.readouterr().out
-        x, y = via.end
-        distance = np.hypot(x - VIA[0], y - VIA[1])
-        gx, gy = GRID_ORIGIN
-        assert (
-            f"Via v moved {distance:.3f} mm, "
-            f"from (3.000, 2.000) to ({x - gx:.3f}, {y - gy:.3f})" in out.splitlines()
-        )
 
     def test_a_refused_via_create_drops_the_whole_commit(
         self, connect: Connector, log: list[str]
@@ -2132,7 +2118,7 @@ class TestMovingVias:
         assert marks == {"SIG on B.Cu": 1, "SIG on F.Cu": 1, "SIG2 on In1.Cu": 0}
 
 
-def test_statistics_count_the_vias_rejected_edge_moves() -> None:
+def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
         "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, True
@@ -2142,14 +2128,14 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
         (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, (), BOARD_FRAME
     )
 
-    outcome = cli.format_statistics(report).splitlines()[-1]
+    outcome = cli.format_outcome(report)
 
     assert outcome == (
         "Optimizer: converged after 7 iterations in 3.4 s, 5 rejected edge moves"
     )
 
 
-def test_statistics_count_rejected_moves_abnormal_bursts_and_frozen_vertices() -> None:
+def test_outcome_and_warnings_count_rejected_moves_bursts_and_frozen() -> None:
     problem = "the chains and vias on F.Cu and B.Cu"
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
@@ -2179,7 +2165,7 @@ def test_statistics_count_rejected_moves_abnormal_bursts_and_frozen_vertices() -
         UserFrame((0.5, 3.0)),
     )
 
-    outcome = cli.format_statistics(report).splitlines()[-1]
+    outcome = cli.format_outcome(report)
     warnings = cli.report_warnings(report)
 
     assert outcome == (
@@ -2211,8 +2197,9 @@ SECOND_PAIR = 5.0
 """How far, mm, a second pair runs below the first."""
 FAR = 100.0
 """mm, beyond any track of a test board."""
-PRINTED = 1e-3
-"""The report's resolution, mm."""
+REPORTED = 5e-4
+"""mm: how near a pair's reported gap or skew must be to the expected value:
+the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
@@ -2298,12 +2285,6 @@ def coupled_gaps(p: list[LineString], n: list[LineString]) -> tuple[float, float
     return gap_range(a, b, PAIR_WIDTH)
 
 
-def row(out: str, label: str) -> list[str]:
-    """The before and after columns of a statistics row."""
-    line = next(line for line in out.splitlines() if line.startswith(label))
-    return line[len(label) :].split()
-
-
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestPairs:
     def test_commits_both_tracks_in_one_commit_at_their_gap(
@@ -2353,23 +2334,21 @@ class TestPairs:
             assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
     def test_reports_the_pair_its_gap_and_skew(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+        self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         connect.to(pair_board())
 
         run("--dry-run")
 
-        out = capsys.readouterr().out
-        assert "Differential pair USB_D+ and USB_D- on F.Cu" in out
-        gap_before, gap_after = row(out, "Gap (mm)")
-        assert gap_before == f"{PAIR_GAP:.3f}"
-        assert gap_after == f"{PAIR_GAP:.3f}-{PAIR_GAP:.3f}"
+        ((pair,),) = (r.pairs for r in reports)
+        assert (pair.nets, pair.layer) == (USB, "F.Cu")
+        assert pair.gap == pytest.approx(PAIR_GAP, abs=REPORTED)
+        assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         # The two corners turn opposite ways, so the tracks start equally long.
-        skew_before, _ = row(out, "Skew (mm)")
-        assert float(skew_before) == pytest.approx(0.0, abs=PRINTED)
+        assert pair.skew_before == pytest.approx(0.0, abs=REPORTED)
 
     def test_reports_the_skew_of_the_committed_tracks(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+        self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         p, n = offset_pair(np.array(BENT_PAIR), PAIR_GAP, PAIR_WIDTH)
         lines = {"USB_D+": vertices(p), "USB_D-": vertices(n)}
@@ -2389,11 +2368,12 @@ class TestPairs:
 
         run("--no-drc")
 
-        before, after = (float(v) for v in row(capsys.readouterr().out, "Skew (mm)"))
+        ((pair,),) = (r.pairs for r in reports)
         given = (LineString(points).length for points in lines.values())
-        assert before == pytest.approx(abs(next(given) - next(given)), abs=PRINTED)
+        skew = abs(next(given) - next(given))
+        assert pair.skew_before == pytest.approx(skew, abs=REPORTED)
         p_now, n_now = (unary_union(c).length for c in by_net(board).values())
-        assert after == pytest.approx(abs(p_now - n_now), abs=PRINTED)
+        assert pair.skew_after == pytest.approx(abs(p_now - n_now), abs=REPORTED)
 
     def test_netclass_gap_like_the_measured_one_does_not_warn(
         self, connect: Connector, log: list[str]
@@ -2467,7 +2447,7 @@ class TestPairs:
         assert seen == [{"w"}]
 
     def test_section_with_copper_between_its_ends_is_held(
-        self, connect: Connector, capsys: pytest.CaptureFixture[str]
+        self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         stub = kipy_track(
             "stub", "USB_D+", (2.5, PAIR_HALF_PITCH), (2.5, 2.0), width=PAIR_WIDTH
@@ -2476,7 +2456,8 @@ class TestPairs:
 
         run("--dry-run")
 
-        assert "1 coupled section held" in capsys.readouterr().out
+        ((pair,),) = (r.pairs for r in reports)
+        assert pair.held == 1
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]
@@ -2916,14 +2897,14 @@ NARROWER_GAP = 0.14
 
 @pytest.mark.usefixtures("coarse_optimizer")
 def test_reports_the_gap_range_over_every_section(
-    connect: Connector, capsys: pytest.CaptureFixture[str]
+    connect: Connector, reports: list[pipeline.RunReport]
 ) -> None:
     connect.to(split_pair_board(NARROWER_GAP))
 
     run("--dry-run", "--no-drc")
 
-    _, gap_after = row(capsys.readouterr().out, "Gap (mm)")
-    assert gap_after == f"{NARROWER_GAP:.3f}-{PAIR_GAP:.3f}"
+    ((pair,),) = (r.pairs for r in reports)
+    assert pair.gap_after == pytest.approx((NARROWER_GAP, PAIR_GAP), abs=REPORTED)
 
 
 def routed_too_tightly_board() -> CommitBoard:
@@ -2960,13 +2941,14 @@ limit, with the inner track's chamfer still of positive length."""
 
 @pytest.mark.usefixtures("coarse_optimizer")
 def test_a_section_routed_too_tightly_is_held_with_a_warning(
-    connect: Connector, log: list[str], capsys: pytest.CaptureFixture[str]
+    connect: Connector, log: list[str], reports: list[pipeline.RunReport]
 ) -> None:
     connect.to(routed_too_tightly_board())
 
     run("--dry-run", "--no-drc")
 
-    assert "1 coupled section held" in capsys.readouterr().out
+    ((pair,),) = (r.pairs for r in reports)
+    assert pair.held == 1
     (warning,) = [w for w in log if Hold.ROUTING.value in w]
     assert warning.startswith("WARNING") and "radius of" in warning
 
@@ -3282,7 +3264,7 @@ def v_board(turn: float) -> CommitBoard:
 def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     connect: Connector,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    reports: list[pipeline.RunReport],
 ) -> None:
     # Simplification and the gap check on a pair whose legs face each other,
     # end to end, at coarse settings; test_optimize_pairs covers the
@@ -3292,8 +3274,8 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
 
     run("--no-drc", f"--repulsion={V_REPULSION}")
 
-    _, gap_after = row(capsys.readouterr().out, "Gap (mm)")
-    assert gap_after == f"{PAIR_GAP:.3f}-{PAIR_GAP:.3f}"
+    ((pair,),) = (r.pairs for r in reports)
+    assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
     p, n = (unary_union(lines) for lines in by_net(board).values())
     assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
 
