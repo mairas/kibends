@@ -6,6 +6,7 @@ Units are mm floats in KiCad's board frame, with y pointing down.
 
 import math
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import NamedTuple
 
 import numpy as np
@@ -50,6 +51,19 @@ SAMPLES_PER_WIDTH = 4
 SQUARE_SLACK = 1e-9
 """mm: a foot this close to an edge's end still counts as inside it, so that
 a point opposite a straight vertex does not drop out."""
+
+STRAIGHT_PITCHES = 2.0
+"""Same-net copper splits a coupled stretch only where both tracks run
+straight for this many pitches to either side of the pin. Then the point
+square across from the pin lies on the other track's straight too, and a
+section ending there has at least two pitches of centreline before its
+first corner, whose vertex lies between the two tracks' corners. Less a
+spacing to its direction pin, at most a pitch, that leaves a pitch, more
+than the bend-radius limit, which is the straight an arc at that limit
+takes to turn by 90°."""
+
+STRAIGHT_TURN = 1e-3
+"""Radians: edges whose directions differ by less run straight."""
 
 BEND_RADIUS_TOLERANCE = 1e-3
 """Relative: a dense polyline drawn at the radius limit measures a hair below
@@ -104,10 +118,11 @@ class Track:
 
 
 class Section(NamedTuple):
-    """One coupled stretch: inclusive vertex indices into `Pair.a.points` and
-    `Pair.b.points`, with start < end on each track. `a_start` lies opposite
-    `b_start` unless `b_reversed`, when b runs against a and `a_start` lies
-    opposite `b_end`. `gap` is the section's median edge-to-edge gap."""
+    """One coupled stretch, or a part of one between pins: inclusive vertex
+    indices into `Pair.a.points` and `Pair.b.points`, with start < end on
+    each track. `a_start` lies opposite `b_start` unless `b_reversed`, when
+    b runs against a and `a_start` lies opposite `b_end`. `gap` is the
+    section's median edge-to-edge gap."""
 
     a_start: int
     a_end: int
@@ -192,6 +207,13 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     to that. The ends of a section lie opposite each other, so a track that
     runs on past the other's fan-out gets a vertex there. None when no
     stretch qualifies.
+
+    Same-net copper fixes a pair where it pins either track. Where both
+    tracks run straight around the pin (`_Splits.of`), the stretch is split
+    there into sections, which end at the pinned vertex and square across
+    from it on the other track, given a vertex there. A pin elsewhere, or
+    one that would not lie strictly between its neighbours on both tracks,
+    splits nothing and stays inside a section.
     """
     if not nets_pair(a.net, b.net):
         raise PairError(f"nets {a.net} and {b.net} do not form a differential pair")
@@ -211,17 +233,28 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     if not spans:
         return None
     snap = max(VERTEX_SNAP, chord_tolerance)
+    pinned_a, pinned_b = np.array(a.pinned), np.array(b.pinned)
+    stations = [
+        _stations(points_a, pinned_a, points_b, pinned_b, ends, a.width, snap)
+        for ends in spans
+    ]
     track_a, index_a = _with_vertices(
-        points_a, np.array(a.pinned), [d for s in spans for d in s.a], snap
+        points_a, pinned_a, [a for stretch in stations for a, _ in stretch], snap
     )
     track_b, index_b = _with_vertices(
-        points_b, np.array(b.pinned), [d for s in spans for d in s.b], snap
+        points_b, pinned_b, [b for stretch in stations for _, b in stretch], snap
     )
+    at_a, at_b = iter(index_a), iter(index_b)
+    parts = [
+        (a_start, a_end, b_first, b_last)
+        for stretch in stations
+        for (a_start, b_first), (a_end, b_last) in pairwise(
+            _in_order([(next(at_a), next(at_b)) for _ in stretch])
+        )
+    ]
     sections: list[Section] = []
     distances: list[FloatArray] = []
-    for k in range(len(spans)):
-        a_start, a_end = index_a[2 * k : 2 * k + 2]
-        b_first, b_last = index_b[2 * k : 2 * k + 2]
+    for a_start, a_end, b_first, b_last in parts:
         b_start, b_end = min(b_first, b_last), max(b_first, b_last)
         section_distances = _centre_distances(
             track_a.points[a_start : a_end + 1],
@@ -233,6 +266,113 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
         sections.append(Section(a_start, a_end, b_start, b_end, b_first > b_last, gap))
     gap = float(np.median(np.concatenate(distances))) - a.width
     return Pair(track_a, track_b, tuple(sections), a.width, gap)
+
+
+def _stations(
+    a: FloatArray,
+    pinned_a: BoolArray,
+    b: FloatArray,
+    pinned_b: BoolArray,
+    ends: _SectionEnds,
+    width: float,
+    snap: float,
+) -> list[tuple[float, float]]:
+    """A coupled stretch's ends and, between them, the pins of either track
+    that split it (`_Splits.of`), each as (arc length along a, along b)."""
+    (a_first, a_last), (b_first, b_last) = ends.a, ends.b
+    span_a, span_b = (a_first, a_last), (min(b_first, b_last), max(b_first, b_last))
+    pitch = float(
+        np.median(_centre_distances(_cut(a, *span_a), _cut(b, *span_b), width))
+    )
+    splits = _Splits(pitch - width, width, STRAIGHT_PITCHES * pitch, snap)
+    inner = [
+        *splits.of(a, pinned_a, span_a, b, span_b),
+        *((x, y) for y, x in splits.of(b, pinned_b, span_b, a, span_a)),
+    ]
+    return [(a_first, b_first), *inner, (a_last, b_last)]
+
+
+def _cut(points: FloatArray, start: float, end: float) -> FloatArray:
+    """The stretch of `points` between two arc lengths."""
+    arc = _polyline(points).arc
+    inside = (arc > start) & (arc < end)
+    ends = _point_at(points, np.array([start, end]))
+    return np.concatenate([ends[:1], points[inside], ends[1:]])
+
+
+class _Splits(NamedTuple):
+    """Where pins split one coupled stretch."""
+
+    gap: float
+    """The stretch's routed gap, mm."""
+    width: float
+    reach: float
+    """How far, mm, both tracks must run straight to either side."""
+    snap: float
+
+    def of(
+        self,
+        line: FloatArray,
+        pinned: BoolArray,
+        span: tuple[float, float],
+        other: FloatArray,
+        other_span: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        """(arc length along `line`, along `other`) of each pin of `line`
+        more than a snap inside the stretch that splits it: one where both
+        tracks run straight for `reach` to either side, each from its own
+        point (`_straight`), and the other track's point, the nearest one
+        to the pin, lies square across it at the routed gap. A pin too
+        close to a corner splits nothing, so the section around it stays
+        as it is."""
+        arc = _polyline(line).arc
+        inside = pinned & (arc > span[0] + self.snap) & (arc < span[1] - self.snap)
+        pins = np.flatnonzero(inside)
+        if len(pins) == 0:
+            return []
+        across = _nearest(line[pins], other)
+        splits: list[tuple[float, float]] = []
+        for pin, along, distance in zip(
+            pins.tolist(), across.along.tolist(), across.distance.tolist(), strict=True
+        ):
+            if (
+                other_span[0] + self.snap < along < other_span[1] - self.snap
+                and abs(distance - self.width - self.gap) <= GAP_TOLERANCE * self.gap
+                and _straight(line, float(arc[pin]), self.reach)
+                and _straight(other, along, self.reach)
+            ):
+                splits.append((float(arc[pin]), along))
+        return splits
+
+
+def _straight(points: FloatArray, at: float, reach: float) -> bool:
+    """Whether the polyline keeps one direction, within `STRAIGHT_TURN`,
+    for `reach` to either side of arc length `at`, or to its end. Vertices
+    on the way that do not turn, such as a straight drawn in two clicks,
+    do not end it."""
+    line = _polyline(points)
+    last = len(line.lengths) - 1
+    edge = min(int(np.searchsorted(line.arc, at, side="right")) - 1, last)
+    near = (line.arc[1:] > at - reach) & (line.arc[:-1] < at + reach)
+    return bool(
+        (line.directions[near] @ line.directions[edge] >= math.cos(STRAIGHT_TURN)).all()
+    )
+
+
+def _in_order(stations: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """A stretch's ends and the stations between them, vertex indices into
+    tracks a and b, in order along a and then b, without each station that
+    does not lie strictly between the last one kept and the end on both
+    tracks, so that every part runs on both. A pin dropped stays inside a
+    section, which then stays as it is."""
+    first, *inner, last = stations
+    sign = 1 if last[1] > first[1] else -1
+    kept = [first]
+    for a, b in sorted(inner, key=lambda station: (station[0], sign * station[1])):
+        a_kept, b_kept = kept[-1]
+        if a_kept < a < last[0] and sign * b_kept < sign * b < sign * last[1]:
+            kept.append((a, b))
+    return [*kept, last]
 
 
 class _SectionEnds(NamedTuple):

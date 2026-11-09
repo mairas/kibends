@@ -33,6 +33,7 @@ from kibends.energy import (
     EnergyParams,
     ObstacleField,
     TermValue,
+    arc_lengths,
     obstacle_reach,
     total_energy,
 )
@@ -1169,3 +1170,382 @@ def test_a_junction_where_a_pair_starts_stays_whole() -> None:
             start = tuple(given.centreline.points[end])
             if start in at.values():
                 assert tuple(chain.polyline[end]) == start
+
+
+PINNED_PAIR = ((0.0, 0.0), (3.0, 0.0), (5.0, 2.0), (9.0, 2.0), (11.0, 0.0), (14.0, 0.0))
+"""A pair's centreline with two 45° corners on each side of its middle
+straight, which runs from x = 5 to x = 9."""
+PAD_EDGES = (6.8, 7.2)
+"""x where a same-net pad's outline crosses each track of the pair."""
+STUB_AT = 7.0
+"""x where an unselected same-net stub leaves track P."""
+END_PAD_EDGE = 0.055
+"""x where the pads at the pair's start cross its tracks, as on the board of
+https://github.com/mairas/kibends/issues/42."""
+ROUNDED = 0.05
+"""mm: how far a rounded corner's track passes from where its corner was, at
+least."""
+LIKE_UNPINNED = 1e-4
+"""mm: how far a pair pinned only in its end pads may end up from the same
+pair unpinned, whose direction pin is the pads' pin."""
+
+
+def pinned_chain(net: str, track: FloatArray, *xs: float) -> Chain:
+    """`track` as a chain of `net`, pinned at its ends and at a vertex
+    inserted where each of `xs` meets one of its horizontal edges."""
+    points = [(float(x), float(y)) for x, y in track]
+    pinned = [True, *[False] * (len(points) - 2), True]
+    for x in xs:
+        k = next(
+            k
+            for k in range(len(points) - 1)
+            if abs(points[k][1] - points[k + 1][1]) < EXTENT_SLACK
+            and points[k][0] < x < points[k + 1][0]
+        )
+        points.insert(k + 1, (x, points[k][1]))
+        pinned.insert(k + 1, True)
+    return Chain(tuple(points), tuple(pinned), PAIR_WIDTH, "F.Cu", net, ())
+
+
+def pinned_pair(pins_p: Sequence[float], pins_n: Sequence[float]) -> list[Chain]:
+    p, n = scenarios.tracks(*PINNED_PAIR)
+    return [pinned_chain("USB_D+", p, *pins_p), pinned_chain("USB_D-", n, *pins_n)]
+
+
+def free_section(
+    _layer: str, _a: ChainCentreline, _b: ChainCentreline, _gap: float
+) -> ObstacleField:
+    return FreeSpace()
+
+
+@dataclass(frozen=True)
+class Smoothed:
+    result: RunResult
+    joined: list[FloatArray]
+    """One polyline per chain, as the layout joins them."""
+
+
+def smoothed(chains: Sequence[Chain], settings: OptimizerSettings = COARSE) -> Smoothed:
+    """`chains` laid out with their pairs and run in free space."""
+    whole = [
+        ChainInput(
+            ChainCentreline(c.net, c.net, c.width, PAIR_CLEARANCE, np.array(c.points)),
+            c.layer,
+            np.array(c.pinned),
+            FreeSpace(),
+        )
+        for c in chains
+    ]
+    pairs = find_pairs(chains, DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME)
+    layout = lay_out(whole, pairs, free_section)
+    result = optimize_chains(
+        layout.inputs, scenarios.PARAMS, settings, pairs=layout.sections
+    )
+    joined = layout.whole_polylines(
+        [c.polyline for c in result.chains], [r.kept() for r in result.pairs]
+    )
+    return Smoothed(result, joined)
+
+
+def assert_pins_kept(chains: Sequence[Chain], joined: Sequence[FloatArray]) -> None:
+    for chain, line in zip(chains, joined, strict=True):
+        for point, pinned in zip(chain.points, chain.pinned, strict=True):
+            if pinned:
+                assert (line == np.array(point)).all(axis=1).any(), point
+
+
+def assert_corners_round(chains: Sequence[Chain], joined: Sequence[FloatArray]) -> None:
+    """Every corner of each track's routing is rounded off."""
+    for chain, line in zip(chains, joined, strict=True):
+        points = np.array(chain.points)
+        step = np.diff(points, axis=0)
+        turning = np.abs(_cross_2d(step[:-1], step[1:])) > DIRECTION_TOLERANCE
+        turns = np.flatnonzero(turning) + 1
+        assert len(turns) == 4
+        for corner in points[turns]:
+            assert LineString(line).distance(Point(corner)) >= ROUNDED, corner
+
+
+def _cross_2d(u: FloatArray, v: FloatArray) -> FloatArray:
+    return u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
+
+
+def assert_moved_sections_keep_their_gap(result: RunResult) -> None:
+    moved = [p for p in result.pairs if not p.block.held]
+    assert moved
+    for pair in moved:
+        assert_gap_kept(pair)
+
+
+def test_a_pair_past_same_net_pads_rounds_its_corners_on_both_sides() -> None:
+    chains = pinned_pair(PAD_EDGES, PAD_EDGES)
+
+    out = smoothed(chains)
+
+    assert_pins_kept(chains, out.joined)
+    assert_corners_round(chains, out.joined)
+    assert_moved_sections_keep_their_gap(out.result)
+
+
+def test_a_pair_with_a_same_net_stub_rounds_its_corners_on_both_sides() -> None:
+    chains = pinned_pair((STUB_AT,), ())
+
+    out = smoothed(chains)
+
+    assert_pins_kept(chains, out.joined)
+    assert_corners_round(chains, out.joined)
+    assert_moved_sections_keep_their_gap(out.result)
+
+
+def test_a_pair_pinned_only_in_its_end_pads_moves_as_an_unpinned_one() -> None:
+    chains = pinned_pair((END_PAD_EDGE,), (END_PAD_EDGE,))
+
+    out = smoothed(chains)
+    unpinned = smoothed(pinned_pair((), ()))
+
+    assert_pins_kept(chains, out.joined)
+    for chain, line, free_line in zip(chains, out.joined, unpinned.joined, strict=True):
+        assert hausdorff(line, np.array(chain.points)) >= ROUNDED
+        assert hausdorff(line, free_line) <= LIKE_UNPINNED
+
+
+SHORT_PART = ((0.0, -5.0), (0.2, -5.0), (0.4, -4.8))
+"""A section's centreline whose end edges are shorter than the direction
+pins' room, so that every vertex is an end or a direction pin, none more
+than a spacing apart; clear of `pair_corner`."""
+
+
+def test_a_section_too_short_to_move_stays_as_routed() -> None:
+    short = scenarios.coupled(FreeSpace(), *SHORT_PART)
+    # Offsetting its centreline would drop track N's vertex of its own.
+    n = short.b.points
+    short = replace(
+        short,
+        b=replace(short.b, points=np.insert(n, 1, (n[0] + n[1]) / 2, axis=0)),
+        b_pinned=np.insert(short.b_pinned, 1, False),
+    )
+    (corner,) = scenarios.pair_corner().pairs
+
+    result = optimize_chains((), scenarios.PARAMS, COARSE, pairs=(short, corner))
+
+    kept, moved = result.pairs
+    np.testing.assert_array_equal(kept.a, short.a.points)
+    np.testing.assert_array_equal(kept.b, short.b.points)
+    assert kept.block.hold is Hold.SHORT
+    assert not np.array_equal(moved.a, corner.a.points)
+
+
+NEAR_CORNER = (0.0, 0.02, -0.02, 0.1, -0.1, 0.2, -0.2, 0.28, -0.28)
+"""mm along a track from one of its corners, ahead of it where positive,
+all within two pitches."""
+CLEAR_OF_CORNER = 0.9
+"""mm along a track from one of its corners, beyond two pitches, 0.7 mm, on
+both tracks, whose corners lie a pitch·tan(turn/2) apart along the pair."""
+CORNERS = (1, 2)
+"""Corners of `PINNED_PAIR`: P is inside the first and outside the second.
+The other two mirror them, run the other way."""
+ACROSS_N_CORNER = 9.0
+"""x of a point on P's middle straight whose nearest point on N is N's
+corner at the straight's end."""
+DEFAULT_SPACING = replace(
+    COARSE, spacing=OptimizerSettings().spacing, settled_change=0.002, max_iterations=4
+)
+"""The default spacing, at which a section's direction pins and its starting
+bend are those of a real run, with short bursts to run fast."""
+SPACINGS = [
+    pytest.param(COARSE, id="coarse"),
+    pytest.param(DEFAULT_SPACING, id="default"),
+]
+SPLIT_HOLDS = {None, Hold.COPPER, Hold.SHORT}
+"""How a section split at pins, or left whole around one, may be held: as
+routed, never for its bend."""
+RIGHT_ANGLE_PAIR = ((0.0, 0.0), (4.0, 0.0), (4.0, -4.0))
+"""A pair's centreline turning left by 90°: P is outside its corner."""
+
+
+def pinned_along(net: str, track: FloatArray, *arcs: float) -> Chain:
+    """`track` as a chain of `net`, pinned at its ends and at the point at
+    each of `arcs` along it, a vertex inserted there unless one is."""
+    points = [(float(x), float(y)) for x, y in track]
+    pinned = [True, *[False] * (len(points) - 2), True]
+    for arc in arcs:
+        along = arc_lengths(np.array(points))
+        k = int(np.searchsorted(along, arc - EXTENT_SLACK))
+        if not math.isclose(along[k], arc, abs_tol=EXTENT_SLACK):
+            t = (arc - along[k - 1]) / (along[k] - along[k - 1])
+            start, end = np.array(points[k - 1]), np.array(points[k])
+            x, y = start + t * (end - start)
+            points.insert(k, (float(x), float(y)))
+            pinned.insert(k, False)
+        pinned[k] = True
+    return Chain(tuple(points), tuple(pinned), PAIR_WIDTH, "F.Cu", net, ())
+
+
+def corner_arc(track: FloatArray, corner: int) -> float:
+    """Arc length along `track` of its vertex at `corner`."""
+    return float(arc_lengths(track)[corner])
+
+
+def pinned_near(
+    tracks: tuple[FloatArray, FloatArray], pinned: str, arcs: Sequence[float]
+) -> list[Chain]:
+    """Tracks P and N as chains, track `pinned` pinned at `arcs` along it."""
+    p, n = tracks
+    return [
+        pinned_along("USB_D+", p, *(arcs if pinned == "P" else ())),
+        pinned_along("USB_D-", n, *(arcs if pinned == "N" else ())),
+    ]
+
+
+def assert_kept_or_held(
+    chains: Sequence[Chain], settings: OptimizerSettings, gap: float = DP_GAP
+) -> Smoothed:
+    """Smooth `chains`: every pin stays, the joined tracks keep the pair's
+    gap, so they neither narrow nor overlap, and no section is held for
+    its bend."""
+    out = smoothed(chains, settings)
+
+    assert_pins_kept(chains, out.joined)
+    p, n = out.joined
+    low, high = gap_range(p, n, PAIR_WIDTH)
+    slack = GAP_TOLERANCE * gap
+    assert gap - slack <= low <= high <= gap + slack
+    assert {p.block.hold for p in out.result.pairs} <= SPLIT_HOLDS
+    return out
+
+
+@pytest.mark.parametrize("settings", SPACINGS)
+@pytest.mark.parametrize("offset", NEAR_CORNER)
+@pytest.mark.parametrize("corner", CORNERS)
+@pytest.mark.parametrize("pinned", ["P", "N"])
+def test_a_pin_near_a_corner_of_either_track_holds_its_section(
+    pinned: str, corner: int, offset: float, settings: OptimizerSettings
+) -> None:
+    tracks = scenarios.tracks(*PINNED_PAIR)
+    track = tracks[0 if pinned == "P" else 1]
+    chains = pinned_near(tracks, pinned, [corner_arc(track, corner) + offset])
+
+    out = assert_kept_or_held(chains, settings)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+
+
+@pytest.mark.parametrize("settings", SPACINGS)
+@pytest.mark.parametrize("offset", [0.0, 0.1, -0.1])
+@pytest.mark.parametrize("corner", CORNERS)
+def test_a_pad_across_both_tracks_near_a_corner_holds_its_section(
+    corner: int, offset: float, settings: OptimizerSettings
+) -> None:
+    # At 0 the pad touches both tracks' corner vertices, across the bend.
+    p, n = scenarios.tracks(*PINNED_PAIR)
+    chains = [
+        pinned_along("USB_D+", p, corner_arc(p, corner) + offset),
+        pinned_along("USB_D-", n, corner_arc(n, corner) + offset),
+    ]
+
+    out = assert_kept_or_held(chains, settings)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+
+
+@pytest.mark.parametrize("settings", SPACINGS)
+@pytest.mark.parametrize(
+    ("corner", "offset"),
+    # On the bump between the first and last straights, which a pin on
+    # either of those would let the pair straighten away in free space.
+    [(1, CLEAR_OF_CORNER), (2, -CLEAR_OF_CORNER), (2, CLEAR_OF_CORNER)],
+)
+@pytest.mark.parametrize("pinned", ["P", "N"])
+def test_a_pin_two_pitches_from_every_corner_rounds_them_all(
+    pinned: str, corner: int, offset: float, settings: OptimizerSettings
+) -> None:
+    tracks = scenarios.tracks(*PINNED_PAIR)
+    track = tracks[0 if pinned == "P" else 1]
+    chains = pinned_near(tracks, pinned, [corner_arc(track, corner) + offset])
+
+    out = assert_kept_or_held(chains, settings)
+
+    assert [p.block.hold for p in out.result.pairs] == [None, None]
+    assert_corners_round(chains, out.joined)
+
+
+def test_a_pin_across_from_the_other_tracks_corner_holds_its_section() -> None:
+    out = assert_kept_or_held(pinned_pair((ACROSS_N_CORNER,), ()), COARSE)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+
+
+@pytest.mark.parametrize("offset", [0.0, 0.02, -0.02, 0.1, -0.1])
+@pytest.mark.parametrize("pinned", ["P", "N"])
+def test_a_pin_at_a_right_angle_corner_holds_its_section(
+    pinned: str, offset: float
+) -> None:
+    tracks = scenarios.tracks(*RIGHT_ANGLE_PAIR)
+    track = tracks[0 if pinned == "P" else 1]
+    chains = pinned_near(tracks, pinned, [corner_arc(track, 1) + offset])
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+
+
+@pytest.mark.parametrize("pinned", ["P", "N"])
+def test_a_pin_on_a_straight_lets_a_right_angle_corner_round(pinned: str) -> None:
+    tracks = scenarios.tracks(*RIGHT_ANGLE_PAIR)
+    track = tracks[0 if pinned == "P" else 1]
+    chains = pinned_near(tracks, pinned, [corner_arc(track, 1) - 2.0])
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING)
+
+    assert [p.block.hold for p in out.result.pairs] == [None, None]
+    for chain, line in zip(chains, out.joined, strict=True):
+        corner = Point(np.array(chain.points)[-2])
+        assert LineString(line).distance(corner) >= ROUNDED
+
+
+@pytest.mark.parametrize(
+    ("offsets", "holds"),
+    [((0.1, 0.3), [Hold.COPPER]), ((0.3, 1.5), [Hold.COPPER, None])],
+)
+def test_pins_past_an_outer_corner_hold_only_the_section_around_them(
+    offsets: tuple[float, float], holds: list[Hold | None]
+) -> None:
+    # N is outside corner 1: a pad's two outline crossings past it.
+    tracks = scenarios.tracks(*PINNED_PAIR)
+    at = corner_arc(tracks[1], 1)
+    chains = pinned_near(tracks, "N", [at + offset for offset in offsets])
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING)
+
+    assert [p.block.hold for p in out.result.pairs] == holds
+
+
+@pytest.mark.parametrize("gap", [0.3, 0.4, 0.5])
+def test_a_pin_at_the_outer_corner_of_a_wider_pair_holds_its_section(
+    gap: float,
+) -> None:
+    p, n = offset_pair(scenarios.path(*PINNED_PAIR), gap, PAIR_WIDTH)
+    # N is outside corner 1.
+    chains = pinned_near((p, n), "N", [corner_arc(n, 1)])
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING, gap)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+
+
+def test_a_vertex_that_does_not_turn_does_not_hide_a_corner() -> None:
+    # P's first straight drawn in two clicks, between the pin and its
+    # corner.
+    p, n = scenarios.tracks(*PINNED_PAIR)
+    corner = corner_arc(p, 1)
+    clicked = pinned_along("USB_D+", p, corner - 0.15, corner - 0.3)
+    pins = list(clicked.pinned)
+    pins[2] = False
+    chains = [
+        replace(clicked, pinned=tuple(pins)),
+        pinned_along("USB_D-", n),
+    ]
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING)
+
+    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]

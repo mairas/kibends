@@ -50,6 +50,7 @@ from kibends.bursts import (
     INSIDE_TOLERANCE,
     OptimizerSettings,
 )
+from kibends.chain import NM_PER_MM
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import EnergyParams, FloatArray
 from kibends.neighbours import ChainInput
@@ -63,7 +64,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput
-from kibends.pairs import BendCheck, gap_range, offset_pair
+from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
 from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot, ViaZone
 
 WIDTH = 0.25
@@ -2187,9 +2188,33 @@ TOO_TIGHT_RADIUS = 0.01
 OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
+PADS_AT = 10.5
+"""x of the same-net pads beside the pair's last straight, mm."""
+PAD_OVERLAP = 0.05
+"""How far, mm, each pad reaches past its track's centreline."""
+ROUNDED_OFF = 0.05
+"""mm: how far a rounded corner's track passes from where its corner was,
+at least."""
+GAP_SLACK = GAP_TOLERANCE * PAIR_GAP
+"""How far, mm, a pair's gap may stray and still count as coupled."""
+STUB_NEAR_CORNER = 0.02
+"""mm before a corner of the pair's inner track where a stub leaves it."""
+STUBS_APART = 0.05
+"""mm between two stubs leaving one track, less than the default spacing."""
+NO_OUTLINE = "Edge.Cuts has no closed outline"
+"""The warning of every test board, which has no board edge."""
 
 
 USB = ("USB_D+", "USB_D-")
+
+
+def unexpected_warnings(log: Sequence[str]) -> list[str]:
+    """The errors and warnings in `log` but the test boards' `NO_OUTLINE`."""
+    return [
+        line
+        for line in log
+        if line.startswith(("ERROR", "WARNING")) and NO_OUTLINE not in line
+    ]
 
 
 def pair_tracks(
@@ -2426,7 +2451,7 @@ class TestPairs:
         assert any("1 moving via" in line for line in log)
         assert seen == [{"w"}]
 
-    def test_section_with_copper_between_its_ends_is_held(
+    def test_section_with_copper_between_its_ends_is_split_there(
         self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         stub = kipy_track(
@@ -2437,7 +2462,90 @@ class TestPairs:
         run("--dry-run")
 
         ((pair,),) = (r.pairs for r in reports)
-        assert pair.held == 1
+        assert (pair.sections, pair.held) == (2, 0)
+
+    def test_pair_past_same_net_pads_commits_smoothed_and_pinned(
+        self, connect: Connector
+    ) -> None:
+        # As on the board of https://github.com/mairas/kibends/issues/42:
+        # each track runs over the edge of a pad of its own net beyond the
+        # pair's corners, which pins it where it crosses the pad's outline.
+        inside = PAD_HALF_SIZE - PAD_OVERLAP
+        pads = [
+            kipy_pad(f"pad{net}", net, PADS_AT, 3.0 + side * (PAIR_HALF_PITCH + inside))
+            for net, side in zip(USB, (1.0, -1.0), strict=True)
+        ]
+        board = connect.to(pair_board())
+        board.pads = pads
+
+        run()
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        lines = by_net(board)
+        for net, side in zip(USB, (1.0, -1.0), strict=True):
+            joined = linemerge(lines[net])
+            assert isinstance(joined, LineString)
+            y = 3.0 + side * PAIR_HALF_PITCH
+            for x in (PADS_AT - PAD_HALF_SIZE, PADS_AT + PAD_HALF_SIZE):
+                assert (x, y) in joined.coords
+            # Both corners ahead of the pads are rounded off.
+            mitre = math.tan(math.pi / 8) * PAIR_HALF_PITCH
+            for corner in ((5.0, y - 3.0), (8.0, y)):
+                at = Point(corner[0] - side * mitre, corner[1])
+                assert joined.distance(at) >= ROUNDED_OFF
+        low, high = coupled_gaps(*lines.values())
+        assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
+
+    @pytest.mark.parametrize("before", [0.0, STUB_NEAR_CORNER])
+    def test_a_stub_at_or_near_a_corner_holds_the_section_without_a_warning(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+        before: float,
+    ) -> None:
+        # Same-net copper at P's inner corner, or just before it, closer
+        # than two pitches: the section stays as routed, while its fan-outs
+        # are smoothed.
+        corner = 5.0 - math.tan(math.pi / 8) * PAIR_HALF_PITCH
+        x = nm(corner - before) / NM_PER_MM
+        stub = kipy_track(
+            "stub", "USB_D+", (x, PAIR_HALF_PITCH), (x, 2.0), width=PAIR_WIDTH
+        )
+        board = connect.to(pair_board(extra=[stub]))
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert (pair.sections, pair.held) == (1, 1)
+        assert not unexpected_warnings(log)
+        lines = by_net(board)
+        joined = linemerge(lines[USB[0]])
+        assert isinstance(joined, LineString)
+        assert (x, PAIR_HALF_PITCH) in joined.coords
+        low, high = coupled_gaps(*lines.values())
+        assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
+
+    def test_a_part_held_between_two_stubs_commits_the_rest(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        stubs = [
+            kipy_track(
+                f"stub{k}", "USB_D+", (x, PAIR_HALF_PITCH), (x, 2.0), width=PAIR_WIDTH
+            )
+            for k, x in enumerate((2.5, 2.5 + STUBS_APART))
+        ]
+        board = connect.to(pair_board(extra=stubs))
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert (pair.sections, pair.held) == (3, 1)
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert not unexpected_warnings(log)
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]
@@ -2637,6 +2745,49 @@ class TestPairs:
         assert len(drawn) == 2
         assert all("pair with" in title for title in drawn)
         assert board.calls == []
+
+
+FOLDED = [("USB_D+", 2.3), ("USB_D-", 2.7), ("USB_D+", 3.4)]
+"""Net and x, mm, of a same-net pad over one track of the pair's first
+straight that once folded a section 180° in a trial step of the first burst
+at default settings: https://github.com/mairas/kibends/issues/50."""
+
+
+@pytest.mark.parametrize(("net", "x"), FOLDED)
+def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, net: str, x: float
+) -> None:
+    results: list[RunResult] = []
+    # One outer iteration, as the fold came in the first burst.
+    first_burst = at(replace(OptimizerSettings(), max_iterations=1))
+
+    def spy(*args: object, **kwargs: object) -> RunResult:
+        result = first_burst(*args, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(pipeline, "optimize_chains", spy)
+    # Without its fan-out, the pair is coupled from its start.
+    tracks = [t for t in pair_tracks() if t.id.value not in ("p1", "n1")]
+    side = 1.0 if net == USB[0] else -1.0
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    board = connect.to(
+        CommitBoard(
+            selection=list(tracks),
+            tracks=list(tracks),
+            pads=[kipy_pad("pad", net, x + PAD_HALF_SIZE, side * PAIR_HALF_PITCH)],
+            netclasses={n: usb for n in USB},
+        )
+    )
+
+    run()
+
+    assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+    sections = [p for r in results for p in r.pairs]
+    assert sections
+    for p in sections:
+        assert all(np.isfinite(t).all() for t in (p.centreline, p.a, p.b))
+        assert p.bend is None or not p.bend.too_tight
 
 
 ROUND_OFF = 1e-12
@@ -3412,6 +3563,7 @@ def test_a_pair_routed_below_its_clearance_keeps_it_across_a_turn() -> None:
 def test_a_sharp_pair_held_as_routed_is_not_refused(
     connect: Connector,
     log: list[str],
+    reports: list[pipeline.RunReport],
     turn: float,
     width: float,
     gap: float,
@@ -3424,8 +3576,9 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
         for net, track in zip(USB, (p, n), strict=True)
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    # Same-net copper on P between the section's ends holds it as routed.
-    held_by = kipy_pad("pad", USB[0], 1.0, float(p[0, 1]))
+    # Same-net copper on P's apex, whose outline crosses P closer to the
+    # turn than two pitches, holds the section as routed.
+    held_by = kipy_pad("pad", USB[0], float(p[1, 0]), float(p[1, 1]))
     usb = netclass("USB", clearance, gap)
     board = connect.to(
         CommitBoard(
@@ -3438,6 +3591,8 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
 
     run()
 
+    ((pair,),) = (r.pairs for r in reports)
+    assert (pair.sections, pair.held) == (1, 1)
     assert not any(line.startswith("ERROR") for line in log)
     assert board.calls == []
 

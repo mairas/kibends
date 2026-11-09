@@ -182,8 +182,15 @@ Both nets' tracks go into the one commit.
 
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which
-KiCad's length tuner does. A coupled section that same-net copper touches
-between its ends stays as it is.
+KiCad's length tuner does. Same-net copper that touches a coupled section
+between its ends, such as a pad the pair runs past or a stub that branches
+off one track, fixes the pair there. Where both tracks run straight for
+at least two pitches (track width plus gap) to either side of that
+point, the section is split there, and square across the pair from it on
+the other track, into sections that each move on their own and meet where
+the copper is; a part too short to change shape between two such points
+stays as it is. Copper anywhere else, such as near a corner, leaves the
+whole section as it is.
 
 A run warns when two chains whose nets pair run coupled but have
 different widths, when a chain runs coupled with one of its pair net that
