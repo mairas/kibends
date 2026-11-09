@@ -69,7 +69,7 @@ from kibends.obstacles import (
     build_via_obstacles,
     own_net_stops,
 )
-from kibends.optimize import measure, no_contacts, optimize_chains
+from kibends.optimize import no_contacts, optimize_chains
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
     ChainPair,
@@ -79,6 +79,7 @@ from kibends.pair_layout import (
     pairs_among,
 )
 from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
+from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
     FrozenVertex,

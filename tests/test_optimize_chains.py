@@ -37,12 +37,11 @@ from kibends.optimize import (
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
     layer_energy,
-    measure,
     optimize,
     optimize_chains,
-    resample,
     seen_parts,
 )
+from kibends.polylines import measure, resample
 from kibends.results import PolylineStats, RunResult, Termination
 from kibends.simplify import simplify_chains
 

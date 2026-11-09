@@ -48,12 +48,9 @@ from kibends.obstacles import ChainCentreline, ChainField
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     Member,
-    SelfCheck,
-    close_to_itself,
     layer_energy,
     no_contacts,
     optimize_chains,
-    resample,
     seen_parts,
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
@@ -65,6 +62,7 @@ from kibends.pairs import (
     gap_range,
     offset_pair,
 )
+from kibends.polylines import SelfCheck, close_to_itself, resample
 from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
 

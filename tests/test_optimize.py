@@ -17,14 +17,8 @@ import kibends.optimize as optimize_module
 from kibends.bursts import OptimizerSettings
 from kibends.energy import BoolArray, ObstacleField, total_energy
 from kibends.obstacles import Obstacle, Obstacles
-from kibends.optimize import (
-    INSIDE_TOLERANCE,
-    MAX_ABNORMAL_BURSTS,
-    measure,
-    optimize,
-    resample,
-    violations,
-)
+from kibends.optimize import INSIDE_TOLERANCE, MAX_ABNORMAL_BURSTS, optimize
+from kibends.polylines import measure, resample, violations
 from kibends.results import OptimizeResult, Termination
 
 SETTINGS = OptimizerSettings()
