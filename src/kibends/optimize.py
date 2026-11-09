@@ -222,7 +222,7 @@ from kibends.obstacles import (
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.pairs import BendCheck, bend_radii, too_tight
 from kibends.seen import NeighbourList, Seen, SeenParts, ViaNearest, ViaSight
-from kibends.via_moves import MovingVias
+from kibends.via_moves import MovingVias, free_distances
 from kibends.vias import ViaInput
 
 # A span only slightly longer than a multiple of the spacing gets no extra
@@ -877,8 +877,8 @@ def _problems(
     originals = [chain.centreline.points for chain in vias.chains]
     positions = vias.starting_positions()
     frozen = [
-        vias.distance(v, positions, originals) < -settings.bubble_tolerance
-        for v in range(len(vias.vias))
+        distance < -settings.bubble_tolerance
+        for distance in vias.distances(positions, originals)
     ]
     vias = vias.standing({v for v, still in enumerate(frozen) if still})
     # The ends a via that stays would carry are pinned, as at an unselected one.
@@ -958,7 +958,7 @@ def _problem_via(
         vias.vias[v],
         frozen,
         carried,
-        {local[i]: vias.ring(v, i) for i in vias.chains_near(v) if i in local},
+        {local[i]: ring for i, ring in vias.rings(v).items() if i in local},
         apart,
     )
 
@@ -1729,11 +1729,9 @@ class _Problem:
         """Each moving via's free distance, in order: to its static copper,
         the members near it at `polylines` and the other vias at
         `positions`."""
-        cross = self.via_sight.nearest(polylines, positions, math.inf).distance
-        return [
-            min(point_distance(self.vias[k].given.limits, positions[k]), float(d))
-            for k, d in zip(self.free_vias, cross, strict=True)
-        ]
+        return free_distances(
+            [via.given for via in self.vias], self.via_sight, polylines, positions
+        )
 
     def via_energy(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]

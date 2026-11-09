@@ -1102,30 +1102,6 @@ def moving_via_obstacles(
     )
 
 
-def via_obstacles_for_via(
-    via: Via,
-    others: Iterable[Via],
-    clearance_of: Callable[[str], float],
-    *,
-    hole_clearance: float = HOLE_CLEARANCE,
-    hole_to_hole: float = HOLE_TO_HOLE,
-    zones: Sequence[ViaZone] = (),
-) -> ChainField | None:
-    """`others`, at their positions, as obstacles to `via`, or None if none
-    is one; `via` itself among them is left out.
-
-    Each counts as `build_via_obstacles` counts a via on the board: rings
-    and holes of another net keep the copper and hole clearances, and holes
-    of any net keep hole-to-hole, and rings of another net the clearance and
-    margin of the zones `via` stays inside. Moving vias are through vias, so
-    every pair shares a layer, those of the zones included.
-    """
-    keeper = _via_keeper(
-        via, clearance_of(via.net), hole_clearance, hole_to_hole, zones
-    )
-    return _vias_field(keeper, (v for v in others if v.id != via.id), clearance_of)
-
-
 def via_via_inflation(
     via: Via,
     other: Via,
@@ -1136,40 +1112,20 @@ def via_via_inflation(
     zones: Sequence[ViaZone] = (),
     other_zones: Sequence[ViaZone] = (),
 ) -> float | None:
-    """The distance `via`'s centre keeps from `other`'s, as
-    `via_obstacles_for_via` counts it, mm, the same both ways; None if no
-    rule applies."""
+    """The distance `via`'s centre keeps from `other`'s, mm, as
+    `build_via_obstacles` counts a via on the board; None if no rule
+    applies.
+
+    Rings and holes of another net keep the copper and hole clearances,
+    holes of any net keep hole-to-hole, and rings of another net the
+    clearance and margin of `zones`, the zones `via` stays inside, and of
+    `other_zones`, those `other` stays inside: given both, the distance is
+    the same both ways. Moving vias are through vias, so every pair shares
+    a layer, those of the zones included."""
     keeper = _via_keeper(
         via, clearance_of(via.net), hole_clearance, hole_to_hole, zones
     )
     return _via_inflation(keeper, other, clearance_of, zones=other_zones)
-
-
-def chain_obstacles_for_via(
-    via: Via,
-    others: Sequence[ChainCentreline],
-    clearance_of: Callable[[str], float],
-    *,
-    hole_clearance: float = HOLE_CLEARANCE,
-    zones: Sequence[ViaZone] = (),
-) -> ChainField:
-    """Other chains' centrelines as obstacles to `via`, with `clearance_of`
-    giving its net's netclass clearance.
-
-    Another net's chain keeps the larger of the copper clearance from the
-    via's ring and the hole clearance from its hole, and the clearance and
-    margin of `zones`, the zones the via stays inside on the chains' layer.
-    A chain of the via's net is no obstacle.
-    """
-    return chains_field(
-        (
-            o,
-            via_chain_inflation(
-                via, o, clearance_of, hole_clearance=hole_clearance, zones=zones
-            ),
-        )
-        for o in others
-    )
 
 
 def via_chain_inflation(
@@ -1180,8 +1136,11 @@ def via_chain_inflation(
     hole_clearance: float = HOLE_CLEARANCE,
     zones: Sequence[ViaZone] = (),
 ) -> float | None:
-    """The distance `via`'s centre keeps from `chain`'s centreline, as
-    `chain_obstacles_for_via` counts it, mm; None for a chain of its net."""
+    """The distance `via`'s centre keeps from `chain`'s centreline, mm:
+    the larger of the copper clearance from the via's ring and the hole
+    clearance from its hole, and the clearance and margin of `zones`, the
+    zones the via stays inside on the chain's layer; None for a chain of
+    its net, which is no obstacle to it."""
     if chain.net == via.net:
         return None
     # Chains have no holes, so the keeper's hole-to-hole is never asked.
