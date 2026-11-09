@@ -4,7 +4,7 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
-from conftest import CommitBoard, kipy_track, kipy_via, nm
+from conftest import COMMIT_CALLS, CommitBoard, kipy_track, kipy_via, nm
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -33,7 +33,7 @@ def setup(
     short_create: bool = False,
     refuse_delete: frozenset[str] = frozenset(),
     unanswered_delete: frozenset[str] = frozenset(),
-    push_error: Exception | None = None,
+    push_error: BaseException | None = None,
 ) -> tuple[CommitBoard, Chain, list[Segment]]:
     tracks = l_tracks()
     board = CommitBoard(
@@ -69,12 +69,7 @@ class TestCommitChain:
 
         run_commit(board, chain, selected)
 
-        assert board.calls == [
-            "begin_commit",
-            "delete",
-            "create",
-            "push_commit",
-        ]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "b"]
         assert board.labels[0].startswith("kibends smooth ")
 
@@ -230,7 +225,7 @@ class TestCommitChains:
         run_commit_chains(board, chains, selected)
 
         assert board.reads["get_items_by_id"] == 1
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert len(board.labels) == 1
         assert sorted(board.deleted) == ["a", "b", "c", "d"]
         created = cast(list[kbt.Track], board.created)
@@ -341,11 +336,11 @@ class TestMovedVias:
         run_commit_vias(board, chains, selected, vias)
 
         assert board.reads["get_items_by_id"] == 1
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "e", "v"]
         (via,) = [i for i in board.created if isinstance(i, kbt.Via)]
         assert (via.position.x, via.position.y) == (nm(4.0), nm(4.5))
-        assert via.id.value == ""
+        assert via.id.value in board.assigned_ids
         assert (via.net.name, via.diameter, via.drill_diameter, via.type) == (
             old.net.name,
             old.diameter,
@@ -368,7 +363,7 @@ class TestMovedVias:
 
         run_commit_vias(board, [], selected, vias)
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert board.deleted == ["v"]
         (via,) = board.created
         assert isinstance(via, kbt.Via)
@@ -435,3 +430,76 @@ class TestMovedVias:
 
         (via,) = [i for i in board.created if isinstance(i, kbt.Via)]
         assert not via.proto.HasField("parent")
+
+
+class TestSelection:
+    def test_selects_the_new_tracks_and_keeps_the_unchanged_ones(self) -> None:
+        tracks = [*l_tracks(), kipy_track("c", "SIG", (5, 5), (8, 5), locked=True)]
+        tracks[2].width = nm(WIDTH)
+        board = CommitBoard(selection=list(tracks), tracks=list(tracks))
+        selected = [segment_from_track(t) for t in tracks]
+
+        run_commit(board, extract_chain(selected, frame=BOARD_FRAME), selected)
+
+        assert board.selected_ids() == ["c", *board.assigned_ids]
+        assert len(board.assigned_ids) == len(NEW_PATH) - 1
+
+    def test_selects_the_moved_via(self) -> None:
+        board, chains, selected, vias = via_route()
+
+        run_commit_vias(board, chains, selected, vias)
+
+        assert board.selected_ids() == board.assigned_ids
+        (via,) = [i for i in board.selection if isinstance(i, kbt.Via)]
+        assert (via.position.x, via.position.y) == (nm(4.0), nm(4.5))
+        assert via.id.value in board.assigned_ids
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ApiError("busy", code=ApiStatusCode.AS_BUSY),
+            KiCadConnectionError("timed out"),
+            KeyboardInterrupt(),
+        ],
+    )
+    def test_a_failure_to_select_after_the_push_is_logged_at_debug(
+        self, log: list[str], error: BaseException
+    ) -> None:
+        board, chain, selected = setup()
+        board.select_error = error
+
+        run_commit(board, chain, selected)
+
+        assert board.calls[-2:] == ["push_commit", "select"]
+        (line,) = [line for line in log if "Could not select" in line]
+        assert line.startswith("DEBUG")
+        assert any("Committed" in line for line in log)
+
+    @pytest.mark.parametrize(
+        ("error", "raised"),
+        [
+            (ApiError("refused"), ApiError),
+            (KiCadConnectionError("timed out"), commit.CommitUncertainError),
+            (KeyboardInterrupt(), commit.CommitUncertainError),
+        ],
+    )
+    def test_a_push_that_fails_or_may_not_have_landed_selects_nothing(
+        self, error: BaseException, raised: type[Exception]
+    ) -> None:
+        board, chain, selected = setup(push_error=error)
+        before = list(board.selection)
+
+        with pytest.raises(raised):
+            run_commit(board, chain, selected)
+
+        assert "select" not in board.calls
+        assert board.selection == before
+
+    def test_a_dropped_commit_leaves_the_selection_alone(self) -> None:
+        board, chain, selected = setup(refuse_create=True)
+        before = list(board.selection)
+
+        with pytest.raises(commit.CreateItemsError):
+            run_commit(board, chain, selected)
+
+        assert board.selection == before

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import astuple, dataclass
 from datetime import datetime
 from itertools import pairwise
+from typing import cast
 
 import kipy.board
 import kipy.board_types as kbt
@@ -17,12 +18,14 @@ from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.geometry import Vector2
 from kipy.proto.common.commands.editor_commands_pb2 import (
+    AddToSelection,
     CreateItems,
     CreateItemsResponse,
     DeleteItems,
     DeleteItemsResponse,
     ItemDeletionStatus,
     ItemStatusCode,
+    SelectionResponse,
 )
 from kipy.proto.common.types.base_types_pb2 import KIID
 from kipy.util.proto import pack_any
@@ -114,13 +117,14 @@ def commit_chains(
     commit = board.begin_commit()
     try:
         delete_checked(board, ids)
-        create_checked(board, new_items)
+        created = create_checked(board, new_items)
     except BaseException:
         board.drop_commit(commit)
         raise
 
     # Outside the try above: once pushed, the commit can't be dropped.
     push_checked(board, commit, label)
+    _select(board, created)
     parts: list[str] = []
     if track_ids:
         parts.append(
@@ -130,6 +134,22 @@ def commit_chains(
     if vias:
         parts.append(f"moved {_count(len(vias), 'via')}")
     logger.info(f"Committed '{label}': {' and '.join(parts)}")
+
+
+def _select(board: kipy.board.Board, ids: Sequence[KIID]) -> None:
+    """Add the items `ids` to the editor's selection, which is outside the
+    undo history. The commit has landed, so a failure here fails nothing.
+
+    kipy's add_to_selection unwraps the whole selection KiCad answers with,
+    and fails on any item type it does not know; the answer is not needed.
+    """
+    command = AddToSelection()
+    command.header.document.CopyFrom(board.document)
+    command.items.extend(ids)
+    try:
+        board.client.send(command, SelectionResponse)
+    except (ApiError, KiCadConnectionError, KeyboardInterrupt) as e:
+        logger.debug(f"Could not select the new tracks and vias: {e!r}")
 
 
 def _count(n: int, noun: str) -> str:
@@ -267,8 +287,9 @@ def delete_checked(board: kipy.board.Board, ids: Sequence[str]) -> None:
         )
 
 
-def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
-    """Create items and raise if KiCad refuses any of them.
+def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[KIID]:
+    """Create items and raise if KiCad refuses any of them; return the ids
+    KiCad gave them, which the push keeps.
 
     KiCad reports refusals per item, and kipy's create_items discards those
     statuses, so a refused item would otherwise vanish silently.
@@ -288,6 +309,7 @@ def create_checked(board: kipy.board.Board, items: Sequence[Wrapper]) -> None:
             f"KiCad created {len(response.created_items) - len(refused)} of "
             f"{len(items)} items{reasons}"
         )
+    return [cast(kbt.BoardItem, kbt.unwrap(r.item)).id for r in response.created_items]
 
 
 def push_checked(board: kipy.board.Board, commit: Commit, label: str) -> None:
