@@ -62,6 +62,11 @@ back to nothing at a fold instead of growing without bound: a trial step
 that folds a centreline offsets it to finite tracks, and the bend-radius
 hinge and the self check keep the optimizer away from it."""
 
+FOLD_SLACK = 1e-12
+"""1 + cos(turn) at or below which a vertex is a fold: off the axes,
+rounding leaves an exact fold's 1 + cos a hair above 0, where sin / (1 + cos)
+is noise. A turn this close to a fold has a bend radius of well under a
+nanometre either way."""
 
 
 class PairError(ValueError):
@@ -676,14 +681,19 @@ def check_bend_radius(centreline: FloatArray, gap: float, width: float) -> BendC
 
 
 def bend_radii(centreline: FloatArray) -> FloatArray:
-    """Each edge's bend radius, as `energy.edge_bend_radii` defines it. For a
-    dense arc of radius R with turn Δ per vertex it is R·cos(Δ/2)."""
+    """Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
+    beside a fold. For a dense arc of radius R with turn Δ per vertex it is
+    R·cos(Δ/2)."""
     delta = np.diff(centreline, axis=0)
     lengths = np.hypot(delta[:, 0], delta[:, 1])
     direction = delta / lengths[:, None]
     sine = _cross(direction[:-1], direction[1:])
-    cosine = np.sum(direction[:-1] * direction[1:], axis=1)
-    radii, _ = edge_bend_radii(lengths, sine / (1.0 + cosine))
+    one_plus_cos = 1.0 + np.sum(direction[:-1] * direction[1:], axis=1)
+    folds = one_plus_cos <= FOLD_SLACK
+    half_turns = np.divide(sine, one_plus_cos, out=np.zeros_like(sine), where=~folds)
+    radii, _ = edge_bend_radii(lengths, half_turns)
+    radii[:-1][folds] = 0.0
+    radii[1:][folds] = 0.0
     return radii
 
 

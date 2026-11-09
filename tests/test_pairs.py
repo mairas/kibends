@@ -685,6 +685,26 @@ def test_the_offset_pullback_matches_finite_differences(turn: float) -> None:
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-6)
 
 
+def test_a_fold_is_too_tight() -> None:
+    check = check_bend_radius(FOLDED, GAP, WIDTH)
+
+    assert check.radius == 0.0
+    assert check.too_tight
+
+
+FOLD_DIRECTIONS = 360
+"""Directions, one degree apart, to fold a centreline along: off the axes,
+rounding leaves 1 + cos of a fold a hair above 0."""
+
+
+def test_a_fold_off_the_axes_is_too_tight() -> None:
+    for angle in np.radians(np.arange(FOLD_DIRECTIONS)):
+        turn = array(
+            (math.cos(angle), -math.sin(angle)), (math.sin(angle), math.cos(angle))
+        )
+        assert check_bend_radius(FOLDED @ turn, GAP, WIDTH).too_tight, angle
+
+
 def test_gap_range_reports_narrowing() -> None:
     a = array((0.0, 0.0), (10.0, 0.0))
     b = array((0.0, 2 * HALF_PITCH), (5.0, 2 * HALF_PITCH), (10.0, 0.3))

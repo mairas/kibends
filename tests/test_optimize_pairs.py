@@ -475,6 +475,15 @@ class TestTightCorner:
         assert trials
         assert pair.bend is not None and not pair.bend.too_tight
 
+    def test_the_self_check_moves_a_fold_back(self) -> None:
+        straight = np.array([(float(x), 0.0) for x in range(6)])
+        check = SelfCheck.of(straight, bend_radius_limit(DP_GAP, PAIR_WIDTH))
+
+        back, count, _ = check(folded(straight, 1))
+
+        assert count > 0
+        assert back[[1, 2, 3]].all()
+
     def test_inner_track_runs_the_centreline_s_way(self, corner: RunResult) -> None:
         (pair,) = corner.pairs
         along = np.diff(pair.centreline, axis=0)
