@@ -12,15 +12,11 @@ from shapely.geometry import Point, box
 from shapely.geometry.base import BaseGeometry
 
 from kibends.bursts import OptimizerSettings
+from kibends.contacts import contact_stops, contacts_left
 from kibends.energy import FloatArray, hinge_integrand
 from kibends.neighbours import ChainInput
 from kibends.obstacles import Obstacle, Obstacles
-from kibends.optimize import (
-    INSIDE_TOLERANCE,
-    contact_stops,
-    contacts_left,
-    optimize_chains,
-)
+from kibends.optimize import INSIDE_TOLERANCE, optimize_chains
 from kibends.results import ChainResult, Termination
 
 SETTINGS = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)

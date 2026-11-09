@@ -18,9 +18,10 @@ from scenarios import (
 from shapely.geometry import LineString
 
 from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
+from kibends.contacts import no_contacts
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.optimize import no_contacts, optimize, optimize_chains
+from kibends.optimize import optimize, optimize_chains
 from kibends.pair_blocks import pair_block
 from kibends.polylines import measure
 from kibends.results import ChainResult, RunResult, Termination

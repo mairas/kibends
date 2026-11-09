@@ -47,6 +47,7 @@ from kibends.chain import (
     split_locked,
 )
 from kibends.commit import ViaMove, commit_chains, snapped_path, snapped_points
+from kibends.contacts import no_contacts
 from kibends.coords import UserFrame
 from kibends.energy import (
     EnergyParams,
@@ -69,7 +70,7 @@ from kibends.obstacles import (
     build_via_obstacles,
     own_net_stops,
 )
-from kibends.optimize import no_contacts, optimize_chains
+from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
     ChainPair,

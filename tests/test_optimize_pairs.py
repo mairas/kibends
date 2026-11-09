@@ -34,6 +34,7 @@ from kibends.bursts import (
     run_burst,
 )
 from kibends.chain import Chain
+from kibends.contacts import no_contacts
 from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
@@ -49,7 +50,6 @@ from kibends.optimize import (
     INSIDE_TOLERANCE,
     Member,
     layer_energy,
-    no_contacts,
     optimize_chains,
     seen_parts,
 )
