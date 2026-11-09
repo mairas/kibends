@@ -61,9 +61,10 @@ Adjacency = dict[NmPoint, list[Segment]]
 
 
 class SameNetTrack(NamedTuple):
-    """A same-net track that is not part of the chain; `width` in mm."""
+    """A same-net track that is not part of the chain, or the end of a
+    selected one, a point; `width` in mm."""
 
-    centreline: LineString
+    centreline: LineString | Point
     width: float
 
 
@@ -103,7 +104,7 @@ def extract_chains(
     Selected segments are grouped by layer, net and width, and each group is
     split into connected pieces. Two widths that meet end to end both end
     there and so are pinned; two that overlap along a span stay a chain
-    each, pinned where their copper overlaps. A point where three or more
+    each. A point where three or more
     selected tracks of one net on one layer meet end is a junction: the
     pieces are split there into chains that end at it, loose, unless other
     copper pins any of them there, which pins them all. A stub whose end
@@ -112,7 +113,10 @@ def extract_chains(
     the end moves there (`_join_mid_track_ends`). `same_net_copper(layer,
     net)` returns the copper of `net` on `layer` that pins its chains, as
     for `extract_chain`; a via joining chains on two layers pins both, and a
-    net's chains on one layer pin each other where their copper overlaps.
+    net's chain on one layer pins another where its end's copper reaches the
+    other's. Where they overlap or cross away from their ends, nothing pins
+    either: copper of one net does not interact, and the run may move them
+    apart.
     Locked segments stay out of every chain, with a warning, and pin the
     chains they touch on their layer.
 
@@ -190,16 +194,19 @@ def split_chains(
                 (width, piece, list(dict.fromkeys(piece_ids)))
                 for piece, piece_ids in zip(of_width_pieces, ids, strict=True)
             ]
-        # A selected track whose copper overlaps another chain's connects to
-        # it like unselected copper, so each pins the other there.
-        tracks = [
-            (k, _same_net_track(s))
-            for k, (_, adjacency, _) in enumerate(pieces)
-            for s in dict.fromkeys(_edges_of(adjacency))
+        # Copper of one net does not interact, so selected chains pin each
+        # other only where one ends in the other's copper: there the end's
+        # copper pins like unselected copper. Where they overlap or cross
+        # away from their ends, nothing pins either.
+        ends = [
+            (k, SameNetTrack(Point(_mm(p)), width / NM_PER_MM))
+            for k, (width, adjacency, _) in enumerate(pieces)
+            for p, at in adjacency.items()
+            if len(at) == 1
         ]
         copper = _CopperIndex(
-            [*fixed, *(t for _, t in tracks)],
-            [*(NO_PIECE for _ in fixed), *(k for k, _ in tracks)],
+            [*fixed, *(t for _, t in ends)],
+            [*(NO_PIECE for _ in fixed), *(k for k, _ in ends)],
         )
         net_chains = [
             _chain(

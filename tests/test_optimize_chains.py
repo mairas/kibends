@@ -14,7 +14,9 @@ from shapely.geometry import LineString, Point, Polygon
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, half_side
+from kibends.chain import NM_PER_MM, Segment, extract_chains
 from kibends.commit import snapped_points
+from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
@@ -559,6 +561,92 @@ def test_a_chain_passes_through_a_chain_of_its_net() -> None:
     straightened = result.chains[0].polyline
     assert length(straightened) < 10.0 + 0.01
     assert abs(y_at(straightened, 5.0)) < 0.01
+
+
+def re_extracted(scenario: ChainsScenario, result: RunResult) -> list[ChainInput]:
+    """The chains of `result`, simplified and committed as straight tracks
+    and extracted again, as a second run takes them, each with its
+    scenario's field."""
+    simplified = simplify_chains(scenario.chains, result, scenario.params)
+    segments = [
+        Segment(
+            f"{k}.{i}",
+            (round(a[0] * NM_PER_MM), round(a[1] * NM_PER_MM)),
+            (round(b[0] * NM_PER_MM), round(b[1] * NM_PER_MM)),
+            round(given.centreline.width * NM_PER_MM),
+            given.layer,
+            given.centreline.net,
+        )
+        for k, (given, polyline) in enumerate(
+            zip(scenario.chains, simplified, strict=True)
+        )
+        for i, (a, b) in enumerate(itertools.pairwise(snapped_points(polyline)))
+    ]
+    extracted = sorted(
+        extract_chains(segments, frame=BOARD_FRAME),
+        key=lambda c: int(c.segment_ids[0].split(".")[0]),
+    )
+    return [
+        ChainInput(
+            replace(given.centreline, points=np.array(c.points)),
+            given.layer,
+            np.array(c.pinned),
+            given.field,
+        )
+        for given, c in zip(scenario.chains, extracted, strict=True)
+    ]
+
+
+def test_chains_of_one_net_left_overlapping_are_extracted_without_pins() -> None:
+    scenario = scenarios.same_net_wrap()
+    result = run(scenario)
+
+    again = re_extracted(scenario, result)
+
+    inner, outer = (c.centreline.points for c in again)
+    assert gap(inner, outer) < scenarios.PAIR_WIDTH / 2
+    for chain in again:
+        assert chain.fixed[0] and chain.fixed[-1]
+        assert not chain.fixed[1:-1].any()
+
+
+def test_a_crossing_a_run_makes_neither_pins_nor_joins_on_extraction() -> None:
+    # The arch comes down through the bar's middle, far from its ends.
+    free = FreeSpace()
+    scenario = ChainsScenario(
+        "arch-through-bar",
+        (
+            selected("arch", "N", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+            selected("bar", "N", free, (5.0, -0.5), (5.0, 1.5)),
+        ),
+    )
+    result = run(scenario)
+    arch, bar = (c.polyline for c in result.chains)
+    assert LineString(arch).crosses(LineString(bar))
+
+    again = re_extracted(scenario, result)
+
+    assert len(again) == 2
+    for chain, given in zip(again, result.chains, strict=True):
+        np.testing.assert_allclose(
+            chain.centreline.points[[0, -1]], given.polyline[[0, -1]], atol=1e-6
+        )
+        assert chain.fixed[0] and chain.fixed[-1]
+        assert not chain.fixed[1:-1].any()
+
+
+def test_a_second_run_moves_chains_of_one_net_left_overlapping_apart() -> None:
+    # Without the disc each straightens to its own ends, 0.4 mm apart.
+    scenario = scenarios.same_net_wrap()
+    again = [
+        replace(c, field=FreeSpace()) for c in re_extracted(scenario, run(scenario))
+    ]
+
+    result = optimize_chains(again, scenario.params, COARSE)
+
+    for chain in result.chains:
+        ends = chain.polyline[[0, -1]]
+        assert length(chain.polyline) < length(ends) + 0.01
 
 
 def test_chains_of_one_net_on_different_layers_are_taken() -> None:
