@@ -10,9 +10,10 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario
 import kibends.optimize as optimize_module
 from kibends.bursts import DEFAULT_SETTINGS
 from kibends.energy import quadrature_points
+from kibends.members import seen_parts
 from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
-from kibends.optimize import LIST_SKIN, seen_parts
+from kibends.optimize import LIST_SKIN
 from kibends.pair_blocks import pair_block
 from kibends.seen import NeighbourList, Seen
 from kibends.via_moves import MovingVias

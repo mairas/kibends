@@ -24,8 +24,10 @@ from scenarios import (
 )
 from shapely.geometry import LineString, Point
 
+import kibends.members as members_module
 import kibends.optimize as optimize_module
 from kibends.bursts import (
+    INSIDE_TOLERANCE,
     Burst,
     Objective,
     OptimizerSettings,
@@ -34,6 +36,7 @@ from kibends.bursts import (
     run_burst,
 )
 from kibends.chain import Chain
+from kibends.contacts import no_contacts
 from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
@@ -43,23 +46,10 @@ from kibends.energy import (
     obstacle_reach,
     total_energy,
 )
+from kibends.members import Member, layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline, ChainField
-from kibends.optimize import (
-    INSIDE_TOLERANCE,
-    ChainResult,
-    Member,
-    PairResult,
-    RunResult,
-    SelfCheck,
-    Termination,
-    close_to_itself,
-    layer_energy,
-    no_contacts,
-    optimize_chains,
-    resample,
-    seen_parts,
-)
+from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import find_pairs, lay_out
 from kibends.pairs import (
@@ -69,6 +59,8 @@ from kibends.pairs import (
     gap_range,
     offset_pair,
 )
+from kibends.polylines import SelfCheck, close_to_itself, resample
+from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -477,7 +469,7 @@ class TestTightCorner:
         ) -> TermValue:
             return 0.0, np.zeros_like(points)
 
-        monkeypatch.setattr(optimize_module, "bend_radius_energy", unhinged)
+        monkeypatch.setattr(members_module, "bend_radius_energy", unhinged)
         # Routed wider than the limit: length alone would pull it into the
         # corner, below the limit, and only the self check holds it back.
         (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs

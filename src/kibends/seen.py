@@ -41,8 +41,8 @@ class SeenParts:
 
     vertex: IntArray
     """Each piece's edge's first vertex, numbered across what the others
-    see of every chain and section (`optimize.shown`), one after another,
-    then two for each via (`optimize._shown_flat`)."""
+    see of every chain and section (`members.shown`), one after another,
+    then two for each via (`members.shown_flat`)."""
     start: FloatArray
     """Where along its edge each piece starts, from 0 to 1."""
     end: FloatArray

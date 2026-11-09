@@ -38,6 +38,7 @@ from kibends.energy import (
     quadrature_points,
     shape_energy,
 )
+from kibends.members import Member, members_energy, seen_parts, shown
 from kibends.neighbours import ChainInput, kept_spans
 from kibends.obstacles import (
     HOLE_CLEARANCE,
@@ -46,16 +47,9 @@ from kibends.obstacles import (
     CompositeField,
     zones_on,
 )
-from kibends.optimize import (
-    LIST_SKIN,
-    Member,
-    NeighbourList,
-    SeenParts,
-    members_energy,
-    seen_parts,
-    shown,
-)
+from kibends.optimize import LIST_SKIN
 from kibends.pair_blocks import PairBlock, pair_block
+from kibends.seen import NeighbourList, SeenParts
 from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
 

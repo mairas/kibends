@@ -30,22 +30,18 @@ from kibends.energy import (
     obstacle_reach,
     total_energy,
 )
+from kibends.members import layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
-    PolylineStats,
-    RunResult,
-    Termination,
-    layer_energy,
-    measure,
     optimize,
     optimize_chains,
-    resample,
-    seen_parts,
 )
+from kibends.polylines import measure, resample
+from kibends.results import PolylineStats, RunResult, Termination
 from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)

@@ -33,8 +33,8 @@ from kibends.neighbours import (
     same_layer_neighbours,
 )
 from kibends.obstacles import CompositeField
-from kibends.optimize import RunResult
 from kibends.pair_blocks import PairBlock
+from kibends.results import RunResult
 
 DEFAULT_CHORD_TOLERANCE = 0.01
 """mm: well below fabrication tolerances; at 5 µm a 23 mm chain on a real
