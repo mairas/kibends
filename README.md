@@ -67,20 +67,30 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
    it, and no other copper touches it or those chain ends on any layer,
-   except the fill of a zone of its net: a via in a plane moves within the
-   zone's current fill, on each layer where the fill touches it, keeping
-   its centre half the zone's minimum width plus 0.005 mm (KiCad's default
-   arc error) inside it, so that the next refill connects it again. A fill
-   older than a higher-priority zone of another net or a rule area keeping
-   out copper pour still covers them; the via stays out of them as the
-   next refill will. Refill the zones before running kibends if they are
-   out of date otherwise. Any other selected via stays where it is; a
+   except the fill of a zone of its net. A via in a plane stays inside the
+   zone on each layer where the fill touches it, so that the next refill
+   connects it again: its centre stays half the zone's minimum width plus
+   0.005 mm (KiCad's default arc error) inside the zone's outline, out of
+   the zone's own cut-outs, zones of other nets of higher or equal
+   priority (grown by the larger of the two zones' clearances) and rule areas keeping out
+   copper pour, and it keeps the zone's clearance plus that margin from
+   other nets' copper on those layers, where that is more than the netclass
+   clearance, including tracks and vias that move in the same run. The
+   current fill only tells which zones the via connects to, so a fill out
+   of date with the outlines or the copper does not mislead it. Thermal
+   reliefs, island removal, hatched fills and a zone's minimum width
+   through narrow necks are not modelled: a via can end up in a part of the
+   zone the refill leaves out, in a gap of a hatch, or connected only
+   through a neck, which only KiCad's DRC
+   sees. Any other selected via stays where it is; a
    debug log line names it and the reason: it is locked, it is not a
    through via, other copper touches it or a chain end it would carry (an
    unselected track, a pad, a copper shape or another via of its net, on
-   any layer), it sits at the edge of a zone's fill, or fewer than two
-   selected tracks end at it. Teardrops are ignored: KiCad reapplies
-   them on the next refill. Selected pads and
+   any layer), it sits at the edge of a zone's outline, or fewer than two
+   selected tracks end at it. A moving via that starts closer to other
+   copper than its clearance stays where it is too, connected by its fill
+   as it is, and other chains keep only the netclass clearance from it. Teardrops are ignored:
+   KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
@@ -238,14 +248,15 @@ netclass clearances, including pad and footprint clearance overrides; the
 edge and hole clearances of `--edge-clearance` and `--hole-clearance`,
 since KiCad's API does not expose the board's own; rule areas that keep
 out tracks or vias, which moving vias stay out of as well; and, for a
-moving via, the fill of the zones it connects to. Rule areas' other
-keepouts, of pads, copper pours and footprints, are not seen. Nor are
-custom DRC rules (the project's `.kicad_dru`), board minimums, thermal
-reliefs or island removal, or copper zones, which reflow after an edit,
-beyond the fills that hold a moving via. A custom rule stricter than the
-netclass clearances (a larger clearance for vias, say) can therefore be
-violated by the smoothed tracks. Those are left to KiCad's DRC: run it
-after smoothing.
+moving via, the outlines and clearances of the zones it connects to. Rule
+areas' other keepouts, of pads, copper pours and footprints, are not seen.
+Nor are custom DRC rules (the project's `.kicad_dru`), board minimums,
+thermal reliefs, island removal, hatched fills or minimum-width necks, or
+copper zones,
+which reflow after an edit, beyond what holds a moving via. A custom rule
+stricter than the netclass clearances (a larger clearance for vias, say)
+can therefore be violated by the smoothed tracks. Those are left to
+KiCad's DRC: run it after smoothing.
 
 ### Editing a smoothed track
 

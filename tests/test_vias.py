@@ -234,13 +234,12 @@ class TestMovableVias:
         )
 
     @pytest.mark.parametrize(("past", "moves"), [(0.001, True), (-0.001, False)])
-    def test_moves_only_with_its_centre_deep_enough_in_the_fill(
+    def test_moves_only_with_its_centre_deep_enough_in_the_outline(
         self, log: list[str], past: float, moves: bool
     ) -> None:
-        # The fill ends inside the ring, as it does where the zone's
-        # clearance to another net's copper reaches it; the refill still
-        # connects the via when its centre lies half the zone's minimum width
-        # and the arc error inside.
+        # The outline ends inside the ring; the refill still connects the via
+        # when its centre lies half the zone's minimum width and the arc
+        # error inside.
         v = kipy_via("v", "SIG", *VIA)
         min_width = 0.2
         edge = VIA[0] + min_width / 2 + KICAD_MAX_ERROR + past
@@ -259,6 +258,24 @@ class TestMovableVias:
             assert warning.rstrip().endswith(
                 "stays fixed: it sits at the edge of zone plane on In2.Cu"
             )
+
+    def test_a_stale_fill_short_of_its_centre_leaves_it_movable(
+        self, log: list[str]
+    ) -> None:
+        # The fill ends at the ring where other copper stood at the last
+        # refill; the outline reaches well past it.
+        v = kipy_via("v", "SIG", *VIA)
+        fill = {BL.BL_In2_Cu: kipy_rect(2, 2, VIA[0] + 0.25, 6)}
+        zone = kipy_filled_zone(
+            "plane", "SIG", fill, outline=kipy_rect(2, 2, 6, 6), min_width=0.2
+        )
+
+        movable, _ = judge(
+            [*front(), *back(), v], [*front(), *back()], [v], zones=[zone]
+        )
+
+        assert [m.via.id for m in movable] == ["v"]
+        assert warnings(log) == []
 
     def test_a_fill_the_refill_will_not_keep_fixes_it(self, log: list[str]) -> None:
         # A rule area keeping out pour, drawn over the via since the last

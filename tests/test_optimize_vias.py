@@ -169,7 +169,7 @@ def test_a_track_on_a_layer_without_chains_hems_the_via_in(
 
 
 def in_zone(bottom: float) -> ViasScenario:
-    """The detour route with its via in a zone of its net whose fill ends at
+    """The detour route with its via in a zone of its net whose region ends at
     y = `bottom`, short of the straight route at y = 0."""
     via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
     return ViasScenario(
@@ -180,22 +180,22 @@ def in_zone(bottom: float) -> ViasScenario:
 
 
 def plane(bottom: float) -> ViaZone:
-    """A zone with a minimum width of 0.2 mm whose fill ends at y = `bottom`."""
-    return ViaZone("plane", {"In1.Cu": box(3, bottom, 7, 5)}, 0.2)
+    """A zone with a minimum width of 0.2 mm whose region ends at y = `bottom`."""
+    return ViaZone("plane", {"In1.Cu": box(3, bottom, 7, 5)}, 0.2, 0.0)
 
 
 MARGIN = plane(0).margin
 
 
 class TestInsideAZone:
-    def test_the_via_moves_within_the_fill(self) -> None:
+    def test_the_via_moves_within_the_region(self) -> None:
         result = run(in_zone(-1.0))
 
         (via,) = result.vias
         assert not via.frozen
         assert via.position[1] == pytest.approx(0.0, abs=0.1)
 
-    def test_a_pull_toward_the_fill_s_edge_is_held_at_it(self) -> None:
+    def test_a_pull_toward_the_region_s_edge_is_held_at_it(self) -> None:
         bottom = 1.5
 
         result = run(in_zone(bottom))
@@ -398,6 +398,82 @@ class TestPair:
         apart = scenarios.VIA_DRILL + hole_to_hole
         assert apart > scenarios.VIA_TO_VIA
         assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
+
+
+ZONE_CLEARANCE = 0.5
+"""More than the scenarios' netclass clearance, so that it is the rule."""
+
+
+def zoned(scenario: ViasScenario, k: int, layer: str) -> ViasScenario:
+    """`scenario` with via k inside a wide zone of its net on `layer` whose
+    clearance is ZONE_CLEARANCE."""
+    zone = ViaZone("plane", {layer: box(-20, -20, 30, 20)}, 0.2, ZONE_CLEARANCE)
+    vias = list(scenario.vias)
+    vias[k] = replace(vias[k], zones=(zone,))
+    return replace(scenario, vias=tuple(vias))
+
+
+class TestZoneClearanceToMembers:
+    def test_a_chain_on_the_zone_s_layer_keeps_it_from_the_via(self) -> None:
+        result = run(zoned(scenarios.via_beside_chain(), 0, "In1.Cu"))
+
+        (via,) = result.vias
+        gap = to_polyline(via.position, result.chains[2].polyline)
+        expected = scenarios.PAIR_WIDTH / 2 + ZONE_CLEARANCE + MARGIN
+        assert expected > scenarios.VIA_TO_CHAIN
+        assert gap >= expected - INSIDE_TOLERANCE
+        assert gap < expected + 0.05
+
+    def test_a_chain_on_another_layer_keeps_the_netclass_clearance(self) -> None:
+        result = run(zoned(scenarios.via_beside_chain(), 0, "In2.Cu"))
+
+        (via,) = result.vias
+        gap = to_polyline(via.position, result.chains[2].polyline)
+        assert gap < scenarios.VIA_TO_CHAIN + 0.05
+
+    def test_another_moving_via_keeps_it(self) -> None:
+        result = run(zoned(scenarios.via_pair(), 0, "In1.Cu"))
+
+        a, b = (v.position for v in result.vias)
+        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
+        assert expected > scenarios.VIA_TO_VIA
+        assert math.dist(a, b) >= expected - INSIDE_TOLERANCE
+        assert math.dist(a, b) < expected + 0.1
+
+    def test_a_via_inside_another_s_zone_distance_holds_only_that_one(
+        self,
+    ) -> None:
+        # 0.85 mm apart: more than the netclass distance, less than the
+        # zoned via's. The zoned via stays, as an unselected via, and the
+        # other is free to go.
+        lower = (5.0, -2.0)
+        upper = (5.0, -2.0 + 0.85)
+        level = scenarios.PAIR_LEVEL
+        scenario = ViasScenario(
+            "via-in-zone-distance",
+            (
+                *scenarios.route("A", lower),
+                *scenarios.route("B", upper, (0.0, level), (10.0, level)),
+            ),
+            (
+                scenarios.joining(scenarios.through_via("a", "A", lower), 0),
+                scenarios.joining(scenarios.through_via("b", "B", upper), 2),
+            ),
+        )
+
+        result = run(zoned(scenario, 0, "In1.Cu"))
+
+        a, b = result.vias
+        assert a.frozen and a.position == lower
+        assert not b.frozen
+        assert b.position[1] > upper[1] + 0.5
+
+    def test_two_vias_keep_the_larger_of_their_distances_both_ways(self) -> None:
+        vias = moving_vias(zoned(scenarios.via_pair(), 0, "In1.Cu"))
+
+        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
+        assert vias.apart(0, 1) == pytest.approx(expected)
+        assert vias.apart(1, 0) == pytest.approx(expected)
 
 
 TOUCHING = scenarios.VIA_DIAMETER / 2 + scenarios.PAIR_WIDTH / 2
@@ -751,6 +827,21 @@ class TestGradient:
             ),
         )
         self.check(scenario, 2)
+
+    def test_with_a_zoned_via_near_another(self) -> None:
+        lower, upper = (5.0, 1.0), (5.0, 2.2)
+        scenario = ViasScenario(
+            "zoned-vias-near",
+            (
+                *scenarios.route("A", lower),
+                *scenarios.route("B", upper, (0.0, 0.7), (10.0, 0.7)),
+            ),
+            (
+                scenarios.joining(scenarios.through_via("a", "A", lower), 0),
+                scenarios.joining(scenarios.through_via("b", "B", upper), 2),
+            ),
+        )
+        self.check(zoned(scenario, 0, "In1.Cu"), 2)
 
 
 def moving_vias(scenario: ViasScenario) -> MovingVias:

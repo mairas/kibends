@@ -65,7 +65,7 @@ from kibends.optimize import (
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
-from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot, ViaZone
+from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -1636,24 +1636,28 @@ class TestMovingVias:
         assert moved in ends(created_on(board, BL.BL_B_Cu))
 
     @pytest.mark.parametrize("unfilled", ["pwr pour", "pour keepout"])
-    def test_a_via_in_a_zone_of_its_net_moves_within_its_fill_and_commits(
+    def test_a_via_in_a_zone_of_its_net_moves_within_its_region_and_commits(
         self, connect: Connector, log: list[str], unfilled: str
     ) -> None:
         # Without the zone, the via ends below y = 1, in the part of the
-        # outline that the PWR pour or the keepout leaves unfilled.
-        fill_top = 2.8
+        # outline that the higher-priority PWR pour or the keepout leaves
+        # unfilled; the fill is as the refill left it.
         board = moving_via_board()
         unfilled_area = kipy_rect(-2, -3, 10, 2.5)
         if unfilled == "pwr pour":
             other = kipy_filled_zone("pwr", "PWR", {BL.BL_In1_Cu: unfilled_area})
+            other.priority = 1
+            other.clearance = nm(0.3)
+            refill_top = 2.5 + 0.3
         else:
             other = kipy_zone(unfilled_area, [BL.BL_In1_Cu], keepout_tracks=False)
             other.proto.rule_area_settings.keepout_copper = True
+            refill_top = 2.5
         board.zones = [
             kipy_filled_zone(
                 "plane",
                 "SIG",
-                {BL.BL_In1_Cu: kipy_rect(0, fill_top, 10, 10)},
+                {BL.BL_In1_Cu: kipy_rect(0, refill_top, 10, 10)},
                 outline=kipy_rect(-2, -3, 10, 10),
             ),
             other,
@@ -1666,7 +1670,7 @@ class TestMovingVias:
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         (via,) = created_vias(board)
         y = via.position.y / 1e6
-        assert fill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
+        assert refill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
 
     @pytest.mark.parametrize("unfillable", ["pwr pour", "pour keepout"])
     def test_a_stale_fill_does_not_lead_the_via_into_what_the_refill_leaves_out(
@@ -1698,6 +1702,97 @@ class TestMovingVias:
         (via,) = created_vias(board)
         y = via.position.y / 1e6
         assert refill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
+
+    def test_the_via_keeps_the_zone_clearance_from_other_copper_in_it(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The OTHER track across the via's way up crosses the plane, whose
+        # refill keeps 0.5 mm from it, more than the netclass clearance.
+        board = moving_via_board()
+        other = kipy_track("o", "OTHER", (0, 1), (10, 1), layer=BL.BL_In1_Cu)
+        board.tracks = [*board.tracks, other]
+        plane = kipy_filled_zone(
+            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        )
+        plane.clearance = nm(0.5)
+        board.zones = [plane]
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        connect.to(board)
+
+        run()
+
+        assert "stays fixed" not in "".join(log)
+        (via,) = created_vias(board)
+        y = via.position.y / 1e6
+        kept = 1 + 0.25 / 2 + 0.5 + 0.25 / 2 + KICAD_MAX_ERROR
+        assert kept - INSIDE_TOLERANCE - NM_ROUNDING <= y < kept + 0.1
+
+    def test_the_via_keeps_the_zone_clearance_from_a_route_moving_with_it(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The selected OTHER route on the plane's layer bows toward the via
+        # and straightens across its way up; the refill keeps 0.5 mm from
+        # it wherever it ends.
+        board = moving_via_board()
+        route = [
+            kipy_track("o1", "OTHER", (0, 1.5), (4, 2.2), layer=BL.BL_In1_Cu),
+            kipy_track("o2", "OTHER", (4, 2.2), (8, 1.5), layer=BL.BL_In1_Cu),
+        ]
+        board.selection = [*board.selection, *route]
+        board.tracks = [*board.tracks, *route]
+        plane = kipy_filled_zone(
+            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        )
+        plane.clearance = nm(0.5)
+        board.zones = [plane]
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        connect.to(board)
+
+        run("--repulsion", "0")
+
+        assert "stays fixed" not in "".join(log)
+        (via,) = created_vias(board)
+        at = Point(via.position.x / 1e6, via.position.y / 1e6)
+        (other,) = {t.net.name for t in created_on(board, BL.BL_In1_Cu)}
+        assert other == "OTHER"
+        gap = unary_union(
+            [segment(t) for t in created_on(board, BL.BL_In1_Cu)]
+        ).distance(at)
+        kept = 0.25 / 2 + 0.5 + 0.25 / 2 + KICAD_MAX_ERROR
+        assert kept > 0.25 / 2 + 0.2 + 0.3  # the netclass spacing
+        assert kept - INSIDE_TOLERANCE - NM_ROUNDING <= gap < kept + 0.1
+
+    def test_a_via_starting_inside_the_zone_clearance_stays_as_unselected(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The selected OTHER route bends 0.625 mm from the via, at the
+        # netclass spacing and inside the plane's 0.5 mm zone clearance plus
+        # margin. The via stays, connected by its fill as it is, and the
+        # route sees it as an unselected via.
+        board = moving_via_board()
+        bend = (VIA[0], VIA[1] + 0.3 + 0.2 + 0.25 / 2)
+        route = [
+            kipy_track("o1", "OTHER", (1, bend[1]), bend, layer=BL.BL_In1_Cu),
+            kipy_track("o2", "OTHER", bend, (7, 5.5), layer=BL.BL_In1_Cu),
+        ]
+        board.selection = [*board.selection, *route]
+        board.tracks = [*board.tracks, *route]
+        plane = kipy_filled_zone(
+            "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}, min_width=0.25
+        )
+        plane.clearance = nm(0.5)
+        board.zones = [plane]
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        connect.to(board)
+
+        run()
+
+        assert not [
+            line for line in log if line.startswith("WARNING") and "in place" in line
+        ]
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert created_vias(board) == [] and "v" not in board.deleted
+        assert {"o1", "o2"} <= set(board.deleted)
 
     def test_a_via_at_the_edge_of_a_fill_stays_naming_the_zone(
         self, connect: Connector, log: list[str]
@@ -2001,6 +2096,11 @@ def refilled_sig_fill() -> list[PolygonWithHoles]:
 
 ZONE_MIN_WIDTH = 0.2
 """The SIG zone's minimum fill width in the zone fixture, mm."""
+ZONE_MARGIN = ZONE_MIN_WIDTH / 2 + KICAD_MAX_ERROR
+"""How far inside its region the SIG zone keeps a via's centre, mm."""
+ZONE_REGION_TOP = 8 + 0.2
+"""The top of the SIG zone's region: its outline less the higher-priority
+OTHER zone over y < 8, grown by the zones' 0.2 mm clearance."""
 
 
 def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
@@ -2070,24 +2170,8 @@ class TestZoneFixture:
         assert "stays fixed" not in "".join(log)
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         (via,) = created_vias(board)
-        x, y = via.position.x / 1e6, via.position.y / 1e6
-        assert y < 9.5
-        filled = unary_union(
-            [
-                shapely.Polygon([(n.point.x / 1e6, n.point.y / 1e6) for n in p.outline])
-                for p in fill
-            ]
-        )
-        (column,) = [
-            piece
-            for piece in shapely.get_parts(
-                LineString([(x, 0), (x, 20)]).intersection(filled)
-            )
-            if piece.distance(Point(x, y)) < NM_ROUNDING
-        ]
-        _, edge, _, _ = column.bounds
-        margin = ViaZone("SIG", {}, ZONE_MIN_WIDTH).margin
-        assert y >= edge + margin - NM_ROUNDING
+        y = via.position.y / 1e6
+        assert ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING <= y < 9.5
 
     def test_a_stale_fill_keeps_the_via_out_of_a_newer_zone(
         self, connect: Connector, log: list[str]
@@ -2098,7 +2182,7 @@ class TestZoneFixture:
         assert "stays fixed" not in "".join(log)
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         (via,) = created_vias(board)
-        assert via.position.y / 1e6 >= 8 + 0.2 + 0.1 + KICAD_MAX_ERROR - NM_ROUNDING
+        assert via.position.y / 1e6 >= ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING
 
 
 def test_outcome_counts_the_vias_rejected_edge_moves() -> None:

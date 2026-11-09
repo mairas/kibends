@@ -693,6 +693,7 @@ def _via_inputs(
                 allow_via_in_pad=options.allow_via_in_pad,
                 zones=m.zones,
             ),
+            m.zones,
         )
         for m in movable
     ]
@@ -787,7 +788,9 @@ def _with_vias(
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE)
+    moving = MovingVias(
+        inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE
+    ).standing({k for k, r in enumerate(vias) if r.frozen})
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
