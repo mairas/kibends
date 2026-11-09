@@ -12,7 +12,7 @@ canonical layer naming are copied and trimmed from kistitch's snapshot.py
 
 import enum
 import math
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
@@ -24,7 +24,13 @@ from kipy import common_types
 from kipy.errors import ApiError
 from kipy.geometry import Box2, PolygonWithHoles, PolyLine, Vector2
 from kipy.proto.board.board_commands_pb2 import BoardOriginType
-from kipy.proto.board.board_types_pb2 import BoardLayer, PadType, ViaType, ZoneType
+from kipy.proto.board.board_types_pb2 import (
+    BoardLayer,
+    PadType,
+    RuleAreaSettings,
+    ViaType,
+    ZoneType,
+)
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.util.board_layer import (
@@ -197,8 +203,10 @@ class LayerSnapshot:
     tracks: tuple[Track, ...]
     vias: tuple[Via, ...]
     graphics: tuple[Graphic, ...]
-    keepouts: tuple[BaseGeometry, ...]
+    track_keepouts: tuple[BaseGeometry, ...]
     """Rule areas on the layer that keep out tracks."""
+    via_keepouts: tuple[BaseGeometry, ...]
+    """Rule areas on the layer that keep out vias."""
     edge_paths: tuple[tuple[Point2, ...], ...]
     clearances: Mapping[str, float]
     """Netclass clearance per net name, in mm."""
@@ -246,7 +254,8 @@ class BoardSnapshot:
     tracks: Mapping[str, tuple[Track, ...]]
     vias: tuple[Via, ...]
     graphics: Mapping[str, tuple[Graphic, ...]]
-    keepouts: Mapping[str, tuple[BaseGeometry, ...]]
+    track_keepouts: Mapping[str, tuple[BaseGeometry, ...]]
+    via_keepouts: Mapping[str, tuple[BaseGeometry, ...]]
     edge_paths: tuple[tuple[Point2, ...], ...]
     clearances: Mapping[str, float]
     """Netclass clearance of every net on the board, in mm."""
@@ -329,7 +338,14 @@ class BoardSnapshot:
             },
             vias=vias,
             graphics=graphics,
-            keepouts={layer: _read_track_keepouts(zones, layer) for layer in wanted},
+            track_keepouts={
+                layer: _read_keepouts(zones, layer, lambda r: r.keepout_tracks)
+                for layer in wanted
+            },
+            via_keepouts={
+                layer: _read_keepouts(zones, layer, lambda r: r.keepout_vias)
+                for layer in wanted
+            },
             edge_paths=tuple(tuple(path) for path in read_edge_paths(shapes)),
             clearances=clearances,
             default_clearance=default_clearance,
@@ -361,7 +377,8 @@ class BoardSnapshot:
             tracks=tuple(t for t in self.tracks[layer] if t.id not in replaced_ids),
             vias=tuple(v for v in self.vias if v.reaches(layer)),
             graphics=self.graphics[layer],
-            keepouts=self.keepouts[layer],
+            track_keepouts=self.track_keepouts[layer],
+            via_keepouts=self.via_keepouts[layer],
             edge_paths=self.edge_paths,
             clearances=self.clearances,
             default_clearance=self.default_clearance,
@@ -370,7 +387,8 @@ class BoardSnapshot:
         logger.debug(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
             f"{len(snap.vias)} vias, {len(snap.graphics)} copper graphics, "
-            f"{len(snap.keepouts)} track keepouts"
+            f"{len(snap.track_keepouts)} track keepouts, "
+            f"{len(snap.via_keepouts)} via keepouts"
         )
         return snap
 
@@ -752,14 +770,17 @@ def _read_copper_text(
     return graphics
 
 
-def _read_track_keepouts(
-    zones: Iterable[kbt.Zone], layer: str
+def _read_keepouts(
+    zones: Iterable[kbt.Zone],
+    layer: str,
+    keeps_out: Callable[[RuleAreaSettings], bool],
 ) -> tuple[BaseGeometry, ...]:
+    """The outlines of the rule areas on `layer` whose settings `keeps_out`."""
     return tuple(
         _polygon(PolygonWithHoles(p))
         for z in zones
         if z.type == ZoneType.ZT_RULE_AREA
-        and z.proto.rule_area_settings.keepout_tracks
+        and keeps_out(z.proto.rule_area_settings)
         and layer in {canonical_name(L) for L in z.layers}
         for p in z.proto.outline.polygons
     )

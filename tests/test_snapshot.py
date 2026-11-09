@@ -517,11 +517,34 @@ class TestKeepoutsAndEdge:
         zones = [
             kipy_zone(kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu, BL.BL_B_Cu], zone_id="k"),
             kipy_zone(kipy_rect(0, 0, 3, 3), [BL.BL_F_Cu], keepout_tracks=False),
+            kipy_zone(
+                kipy_rect(0, 0, 6, 6),
+                [BL.BL_F_Cu],
+                keepout_tracks=False,
+                keepout_vias=True,
+            ),
             kipy_zone(kipy_rect(0, 0, 4, 4), [BL.BL_B_Cu]),
             kipy_zone(kipy_rect(0, 0, 5, 5), [BL.BL_F_Cu], rule_area=False),
         ]
 
-        (keepout,) = snapshot(FakeBoard(zones=zones)).keepouts
+        (keepout,) = snapshot(FakeBoard(zones=zones)).track_keepouts
+
+        assert keepout.area == pytest.approx(4)
+
+    def test_via_keepouts_on_the_layer(self) -> None:
+        zones = [
+            kipy_zone(
+                kipy_rect(0, 0, 2, 2),
+                [BL.BL_F_Cu, BL.BL_B_Cu],
+                keepout_tracks=False,
+                keepout_vias=True,
+            ),
+            kipy_zone(kipy_rect(0, 0, 3, 3), [BL.BL_F_Cu]),
+            kipy_zone(kipy_rect(0, 0, 4, 4), [BL.BL_B_Cu], keepout_vias=True),
+            kipy_zone(kipy_rect(0, 0, 5, 5), [BL.BL_F_Cu], rule_area=False),
+        ]
+
+        (keepout,) = snapshot(FakeBoard(zones=zones)).via_keepouts
 
         assert keepout.area == pytest.approx(4)
 
@@ -708,7 +731,7 @@ class TestBoardSnapshot:
             "In1.Cu", frozenset()
         )
 
-        assert (inner.tracks, inner.graphics, inner.keepouts) == ((), (), ())
+        assert (inner.tracks, inner.graphics, inner.track_keepouts) == ((), (), ())
         assert [(p.id, p.shape) for p in inner.pads] == [("p", None)]
         assert inner.clearance("SIG") == pytest.approx(0.2)
 

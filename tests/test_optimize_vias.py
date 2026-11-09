@@ -8,6 +8,7 @@ import scenarios
 from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
 from shapely.geometry import LineString, Point, box
+from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
@@ -17,6 +18,7 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     CompositeField,
+    build_via_obstacles,
     zone_containment,
 )
 from kibends.optimize import (
@@ -27,7 +29,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.pair_blocks import PairInput, pair_block
-from kibends.snapshot import ViaZone
+from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, ViaInput
 
@@ -208,6 +210,58 @@ class TestInsideAZone:
 
     def test_a_via_whose_centre_starts_shallower_than_the_margin_stays(self) -> None:
         result = run(in_zone(scenarios.DETOUR_VIA[1] - MARGIN / 2))
+
+        (via,) = result.vias
+        assert via.frozen
+        assert via.position == scenarios.DETOUR_VIA
+
+
+def layer(name: str, via_keepouts: tuple[BaseGeometry, ...] = ()) -> LayerSnapshot:
+    return LayerSnapshot(
+        layer=name,
+        pads=(),
+        tracks=(),
+        vias=(),
+        graphics=(),
+        track_keepouts=(),
+        via_keepouts=via_keepouts,
+        edge_paths=(),
+        clearances={},
+        default_clearance=scenarios.PAIR_CLEARANCE,
+        diff_pair_gaps={},
+    )
+
+
+def below_keepout(top: float, on: str = "B.Cu") -> ViasScenario:
+    """The detour route with a rule area keeping out vias on layer `on`,
+    whose top edge is at y = `top`, across the straight route at y = 0."""
+    via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
+    keepout = box(3, -1, 7, top)
+    layers = [layer(name, (keepout,) if name == on else ()) for name in via.span]
+    return ViasScenario(
+        "via-keepout",
+        scenarios.route("N", scenarios.DETOUR_VIA),
+        (scenarios.joining(via, 0, build_via_obstacles(layers, via)),),
+    )
+
+
+class TestViaKeepout:
+    def test_a_pull_toward_it_stops_at_its_edge(self) -> None:
+        top = 1.5
+
+        result = run(below_keepout(top))
+
+        (via,) = result.vias
+        assert not via.frozen
+        # Held where its ring meets the keepout: the clearance hinge, which
+        # starts `standoff` from that edge, holds it against the pull of the
+        # route.
+        edge = top + scenarios.VIA_DIAMETER / 2
+        assert edge - INSIDE_TOLERANCE <= via.position[1]
+        assert via.position[1] <= edge + scenarios.PARAMS.standoff
+
+    def test_a_via_starting_inside_one_stays(self) -> None:
+        result = run(below_keepout(scenarios.DETOUR_VIA[1] + 0.1))
 
         (via,) = result.vias
         assert via.frozen

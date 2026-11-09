@@ -100,8 +100,10 @@ each other: chains of different nets keep their clearance to each other and
 repel each other like other copper, while chains of one net may touch but
 not overlap, except where they already connect. Only selected chains and
 vias move. A moving via keeps its clearances on every copper layer it spans,
-including layers no selected chain is on, and the chains it joins move with
-it.
+including layers no selected chain is on, stays out of rule areas that keep
+out vias on those layers, and the chains it joins move with it. A selected
+via that starts inside its clearance or inside such a rule area stays where
+it is.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on
@@ -236,7 +238,8 @@ violated by the smoothed tracks; only the DRC check below sees it. The
 API does not expose the edge and hole clearances either; they come from
 the options above. The optimizer does not see copper zones either, which
 reflow after an edit, except the fills that keep a moving via inside the
-zones it connects to, nor rule areas that keep out vias.
+zones it connects to. Rule areas that keep out tracks or vias are seen;
+their other keepouts, of pads, copper pours and footprints, are not.
 
 The DRC check covers what the optimizer cannot see. Before committing,
 kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch

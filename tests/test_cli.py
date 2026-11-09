@@ -2175,7 +2175,7 @@ class TestMovingVias:
         assert "push_commit" in board.calls
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         assert created_vias(board) == []
-        assert "WARNING Left via v at (3.000, 2.000) in place" in "".join(log)
+        assert "DEBUG Left via v at (3.000, 2.000) in place" in "".join(log)
         (report,) = reports
         (via,) = report.vias
         assert (via.id, via.start, via.frozen, via.moved) == ("v", VIA, True, False)
