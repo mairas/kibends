@@ -899,7 +899,7 @@ def build_via_obstacles(
     zones: Sequence[ViaZone] = (),
 ) -> ObstacleField:
     """Obstacles for `via` at any position, over every layer of `layers` it
-    spans, and the outside of the fill of each of `zones`
+    spans, and the outside of the region of each of `zones`
     (`zone_containment`).
 
     Rule areas keeping out vias on those layers keep its ring out, as track
@@ -953,21 +953,15 @@ def build_via_obstacles(
 
 
 def zone_containment(zone: ViaZone) -> list[Obstacles]:
-    """The outside of `zone`'s fill on each layer where it touches the via,
-    as an obstacle to the via's centre inflated as the board edge is, by
-    `ViaZone.margin`, so that the next refill connects the via again.
+    """The outside of `zone`'s region on each layer where its fill touches
+    the via, as an obstacle to the via's centre inflated as the board edge
+    is, by `ViaZone.margin`, so that the next refill connects the via again.
 
-    The fill, not the outline: the refill leaves out of the outline the
-    clearance around other nets' copper, higher-priority zones of other nets
-    and rule areas keeping out pour. The current fill already leaves them
-    out, and the snapshot cuts from a fill older than those zones what they
-    will take. A same-net via adds no fill where it stands, so the fill does
-    not depend on where the via is, except that it keeps an island it
-    connects, and the via moves only within that island. Where the copper
-    that moves with the via clears new room, the next refill may fill more
-    than the fill holds now, which only makes the containment cautious.
+    The region, not the current fill: the fill holds where other copper
+    stood at the last refill, which the run may move, and is a polygon with
+    a hole for every other net's item in the zone.
     """
-    return [Obstacles((), fill, zone.margin) for fill in zone.fills.values()]
+    return [Obstacles((), region, zone.margin) for region in zone.regions.values()]
 
 
 def moving_via_obstacles(

@@ -221,25 +221,25 @@ class TestViaField:
         assert list(clear) == [True, False]
 
 
-FILL = box(-2, -1, 2, 1)
-"""A zone fill 4 mm by 2 mm around the via at (0, 0)."""
+REGION = box(-2, -1, 2, 1)
+"""A zone region 4 mm by 2 mm around the via at (0, 0)."""
 
 
 def zone(
-    fills: Mapping[str, BaseGeometry] | None = None, min_width: float = 0.0
+    regions: Mapping[str, BaseGeometry] | None = None, min_width: float = 0.0
 ) -> ViaZone:
-    """A zone of the via's net filled with `FILL` on In1.Cu, or with
-    `fills` by layer."""
-    return ViaZone("plane", fills or {"In1.Cu": FILL}, min_width)
+    """A zone of the via's net with `REGION` on In1.Cu, or `regions` by
+    layer."""
+    return ViaZone("plane", regions or {"In1.Cu": REGION}, min_width, 0.0)
 
 
 MARGIN = zone().margin
-"""How far inside the fill of a zone without a minimum width a via's centre
-stays."""
+"""How far inside the region of a zone without a minimum width a via's
+centre stays."""
 
 
 class TestZoneContainment:
-    def test_keeps_the_centre_inside_the_fill_by_the_margin(self) -> None:
+    def test_keeps_the_centre_inside_the_region_by_the_margin(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
 
         field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])
@@ -256,9 +256,9 @@ class TestZoneContainment:
 
         assert distance[0] == pytest.approx(0.5 - zone(min_width=1.0).margin)
 
-    def test_keeps_the_centre_out_of_a_hole_in_the_fill(self) -> None:
+    def test_keeps_the_centre_out_of_a_cut_out_of_the_region(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
-        holed = FILL.difference(box(1, -0.5, 1.5, 0.5))
+        holed = REGION.difference(box(1, -0.5, 1.5, 0.5))
 
         field = build_via_obstacles(
             snaps, via_of(snaps), zones=[zone({"In1.Cu": holed})]
@@ -268,29 +268,29 @@ class TestZoneContainment:
         assert distance == pytest.approx([0.5 - MARGIN, -0.25 - MARGIN])
         assert gradient == pytest.approx(np.array([(-1, 0), (-1, 0)]))
 
-    def test_keeps_the_centre_inside_the_fill_on_each_layer(self) -> None:
+    def test_keeps_the_centre_inside_the_region_on_each_layer(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
         narrower = box(-2, -1, 2, 0.6)
 
         field = build_via_obstacles(
             snaps,
             via_of(snaps),
-            zones=[zone({"In1.Cu": FILL, "In2.Cu": narrower})],
+            zones=[zone({"In1.Cu": REGION, "In2.Cu": narrower})],
         )
         distance, _ = field.signed_distance(points((0, 0.5), (1.5, 0)))
 
         assert distance == pytest.approx([0.1 - MARGIN, 0.5 - MARGIN])
 
-    def test_keeps_the_centre_inside_the_fill_of_each_zone(self) -> None:
+    def test_keeps_the_centre_inside_the_region_of_each_zone(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
-        across = ViaZone("strip", {"B.Cu": box(-0.5, -3, 0.5, 3)}, 0.0)
+        across = ViaZone("strip", {"B.Cu": box(-0.5, -3, 0.5, 3)}, 0.0, 0.0)
 
         field = build_via_obstacles(snaps, via_of(snaps), zones=[zone(), across])
         distance, _ = field.signed_distance(points((0, 0.5), (0.4, 0)))
 
         assert distance == pytest.approx([0.5 - MARGIN, 0.1 - MARGIN])
 
-    def test_a_move_out_of_the_fill_is_not_clear(self) -> None:
+    def test_a_move_out_of_the_region_is_not_clear(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
 
         field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])

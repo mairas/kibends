@@ -145,16 +145,18 @@ class ViaZone:
     """A copper zone of a via's net whose fill touches the via."""
 
     name: str
-    fills: Mapping[str, BaseGeometry]
-    """By layer, for the layers on which its fill touches the via: the
-    pieces of its current fill that touch it, less what the next refill
-    will leave out of them (`_unfillable`)."""
+    regions: Mapping[str, BaseGeometry]
+    """By layer, for the layers on which its fill touches the via: where the
+    next refill may fill it, before it keeps clear of other nets' copper
+    (`_zone_region`)."""
     min_width: float
     """The zone's minimum fill width, mm."""
+    clearance: float
+    """The zone's own clearance to copper of other nets, mm."""
 
     @property
     def layers(self) -> tuple[str, ...]:
-        return tuple(self.fills)
+        return tuple(self.regions)
 
     @property
     def description(self) -> str:
@@ -269,7 +271,7 @@ class BoardSnapshot:
     copper zones left out."""
     via_zones: Mapping[str, tuple[ViaZone, ...]]
     """By via id, for the vias asked for: the copper zones of its net whose
-    fill touches it."""
+    fill touches it, with the regions it stays inside."""
 
     @classmethod
     def read(
@@ -891,10 +893,11 @@ def _via_contacts(
 
 def _via_zones(zones: Sequence[kbt.Zone], via: Via) -> tuple[ViaZone, ...]:
     """The copper zones of `via`'s net whose fill touches the via itself,
-    each fill cut where the next refill will not fill (`_unfillable`).
+    each with its region on the layers where it does (`_zone_region`).
 
-    A zone touching only a chain end the via carries is left out: the via
-    does not connect to it.
+    The fill only tells which zones the via connects to now. A zone touching
+    only a chain end the via carries is left out: the via does not connect
+    to it.
     """
     # A plane's fill is large and mostly far away; converting only the pieces
     # whose bounding box comes near the via keeps a selected GND via cheap.
@@ -905,35 +908,40 @@ def _via_zones(zones: Sequence[kbt.Zone], via: Via) -> tuple[ViaZone, ...]:
     for z in zones:
         if z.type != ZoneType.ZT_COPPER or z.net is None or z.net.name != via.net:
             continue
-        fills: dict[str, BaseGeometry] = {}
+        regions: dict[str, BaseGeometry] = {}
         for layer_id, pieces in sorted(z.filled_polygons.items()):
-            near = [
-                _polygon(piece)
+            if any(
+                _polygon(piece).distance(centre) <= via.diameter / 2
                 for piece in pieces
                 if _box_near(piece.bounding_box(), via.net, disc)
-            ]
-            touching = [p for p in near if p.distance(centre) <= via.diameter / 2]
-            if touching:
+            ):
                 layer = canonical_name(layer_id)
-                fills[layer] = unary_union(touching).difference(
-                    _unfillable(zones, z, via.net, layer)
-                )
-        if fills:
+                regions[layer] = _zone_region(zones, z, via.net, layer)
+        if regions:
             found.append(
-                ViaZone(z.name or z.id.value, fills, (z.min_thickness or 0) / NM_PER_MM)
+                ViaZone(
+                    z.name or z.id.value,
+                    regions,
+                    (z.min_thickness or 0) / NM_PER_MM,
+                    (z.clearance or 0) / NM_PER_MM,
+                )
             )
     return tuple(found)
 
 
-def _unfillable(
+def _zone_region(
     zones: Sequence[kbt.Zone], zone: kbt.Zone, net: str, layer: str
 ) -> BaseGeometry:
-    """Where the next refill leaves `zone`, of `net`, unfilled on `layer`,
-    whatever its current fill holds: the outline of each copper zone of
-    another net that fills first, having the higher priority, grown by the
-    larger of the two zones' clearances, and the outline of each rule area
-    keeping out copper pour. A fill older than those zones still covers
-    them."""
+    """Where the next refill may fill `zone`, of `net`, on `layer`, before it
+    keeps clear of other nets' copper: its outline, with its own cut-outs,
+    less the outline of each copper zone of another net that may fill
+    first, having the higher or the same priority (KiCad breaks a tie by
+    uuid), grown by the larger of the two zones' clearances, and the outline
+    of each rule area keeping out copper pour.
+
+    Outlines alone, which the run does not move: the current fill holds
+    where other copper stood at the last refill, and may predate those
+    zones."""
     own_clearance = (zone.clearance or 0) / NM_PER_MM
     areas: list[BaseGeometry] = []
     for z in zones:
@@ -946,11 +954,12 @@ def _unfillable(
         elif (
             z.type == ZoneType.ZT_COPPER
             and (z.net.name if z.net else "") != net
-            and z.priority > zone.priority
+            and z.priority >= zone.priority
         ):
             gap = max(own_clearance, (z.clearance or 0) / NM_PER_MM)
             areas.extend(o.buffer(gap) for o in outline)
-    return unary_union(areas)
+    own = [_polygon(PolygonWithHoles(p)) for p in zone.proto.outline.polygons]
+    return unary_union(own).difference(unary_union(areas))
 
 
 def _box_near(box: Box2, net: str, selected: Mapping[Via, Sequence[Disc]]) -> bool:

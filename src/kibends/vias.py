@@ -3,12 +3,14 @@
 A selected via moves only when it is an unlocked through via, every copper
 item touching it on any layer is the end of a selected chain or the fill
 of a zone of its net, no other copper touches those ends, and at least two
-such ends meet it. A via that moves stays inside the fill of every zone of
-its net that touches it, on each layer where it does, with its centre at
-least `ViaZone.margin` inside, so that the next refill reconnects it; one
-whose centre does not start that deep inside that fill, less what the
-refill will leave out (`snapshot._unfillable`), stays fixed, with a debug
-line naming the zone and layer. Every other selected via stays
+such ends meet it. A via that moves stays inside the region of every zone
+of its net whose fill touches it, on each layer where it does, with its
+centre at least `ViaZone.margin` inside, so that the next refill reconnects
+it; one whose centre does not start that deep inside that region stays
+fixed, with a debug line naming the zone and layer. One that starts closer
+to other nets' copper than the zone's clearance and the margin is left to
+the optimizer, which keeps it where it is as it keeps any via starting
+inside its clearance. Every other selected via stays
 fixed, with a debug line naming the reason, and pins the chains it touches
 like an unselected via.
 """
@@ -106,7 +108,7 @@ def movable_vias(
     it carries, as `BoardSnapshot.read` finds it from `carried_copper`, and
     `zones` the zones of its net whose fill touches each, which keep it
     from moving only when its centre does not start `ViaZone.margin` inside
-    their fill.
+    their regions.
     """
     chains_of: dict[str, set[int]] = defaultdict(set)
     for k, c in enumerate(chains):
@@ -150,14 +152,14 @@ def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
 
 
 def _edge_reason(via: Via, zones: Sequence[ViaZone]) -> str | None:
-    """Why `via` cannot stay inside the fill of `zones`: on some layer, it
-    does not start inside the fill by the zone's margin."""
+    """Why `via` cannot stay inside the regions of `zones`: on some layer,
+    it does not start inside the region by the zone's margin."""
     centre = Point(via.position)
     edges = [
         f"zone {zone.name} on {layer}"
         for zone in zones
-        for layer, fill in zone.fills.items()
-        if _depth(fill, centre) < zone.margin - INSIDE_TOLERANCE
+        for layer, region in zone.regions.items()
+        if _depth(region, centre) < zone.margin - INSIDE_TOLERANCE
     ]
     if not edges:
         return None

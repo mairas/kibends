@@ -169,7 +169,7 @@ def test_a_track_on_a_layer_without_chains_hems_the_via_in(
 
 
 def in_zone(bottom: float) -> ViasScenario:
-    """The detour route with its via in a zone of its net whose fill ends at
+    """The detour route with its via in a zone of its net whose region ends at
     y = `bottom`, short of the straight route at y = 0."""
     via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
     return ViasScenario(
@@ -180,22 +180,22 @@ def in_zone(bottom: float) -> ViasScenario:
 
 
 def plane(bottom: float) -> ViaZone:
-    """A zone with a minimum width of 0.2 mm whose fill ends at y = `bottom`."""
-    return ViaZone("plane", {"In1.Cu": box(3, bottom, 7, 5)}, 0.2)
+    """A zone with a minimum width of 0.2 mm whose region ends at y = `bottom`."""
+    return ViaZone("plane", {"In1.Cu": box(3, bottom, 7, 5)}, 0.2, 0.0)
 
 
 MARGIN = plane(0).margin
 
 
 class TestInsideAZone:
-    def test_the_via_moves_within_the_fill(self) -> None:
+    def test_the_via_moves_within_the_region(self) -> None:
         result = run(in_zone(-1.0))
 
         (via,) = result.vias
         assert not via.frozen
         assert via.position[1] == pytest.approx(0.0, abs=0.1)
 
-    def test_a_pull_toward_the_fill_s_edge_is_held_at_it(self) -> None:
+    def test_a_pull_toward_the_region_s_edge_is_held_at_it(self) -> None:
         bottom = 1.5
 
         result = run(in_zone(bottom))
