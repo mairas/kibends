@@ -1185,9 +1185,10 @@ https://github.com/mairas/kibends/issues/42."""
 ROUNDED = 0.05
 """mm: how far a rounded corner's track passes from where its corner was, at
 least."""
-LIKE_UNPINNED = 1e-4
+LIKE_UNPINNED = 2e-3
 """mm: how far a pair pinned only in its end pads may end up from the same
-pair unpinned, whose direction pin is the pads' pin."""
+pair unpinned, whose direction pin is the pads' pin. The two runs resample
+differently and stop where L-BFGS-B's ftol ends them, about 1 µm apart."""
 
 
 def pinned_chain(net: str, track: FloatArray, *xs: float) -> Chain:

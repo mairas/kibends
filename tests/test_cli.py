@@ -2750,8 +2750,13 @@ class TestPairs:
 
 FOLDED = [("USB_D+", 2.3), ("USB_D-", 2.7), ("USB_D+", 3.4)]
 """Net and x, mm, of a same-net pad over one track of the pair's first
-straight that once folded a section 180° in a trial step of the first burst
-at default settings: https://github.com/mairas/kibends/issues/50."""
+straight that once folded a section 180° in a trial step of the first burst:
+https://github.com/mairas/kibends/issues/50. The fold needs the settings it
+was found at, `FOLDING`, not the defaults."""
+
+FOLDING = OptimizerSettings(burst_maxiter=100, lbfgs_ftol=1e-15, max_iterations=1)
+"""The defaults when the fold was found, for one outer iteration, as the fold
+came in the first burst."""
 
 
 @pytest.mark.parametrize(("net", "x"), FOLDED)
@@ -2759,8 +2764,7 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, net: str, x: float
 ) -> None:
     results: list[RunResult] = []
-    # One outer iteration, as the fold came in the first burst.
-    first_burst = at(replace(OptimizerSettings(), max_iterations=1))
+    first_burst = at(FOLDING)
 
     def spy(*args: object, **kwargs: object) -> RunResult:
         result = first_burst(*args, **kwargs)
@@ -2816,9 +2820,7 @@ def pair_tracks_at(
 @pytest.mark.parametrize(
     "settings",
     [
-        # Slow: about 2 s at the default spacing, which neither shorter
-        # bursts nor a spacing up to 0.2 mm bring under 1 s.
-        pytest.param(DEFAULT_SETTINGS, id="default", marks=pytest.mark.slow),
+        pytest.param(DEFAULT_SETTINGS, id="default"),
         pytest.param(COARSE, id="coarse"),
     ],
 )
@@ -3267,9 +3269,9 @@ PAIRED_BOARDS: dict[str, Callable[[], CommitBoard]] = {
     ("layout", "settings"),
     [
         *(pytest.param(name, COARSE, id=f"{name}-coarse") for name in PAIRED_BOARDS),
-        # The bus at the default spacing takes about 9 s; the coarse bus
-        # and the other layouts at the default spacing cover it. Those take
-        # 1 to 2 s each, slow too.
+        # The bus at the default settings takes about 12 s; the coarse bus
+        # and the other layouts at the default settings cover it. Those take
+        # 0.6 to 3 s each, slow too.
         *(
             pytest.param(
                 name, DEFAULT_SETTINGS, id=f"{name}-default", marks=pytest.mark.slow
