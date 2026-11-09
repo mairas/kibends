@@ -41,7 +41,6 @@ from kibends.neighbours import (
     chain_field,
     neighbour_fields,
     same_layer_neighbours,
-    with_moved_ends,
 )
 from kibends.obstacles import (
     HOLE_TO_HOLE,
@@ -883,7 +882,7 @@ def _whole_results(
         ]
         field = chain_field(
             inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals, reach, originals[k]),
+            neighbour_fields(inputs, k, neighbours[k], originals, reach),
         )
         results.append(
             _WholeResult(
@@ -962,10 +961,8 @@ def _chain_reports(
         zip(chains, inputs, results, changes, strict=True)
     ):
         given_points = given.centreline.points
-        own = with_moved_ends(given_points, result.polyline)
         field = chain_field(
-            given.field,
-            neighbour_fields(inputs, i, neighbours[i], simplified, reach, own),
+            given.field, neighbour_fields(inputs, i, neighbours[i], simplified, reach)
         )
         # An unchanged chain stays on the board as it is.
         after = simplified[i] if changed else given_points

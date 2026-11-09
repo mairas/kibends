@@ -186,6 +186,60 @@ class TestEnergy:
         for (_, gradient), together in zip(apart, gradients, strict=True):
             assert not np.allclose(gradient, together)
 
+    def mixed(self) -> tuple[ChainInput, ...]:
+        """`chains` with a chain of A's net crossing A twice and reaching
+        into B's clearance, so that it sees B and not A."""
+        crossing = selected(
+            "A2", "A", FreeSpace(), (0.5, -0.5), (1.5, 0.7), (2.5, -0.5)
+        )
+        return (*self.chains(), crossing)
+
+    def test_chains_of_one_net_add_nothing_to_each_other(self) -> None:
+        a, _, crossing = self.mixed()
+        chains = (a, crossing)
+        polylines = [c.centreline.points for c in chains]
+        masks = [c.fixed for c in chains]
+
+        value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
+
+        for chain, points, mask, gradient in zip(
+            chains, polylines, masks, gradients, strict=True
+        ):
+            alone, alone_gradient = layer_energy(
+                [chain], [points], [mask], self.params(), 0.01
+            )
+            value -= alone
+            np.testing.assert_allclose(gradient, alone_gradient[0], atol=1e-12)
+        assert value == pytest.approx(0.0, abs=1e-12)
+
+    def test_gradient_with_chains_of_one_net_and_another(self) -> None:
+        chains = self.mixed()
+        polylines = [c.centreline.points.copy() for c in chains]
+        masks = [c.fixed for c in chains]
+        params = self.params()
+        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        alone = sum(
+            layer_energy([c], [p], [m], params, 0.01)[0]
+            for c, p, m in zip(chains, polylines, masks, strict=True)
+        )
+        # B repels both chains of net A.
+        assert value > alone
+        step = 1e-7
+
+        for i in range(len(polylines)):
+            for j in np.flatnonzero(~masks[i]):
+                for axis in (0, 1):
+                    shifted = [p.copy() for p in polylines]
+                    shifted[i][j, axis] += step
+                    up = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    shifted[i][j, axis] -= 2 * step
+                    down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    numeric = (up - down) / (2 * step)
+                    assert gradients[i][j, axis] == pytest.approx(
+                        numeric, rel=1e-5, abs=1e-7
+                    )
+
 
 def test_two_bumped_chains_shorten_and_stay_apart() -> None:
     scenario = bumps()
@@ -477,13 +531,35 @@ def test_an_optimised_layout_converges_again_almost_unchanged() -> None:
         )
 
 
-def test_chains_of_one_net_are_pulled_together_without_overlapping() -> None:
-    result = run(scenarios.same_net_wrap())
+def test_chains_of_one_net_closer_than_their_range_do_not_push_apart() -> None:
+    # Both wrap the disc as each would alone, so they overlap over its top.
+    scenario = scenarios.same_net_wrap()
 
-    inner, outer = (c.polyline for c in result.chains)
+    result = run(scenario)
+
     assert result.termination is Termination.CONVERGED
-    assert gap(inner, outer) >= scenarios.SAME_NET_INFLATION - INSIDE_TOLERANCE
-    assert gap(inner, outer) < scenarios.SAME_NET_INFLATION + 0.05
+    for chain, given in zip(result.chains, scenario.chains, strict=True):
+        (alone,) = optimize_chains([given], scenario.params, COARSE).chains
+        assert (
+            LineString(chain.polyline).hausdorff_distance(LineString(alone.polyline))
+            < 10 * COARSE.settled_change
+        )
+    inner, outer = (c.polyline for c in result.chains)
+    assert gap(inner, outer) < scenarios.PAIR_WIDTH / 2
+
+
+def test_a_chain_passes_through_a_chain_of_its_net() -> None:
+    # Of another net, the arch would drape over the bar.
+    free = FreeSpace()
+    arch = selected("arch", "N", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
+    bar = selected("bar", "N", free, (3.0, 1.0), (7.0, 1.0))
+
+    result = optimize_chains([arch, bar], scenarios.PARAMS, COARSE)
+
+    assert result.termination is Termination.CONVERGED
+    straightened = result.chains[0].polyline
+    assert length(straightened) < 10.0 + 0.01
+    assert abs(y_at(straightened, 5.0)) < 0.01
 
 
 def test_chains_of_one_net_on_different_layers_are_taken() -> None:
@@ -972,30 +1048,39 @@ class TestJunctionEnergy:
     def test_gradient_of_the_shared_junction_matches_finite_differences(
         self,
     ) -> None:
-        # The middle branch swings back toward the first beyond what each
-        # leaves out of the other near the junction, so they repel there.
-        chains = pinned_at_junctions(
-            [
-                branch("A", (0.0, 0.0), (3.0, 0.0), (6.0, 0.0)),
-                branch("B", (0.0, 0.0), (1.5, 1.5), (3.0, 0.55), (4.5, 1.5)),
-                branch("C", (0.0, 0.0), (0.0, -3.0), (0.0, -6.0)),
-            ]
-        )
+        # The middle branch swings back toward the first, which it does not
+        # see, and passes a chain of another net, which it does.
+        branches = [
+            branch("A", (0.0, 0.0), (3.0, 0.0), (6.0, 0.0)),
+            branch("B", (0.0, 0.0), (1.5, 1.5), (3.0, 0.55), (4.5, 1.5)),
+            branch("C", (0.0, 0.0), (0.0, -3.0), (0.0, -6.0)),
+        ]
+        other = selected("D", "M", FreeSpace(), (1.5, 2.2), (3.0, 1.2), (4.5, 2.2))
+        chains = [*branches, other]
         polylines = [c.centreline.points.copy() for c in chains]
-        masks = [np.arange(len(p)) == len(p) - 1 for p in polylines]
+        masks = [np.arange(len(p)) == len(p) - 1 for p in polylines[:3]]
+        masks.append(other.fixed)
         params = self.params()
         seen = seen_parts(chains, polylines, obstacle_reach(params))
         value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
-        apart = sum(
-            layer_energy([c], [p], [m], params, 0.01)[0]
-            for c, p, m in zip(chains, polylines, masks, strict=True)
-        )
-        assert value > apart
+
+        def apart(members: Sequence[ChainInput]) -> float:
+            """The members, the first of `chains`, each alone."""
+            n = len(members)
+            return sum(
+                layer_energy([c], [p], [m], params, 0.01)[0]
+                for c, p, m in zip(members, polylines[:n], masks[:n], strict=True)
+            )
+
+        assert layer_energy(branches, polylines[:3], masks[:3], params, 0.01)[
+            0
+        ] == pytest.approx(apart(branches), rel=1e-12)
+        assert value > apart(chains)
         step = 1e-7
 
         def moved(axis: int, by: float) -> float:
             shifted = [p.copy() for p in polylines]
-            for p in shifted:
+            for p in shifted[:3]:
                 p[0, axis] += by
             return layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
 

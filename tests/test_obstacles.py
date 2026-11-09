@@ -189,6 +189,17 @@ class TestObstacleSet:
             "hole of pad np": pytest.approx(0.5 + HOLE_CLEARANCE + HALF)
         }
 
+    def test_same_net_pads_and_tracks_beside_the_chain_are_no_obstacle(self) -> None:
+        fake = FakeBoard(
+            pads=[kipy_pad("beside", NET, 2, 0.4)],
+            tracks=[
+                kipy_track("sel", NET, (0, 0), (5, 0)),
+                kipy_track("locked", NET, (0, 0.3), (5, 0.3)),
+            ],
+        )
+
+        assert by_description(obstacles_of(fake, frozenset({"sel"}))) == {}
+
     def test_other_net_tracks_and_vias_but_not_same_net_ones(self) -> None:
         fake = FakeBoard(
             tracks=[
@@ -660,18 +671,18 @@ class TestChainObstacles:
         assert d[0] == pytest.approx(0.8 - OTHER_NET_INFLATION, abs=NM_TOLERANCE)
 
     def test_a_long_chain_has_no_gap_between_its_pieces(self) -> None:
-        # At 1 mm spacing a missing edge leaves its midpoint 0.5 mm from the
-        # nearest vertex, beyond the same-net band of both half widths.
-        xs = np.arange(41.0)
+        # At 2 mm spacing a missing edge leaves its midpoint 1 mm from the
+        # nearest vertex, beyond the band.
+        xs = np.arange(0.0, 82.0, 2.0)
         long_chain = ChainCentreline(
             "long",
-            NET,
+            OTHER_NET,
             OTHER_WIDTH,
             OTHER_CLEARANCE,
             np.column_stack([xs, np.zeros_like(xs)]),
         )
-        midpoints = xs[:-1] + 0.5
-        height = PAIR_HALF_WIDTHS / 2
+        midpoints = xs[:-1] + 1.0
+        height = OTHER_NET_INFLATION / 2
         field = neighbours(long_chain)
 
         d, _ = field.signed_distance(
@@ -683,7 +694,7 @@ class TestChainObstacles:
         )
 
         assert d == pytest.approx(
-            np.full(len(midpoints), height - PAIR_HALF_WIDTHS), abs=NM_TOLERANCE
+            np.full(len(midpoints), height - OTHER_NET_INFLATION), abs=NM_TOLERANCE
         )
         assert not clear.any()
 
@@ -694,17 +705,14 @@ class TestChainObstacles:
 
         assert d[0] == pytest.approx(1 - 0.5 - PAIR_HALF_WIDTHS, abs=NM_TOLERANCE)
 
-    def test_a_same_net_chain_is_inflated_by_both_half_widths_only(self) -> None:
-        between = PAIR_HALF_WIDTHS + OTHER_CLEARANCE / 2
-        probe = points((5, between))
+    def test_a_same_net_chain_is_no_obstacle(self) -> None:
         same = neighbours(other_chain(NET, (0, 0), (10, 0)))
 
-        d_same, _ = same.signed_distance(probe)
-        d_other, _ = neighbours(BELOW).signed_distance(probe)
+        d, _ = same.signed_distance(points((5, 0), (5, 1)))
+        clear = same.segments_clear(points((5, -1)), points((5, 1)))
 
-        assert d_same[0] == pytest.approx(between - PAIR_HALF_WIDTHS, abs=NM_TOLERANCE)
-        assert d_same[0] > 0
-        assert d_other[0] < 0
+        assert np.isinf(d).all()
+        assert clear.all()
 
     def test_gradient_points_away_from_the_nearest_chain(self) -> None:
         diagonal = neighbours(other_chain(OTHER_NET, (0, 0), (4, 4)))
@@ -806,11 +814,10 @@ def shapely_chain_field(
             Obstacle(
                 o.description,
                 LineString(o.points),
-                width / 2
-                + o.width / 2
-                + (max(clearance, o.clearance) if o.net != net else 0.0),
+                width / 2 + o.width / 2 + max(clearance, o.clearance),
             )
             for o in others
+            if o.net != net
         ]
     )
 

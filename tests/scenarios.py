@@ -165,8 +165,6 @@ PAIR_WIDTH = 0.2
 PAIR_CLEARANCE = 0.2
 PAIR_INFLATION = PAIR_WIDTH + PAIR_CLEARANCE
 """Distance two chains of different nets keep between their centrelines."""
-SAME_NET_INFLATION = PAIR_WIDTH
-"""Distance two chains of one net keep: they may touch but not overlap."""
 
 
 @dataclass(frozen=True)

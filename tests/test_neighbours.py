@@ -22,12 +22,16 @@ from kibends.obstacles import ChainCentreline
 
 WIDTH = 0.2
 REACH = 0.1
-CLEAR = WIDTH + REACH
+MARGIN = 0.2
+"""The clearance a section keeps from the rest of a chain of its net."""
+CLEAR = WIDTH + REACH + MARGIN
 LEG = 5.0
 ANGLE = math.radians(30.0)
 
 
 def chain(name: str, *xy: tuple[float, float]) -> ChainInput:
+    """A chain of net N, standing for a section's centreline as a chain of
+    that net (`PairBlock.as_net`) or for a chain of that net it sees."""
     points = np.array(xy)
     fixed = np.zeros(len(points), dtype=bool)
     fixed[[0, -1]] = True
@@ -37,7 +41,9 @@ def chain(name: str, *xy: tuple[float, float]) -> ChainInput:
 
 
 def kept_start(own: ChainInput, other: ChainInput) -> FloatArray:
-    (part,) = neighbour_centrelines(own, other, other.centreline.points, REACH)
+    (part,) = neighbour_centrelines(
+        own, other, other.centreline.points, REACH, margin=MARGIN
+    )
     return part.points[0]
 
 
@@ -66,8 +72,12 @@ def test_a_stub_ending_beside_a_chain_is_kept_from_where_it_clears() -> None:
     bar.fixed[1] = True
     stub = chain("stub", (2.0, -3.0), (2.0, -0.1))
 
-    (part,) = neighbour_centrelines(bar, stub, stub.centreline.points, REACH)
-    left, right = neighbour_centrelines(stub, bar, bar.centreline.points, REACH)
+    (part,) = neighbour_centrelines(
+        bar, stub, stub.centreline.points, REACH, margin=MARGIN
+    )
+    left, right = neighbour_centrelines(
+        stub, bar, bar.centreline.points, REACH, margin=MARGIN
+    )
 
     assert part.points[-1] == pytest.approx((2.0, -CLEAR))
     assert math.dist(left.points[-1], (2.0, -0.1)) == pytest.approx(CLEAR)
@@ -78,7 +88,9 @@ def test_a_neighbour_departing_alongside_is_left_out_on_that_side() -> None:
     own = chain("own", (0.0, 0.0), (2 * LEG, 0.0))
     alongside = chain("alongside", (0.0, 0.1), (LEG, 0.1))
 
-    parts = neighbour_centrelines(own, alongside, alongside.centreline.points, REACH)
+    parts = neighbour_centrelines(
+        own, alongside, alongside.centreline.points, REACH, margin=MARGIN
+    )
 
     assert parts == []
 
@@ -89,7 +101,9 @@ def test_a_neighbour_touched_twice_is_kept_around_both_touches() -> None:
     tips = ((2.0, -0.1), (4.0, -0.1))
     arch = chain("arch", tips[0], (2.0, -3.0), (4.0, -3.0), tips[1])
 
-    parts = neighbour_centrelines(arch, bar, bar.centreline.points, REACH)
+    parts = neighbour_centrelines(
+        arch, bar, bar.centreline.points, REACH, margin=MARGIN
+    )
 
     assert len(parts) == 3
     first, middle, last = (p.points for p in parts)
@@ -97,28 +111,6 @@ def test_a_neighbour_touched_twice_is_kept_around_both_touches() -> None:
     assert math.dist(middle[0], tips[0]) == pytest.approx(CLEAR)
     assert math.dist(middle[-1], tips[1]) == pytest.approx(CLEAR)
     assert math.dist(last[0], tips[1]) == pytest.approx(CLEAR)
-
-
-def test_a_junction_carried_away_is_found_at_the_chains_ends() -> None:
-    # Both chains end at a via that started at (1, 0.2) and moved to
-    # (5, 3); the first chain now runs up past where the junction was and
-    # across to it, so one of its middle vertices is nearer that spot than
-    # its end, and leaves it in another direction.
-    junction = np.array([5.0, 3.0])
-    own = chain("own", (1.0, 0.0), (1.0, 0.2))
-    other = chain("other", (1.0, 0.2), (10.0, 0.0))
-    own_now = np.concatenate(
-        [
-            np.linspace((1.0, 0.0), (1.0, 3.0), 7)[:-1],
-            np.linspace((1.0, 3.0), junction, 9),
-        ]
-    )
-    other_now = np.linspace(junction, (10.0, 0.0), 11)
-
-    parts = neighbour_centrelines(own, other, other_now, REACH, own_now)
-
-    kept = np.concatenate([part.points for part in parts])
-    assert np.linalg.norm(kept - junction, axis=1).min() >= CLEAR - 1e-9
 
 
 def _reference_heading(points: FloatArray, length: float) -> FloatArray:
@@ -147,8 +139,8 @@ def reference_kept_spans(
     other: ChainInput,
     points: FloatArray,
     reach: float,
-    own_points: FloatArray | None = None,
-    margin: float = 0.0,
+    own_points: FloatArray | None,
+    margin: float,
 ) -> list[tuple[float, float]] | None:
     """`kept_spans` as first written: every touch pair on its own, each
     heading from the chain's whole arc length.
@@ -156,8 +148,6 @@ def reference_kept_spans(
     It pins the refactor that finds each pin's departures once by binary
     search; the next intended change to the spans replaces or removes it."""
     me, them = own.centreline, other.centreline
-    if them.net != me.net:
-        return None
     pinned_mine = me.points[own.fixed]
     pinned_theirs = them.points[other.fixed]
     overlap = (me.width + them.width) / 2 + TOUCH_TOLERANCE
@@ -303,7 +293,7 @@ def _assert_same_spans(
     ("own", "other"),
     [pytest.param(own, other, id=name) for name, own, other in _same_net_pairs()],
 )
-@pytest.mark.parametrize("margin", [0.0, 0.2])
+@pytest.mark.parametrize("margin", [0.1, 0.2])
 def test_kept_spans_match_the_reference(
     own: ChainInput, other: ChainInput, margin: float
 ) -> None:
@@ -313,14 +303,14 @@ def test_kept_spans_match_the_reference(
     resampled = (_resampled(own, rng), _resampled(other, rng))
     for own_points, points in (starts, moved, resampled):
         _assert_same_spans(
-            kept_spans(own, other, points, REACH, own_points, margin),
+            kept_spans(own, other, points, REACH, own_points, margin=margin),
             reference_kept_spans(own, other, points, REACH, own_points, margin),
         )
 
 
 def test_the_clustered_pair_is_kept_on_both_sides_of_the_crossing() -> None:
     own, other = _clustered_pair()
-    spans = kept_spans(own, other, other.centreline.points, REACH)
+    spans = kept_spans(own, other, other.centreline.points, REACH, margin=MARGIN)
     assert spans is not None
     assert len(spans) == 2
 
@@ -329,7 +319,7 @@ def test_every_scenario_pair_of_one_net_is_compared() -> None:
     assert len(_scenario_pairs()) >= 38
 
 
-@pytest.mark.parametrize("margin", [0.0, 0.2])
+@pytest.mark.parametrize("margin", [0.1, 0.2])
 def test_the_end_pins_lie_within_clear_of_both_ends(margin: float) -> None:
     # Departures from them reach past the bar's start backwards and past
     # its end forwards, so both ends of the heading's range are clamped.

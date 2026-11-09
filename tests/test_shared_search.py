@@ -1,6 +1,11 @@
 """The energy and the vias' free distances found through search trees
 shared between members, against a reference that builds a field of its own
-for each member and each via.
+for each member and each via. The reference decides itself what each
+member and each via sees, by net and layer, with copper of one net left
+out, so that copper of one net interacting in what the members and the
+moving vias see of each other fails it; only the distances, the vias'
+rings and a section's leave-out near its fan-outs (`kept_spans`, which
+test_neighbours checks) come from the code under test.
 
 Where two pieces answer a point at exactly the same distance, which one
 does depends on the order a tree lists them in, so the gradient may go to
@@ -8,20 +13,21 @@ either: the states here have no such point. A grid of routes whose vias
 stand in line has them at the start, where a member's end lies midway
 between the vias above and below it."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
 import numpy as np
 import pytest
 import scenarios
 from distance_fields import FloatArray, FreeSpace
-from scenarios import ChainsScenario, PairsScenario, ViasScenario
+from scenarios import ChainsScenario, PairsScenario, ViasScenario, selected
 
 import kibends.optimize as optimize_module
 from kibends.bursts import DEFAULT_SETTINGS
 from kibends.energy import (
     BoolArray,
     EnergyParams,
+    IntArray,
     bend_radius_energy,
     edge_integral,
     obstacle_integrand,
@@ -29,6 +35,7 @@ from kibends.energy import (
     quadrature_points,
     shape_energy,
 )
+from kibends.neighbours import ChainInput, kept_spans
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainField
 from kibends.optimize import (
     LIST_SKIN,
@@ -71,6 +78,8 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     scenarios.via_hemmed,
     scenarios.via_on_one_layer,
     scenarios.via_pair,
+    lambda: _pair_tent_over("P"),
+    lambda: _pair_tent_over("Q"),
     lambda: scenarios.via_over_bowed("N"),
     lambda: scenarios.via_over_bowed("P"),
     lambda: scenarios.via_over_pinned("N"),
@@ -80,7 +89,9 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     lambda: scenarios.via_grid(3, 3),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-7]),
+    *(make.__name__ for make in SCENARIOS[:-9]),
+    "pair_tent_over_its_own_net",
+    "pair_tent_over_another_net",
     "via_over_bowed_same_net",
     "via_over_bowed_other_net",
     "via_over_pinned_same_net",
@@ -89,6 +100,14 @@ IDS = [
     "via_slack",
     "via_grid",
 ]
+
+
+def _pair_tent_over(net: str) -> PairsScenario:
+    """`scenarios.pair_tent` with a bar of `net` under the section's tracks,
+    near enough for the two to see each other, away from its fan-outs."""
+    bar = selected("bar", net, FreeSpace(), (4.0, 2.2), (5.0, 2.4), (6.0, 2.2))
+    return replace(scenarios.pair_tent(), chains=(bar,))
+
 
 JITTER = 0.03
 """How far each variable moves from the start, at most, mm: past the
@@ -119,6 +138,105 @@ def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> Flo
     squared = np.einsum("ij,ij->i", along, along)
     projection = np.einsum("ij,ij->i", points - starts, along)
     return np.clip(projection / np.where(squared > 0.0, squared, 1.0), 0.0, 1.0)
+
+
+def _covered(
+    points: FloatArray, spans: Sequence[tuple[float, float]] | None
+) -> tuple[IntArray, FloatArray, FloatArray]:
+    """Each edge of `points` and where along it, from 0 to 1, the arc-length
+    `spans` cover it, by default all of it."""
+    count = len(points) - 1
+    if spans is None:
+        return np.arange(count, dtype=np.intp), np.zeros(count), np.ones(count)
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(points, axis=0).T))])
+    edges: list[int] = []
+    starts: list[float] = []
+    ends: list[float] = []
+    for left, right in spans:
+        for e in range(count):
+            a, b = float(arc[e]), float(arc[e + 1])
+            if a < right and b > left:
+                span = b - a if b > a else 1.0
+                edges.append(e)
+                starts.append(min(max((left - a) / span, 0.0), 1.0))
+                ends.append(min(max((right - a) / span, 0.0), 1.0))
+    return (
+        np.array(edges, dtype=np.intp),
+        np.array(starts, dtype=float),
+        np.array(ends, dtype=float),
+    )
+
+
+def _reference_parts(
+    problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+    polylines: Sequence[FloatArray],
+) -> list[SeenParts]:
+    """What each member sees, as copper of one net does not interact: every
+    track of another net on its layer, inflated by both half widths and the
+    larger clearance, and every via spanning its layer of another net,
+    inflated by its ring. A chain sees each track whole; a section sees as
+    its centreline of the pair's outer extent, and leaves a track of either
+    of its nets out near where it touches it (`kept_spans`)."""
+    members = problem.members
+    lines = [shown(m, p) for m, p in zip(members, polylines, strict=True)]
+    lengths = [len(points) for parts in lines for _, points in parts]
+    firsts = np.cumsum([0, *lengths])
+    vias_from = int(firsts[-1])
+    parts: list[SeenParts] = []
+    for i, member in enumerate(members):
+        own = member.facing if isinstance(member, PairBlock) else member
+        nets: Mapping[str, ChainInput] = (
+            member.as_net if isinstance(member, PairBlock) else {}
+        )
+        me = own.centreline
+        vertex = [np.empty(0, dtype=np.intp)]
+        start = [np.empty(0)]
+        end = [np.empty(0)]
+        inflation = [np.empty(0)]
+        track = 0
+        for j, tracks in enumerate(lines):
+            for other, points in tracks:
+                them = other.centreline
+                if j != i and other.layer == own.layer and them.net != me.net:
+                    margin = max(me.clearance, them.clearance)
+                    viewer = nets.get(them.net)
+                    spans = (
+                        None
+                        if viewer is None
+                        else kept_spans(
+                            viewer,
+                            other,
+                            points,
+                            problem.reach,
+                            polylines[i],
+                            margin=margin,
+                        )
+                    )
+                    edge, a, b = _covered(points, spans)
+                    vertex.append(firsts[track] + edge)
+                    start.append(a)
+                    end.append(b)
+                    inflation.append(
+                        np.full(len(edge), (me.width + them.width) / 2 + margin)
+                    )
+                track += 1
+        body = problem.bodies[i]
+        for k, via in enumerate(problem.vias):
+            given = via.given.via
+            if given.reaches(body.layer) and given.net != body.centreline.net:
+                vertex.append(np.array([vias_from + 2 * k]))
+                start.append(np.zeros(1))
+                end.append(np.ones(1))
+                inflation.append(np.array([via.rings[i]]))
+        parts.append(
+            SeenParts(
+                np.concatenate(vertex),
+                np.concatenate(start),
+                np.concatenate(end),
+                np.concatenate(inflation),
+            )
+        )
+    return parts
 
 
 def _reference_members(
@@ -208,10 +326,12 @@ def _reference_view(
     ends = [np.empty((0, 2))]
     inflations = [np.empty(0)]
     owner: list[tuple[int, int]] = []
-    for j, ring in via.rings.items():
-        if problem.bodies[j].centreline.net == via.given.via.net:
+    for j, body in enumerate(problem.bodies):
+        given = via.given.via
+        if not given.reaches(body.layer) or body.centreline.net == given.net:
             # Copper of one net does not interact.
             continue
+        ring = via.rings[j]
         points = polylines[j]
         starts.append(points[:-1])
         ends.append(points[1:])
@@ -300,7 +420,8 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
     """At the start, moved within the skin and moved past it, the members'
     energy and the vias' own, searched and through a neighbour list, and
     the vias' free distances are what fields built for each member and via
-    alone give."""
+    alone give, with copper of one net left out of what a chain or a via
+    sees."""
     scenario = make()
     params = (
         scenario.params
@@ -327,7 +448,11 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 seen,
                 positions,
             )
-            expected = _reference_members(*arguments)
+            expected = _reference_members(
+                *arguments[:5],
+                _reference_parts(problem, layout.starts),
+                positions,
+            )
             _assert_same(members_energy(*arguments), expected)
             _assert_same(members_energy(*arguments, listed), expected)
             _assert_same(

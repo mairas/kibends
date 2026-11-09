@@ -668,16 +668,16 @@ def chain_obstacles(
     made of other chains' centrelines.
 
     Another net's chain is kept at the larger of both clearances. A chain of
-    the same net may touch this one but not overlap it, since DRC does not
-    flag same-net overlap and both would otherwise be pulled onto each other.
+    the same net is no obstacle: copper of one net may come close, overlap
+    or cross.
     """
     half_width = width / 2
     return _chains_field(
         (
             o,
-            half_width
-            + o.width / 2
-            + (max(clearance, o.clearance) if o.net != net else 0.0),
+            None
+            if o.net == net
+            else half_width + o.width / 2 + max(clearance, o.clearance),
         )
         for o in others
     )

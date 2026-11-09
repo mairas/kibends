@@ -5,7 +5,8 @@ chord tolerance alone would cut into the clearance at every wrap; each merged
 segment must also pass the exact edge check.
 
 Several chains are simplified in turn, each against its own field plus the
-other chains on its layer at their latest shapes. A coupled section of a
+other chains on its layer at their latest shapes, those of its net left
+out, as the optimizer leaves them out. A coupled section of a
 differential pair is simplified as its centreline, as the optimizer moved
 it, and its two tracks follow it as they do in the optimizer.
 """
@@ -28,7 +29,6 @@ from kibends.neighbours import (
     chain_field,
     neighbour_field,
     same_layer_neighbours,
-    with_moved_ends,
 )
 from kibends.obstacles import CompositeField
 from kibends.optimize import RunResult
@@ -60,7 +60,7 @@ def simplify_chains(
     sections: Mapping[int, PairBlock] | None = None,
 ) -> list[FloatArray]:
     """Simplify the optimised chains of `run`, each against its field and the
-    other chains on its layer at their latest shapes.
+    other chains of other nets on its layer at their latest shapes.
 
     Each of `sections` stands in for the chain of its index, its polyline
     a coupled section's centreline; sections go first, then the chains in
@@ -78,11 +78,11 @@ def simplify_chains(
     clear of the final neighbours; a chain whose merged edges do not is
     logged as an error and left as optimised.
 
-    Neighbours of one net are trimmed near every touch by the reach of
-    `params`, measured against each chain's starting polyline with its ends
-    where a moving via carried them, where the optimizer measures against
-    the chain's current one. That is deliberate: trimming against the
-    optimised polyline left more segments at acute junctions when tried
+    A section's own nets' chains are trimmed near the fan-outs it touches
+    by the reach of `params`, measured against its starting centreline,
+    where the optimizer measures against its current one. That is
+    deliberate: trimming against the optimised polyline left more segments
+    at acute junctions when tried
     (https://github.com/mairas/kibends/issues/17).
     """
     if len(run.chains) != len(chains):
@@ -99,10 +99,7 @@ def simplify_chains(
     order = [*seen.sections, *(i for i in range(len(chains)) if i not in seen.sections)]
     for i in order:
         result = run.chains[i]
-        own = with_moved_ends(chains[i].centreline.points, result.polyline)
-        field = chain_field(
-            chains[i].field, seen.fields(i, neighbours[i], current, own)
-        )
+        field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
         fixed = result.fixed | seen.bounds(i)
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
@@ -149,8 +146,7 @@ def cutting_chains(
             continue
         starts = optimised[i][indices[:-1][merged]]
         ends = optimised[i][indices[1:][merged]]
-        own = with_moved_ends(chains[i].centreline.points, optimised[i])
-        field = CompositeField(seen.fields(i, neighbours[i], simplified, own))
+        field = CompositeField(seen.fields(i, neighbours[i], simplified))
         if not field.segments_clear(starts, ends).all():
             cutting.append(i)
     return cutting
@@ -232,10 +228,11 @@ class _Neighbours:
         i: int,
         others: Sequence[int],
         polylines: Sequence[FloatArray],
-        own_points: FloatArray,
     ) -> list[ObstacleField]:
-        """The chains `others`, at `polylines`, as obstacles to chain i at
-        `own_points`; those left out entirely are dropped."""
+        """The chains `others`, at `polylines`, as obstacles to chain i, a
+        section's own nets' chains left out near its fan-outs as measured
+        against its starting centreline; those left out entirely are
+        dropped."""
         block = self.sections.get(i)
         own = self.chains[i] if block is None else block.facing
         as_net = None if block is None else block.as_net
@@ -247,7 +244,6 @@ class _Neighbours:
                     own,
                     self.shown(j, polylines[j]),
                     self.reach,
-                    own_points,
                     as_net=as_net,
                 )
             )
