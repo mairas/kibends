@@ -96,9 +96,10 @@ class Contact:
     """A pad or a via that stays: a region a chain need only keep one vertex
     inside, anywhere, to stay connected to it.
 
-    KiCad connects a track to a pad or via when an end of the track lies
-    inside its shape, so a vertex, where two tracks end, connects both.
-    `margin`, mm, is how far inside its outline that vertex stays."""
+    KiCad connects two items of one net when their copper overlaps on a
+    layer they share (`CN_VISITOR` in its connectivity code), so a vertex
+    inside the pad or via connects both tracks that end there. `margin`,
+    mm, is how far inside its outline that vertex stays."""
 
     shape: BaseGeometry
     margin: float

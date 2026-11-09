@@ -199,9 +199,9 @@ keeps its end inside it, 5 µm within its outline, but the end may slide
 anywhere there, and the rest of the chain, including what ran inside the
 pad, is free. A chain that runs over one partway along keeps one vertex
 inside it, where two of its new tracks meet, free to slide there in the
-same way, however many times it entered the pad. This rests on KiCad
-connecting a track to a pad or via when an end of the track lies inside
-its shape. A pad or via pins the chain where it touches it, as other
+same way, however many times it entered the pad. KiCad connects a track
+to a pad or via wherever their copper overlaps, so that vertex keeps both
+its tracks connected. A pad or via pins the chain where it touches it, as other
 copper does, where the chain only grazes it without its centreline
 entering, where it also touches an end that other copper holds, and at the
 junction of branching tracks. An end whose copper reaches another selected
