@@ -1023,9 +1023,9 @@ def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_part
     def still(
         self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
         starts: list[FloatArray],
-    ) -> optimize_module._JointBurst:  # pyright: ignore[reportPrivateUsage]
+    ) -> optimize_module._ProblemBurst:  # pyright: ignore[reportPrivateUsage]
         count = len(starts)
-        return optimize_module._JointBurst(  # pyright: ignore[reportPrivateUsage]
+        return optimize_module._ProblemBurst(  # pyright: ignore[reportPrivateUsage]
             list(starts),
             list(self.positions),
             [REJECTED] * count,

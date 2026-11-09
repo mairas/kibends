@@ -1501,7 +1501,7 @@ class _Round:
 
 
 @dataclass(frozen=True)
-class _JointBurst:
+class _ProblemBurst:
     polylines: list[FloatArray]
     positions: list[FloatArray]
     rejected_edges: list[int]
@@ -2079,7 +2079,7 @@ class _Problem:
 
         return objective
 
-    def burst(self, starts: list[FloatArray]) -> _JointBurst:
+    def burst(self, starts: list[FloatArray]) -> _ProblemBurst:
         """One bounded L-BFGS-B run over every free vertex and moving via
         of the problem, retried with halved bounds where edges newly crossed
         static copper or another member's new shape, a section newly bent
@@ -2180,7 +2180,7 @@ class _Problem:
         # An abnormally ended burst stops at its last check without counting it.
         counted = rounds[:-1] if result.abnormal else rounds
         polylines, centres = layout.unflatten(result.points)
-        return _JointBurst(
+        return _ProblemBurst(
             polylines,
             centres,
             [sum(r.members[i][0] for r in counted) for i in range(len(starts))],
