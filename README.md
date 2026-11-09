@@ -107,10 +107,9 @@ barely changes it or its energy stops improving.
 
 The command prints the optimizer's outcome: whether it converged or stopped
 at its iteration cap or the time limit, after how many iterations and how
-many seconds, how many edge moves it rejected, and how many bursts L-BFGS-B
-ended abnormally, if any; then the DRC verdict. Per-chain figures are not
-printed: `--plot` titles each chain's subplot with its length before and
-after and its minimum clearance margin.
+many seconds and how many edge moves it rejected; then the DRC verdict.
+Per-chain figures are not printed: `--plot` titles each chain's subplot
+with its length before and after and its minimum clearance margin.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises and the lowest it has kept, and how far the
@@ -151,11 +150,10 @@ rest of each chain, such as its fan-outs to pads or vias, is smoothed as an
 ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
-already bends tighter keeps its own tracks, with a warning that says so.
-So does one whose corner the copper around it keeps from rounding, such as
-a pad inside a sharp corner, or its own parts beyond the corner: the
-warning says which, and the run is repeated with that section held, so
-that the other chains keep clear of its tracks. The repeat goes on from
+already bends tighter keeps its own tracks. So does one whose corner the
+copper around it keeps from rounding, such as a pad inside a sharp corner,
+or its own parts beyond the corner: the run is repeated with that section
+held, so that the other chains keep clear of its tracks. The repeat goes on from
 where the first run left every other chain and via, and `--time-limit`
 covers both runs.
 

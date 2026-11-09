@@ -1193,8 +1193,8 @@ class TestFailureAfterOptimizing:
         self, error: str, log: list[str], capsys: pytest.CaptureFixture[str]
     ) -> None:
         out = capsys.readouterr().out
-        assert re.search(r"^Optimizer: converged after", out, re.MULTILINE)
-        (warning,) = [i for i, line in enumerate(log) if "abnormally" in line]
+        assert re.search(r"^Optimizer: ", out, re.MULTILINE)
+        (warning,) = [i for i, line in enumerate(log) if "without converging" in line]
         assert warning < log.index(error)
 
     def test_drc_failure(
@@ -1207,7 +1207,7 @@ class TestFailureAfterOptimizing:
     ) -> None:
         board = connect.to(l_board())
         kicad_cli.write_text(f"#!{sys.executable}\n{FAILING_DRC}")
-        with_abnormal_bursts(monkeypatch, [(FRONT, 2)])
+        stopped_at_cap(monkeypatch)
 
         error = exit_message(log)
 
@@ -1223,7 +1223,7 @@ class TestFailureAfterOptimizing:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         connect.to(l_board(push_error=KiCadConnectionError("timed out")))
-        with_abnormal_bursts(monkeypatch, [(FRONT, 2)])
+        stopped_at_cap(monkeypatch)
 
         error = exit_message(log, "--no-drc")
 
@@ -1532,49 +1532,35 @@ def with_abnormal_bursts(
     monkeypatch.setattr(pipeline, "optimize_chains", with_them)
 
 
+def stopped_at_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the optimizer report that it stopped at its iteration cap."""
+    real: Callable[..., RunResult] = pipeline.optimize_chains
+
+    def capped(*args: object, **kwargs: object) -> RunResult:
+        return replace(real(*args, **kwargs), termination=Termination.ITERATION_CAP)
+
+    monkeypatch.setattr(pipeline, "optimize_chains", capped)
+
+
 FRONT = "the chains on F.Cu"
 """How the optimizer names the problem of F.Cu's chains."""
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-class TestAbnormalBursts:
-    def test_single_chain_shows_them_on_the_optimizer_line(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        connect.to(l_board())
-        with_abnormal_bursts(monkeypatch, [(FRONT, 3)])
+def test_abnormal_bursts_are_logged_only_at_debug(
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    log: list[str],
+) -> None:
+    connect.to(l_board())
+    with_abnormal_bursts(monkeypatch, [(FRONT, 3)])
 
-        run("--dry-run", "--no-drc")
+    run("--dry-run", "--no-drc")
 
-        assert re.search(
-            r"^Optimizer: converged after \d+ iterations in \d+\.\d s, "
-            r"\d+ rejected edge moves, 3 abnormal bursts$",
-            capsys.readouterr().out,
-            re.MULTILINE,
-        )
-
-    def test_several_chains_name_the_problem_on_the_optimizer_line(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-        log: list[str],
-    ) -> None:
-        connect.to(two_l_board())
-        with_abnormal_bursts(monkeypatch, [(FRONT, 1)])
-
-        run("--dry-run", "--no-drc")
-
-        (line,) = [
-            ln for ln in capsys.readouterr().out.splitlines() if "Optimizer:" in ln
-        ]
-        assert line.endswith(f"rejected edge moves, 1 abnormal burst in {FRONT}")
-        (warning,) = [ln for ln in log if "abnormally" in ln]
-        assert warning.startswith("WARNING")
-        assert f"1 burst of {FRONT}" in warning
+    assert "abnormal" not in capsys.readouterr().out
+    (line,) = [ln for ln in log if "abnormally" in ln]
+    assert line.startswith("DEBUG") and f"3 bursts of {FRONT}" in line
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
@@ -2266,7 +2252,7 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     )
 
 
-def test_outcome_and_warnings_count_rejected_moves_bursts_and_frozen() -> None:
+def test_outcome_and_warnings_count_rejected_moves_and_frozen() -> None:
     problem = "the chains and vias on F.Cu and B.Cu"
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
@@ -2300,12 +2286,11 @@ def test_outcome_and_warnings_count_rejected_moves_bursts_and_frozen() -> None:
     warnings = cli.report_warnings(report)
 
     assert outcome == (
-        "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves, "
-        "2 abnormal bursts"
+        "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves"
     )
     # The frozen vertex at (1, 2) relative to the frame's origin.
     assert any("(0.500, -1.000)" in w and "0.050 mm inside" in w for w in warnings)
-    assert any(f"2 bursts of {problem}" in w for w in warnings)
+    assert not any(problem in w for w in warnings)
 
 
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
@@ -2692,9 +2677,9 @@ class TestPairs:
                     t.id.value not in board.deleted
                     or (t.start.x, t.start.y, t.end.x, t.end.y) in created
                 )
-        (warning,) = [w for w in log if "too tight" in w]
-        assert warning.startswith("WARNING")
-        assert hold.value in warning and "again" in warning
+        (line,) = [w for w in log if "too tight" in w]
+        assert line.startswith("DEBUG")
+        assert hold.value in line and "again" in line
 
     def test_time_limit_keeps_the_first_runs_work_in_a_second_run(
         self,
@@ -2769,8 +2754,8 @@ class TestPairs:
 
         run("--dry-run", "--no-drc")
 
-        (warning,) = [w for w in log if "Gave up" in w]
-        assert warning.startswith("WARNING") and ABANDONED in warning
+        (line,) = [w for w in log if "Gave up" in w]
+        assert line.startswith("DEBUG") and ABANDONED in line
 
     def test_dry_run_plot_shows_both_tracks_of_the_pair(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -3071,7 +3056,7 @@ limit, with the inner track's chamfer still of positive length."""
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_a_section_routed_too_tightly_is_held_with_a_warning(
+def test_a_section_routed_too_tightly_is_held(
     connect: Connector, log: list[str], reports: list[pipeline.RunReport]
 ) -> None:
     connect.to(routed_too_tightly_board())
@@ -3080,8 +3065,8 @@ def test_a_section_routed_too_tightly_is_held_with_a_warning(
 
     ((pair,),) = (r.pairs for r in reports)
     assert pair.held == 1
-    (warning,) = [w for w in log if Hold.ROUTING.value in w]
-    assert warning.startswith("WARNING") and "radius of" in warning
+    (line,) = [w for w in log if Hold.ROUTING.value in w]
+    assert line.startswith("DEBUG") and "radius of" in line
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
