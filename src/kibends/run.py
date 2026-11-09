@@ -621,7 +621,7 @@ def _off_pairs(
         if pair is None:
             kept.append(m)
             continue
-        logger.warning(
+        logger.debug(
             f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: "
             f"differential pair {pair} ends at it"
         )

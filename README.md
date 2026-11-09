@@ -69,7 +69,7 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
    it, and no other copper touches it or those chain ends on any layer. Any
-   other selected via stays where it is, with a warning naming it and the
+   other selected via stays where it is; a debug log line names it and the
    reason: it is locked, it is not a through via, other copper touches it
    or a chain end it would carry (an unselected track, a pad, a copper
    shape, another via or a zone of its net, on any layer), or fewer than
@@ -182,7 +182,7 @@ pairs with another chain, and when a pair's measured gap differs by more
 than a tenth from its netclass's differential pair gap. Each of these is
 smoothed as separate chains, or, for the last, at its measured gap. A pair
 is paired on each layer separately, and a via that joins a pair's track
-stays fixed, with a warning. kibends does not route uncoupled fan-outs
+stays fixed. kibends does not route uncoupled fan-outs
 into coupling.
 
 ### Options

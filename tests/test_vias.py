@@ -76,7 +76,8 @@ def judge(
 
 
 def warnings(log: list[str]) -> list[str]:
-    return [line for line in log if line.startswith("WARNING")]
+    """The log lines saying why a via stays fixed, which are debug lines."""
+    return [line for line in log if "stays fixed" in line]
 
 
 def fixed(log: list[str], v: kbt.Via) -> str:

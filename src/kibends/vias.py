@@ -3,7 +3,7 @@
 A selected via moves only when it is an unlocked through via, every copper
 item touching it on any layer is the end of a selected chain, no other
 copper touches those ends, and at least two such ends meet it. Every other
-selected via stays fixed, with a warning naming the reason, and pins the
+selected via stays fixed, with a debug line naming the reason, and pins the
 chains it touches like an unselected via.
 """
 
@@ -110,7 +110,7 @@ def movable_vias(
         if reason is None:
             movable.append(MovableVia(via, ends))
         else:
-            logger.warning(
+            logger.debug(
                 f"Via {via.id} at {frame.point(via.position)} stays fixed: {reason}"
             )
     return movable

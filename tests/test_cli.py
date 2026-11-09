@@ -1802,7 +1802,7 @@ class TestSeveralLayers:
 
         assert "push_commit" in board.calls
         (warning,) = [line for line in log if "stays fixed" in line]
-        assert warning.startswith("WARNING Via v at (3.000, 2.000) ")
+        assert warning.startswith("DEBUG Via v at (3.000, 2.000) ")
         assert "locked" in warning
 
     def test_selected_via_with_an_unselected_track_is_named(
@@ -1817,7 +1817,7 @@ class TestSeveralLayers:
         run("--no-drc")
 
         (warning,) = [line for line in log if "stays fixed" in line]
-        assert warning.startswith("WARNING Via v ") and "track g2 on In1.Cu" in warning
+        assert warning.startswith("DEBUG Via v ") and "track g2 on In1.Cu" in warning
 
     def test_selected_via_held_by_other_copper_leaves_the_run_as_without_it(
         self, connect: Connector, log: list[str]
