@@ -401,6 +401,186 @@ class TestMovableVias:
         assert len(warnings(log)) == int(selected)
 
 
+def sig_zone(
+    name: str,
+    corners: tuple[float, float, float, float],
+    layers: Sequence[BL.ValueType] = (BL.BL_In2_Cu,),
+    min_width: float = 0.0,
+) -> kbt.Zone:
+    """A zone of the net of `front` and `back`, a rectangle by its corners."""
+    return kipy_copper_zone(
+        name, "SIG", kipy_rect(*corners), list(layers), min_width=min_width
+    )
+
+
+def judged(*zones: kbt.Zone) -> list[MovableVia]:
+    """`judge` of a via at `VIA` joining `front` and `back`, with `zones`."""
+    v = kipy_via("v", "SIG", *VIA)
+    movable, _ = judge([*front(), *back(), v], [*front(), *back()], [v], zones=zones)
+    return movable
+
+
+def fixed_reason(log: list[str]) -> str:
+    (warning,) = warnings(log)
+    return warning.rstrip().split("stays fixed: ")[1]
+
+
+class TestZonesOfItsNetOnOneLayer:
+    """Zones of the via's net that overlap or meet on a layer count as one:
+    the refill connects the via through any of them."""
+
+    def test_one_deep_in_a_zone_whose_ring_another_crosses_moves(
+        self, log: list[str]
+    ) -> None:
+        # The edge of `small` lies 0.1 mm short of the centre, inside the
+        # ring; `big` holds the via deep inside.
+        big = sig_zone("big", (2, 2, 6, 6))
+        small = sig_zone("small", (2.5, 2.5, 3.9, 5.5))
+
+        movable = judged(big, small)
+
+        (via,) = movable
+        assert [z.name for z in via.zones] == ["big", "small"]
+        assert warnings(log) == []
+
+    def test_one_on_the_seam_of_two_zones_meeting_edge_to_edge_moves(
+        self, log: list[str]
+    ) -> None:
+        left = sig_zone("left", (2, 2, VIA[0], 6))
+        right = sig_zone("right", (VIA[0], 2, 6, 6))
+
+        movable = judged(left, right)
+
+        (via,) = movable
+        assert [z.name for z in via.zones] == ["left", "right"]
+        assert warnings(log) == []
+
+    def test_one_near_the_outer_edge_of_their_union_stays_fixed(
+        self, log: list[str]
+    ) -> None:
+        # Both end inside the ring, the union too.
+        left = sig_zone("left", (2, 2, 3.8, 6))
+        over = sig_zone("over", (3, 2, 3.9, 6))
+
+        assert judged(left, over) == []
+        assert fixed_reason(log) == (
+            "it sits at the edge of zones left and over on In2.Cu"
+        )
+
+    @pytest.mark.parametrize("swapped", [False, True])
+    @pytest.mark.parametrize(("wide", "moves"), [(0.2, True), (0.3, False)])
+    def test_on_a_seam_the_widest_minimum_width_among_them_sets_the_depth(
+        self, log: list[str], wide: float, moves: bool, swapped: bool
+    ) -> None:
+        # On the seam the via lies in neither zone deep enough alone; their
+        # union ends 0.13 mm past the centre: deep enough for a minimum
+        # width of 0.2 mm, not for 0.3 mm, whichever zone has it.
+        edge = VIA[1] + 0.13
+        narrow = sig_zone("narrow", (2, 2, VIA[0], edge), min_width=0.1)
+        wider = sig_zone("wider", (VIA[0], 2, 6, edge), min_width=wide)
+        zones = (wider, narrow) if swapped else (narrow, wider)
+
+        assert len(judged(*zones)) == int(moves)
+
+    @pytest.mark.parametrize("swapped", [False, True])
+    def test_one_deep_enough_in_a_zone_by_its_own_margin_moves(
+        self, log: list[str], swapped: bool
+    ) -> None:
+        # `narrow` forms the union's edge 0.13 mm past the centre, deep
+        # enough for its own minimum width of 0.1 mm; `wider` lies inside
+        # it, its edge inside the ring, with a minimum width too wide for
+        # that depth.
+        edge = VIA[0] + 0.13
+        narrow = sig_zone("narrow", (2, 2, edge, 6), min_width=0.1)
+        wider = sig_zone("wider", (3, 3, VIA[0] + 0.05, 5), min_width=0.3)
+        zones = (wider, narrow) if swapped else (narrow, wider)
+
+        (via,) = judged(*zones)
+        assert {z.name for z in via.zones} == {"narrow", "wider"}
+        assert warnings(log) == []
+
+    def test_logs_once_per_layer_the_zones_it_stays_inside(
+        self, log: list[str]
+    ) -> None:
+        both = [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        left = sig_zone("left", (2, 2, VIA[0] + 0.5, 6), both)
+        right = sig_zone("right", (VIA[0], 2, 6, 6), [BL.BL_In2_Cu])
+
+        assert len(judged(left, right)) == 1
+        assert [line.rstrip() for line in log if "stays inside" in line] == [
+            "DEBUG Via v stays inside zone left on In1.Cu",
+            "DEBUG Via v stays inside zones left and right on In2.Cu",
+        ]
+
+    def test_names_each_group_of_zones_at_whose_edge_it_sits(
+        self, log: list[str]
+    ) -> None:
+        # Alone on In1.Cu, `small` sits at the via's edge there; on In2.Cu
+        # `other` does too, and so does their union.
+        small = sig_zone("small", (2.5, 2.5, 3.9, 5.5), [BL.BL_In1_Cu, BL.BL_In2_Cu])
+        other = sig_zone("other", (3, 3, 3.95, 5), [BL.BL_In2_Cu])
+
+        assert judged(small, other) == []
+        assert fixed_reason(log) == (
+            "it sits at the edge of zone small on In1.Cu; "
+            "zones small and other on In2.Cu"
+        )
+
+    def test_one_between_two_disjoint_zones_reaching_its_ring_stays_fixed(
+        self, log: list[str]
+    ) -> None:
+        left = sig_zone("left", (2, 2, VIA[0] - 0.2, 6))
+        right = sig_zone("right", (VIA[0] + 0.2, 2, 6, 6))
+
+        assert judged(left, right) == []
+        assert fixed_reason(log) == (
+            "it sits at the edge of zones left and right on In2.Cu"
+        )
+
+    @pytest.mark.parametrize(("split_at", "moves"), [(5.0, True), (4.1, False)])
+    def test_one_in_a_zone_another_net_splits_is_judged_by_its_piece(
+        self, log: list[str], split_at: float, moves: bool
+    ) -> None:
+        # A higher-priority GND strip across `plane` cuts its region in two;
+        # the via lies inside the lower piece, deep or 0.1 mm from its edge,
+        # short of the margin of a minimum width of 0.3 mm.
+        plane = sig_zone("plane", (2, 2, 6, 6), min_width=0.3)
+        strip = kipy_copper_zone(
+            "strip", "GND", kipy_rect(1, split_at, 7, split_at + 0.2), [BL.BL_In2_Cu]
+        )
+        strip.priority = 1
+
+        movable = judged(plane, strip)
+
+        assert len(movable) == int(moves)
+        if moves:
+            (via,) = movable
+            (zone,) = via.zones
+            assert zone.regions["In2.Cu"].geom_type == "MultiPolygon"
+        else:
+            assert fixed_reason(log) == "it sits at the edge of zone plane on In2.Cu"
+
+    def test_each_layer_is_judged_against_its_own_zones(self, log: list[str]) -> None:
+        # `small` reaches the ring on In1.Cu and In2.Cu, `big` holds the via
+        # only on In2.Cu: on In1.Cu, `small` sits at its edge alone.
+        big = sig_zone("big", (2, 2, 6, 6))
+        small = sig_zone("small", (2.5, 2.5, 3.9, 5.5), [BL.BL_In1_Cu, BL.BL_In2_Cu])
+
+        assert judged(big, small) == []
+        assert fixed_reason(log) == "it sits at the edge of zone small on In1.Cu"
+
+    def test_layers_with_the_same_zones_at_the_edge_are_named_once(
+        self, log: list[str]
+    ) -> None:
+        both = [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        small = sig_zone("small", (2.5, 2.5, 3.9, 5.5), both)
+
+        assert judged(small) == []
+        assert fixed_reason(log) == (
+            "it sits at the edge of zone small on In1.Cu and In2.Cu"
+        )
+
+
 def plane(name: str = "plane") -> kbt.Zone:
     """A zone of the stitching net around `VIA` on both outer layers."""
     outline = kipy_rect(2, 2, 6, 6)
