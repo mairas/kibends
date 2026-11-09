@@ -50,6 +50,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     build_via_obstacles,
+    own_net_vias,
 )
 from kibends.optimize import (
     ChainResult,
@@ -74,10 +75,10 @@ from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
 from kibends.simplify import simplify_chains
 from kibends.snapshot import (
     BoardSnapshot,
-    LayerSnapshot,
     Disc,
-    read_selection,
+    LayerSnapshot,
     Via,
+    read_selection,
     read_user_frame,
 )
 from kibends.via_moves import MovingVias
@@ -353,11 +354,11 @@ def _read(
         if may
         else {}
     )
-    # A moving via meets the copper of every layer it spans, so a selection
     judged = list(selection.vias)
     if fixed_vias:
         judged, may = _carrying(judged, may, carried, frame)
     candidates = {v.id for v in may}
+    # A moving via meets the copper of every layer it spans, so a selection
     # holding one reads them all.
     whole = BoardSnapshot.read(
         board,
@@ -741,6 +742,12 @@ def _via_inputs(
             ),
             layers[0].clearance(m.via.net),
             m.zones,
+            own_net_vias(
+                layers,
+                m.via,
+                moving=moving,
+                hole_clearance=options.hole_clearance,
+            ),
         )
         for m in movable
     ]

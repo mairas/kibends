@@ -21,6 +21,7 @@ import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import NamedTuple
 
 from loguru import logger
@@ -31,6 +32,7 @@ from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
+from kibends.obstacles import CompositeField, containment
 from kibends.snapshot import Disc, Via, ViaContact, ViaKind, ViaZone
 
 
@@ -68,6 +70,24 @@ class ViaInput:
     zones: tuple[ViaZone, ...] = ()
     """The zones it stays inside, whose clearance it keeps from the chains
     and vias of other nets on their layers."""
+
+    own_net: ObstacleField | None = None
+    """The vias of its net that stand still, as `own_net_vias` gives them,
+    which only stop it."""
+
+    @cached_property
+    def stops(self) -> ObstacleField | None:
+        """What stands still and only stops it, without repelling it: the
+        outside of its zones' regions and `own_net`."""
+        parts = [f for f in (containment(self.zones), self.own_net) if f is not None]
+        return CompositeField(parts) if parts else None
+
+    @cached_property
+    def limits(self) -> ObstacleField:
+        """Everything that stands still and limits where it may go: `field`
+        and `stops`."""
+        stops = self.stops
+        return self.field if stops is None else CompositeField([self.field, stops])
 
 
 def may_move(via: Via) -> bool:

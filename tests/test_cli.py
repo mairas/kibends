@@ -1695,6 +1695,39 @@ class TestMovingVias:
         assert isinstance(via, kbt.Via)
         assert via.position.y / 1e6 < PUSHED_STITCHING[1] - 0.05
 
+    @pytest.mark.parametrize("still", ["unselected", "locked"])
+    def test_a_via_of_its_net_that_stands_still_does_not_push_it(
+        self, connect: Connector, log: list[str], still: str
+    ) -> None:
+        # Within range of the stitching via, beyond their touching distance;
+        # nothing else is in range.
+        start = (2.0, 3.0)
+        straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
+        stitching = kipy_via("s", "GND", *start)
+        other = kipy_via(
+            "u", "GND", start[0] + 1.27, start[1], locked=still == "locked"
+        )
+        plane = kipy_rect(-2, -3, 10, 10)
+        board = connect.to(
+            CommitBoard(
+                selection=[
+                    *straight,
+                    stitching,
+                    *([other] if still == "locked" else []),
+                ],
+                tracks=[*straight],
+                vias=[stitching, other],
+                zones=[
+                    kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+                ],
+            )
+        )
+
+        run()
+
+        assert board.calls == []
+        assert "Nothing to do" in "".join(log)
+
     def test_a_dry_run_moving_only_a_stitching_via_commits_nothing(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -1719,6 +1752,8 @@ class TestMovingVias:
         assert line.rstrip().endswith(
             "stays fixed: no selected track ends at it and --fixed-vias is given"
         )
+        # It is no candidate, so the run reads only the selection's layers.
+        assert board.reads["get_enabled_layers"] == 0
 
     @pytest.mark.parametrize("fixed", [False, True])
     def test_with_fixed_vias_a_routing_via_still_moves(
@@ -1752,8 +1787,6 @@ class TestMovingVias:
         self, connect: Connector, log: list[str], unfilled: str
     ) -> None:
         # Without the zone, the via ends below y = 1, in the part of the
-        # It is no candidate, so the run reads only the selection's layers.
-        assert board.reads["get_enabled_layers"] == 0
         # outline that the higher-priority PWR zone or the keepout leaves
         # unfilled.
         board = moving_via_board()

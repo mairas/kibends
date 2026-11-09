@@ -1,3 +1,4 @@
+import math
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from itertools import pairwise
@@ -32,7 +33,9 @@ from kibends.obstacles import (
     build_obstacles,
     build_via_obstacles,
     chain_obstacles_for_via,
+    contained,
     moving_via_obstacles,
+    own_net_vias,
     via_chain_inflation,
     via_obstacles_for_via,
 )
@@ -90,6 +93,13 @@ def field_of(
         hole_to_hole=hole_to_hole,
         allow_via_in_pad=allow_via_in_pad,
     )
+
+
+def own_net_of(fake: FakeBoard, layers: Sequence[str] = BOTH) -> ObstacleField:
+    snaps = slices(fake, layers)
+    field = own_net_vias(snaps, via_of(snaps))
+    assert field is not None
+    return field
 
 
 def edge_segments(corners: list[tuple[float, float]]) -> list[kbt.BoardShape]:
@@ -239,11 +249,27 @@ MARGIN = zone().margin
 centre stays."""
 
 
+def limits(
+    snaps: list[LayerSnapshot], via: Via, *, zones: Sequence[ViaZone]
+) -> ObstacleField:
+    """Every limit on where `via` may go: its static field and its zones'
+    regions, as `ViaInput.limits` gives them."""
+    return contained(build_via_obstacles(snaps, via, zones=zones), zones)
+
+
 class TestZoneContainment:
-    def test_keeps_the_centre_inside_the_region_by_the_margin(self) -> None:
+    def test_the_static_field_leaves_the_zone_s_edge_out(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
 
         field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])
+        distance, _ = field.signed_distance(points((0, 1.2)))
+
+        assert distance[0] == math.inf
+
+    def test_keeps_the_centre_inside_the_region_by_the_margin(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+
+        field = limits(snaps, via_of(snaps), zones=[zone()])
         distance, gradient = field.signed_distance(points((0, 0.5), (0, 1.2)))
 
         assert distance == pytest.approx([0.5 - MARGIN, -0.2 - MARGIN])
@@ -252,7 +278,7 @@ class TestZoneContainment:
     def test_a_wider_minimum_width_keeps_it_deeper(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
 
-        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone(min_width=1.0)])
+        field = limits(snaps, via_of(snaps), zones=[zone(min_width=1.0)])
         distance, _ = field.signed_distance(points((0, 0.5)))
 
         assert distance[0] == pytest.approx(0.5 - zone(min_width=1.0).margin)
@@ -261,9 +287,7 @@ class TestZoneContainment:
         snaps = slices(FakeBoard(vias=[moving_via()]))
         holed = REGION.difference(box(1, -0.5, 1.5, 0.5))
 
-        field = build_via_obstacles(
-            snaps, via_of(snaps), zones=[zone({"In1.Cu": holed})]
-        )
+        field = limits(snaps, via_of(snaps), zones=[zone({"In1.Cu": holed})])
         distance, gradient = field.signed_distance(points((0.5, 0), (1.25, 0)))
 
         assert distance == pytest.approx([0.5 - MARGIN, -0.25 - MARGIN])
@@ -273,7 +297,7 @@ class TestZoneContainment:
         snaps = slices(FakeBoard(vias=[moving_via()]))
         narrower = box(-2, -1, 2, 0.6)
 
-        field = build_via_obstacles(
+        field = limits(
             snaps,
             via_of(snaps),
             zones=[zone({"In1.Cu": REGION, "In2.Cu": narrower})],
@@ -286,7 +310,7 @@ class TestZoneContainment:
         snaps = slices(FakeBoard(vias=[moving_via()]))
         across = ViaZone("strip", {"B.Cu": box(-0.5, -3, 0.5, 3)}, 0.0, 0.0)
 
-        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone(), across])
+        field = limits(snaps, via_of(snaps), zones=[zone(), across])
         distance, _ = field.signed_distance(points((0, 0.5), (0.4, 0)))
 
         assert distance == pytest.approx([0.5 - MARGIN, 0.1 - MARGIN])
@@ -294,7 +318,7 @@ class TestZoneContainment:
     def test_a_move_out_of_the_region_is_not_clear(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))
 
-        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])
+        field = limits(snaps, via_of(snaps), zones=[zone()])
         clear = field.segments_clear(points((0, 0), (0, 0)), points((0, 0.9), (0, 1.2)))
 
         assert list(clear) == [True, False]
@@ -546,7 +570,7 @@ class TestViaDrill:
         stitch = kipy_via("stitch", NET, 0, 0, diameter=0.45, drill=0.4)
         fake = FakeBoard(vias=[stitch, moving_via(5, 0)])
 
-        distance, _ = field_of(fake).signed_distance(points((2, 0)))
+        distance, _ = own_net_of(fake).signed_distance(points((2, 0)))
 
         assert 0.225 + RADIUS < 0.2 + HOLE_TO_HOLE + HOLE_RADIUS
         expected = 2 - (0.2 + HOLE_TO_HOLE + HOLE_RADIUS)
@@ -578,11 +602,23 @@ class TestViaDrill:
         )
         fake = FakeBoard(vias=[blind, moving_via(5, 0)])
 
-        top, _ = field_of(fake, ("F.Cu",)).signed_distance(points((2, 0)))
-        both, _ = field_of(fake).signed_distance(points((2, 0)))
+        snaps = slices(fake, ("F.Cu",))
+        both, _ = own_net_of(fake).signed_distance(points((2, 0)))
 
-        assert np.isinf(top[0])
+        assert own_net_vias(snaps, via_of(snaps)) is None
         assert np.isfinite(both[0])
+
+    def test_vias_of_its_net_only_stop_it_and_are_left_out_of_its_field(
+        self,
+    ) -> None:
+        fake = FakeBoard(vias=[kipy_via("stitch", NET, 0, 0), moving_via(5, 0)])
+
+        distance, _ = field_of(fake).signed_distance(points((2, 0)))
+        stop, _ = own_net_of(fake).signed_distance(points((2, 0)))
+
+        assert np.isinf(distance[0])
+        expected = 2 - (0.15 + HOLE_TO_HOLE + HOLE_RADIUS)
+        assert stop[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
 
 CHAIN_WIDTH = 0.25

@@ -158,7 +158,7 @@ class MovingVias:
         via, zones = self.vias[v].via, self.vias[v].zones
         layers = dict.fromkeys(self.chains[i].layer for i in self._chains_near[v])
         parts: list[ObstacleField] = [
-            self.vias[v].field,
+            self.vias[v].limits,
             *(
                 chain_obstacles_for_via(
                     via,

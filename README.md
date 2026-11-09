@@ -71,9 +71,10 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    via that no selected track ends at and no copper but a zone of its net
    touches, moves too: it has no length to shorten, so it stays where it
    is unless copper within `--range` of its clearance crowds it (a selected
-   track cutting a corner, another via, a pad or other static copper, or
-   the edge of its zone), and then backs off until the pushes balance or
-   nothing is in range. One that no zone of its net reaches stays where it
+   track cutting a corner, a via of another net, a pad or other static
+   copper), and then backs off until the pushes balance or nothing is in
+   range. The edge of its zone and the vias of its own net only stop it;
+   they do not push it. One that no zone of its net reaches stays where it
    is. A via in a plane stays inside the zone on each
    layer where the zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
@@ -122,11 +123,15 @@ vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A selected
 via that starts inside its clearance or inside such a rule area stays where
-it is. Vias of one net keep only the hole-to-hole distance from each other
-and repel each other within `--range` of it, so a dense grid of selected
-stitching vias spreads, and each moving via adds to the run's time: leave
-stitching vias out of the selection, lock them, or pass `--fixed-vias`
-where they should stay.
+it is. Vias of one net, moving or not, keep only the hole-to-hole distance
+from a moving via, their rings free to overlap, and do not repel it, so a
+grid of selected stitching vias keeps its spacing, as does a selected one
+beside an unselected one; a moving via does not repel from the edge of a
+zone it stays inside either, which only stops it, while the board edge and other
+copper still repel it. A track of the via's own net still repels it within
+`--range`. Each moving via adds to the run's time: leave stitching vias out
+of the selection, lock them, or pass `--fixed-vias` where they should
+stay.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on

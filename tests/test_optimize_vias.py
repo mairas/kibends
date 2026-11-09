@@ -1,5 +1,6 @@
 # pyright: reportPrivateUsage=false
 import math
+from collections.abc import Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -17,9 +18,8 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
-    CompositeField,
     build_via_obstacles,
-    zone_containment,
+    own_net_vias,
 )
 from kibends.optimize import (
     INSIDE_TOLERANCE,
@@ -175,7 +175,7 @@ def in_zone(bottom: float) -> ViasScenario:
     return ViasScenario(
         "via-in-zone",
         scenarios.route("N", scenarios.DETOUR_VIA),
-        (scenarios.joining(via, 0, CompositeField(zone_containment(plane(bottom)))),),
+        (replace(scenarios.joining(via, 0), zones=(plane(bottom),)),),
     )
 
 
@@ -844,6 +844,52 @@ class TestGradient:
         )
         self.check(zoned(scenario, 0, "In1.Cu"), 2)
 
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_with_two_vias_of_one_net_at_their_holes_apart(self, seed: int) -> None:
+        # Within the hinge's standoff of each other, near the track.
+        low = 0.9
+        self.check(stitched(low, low + HOLES_APART + 0.005, top=5.0), seed)
+
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_with_a_via_at_its_zone_s_edge(self, seed: int) -> None:
+        start = 0.9
+        self.check(stitched(start, top=start + STITCH_MARGIN + 0.005), seed)
+
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_with_vias_that_repel_stop_or_stand_still_and_a_zone_edge(
+        self, seed: int
+    ) -> None:
+        # A G via frozen inside the track's clearance; a moving G via at the
+        # edge of its zone, near the frozen one and an unselected G via; and
+        # a moving H via within range of it and of the track.
+        start = 0.9
+        scenario = stitched(start, top=start + STITCH_MARGIN + 0.005)
+        (moving,) = scenario.vias
+        beside = (STITCH_X + HOLES_APART + 0.005, start)
+        still = scenarios.through_via("u", "G", beside)
+        layers = [replace(layer(name), vias=(still,)) for name in moving.via.span]
+        low = (STITCH_X, scenarios.VIA_TO_CHAIN / 2)
+        frozen = replace(moving, via=scenarios.through_via("f", "G", low))
+        plane = {name: box(0, -5, 10, 10) for name in moving.via.span}
+        other = ViaInput(
+            scenarios.through_via("h", "H", (STITCH_X + 1.0, 1.3)),
+            (),
+            FreeSpace(),
+            scenarios.PAIR_CLEARANCE,
+            (ViaZone("h-plane", plane, 0.2, 0.0),),
+        )
+        vias = (
+            frozen,
+            replace(moving, own_net=own_net_vias(layers, moving.via)),
+            other,
+        )
+        self.check(replace(scenario, vias=vias), seed)
+
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_with_a_via_of_its_net_that_stands_still(self, seed: int) -> None:
+        start = 0.9
+        self.check(beside_still(start, start + HOLES_APART + 0.005), seed)
+
 
 def moving_vias(scenario: ViasScenario) -> MovingVias:
     return MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
@@ -894,47 +940,127 @@ STITCH_X = 5.0
 STITCH_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
 
 
-def stitched(at_y: float, top: float) -> ViasScenario:
+def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScenario:
     """A straight chain of net S on F.Cu along y = 0, pinned at every vertex
-    so that it cannot bow away, and a stitching via of net G at `at_y` above
-    it, inside a G zone on F.Cu and B.Cu whose region ends at y = `top`."""
+    so that it cannot bow away, and a stitching via at each of `heights`
+    above it, of net G or the net `nets` gives in turn, inside a zone of its
+    net on F.Cu and B.Cu whose region ends at y = `top`."""
     regions = {layer: box(0, -5, 10, top) for layer in ("F.Cu", "B.Cu")}
     zone = ViaZone("plane", regions, 0.2, 0.0)
-    via = scenarios.through_via("g", "G", (STITCH_X, at_y))
     vertices = [(float(x), 0.0) for x in np.linspace(0.0, 10.0, 41)]
     chain = selected("S", "S", FreeSpace(), *vertices)
     return ViasScenario(
-        "stitching-via",
+        "stitching-vias",
         (replace(chain, fixed=np.ones(len(vertices), dtype=bool)),),
-        (
+        tuple(
             ViaInput(
-                via,
+                scenarios.through_via(f"g{k}", nets[k] if nets else "G", (STITCH_X, y)),
                 (),
-                CompositeField(zone_containment(zone)),
+                FreeSpace(),
                 scenarios.PAIR_CLEARANCE,
                 (zone,),
-            ),
+            )
+            for k, y in enumerate(heights)
         ),
         STITCH_PARAMS,
     )
 
 
+STITCH_MARGIN = ViaZone("plane", {}, 0.2, 0.0).margin
+HOLES_APART = scenarios.VIA_DRILL + HOLE_TO_HOLE
+"""How far apart the centres of two vias of one net keep."""
+
+
+def beside_still(at_y: float, still_y: float) -> ViasScenario:
+    """`stitched` with its via at `at_y` and an unselected via of its net at
+    `still_y` above it, which stands still."""
+    scenario = stitched(at_y, top=still_y + 3.0)
+    (given,) = scenario.vias
+    still = scenarios.through_via("u", "G", (STITCH_X, still_y))
+    layers = [replace(layer(name), vias=(still,)) for name in given.via.span]
+    own = own_net_vias(layers, given.via)
+    return replace(scenario, vias=(replace(given, own_net=own),))
+
+
 class TestStitchingVia:
-    def test_a_crowded_one_backs_off_but_stays_inside_its_zone(self) -> None:
+    def test_one_pushed_toward_a_via_of_its_net_that_stands_still_stops_at_it(
+        self,
+    ) -> None:
+        start, still = 0.9, 2.0
+
+        result = run(beside_still(start, still))
+
+        (via,) = result.vias
+        gap = still - via.position[1]
+        assert via.position[1] > start + 0.1
+        # Hole-to-hole, though their rings then overlap.
+        assert HOLES_APART < scenarios.VIA_DIAMETER
+        assert gap >= HOLES_APART - INSIDE_TOLERANCE
+        assert gap <= HOLES_APART + STITCH_PARAMS.standoff
+
+    def test_a_crowded_one_backs_off_to_the_edge_of_its_zone(self) -> None:
         start, top = 0.8, 1.3
 
-        result = run(stitched(start, top))
+        result = run(stitched(start, top=top))
 
         (via,) = result.vias
         assert not via.frozen
         assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
-        assert via.position[1] > start + 0.1
-        assert via.position[1] <= top - MARGIN + INSIDE_TOLERANCE
+        # The zone's edge only stops it, so the track's push takes it there.
+        edge = top - STITCH_MARGIN
+        assert edge - STITCH_PARAMS.standoff <= via.position[1]
+        assert via.position[1] <= edge + INSIDE_TOLERANCE
+
+    def test_one_near_its_zone_s_edge_with_nothing_else_in_range_stays(
+        self,
+    ) -> None:
+        start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
+
+        result = run(stitched(start, top=start + STITCH_MARGIN + 0.3))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
+
+    def test_two_of_one_net_within_range_of_each_other_stay(self) -> None:
+        low = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
+        high = low + HOLES_APART + STITCH_PARAMS.falloff_range / 2
+
+        result = run(stitched(low, high, top=high + 3.0))
+
+        assert [v.frozen for v in result.vias] == [False, False]
+        assert result.vias[0].position == pytest.approx((STITCH_X, low), abs=1e-6)
+        assert result.vias[1].position == pytest.approx((STITCH_X, high), abs=1e-6)
+
+    def test_two_of_other_nets_within_range_of_each_other_push_apart(
+        self,
+    ) -> None:
+        low = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
+        high = low + HOLES_APART + STITCH_PARAMS.falloff_range / 2
+
+        result = run(stitched(low, high, top=high + 3.0, nets=("G", "H")))
+
+        assert [v.frozen for v in result.vias] == [False, False]
+        apart = result.vias[1].position[1] - result.vias[0].position[1]
+        assert apart > high - low + 0.1
+
+    def test_two_of_one_net_pushed_together_keep_their_holes_apart(self) -> None:
+        # The track pushes the lower one up against the upper one, which
+        # its zone's edge holds.
+        top = 1.9
+        result = run(stitched(0.9, 1.75, top=top))
+
+        low, high = (v.position for v in result.vias)
+        assert high[1] <= top - STITCH_MARGIN + INSIDE_TOLERANCE
+        apart = math.dist(low, high)
+        assert apart >= HOLES_APART - INSIDE_TOLERANCE
+        assert apart <= HOLES_APART + STITCH_PARAMS.standoff
+        assert low[1] > 0.9 + 0.1
 
     def test_one_with_nothing_in_range_stays(self) -> None:
         start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
 
-        result = run(stitched(start, start + 2.0))
+        result = run(stitched(start, top=start + 2.0))
 
         (via,) = result.vias
         assert not via.frozen
@@ -943,7 +1069,7 @@ class TestStitchingVia:
     def test_one_starting_inside_its_clearance_stays_as_unselected(self) -> None:
         start = scenarios.VIA_TO_CHAIN / 2
 
-        result = run(stitched(start, 1.3))
+        result = run(stitched(start, top=1.3))
 
         (via,) = result.vias
         assert via.frozen
