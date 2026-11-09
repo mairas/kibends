@@ -742,9 +742,19 @@ def optimize_chains(
     from its inputs. Either way the run
     completes its first outer iteration before it looks at the time limit.
 
-    Each outer iteration logs its progress at DEBUG, and at INFO once
-    `PROGRESS_INTERVAL` has passed since `started` or the last INFO line.
+    It logs at INFO when setup begins and, once the problems are built,
+    the setup time and the starting length and energy, saying "again" when
+    it repeats a run from `start` with sections held. Each outer iteration
+    logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
+    passed since `started` or the last INFO line.
     """
+    again = start is not None
+    logger.info(
+        "Setting up the optimizer again, with held sections"
+        if again
+        else "Setting up the optimizer"
+    )
+    set_up = clock()
     junctions(chains)
     blocks = [pair_block(pair, settings.spacing) for pair in pairs]
     everything = [*chains, *(block.chain for block in blocks)]
@@ -795,6 +805,7 @@ def optimize_chains(
     if not moving:
         return result(Termination.NOTHING_TO_DO, 0, best=False)
     begun = clock()
+    logger.info(_starting(moving, begun - set_up, again=again))
     origin = begun if started is None else started
     deadline = None if settings.time_limit is None else origin + settings.time_limit
     last_shown = begun
@@ -1044,6 +1055,18 @@ def _pinned(
             fixed[end] = True
             pinned[i] = replace(pinned[i], fixed=fixed)
     return pinned
+
+
+def _starting(problems: Sequence[_Problem], setup: float, *, again: bool) -> str:
+    """One line on the run about to start, after `setup` seconds of setup,
+    `again` when it repeats a run with sections held."""
+    count = len(problems)
+    return (
+        f"Optimizer set up{' again' if again else ''} in {setup:.1f} s: "
+        f"{count} problem{'' if count == 1 else 's'}, "
+        f"length {sum(p.length() for p in problems):.3f} mm, "
+        f"energy {sum(p.energy for p in problems):.3f}"
+    )
 
 
 def _progress(

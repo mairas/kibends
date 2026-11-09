@@ -154,10 +154,15 @@ at its iteration cap or the time limit, after how many iterations and how
 many seconds and how many edge moves it rejected.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after and its minimum clearance margin.
+It reports when it starts setting up the optimizer, and before the first
+iteration how long setup took, how many problems it split the selection into
+(the layers or groups of layers the moving tracks and vias tie together), and
+their starting summed length and energy. A run repeated to hold a
+differential pair's section reports both again, saying so.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
-length, the energy it minimises and the lowest it has kept, and how far the
-iteration moved any track or via. Set `LOGURU_LEVEL=DEBUG` to see that line
+length, the energy it minimises, and how far the iteration moved any track or
+via. Set `LOGURU_LEVEL=DEBUG` to see that line
 after every iteration.
 Every position kibends prints, in errors and warnings, is in millimetres relative to the board's grid origin, with y
 pointing down: as the PCB editor shows coordinates with the grid origin
