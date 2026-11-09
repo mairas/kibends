@@ -661,29 +661,19 @@ def _split_edges(vertices: FloatArray) -> tuple[FloatArray, FloatArray]:
     return a[edge] + first * along, a[edge] + last * along
 
 
-def chain_obstacles(
-    net: str, width: float, clearance: float, others: Sequence[ChainCentreline]
-) -> ChainField:
-    """The field for a track of `net`, `width` and netclass `clearance` (mm)
-    made of other chains' centrelines.
-
-    Another net's chain is kept at the larger of both clearances. A chain of
-    the same net is no obstacle: copper of one net may come close, overlap
-    or cross.
-    """
-    half_width = width / 2
-    return _chains_field(
-        (
-            o,
-            None
-            if o.net == net
-            else half_width + o.width / 2 + max(clearance, o.clearance),
-        )
-        for o in others
-    )
+def chain_inflation(
+    net: str, width: float, clearance: float, other: ChainCentreline
+) -> float | None:
+    """The distance a track of `net`, `width` and netclass `clearance` (mm)
+    keeps its centreline from `other`'s, mm: both half widths and the larger
+    of both clearances, as from an unselected track; None for a chain of its
+    net, since copper of one net may come close, overlap or cross."""
+    # Tracks have no holes, so the keeper's hole clearance is never asked.
+    keeper = _Keeper(net, width / 2, clearance, HOLE_CLEARANCE)
+    return keeper.copper(other.net, other.width / 2, other.clearance)
 
 
-def _chains_field(
+def chains_field(
     inflated: Iterable[tuple[ChainCentreline, float | None]],
 ) -> ChainField:
     """The centrelines as a field, each inflated by its own amount; those
@@ -1171,7 +1161,7 @@ def chain_obstacles_for_via(
     margin of `zones`, the zones the via stays inside on the chains' layer.
     A chain of the via's net is no obstacle.
     """
-    return _chains_field(
+    return chains_field(
         (
             o,
             via_chain_inflation(

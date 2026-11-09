@@ -210,8 +210,8 @@ from kibends.energy import (
 from kibends.neighbours import (
     ChainInput,
     chain_field,
-    kept_spans,
     neighbour_field,
+    obstacle_spans,
 )
 from kibends.obstacles import (
     HOLE_CLEARANCE,
@@ -1195,8 +1195,7 @@ def _body(member: Member) -> ChainInput:
 
 def _viewer(member: Member) -> tuple[ChainInput, Mapping[str, ChainInput] | None]:
     """The chain a member keeps clear of the others as, and, for a section,
-    that chain under each of its nets, as `neighbours.neighbour_field`
-    takes them."""
+    that chain under each of its nets, as `neighbours.obstacle_spans` takes them."""
     if isinstance(member, PairBlock):
         return member.facing, member.as_net
     return member, None
@@ -1235,11 +1234,10 @@ def seen_parts(
     rings: Sequence[Mapping[int, float]] = (),
 ) -> Seen:
     """For each chain or section at its polyline, the others on its layer at
-    theirs as `neighbours.neighbour_field` shows them to it: another net's
-    chain whole, inflated by both half widths and the larger clearance, and
-    nothing of a chain of its net. A section sees as its centreline of the
-    pair's outer extent, which leaves its own nets' chains out near where
-    they touch it (`PairBlock.as_net`), and is seen as its two tracks. Each
+    theirs as `neighbours.obstacle_spans` shows them to it, the rule
+    `neighbours.neighbour_field` builds its field by. A section sees as its
+    centreline of the pair's outer extent under either of its nets
+    (`PairBlock.as_net`), and is seen as its two tracks. Each
     via of `rings` is seen by the members it names, inflated by the distance
     it gives."""
     lines = [
@@ -1249,8 +1247,6 @@ def seen_parts(
     seen: list[SeenParts] = []
     for i, member in enumerate(chains):
         own, as_net = _viewer(member)
-        me = own.centreline
-        nets = as_net or {}
         vertices: list[IntArray] = [np.empty(0, dtype=np.intp)]
         starts: list[FloatArray] = [np.empty(0)]
         ends: list[FloatArray] = [np.empty(0)]
@@ -1259,25 +1255,18 @@ def seen_parts(
         for j, parts in enumerate(lines):
             for other, points in parts:
                 line += 1
-                them = other.centreline
-                if j == i or other.layer != own.layer or them.net == me.net:
+                if j == i or other.layer != own.layer:
                     continue
-                margin = max(me.clearance, them.clearance)
-                mine = nets.get(them.net)
-                spans = (
-                    None
-                    if mine is None
-                    else kept_spans(
-                        mine, other, points, reach, polylines[i], margin=margin
-                    )
+                kept = obstacle_spans(
+                    own, other, points, reach, polylines[i], as_net=as_net
                 )
-                edge, start, end = _pieces(points, spans)
+                if kept is None:
+                    continue
+                edge, start, end = _pieces(points, kept.spans)
                 vertices.append(first[line - 1] + edge)
                 starts.append(start)
                 ends.append(end)
-                inflations.append(
-                    np.full(len(edge), (me.width + them.width) / 2 + margin)
-                )
+                inflations.append(np.full(len(edge), kept.inflation))
         seeing = [(k, ring[i]) for k, ring in enumerate(rings) if i in ring]
         vertices.append(np.array([first[-1] + 2 * k for k, _ in seeing], dtype=np.intp))
         starts.append(np.zeros(len(seeing)))

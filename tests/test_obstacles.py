@@ -21,6 +21,7 @@ from conftest import (
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
+from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
 from kibends.energy import (
@@ -40,7 +41,6 @@ from kibends.obstacles import (
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
-    chain_obstacles,
 )
 
 LAYER = "F.Cu"

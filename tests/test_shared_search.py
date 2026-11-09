@@ -80,6 +80,7 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     scenarios.via_pair,
     lambda: _pair_tent_over("P"),
     lambda: _pair_tent_over("Q"),
+    lambda: _pair_tent_fanning_out(),
     lambda: scenarios.via_over_bowed("N"),
     lambda: scenarios.via_over_bowed("P"),
     lambda: scenarios.via_over_pinned("N"),
@@ -89,9 +90,10 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     lambda: scenarios.via_grid(3, 3),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-9]),
+    *(make.__name__ for make in SCENARIOS[:-10]),
     "pair_tent_over_its_own_net",
     "pair_tent_over_another_net",
+    "pair_tent_fanning_out",
     "via_over_bowed_same_net",
     "via_over_bowed_other_net",
     "via_over_pinned_same_net",
@@ -107,6 +109,27 @@ def _pair_tent_over(net: str) -> PairsScenario:
     near enough for the two to see each other, away from its fan-outs."""
     bar = selected("bar", net, FreeSpace(), (4.0, 2.2), (5.0, 2.4), (6.0, 2.2))
     return replace(scenarios.pair_tent(), chains=(bar,))
+
+
+def _pair_tent_fanning_out() -> PairsScenario:
+    """`scenarios.pair_tent` with a fan-out of each net leaving its track's
+    end, so that the section leaves each out near where it touches it."""
+    scenario = scenarios.pair_tent()
+    (section,) = scenario.pairs
+    fans = (
+        _fan_out("P", section.a.points[-1], -1.0),
+        _fan_out("N", section.b.points[-1], 0.5),
+    )
+    return replace(scenario, chains=(*scenario.chains, *fans))
+
+
+def _fan_out(net: str, end: FloatArray, drop: float) -> ChainInput:
+    """A chain of `net` from `end`, falling by `drop` over its first mm and
+    then running level."""
+    x, y = float(end[0]), float(end[1])
+    return selected(
+        f"fan {net}", net, FreeSpace(), (x, y), (x + 1.0, y + drop), (x + 2.0, y + drop)
+    )
 
 
 JITTER = 0.03
@@ -465,3 +488,51 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 rtol=1e-12,
                 atol=1e-12,
             )
+
+
+@pytest.mark.parametrize("make", SCENARIOS, ids=IDS)
+def test_the_neighbour_field_is_what_seen_parts_sees(
+    make: Callable[[], Scenario],
+) -> None:
+    """What frozen detection and the best-state guard judge against
+    (`_Problem.neighbour`) is what the energy, the boxes and the edge check
+    see of the other members (`seen_parts`): the same distances, at each
+    member's own points and around them, at the start and moved, a
+    section's leave-out near its own nets' chains included."""
+    scenario = make()
+    rng = np.random.default_rng(0)
+    for problem in _problems(scenario, scenario.params):
+        layout = problem.layout(problem.points)
+        for jitter in (0.0, JITTER):
+            x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
+            polylines, _ = layout.unflatten(x)
+            seen = seen_parts(problem.members, polylines, problem.reach)
+            flat = np.concatenate(
+                [
+                    points
+                    for member, line in zip(problem.members, polylines, strict=True)
+                    for _, points in shown(member, line)
+                ]
+            )
+            everywhere = np.concatenate(polylines)
+            queries = np.concatenate(
+                [
+                    everywhere,
+                    everywhere + rng.uniform(-0.5, 0.5, everywhere.shape),
+                ]
+            )
+            for i in range(len(problem.members)):
+                part = seen[i]
+                a, b = flat[part.vertex], flat[part.vertex + 1]
+                expected, _ = ChainField(
+                    a + part.start[:, None] * (b - a),
+                    a + part.end[:, None] * (b - a),
+                    part.inflation,
+                ).signed_distance(queries)
+                field = problem.neighbour(i, problem.neighbours[i], polylines)
+                got = (
+                    np.full(len(queries), np.inf)
+                    if field is None
+                    else field.signed_distance(queries)[0]
+                )
+                np.testing.assert_allclose(got, expected, rtol=1e-9, atol=1e-9)

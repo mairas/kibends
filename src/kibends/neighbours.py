@@ -29,7 +29,8 @@ from kibends.obstacles import (
     ChainCentreline,
     ChainField,
     CompositeField,
-    chain_obstacles,
+    chain_inflation,
+    chains_field,
 )
 
 # Pins of a section and a chain of its net up to this much farther apart than
@@ -98,52 +99,69 @@ def neighbour_field(
     as_net: Mapping[str, ChainInput] | None = None,
 ) -> ObstacleField | None:
     """The chains of `shown`, each at its points, as obstacles to `own` at
-    `own_points`, by default its starting polyline, in one field; None if
-    nothing is left.
-
-    A chain of `own`'s net is no obstacle. A coupled section's centreline,
-    `own` with `as_net` giving it under either of the pair's nets, keeps
-    clear of those nets' chains as of any other, but leaves each out near
-    where it touches it as that net's chain (`neighbour_centrelines`), and
-    keeps the larger of the two clearances from the rest of it.
-    """
-    me = own.centreline
-    nets = as_net or {}
-    parts: list[ChainCentreline] = []
+    `own_points`, by default its starting polyline, in one field, each as
+    `obstacle_spans` gives it; None if nothing is left."""
+    parts: list[tuple[ChainCentreline, float]] = []
     for other, points in shown:
-        them = other.centreline
-        if them.net == me.net:
-            continue
-        mine = nets.get(them.net)
-        if mine is None:
-            parts.append(replace(them, points=points))
-            continue
-        parts += neighbour_centrelines(
-            mine,
-            other,
-            points,
-            reach,
-            own_points,
-            margin=max(me.clearance, them.clearance),
-        )
+        kept = obstacle_spans(own, other, points, reach, own_points, as_net=as_net)
+        if kept is not None:
+            parts += (
+                (part, kept.inflation)
+                for part in _centrelines(other, points, kept.spans)
+            )
     if not parts:
         return None
-    return chain_obstacles(me.net, me.width, me.clearance, parts)
+    return chains_field(parts)
 
 
-def neighbour_centrelines(
+class ObstacleSpans(NamedTuple):
+    """The stretches of another chain that are obstacles to a chain, and
+    how far it keeps from them."""
+
+    spans: list[tuple[float, float]] | None
+    """Arc lengths along the other's points, as `kept_spans` gives them;
+    None for the whole of it."""
+    inflation: float
+    """The distance kept between the two centrelines, mm."""
+
+
+def obstacle_spans(
     own: ChainInput,
     other: ChainInput,
     points: FloatArray,
     reach: float,
     own_points: FloatArray | None = None,
     *,
-    margin: float,
+    as_net: Mapping[str, ChainInput] | None = None,
+) -> ObstacleSpans | None:
+    """The stretches of `other` at `points` that are obstacles to `own` at
+    `own_points`, by default its starting polyline; None if none is.
+
+    A chain of `own`'s net is no obstacle. Another net's chain is seen whole,
+    inflated by both half widths and the larger clearance
+    (`obstacles.chain_inflation`). A coupled section's centreline, `own`
+    with `as_net` giving it under either of the pair's nets, keeps clear of
+    those nets' chains as of any other, but leaves each out near where it
+    touches it as that net's chain (`kept_spans`), widening its leave-out by
+    the larger clearance it keeps from the rest.
+    """
+    me, them = own.centreline, other.centreline
+    inflation = chain_inflation(me.net, me.width, me.clearance, them)
+    if inflation is None:
+        return None
+    mine = (as_net or {}).get(them.net)
+    if mine is None:
+        return ObstacleSpans(None, inflation)
+    margin = max(me.clearance, them.clearance)
+    spans = kept_spans(mine, other, points, reach, own_points, margin=margin)
+    return ObstacleSpans(spans, inflation)
+
+
+def _centrelines(
+    other: ChainInput, points: FloatArray, spans: Sequence[tuple[float, float]] | None
 ) -> list[ChainCentreline]:
-    """The parts of `other` at `points` that are obstacles to `own`, as
-    `kept_spans` gives them."""
+    """`other` at `points`, cut to the arc-length `spans`, by default whole."""
     them = other.centreline
-    spans = kept_spans(own, other, points, reach, own_points, margin=margin)
     if spans is None:
         return [replace(them, points=points)]
     return [replace(them, points=_cut(points, start, end)) for start, end in spans]
