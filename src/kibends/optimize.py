@@ -714,8 +714,9 @@ def optimize_chains(
     A run given the result of an earlier one on the same inputs as `start`
     starts each problem from that run's best state, the sections held in
     this run excepted, unless that leaves some chain or section of the
-    problem with more violations than its input, or a via newly inside its
-    clearance; then that problem starts from its inputs. Either way the run
+    problem with more violations or more edges across the others than its
+    input, or a via newly inside its clearance; then that problem starts
+    from its inputs. Either way the run
     completes its first outer iteration before it looks at the time limit.
 
     Each outer iteration logs its progress at DEBUG, and at INFO once
@@ -1642,8 +1643,11 @@ class _Problem:
     def resume(self, state: _Resume) -> None:
         """Take `state` as the current shapes of the members that move and
         have one, and the vias' centres, unless that leaves some member with
-        more violations than `allowed` or some via deeper inside its
-        clearance than it started and inside it."""
+        more violations than `allowed`, or with more edges across the others
+        than at its inputs, or some via deeper inside its clearance than it
+        started and inside it. Edges are counted too because a held section
+        is all pins, which `violations` cannot count, and a burst leaves an
+        edge that starts across another member as it is."""
         points, masks = list(self.points), list(self.masks)
         for i in self.free:
             given = state.members[i]
@@ -1653,13 +1657,36 @@ class _Problem:
             at if k in self.free_vias else self.positions[k]
             for k, at in enumerate(state.positions)
         ]
-        if self.guard(points, masks, positions):
+        across = zip(
+            self.edges_across(points, positions),
+            self.edges_across(self.points, self.positions),
+            strict=True,
+        )
+        if self.guard(points, masks, positions) and all(
+            count <= before for count, before in across
+        ):
             self.points, self.masks, self.positions = points, masks, positions
             self.resampled = [
                 done and given is None
                 for done, given in zip(self.resampled, state.members, strict=True)
             ]
             self.moved = True
+
+    def edges_across(
+        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+    ) -> list[int]:
+        """Per member at `polylines`, its edges not clear of the other
+        members and the vias at `positions` as it sees them."""
+        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        flat = _shown_flat(self.members, polylines, positions)
+        return [
+            int(
+                np.count_nonzero(
+                    ~_others(part, flat).field.segments_clear(p[:-1], p[1:])
+                )
+            )
+            for p, part in zip(polylines, seen, strict=True)
+        ]
 
     def guard(
         self,

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import scenarios
 from conftest import Ticking
-from distance_fields import BoolArray, FloatArray, FreeSpace
+from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
     DP_HALF_EXTENT,
@@ -550,6 +550,28 @@ class TestResume:
         np.testing.assert_array_equal(
             again.chains[0].polyline, held_tent.chains[0].polyline
         )
+
+    def test_a_start_across_a_held_section_is_not_taken(self, tent: RunResult) -> None:
+        scenario = scenarios.pair_tent()
+        (bar,) = scenario.chains
+        # The bar starts inside this disc, so a start with one violation is
+        # no more than its inputs had.
+        scenario = replace(
+            scenario, chains=(replace(bar, field=Disc(5.0, 1.695, 0.2)),)
+        )
+        (best,) = tent.chains
+        across = best.polyline.copy()
+        across[1] = (3.05, 2.95)
+        start = replace(tent, chains=(replace(best, polyline=across),))
+
+        again = run(held(scenario), start=start)
+
+        (pair,) = again.pairs
+        bar_after = LineString(again.chains[0].polyline)
+        for track in (pair.a, pair.b):
+            assert LineString(track).distance(bar_after) >= (
+                PAIR_WIDTH + PAIR_CLEARANCE - INSIDE_TOLERANCE
+            )
 
     def test_a_section_resumes_from_its_best_centreline(
         self, over_pad: RunResult
