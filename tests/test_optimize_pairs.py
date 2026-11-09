@@ -24,6 +24,7 @@ from scenarios import (
 )
 from shapely.geometry import LineString, Point
 
+import kibends.members as members_module
 import kibends.optimize as optimize_module
 from kibends.bursts import (
     Burst,
@@ -44,15 +45,10 @@ from kibends.energy import (
     obstacle_reach,
     total_energy,
 )
+from kibends.members import Member, layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline, ChainField
-from kibends.optimize import (
-    INSIDE_TOLERANCE,
-    Member,
-    layer_energy,
-    optimize_chains,
-    seen_parts,
-)
+from kibends.optimize import INSIDE_TOLERANCE, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import find_pairs, lay_out
 from kibends.pairs import (
@@ -472,7 +468,7 @@ class TestTightCorner:
         ) -> TermValue:
             return 0.0, np.zeros_like(points)
 
-        monkeypatch.setattr(optimize_module, "bend_radius_energy", unhinged)
+        monkeypatch.setattr(members_module, "bend_radius_energy", unhinged)
         # Routed wider than the limit: length alone would pull it into the
         # corner, below the limit, and only the self check holds it back.
         (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs

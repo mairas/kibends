@@ -30,16 +30,15 @@ from kibends.energy import (
     obstacle_reach,
     total_energy,
 )
+from kibends.members import layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
-    layer_energy,
     optimize,
     optimize_chains,
-    seen_parts,
 )
 from kibends.polylines import measure, resample
 from kibends.results import PolylineStats, RunResult, Termination

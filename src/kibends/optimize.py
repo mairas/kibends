@@ -1,6 +1,15 @@
 """The optimizer: every chain, coupled section and moving via of a problem
 as one L-BFGS-B problem.
 
+This module holds the run loop (`optimize_chains`), which splits the
+members into problems and gives them bursts until they settle, and
+`_Problem`, one problem's variables, energy, checks and best state. What
+does not depend on a problem lives beside it: `members` (what the members
+see of each other and their summed energy), `polylines` (resampling,
+statistics, violations, shape change and a section's self check),
+`contacts` (the stops that keep a vertex on its contact) and `results`
+(what a run returns).
+
 The energy of a problem is the sum of each chain's energy in its static
 field plus the other chains on its layer (`energy.total_energy` with those
 chains in its field), taken as one function of every free vertex: where a
@@ -27,10 +36,10 @@ others as the pair's outer extent, its own nets' chains included but for
 near its fan-outs (`PairBlock.as_net`), since its other track must keep
 clear of them. The others see its two tracks, a chain of one of the pair's
 nets only the track of the other net, offset from the centreline at each
-evaluation (`shown`), so where the obstacle term
-pulls on a track's edge, the gradient goes back through the offset to the
+evaluation (`members.shown`), so where the obstacle term pulls on a
+track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
-check, a burst moves back what `optimize.SelfCheck` finds: a centreline
+check, a burst moves back what `polylines.SelfCheck` finds: a centreline
 newly bent below its limit, or brought closer to its own parts beyond a
 turn than it may. A held section is fully pinned and not resampled; a run
 given an earlier one's result resumes from it (`optimize_chains`), which
@@ -85,8 +94,9 @@ it.
 A section moves as its centreline and is seen as its two tracks, which
 the others' edge checks see where the burst leaves them; its own edges
 are checked as the pair's outer extent. A burst also moves back what
-`SelfCheck` finds on a section: an edge newly bent below its limit, or its
-parts beyond a turn brought closer than they may (`close_to_itself`).
+`polylines.SelfCheck` finds on a section: an edge newly bent below its
+limit, or its parts beyond a turn brought closer than they may
+(`polylines.close_to_itself`).
 
 A moving via is a member whose one vertex is its centre, inflated by
 `via_chain_inflation` against a member of another net and seen by it so,
@@ -104,8 +114,9 @@ does not see them, nor they it.
 
 A vertex that keeps a pad or a via that stays (`ChainInput.contacts`)
 is free: it has a stop, the clearance hinge at its distance to the
-region's edge (`contact_stops`), which limits without repelling, and the
-check below moves it back if it newly ends outside (`contacts_left`).
+region's edge (`contacts.contact_stops`), which limits without
+repelling, and the check below moves it back if it newly ends outside
+(`contacts.contacts_left`).
 Every state a burst leaves, and so the best state, has it inside.
 
 Vertices and vias that start more than δ inside their clearance are
@@ -150,20 +161,25 @@ from kibends.energy import (
     IntArray,
     Integrand,
     ObstacleField,
-    arc_lengths,
-    bend_radius_energy,
-    edge_integral,
     hinge_integrand,
     obstacle_integrand,
     obstacle_reach,
-    quadrature_points,
-    shape_energy,
+)
+from kibends.members import (
+    Member,
+    body_of,
+    members_energy,
+    pieces_field,
+    pull_answers,
+    seen_parts,
+    shown,
+    shown_flat,
+    viewer_of,
 )
 from kibends.neighbours import (
     ChainInput,
     chain_field,
     neighbour_field,
-    obstacle_spans,
 )
 from kibends.obstacles import (
     HOLE_CLEARANCE,
@@ -183,7 +199,7 @@ from kibends.results import (
     Termination,
     ViaResult,
 )
-from kibends.seen import NeighbourList, Seen, SeenParts, ViaNearest, ViaSight
+from kibends.seen import NeighbourList, Seen, ViaSight
 from kibends.via_moves import MovingVias, free_distances
 from kibends.vias import ViaInput
 
@@ -283,10 +299,6 @@ PRESSED_DEPTH = 2.0
 
 End = tuple[int, int]
 """A chain end: the chain's index and 0 or -1."""
-
-Member = ChainInput | PairBlock
-"""What a problem optimises: a chain, or a coupled section as its
-centreline."""
 
 Resumed = tuple[FloatArray, BoolArray, IntArray]
 """Where a member resumes: its polyline, the vertices that stay and, per
@@ -677,276 +689,6 @@ def _progress(
     )
 
 
-def layer_energy(
-    chains: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    masks: Sequence[BoolArray],
-    params: EnergyParams,
-    short_edge: float,
-    seen: Seen | None = None,
-) -> tuple[float, list[FloatArray]]:
-    """The summed energy of chains and sections of one layer, each in its
-    static field plus what it sees of the others at `polylines`, by default
-    as `seen_parts` finds it there, a section with its bend-radius hinge,
-    and its gradient at every vertex of every chain and centreline, with the
-    rows of `masks` zeroed; raises ValueError if it is not finite.
-
-    A section's centreline is what it keeps clear as, and its two tracks,
-    offset from it, are what the others keep clear of: their part of the
-    gradient is taken back through the offset (`PairBlock.offset_pullback`).
-    """
-    if seen is None:
-        seen = seen_parts(chains, polylines, obstacle_reach(params))
-    value, gradients, _ = members_energy(
-        chains, polylines, masks, params, short_edge, seen, ()
-    )
-    return value, gradients
-
-
-def members_energy(
-    members: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    masks: Sequence[BoolArray],
-    params: EnergyParams,
-    short_edge: float,
-    seen: Seen,
-    positions: Sequence[FloatArray],
-    listed: NeighbourList | None = None,
-) -> tuple[float, list[FloatArray], FloatArray]:
-    """`layer_energy` of members on any layers, each seeing the others on its
-    own as `seen` shows them, with vias at `positions` among them; and the
-    gradient at each via's centre. With `listed`, made for `seen`, each
-    layer looks only at the pieces it lists."""
-    reach = obstacle_reach(params)
-    integrand = obstacle_integrand(params)
-    k = params.points_per_edge
-    lines = [
-        shown(member, points) for member, points in zip(members, polylines, strict=True)
-    ]
-    flat = _flat(lines, positions)
-    at_shown = np.zeros_like(flat)
-    gradients: list[FloatArray] = []
-    value = 0.0
-    every_query = [quadrature_points(points, k) for points in polylines]
-    nearest = seen.nearest(every_query, flat, reach, listed)
-    for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
-        queries = every_query[i]
-        static, static_direction = _body(member).field.signed_distance(queries, reach)
-        near = nearest[i]
-        nearer = near.distance < static
-        distance = np.where(nearer, near.distance, static)
-        direction = np.where(nearer[:, None], near.gradient, static_direction)
-        obstacle, obstacle_gradient, slopes = edge_integral(
-            points, distance, direction, integrand, k
-        )
-        shape, shape_gradient = shape_energy(points, masks[i], short_edge)
-        value += shape + obstacle
-        gradient = shape_gradient + obstacle_gradient
-        if isinstance(member, PairBlock):
-            bend, bend_gradient = bend_radius_energy(
-                points, masks[i], member.limit, params
-            )
-            value += bend
-            gradient += bend_gradient
-        gradients.append(gradient)
-        pulled = np.flatnonzero(nearer & (slopes != 0.0))
-        if len(pulled):
-            piece = near.edge[pulled]
-            start = seen.vertex[piece]
-            along = _parameters(queries[pulled], *seen.segments(piece, flat))
-            t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
-            push = slopes[pulled, None] * near.gradient[pulled]
-            np.add.at(at_shown, start, -push * (1 - t)[:, None])
-            np.add.at(at_shown, start + 1, -push * t[:, None])
-    first = 0
-    for member, points, gradient, parts in zip(
-        members, polylines, gradients, lines, strict=True
-    ):
-        pieces: list[FloatArray] = []
-        for _, part in parts:
-            pieces.append(at_shown[first : first + len(part)])
-            first += len(part)
-        if isinstance(member, PairBlock):
-            gradient += member.offset_pullback(points, *pieces)
-        else:
-            gradient += pieces[0]
-    via_gradients = at_shown[first:].reshape(-1, 2, 2).sum(axis=1)
-    if not (math.isfinite(value) and all(np.all(np.isfinite(g)) for g in gradients)):
-        raise ValueError(f"energy is not finite: {value}")
-    for g, mask in zip(gradients, masks, strict=True):
-        g[mask] = 0.0
-    return value, gradients, via_gradients
-
-
-def shown(member: Member, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
-    """What the others see of a member at `points`: a chain itself, a
-    section its two tracks."""
-    if isinstance(member, PairBlock):
-        return list(zip(member.tracks, member.offset(points), strict=True))
-    return [(member, points)]
-
-
-def _body(member: Member) -> ChainInput:
-    """The chain a member's own energy and pins are those of."""
-    return member.chain if isinstance(member, PairBlock) else member
-
-
-def _viewer(member: Member) -> tuple[ChainInput, Mapping[str, ChainInput] | None]:
-    """The chain a member keeps clear of the others as, and, for a section,
-    that chain under each of its nets, as `neighbours.obstacle_spans` takes them."""
-    if isinstance(member, PairBlock):
-        return member.facing, member.as_net
-    return member, None
-
-
-def _shown_flat(
-    members: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    positions: Sequence[FloatArray] = (),
-) -> FloatArray:
-    """What the others see of every member, polylines one after another,
-    then each via's centre twice, an edge of no length."""
-    return _flat(
-        [shown(member, line) for member, line in zip(members, polylines, strict=True)],
-        positions,
-    )
-
-
-def _flat(
-    lines: Sequence[Sequence[tuple[ChainInput, FloatArray]]],
-    positions: Sequence[FloatArray],
-) -> FloatArray:
-    """`_shown_flat` of the members `shown` as `lines`."""
-    return np.concatenate(
-        [
-            *(points for parts in lines for _, points in parts),
-            *(np.array([at, at]) for at in positions),
-        ]
-    )
-
-
-def seen_parts(
-    chains: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    reach: float,
-    rings: Sequence[Mapping[int, float]] = (),
-) -> Seen:
-    """For each chain or section at its polyline, the others on its layer at
-    theirs as `neighbours.obstacle_spans` shows them to it, the rule
-    `neighbours.neighbour_field` builds its field by. A section sees as its
-    centreline of the pair's outer extent under either of its nets
-    (`PairBlock.as_net`), and is seen as its two tracks. Each
-    via of `rings` is seen by the members it names, inflated by the distance
-    it gives."""
-    lines = [
-        shown(member, points) for member, points in zip(chains, polylines, strict=True)
-    ]
-    first = np.cumsum([0, *(len(points) for parts in lines for _, points in parts)])
-    seen: list[SeenParts] = []
-    for i, member in enumerate(chains):
-        own, as_net = _viewer(member)
-        vertices: list[IntArray] = [np.empty(0, dtype=np.intp)]
-        starts: list[FloatArray] = [np.empty(0)]
-        ends: list[FloatArray] = [np.empty(0)]
-        inflations: list[FloatArray] = [np.empty(0)]
-        line = 0
-        for j, parts in enumerate(lines):
-            for other, points in parts:
-                line += 1
-                if j == i or other.layer != own.layer:
-                    continue
-                kept = obstacle_spans(
-                    own, other, points, reach, polylines[i], as_net=as_net
-                )
-                if kept is None:
-                    continue
-                edge, start, end = _pieces(points, kept.spans)
-                vertices.append(first[line - 1] + edge)
-                starts.append(start)
-                ends.append(end)
-                inflations.append(np.full(len(edge), kept.inflation))
-        seeing = [(k, ring[i]) for k, ring in enumerate(rings) if i in ring]
-        vertices.append(np.array([first[-1] + 2 * k for k, _ in seeing], dtype=np.intp))
-        starts.append(np.zeros(len(seeing)))
-        ends.append(np.ones(len(seeing)))
-        inflations.append(np.array([inflation for _, inflation in seeing]))
-        seen.append(
-            SeenParts(
-                np.concatenate(vertices),
-                np.concatenate(starts),
-                np.concatenate(ends),
-                np.concatenate(inflations),
-            )
-        )
-    return Seen(seen, [_viewer(member)[0].layer for member in chains])
-
-
-def _pieces(
-    points: FloatArray, spans: Sequence[tuple[float, float]] | None
-) -> tuple[IntArray, FloatArray, FloatArray]:
-    """The edges of `points` that the arc-length `spans` cover, by default
-    all of them, and where along each the cover starts and ends."""
-    edges = np.arange(len(points) - 1, dtype=np.intp)
-    if spans is None:
-        return edges, np.zeros(len(edges)), np.ones(len(edges))
-    arc = arc_lengths(points)
-    lengths = np.diff(arc)
-    found: list[IntArray] = [np.empty(0, dtype=np.intp)]
-    starts: list[FloatArray] = [np.empty(0)]
-    ends: list[FloatArray] = [np.empty(0)]
-    for left, right in spans:
-        k = np.flatnonzero((arc[:-1] < right) & (arc[1:] > left))
-        length = np.where(lengths[k] > 0.0, lengths[k], 1.0)
-        found.append(k)
-        starts.append(np.clip((left - arc[k]) / length, 0.0, 1.0))
-        ends.append(np.clip((right - arc[k]) / length, 0.0, 1.0))
-    return np.concatenate(found), np.concatenate(starts), np.concatenate(ends)
-
-
-def _others(seen: SeenParts, flat: FloatArray) -> ChainField:
-    """The pieces of `seen` as obstacles, with the layer's chains at `flat`,
-    their polylines one after another."""
-    a, b = flat[seen.vertex], flat[seen.vertex + 1]
-    along = b - a
-    return ChainField(
-        a + seen.start[:, None] * along, a + seen.end[:, None] * along, seen.inflation
-    )
-
-
-def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> FloatArray:
-    """Where along each segment from starts[i] to ends[i] its point nearest
-    points[i] lies, from 0 to 1."""
-    along = ends - starts
-    squared = np.einsum("ij,ij->i", along, along)
-    projection = np.einsum("ij,ij->i", points - starts, along)
-    return np.clip(projection / np.where(squared > 0.0, squared, 1.0), 0.0, 1.0)
-
-
-def _pull(
-    near: ViaNearest,
-    nearer: BoolArray,
-    at: FloatArray,
-    push: FloatArray,
-    gradients: list[FloatArray],
-    via_gradients: FloatArray,
-) -> None:
-    """Subtract each via's `push` from what `near` found answering it, where
-    that is `nearer` than its static copper: the other via, or the ends of a
-    member's edge in proportion to where along it the via's centre at `at`
-    is nearest."""
-    answered = np.flatnonzero(nearer)
-    member, vertex = near.member[answered], near.vertex[answered]
-    on_via = member < 0
-    np.subtract.at(via_gradients, vertex[on_via], push[answered[on_via]])
-    for j in np.unique(member[~on_via]):
-        edge = answered[member == j]
-        first = near.vertex[edge]
-        t = _parameters(at[edge], near.starts[edge], near.ends[edge])[:, None]
-        gradient = gradients[int(j)]
-        np.subtract.at(gradient, first, (1 - t) * push[edge])
-        np.subtract.at(gradient, first + 1, t * push[edge])
-
-
 def _resample(
     points: FloatArray,
     mask: BoolArray,
@@ -955,7 +697,7 @@ def _resample(
     spacing: float,
     kept: BoolArray | None = None,
 ) -> tuple[FloatArray, BoolArray, IntArray]:
-    """`optimize.resample`, keeping the `loose` ends, the vertices that keep
+    """`polylines.resample`, keeping the `loose` ends, the vertices that keep
     a contact (`contact_of`) and the `kept` vertices where they are, as free
     vertices, and where each contact went."""
     anchors = mask | (contact_of >= 0)
@@ -1064,7 +806,7 @@ class _ProblemBurst:
     vertex pairs."""
     too_close: list[int]
     """Per member, of `rejected_edges`, a section's vertex pairs that came
-    too close to each other (`optimize.close_to_itself`)."""
+    too close to each other (`polylines.close_to_itself`)."""
     via_rejected: list[int]
     """Per via, the edges at the ends it carries that newly crossed, and
     the times it ended newly inside its clearance."""
@@ -1124,7 +866,7 @@ class _Problem:
         # The chains with their junction ends pinned, so that those are
         # never frozen: their own masks below leave them loose.
         self.members: list[Member] = [*_pinned(chains, self.groups), *sections]
-        self.bodies = [_body(member) for member in self.members]
+        self.bodies = [body_of(member) for member in self.members]
         self.neighbours = [
             [
                 j
@@ -1236,7 +978,7 @@ class _Problem:
         more violations than `allowed`, or with more edges across the others
         than at its inputs, or some via deeper inside its clearance than it
         started and inside it. Edges are counted too because a held section
-        is all pins, which `violations` cannot count, and a burst leaves an
+        is all pins, which `polylines.violations` cannot count, and a burst leaves an
         edge that starts across another member as it is."""
         points, masks = list(self.points), list(self.masks)
         contact_of = list(self.contact_of)
@@ -1270,9 +1012,13 @@ class _Problem:
         """Per member at `polylines`, its edges not clear of the other
         members and the vias at `positions` as it sees them."""
         seen = seen_parts(self.members, polylines, self.reach, self.rings)
-        flat = _shown_flat(self.members, polylines, positions)
+        flat = shown_flat(self.members, polylines, positions)
         return [
-            int(np.count_nonzero(~_others(part, flat).segments_clear(p[:-1], p[1:])))
+            int(
+                np.count_nonzero(
+                    ~pieces_field(part, flat).segments_clear(p[:-1], p[1:])
+                )
+            )
             for p, part in zip(polylines, seen, strict=True)
         ]
 
@@ -1301,7 +1047,7 @@ class _Problem:
     ) -> ObstacleField | None:
         """The members `others` at `polylines` as obstacles to member i at
         its own."""
-        own, as_net = _viewer(self.members[i])
+        own, as_net = viewer_of(self.members[i])
         return neighbour_field(
             own,
             [part for j in others for part in shown(self.members[j], polylines[j])],
@@ -1389,7 +1135,7 @@ class _Problem:
             value += float(self.via_diameters @ term)
             push = (self.via_diameters * slope)[:, None] * direction
             via_gradients[self.free_vias] += push
-            _pull(near, nearer, at, push, gradients, via_gradients)
+            pull_answers(near, nearer, at, push, gradients, via_gradients)
         return value, gradients, via_gradients
 
     def via_statics(self, at: FloatArray) -> tuple[FloatArray, FloatArray]:
@@ -1410,7 +1156,7 @@ class _Problem:
 
     def left(self, i: int, points: FloatArray) -> BoolArray:
         """Member i's vertices at `points` that lie outside the contact
-        they keep (`contacts_left`)."""
+        they keep (`contacts.contacts_left`)."""
         if i not in self.sliding:
             return np.zeros(len(points), dtype=bool)
         return contacts_left(points, self.contact_of[i], self.within[i])
@@ -1432,9 +1178,9 @@ class _Problem:
         listed: NeighbourList | None = None,
     ) -> tuple[float, list[FloatArray], FloatArray]:
         """The problem's energy, by default with what each member sees of
-        the others as `seen_parts` finds it at `polylines`, and its gradient
+        the others as `members.seen_parts` finds it at `polylines`, and its gradient
         at every vertex and every via's centre; `listed` as for
-        `members_energy`."""
+        `members.members_energy`."""
         if seen is None:
             seen = seen_parts(self.members, polylines, self.reach, self.rings)
         value, gradients, via_gradients = members_energy(
@@ -1615,9 +1361,9 @@ class _Problem:
         lays them there where a chord cuts a corner and moves them out
         again."""
         seen = seen_parts(self.members, polylines, self.reach, self.rings)
-        flat = _shown_flat(self.members, polylines, positions)
+        flat = shown_flat(self.members, polylines, positions)
         return [
-            _others(part, flat).signed_distance(points)[0]
+            pieces_field(part, flat).signed_distance(points)[0]
             < -PRESSED_DEPTH * self.settings.frozen_depth
             for points, part in zip(polylines, seen, strict=True)
         ]
@@ -1665,7 +1411,7 @@ class _Problem:
         problem, with what moved back where edges newly crossed static
         copper or another member's new shape, a section newly bent below its
         limit or brought its parts beyond a turn too close
-        (`optimize.SelfCheck`) or a via ended newly inside its clearance."""
+        (`polylines.SelfCheck`) or a via ended newly inside its clearance."""
         members = self.members
         positions = self.positions
         layout = self.layout(starts)
@@ -1674,13 +1420,13 @@ class _Problem:
         seen = seen_parts(members, starts, self.reach, self.rings)
         objective = self.objective(layout, seen)
         x0 = layout.x0
-        flat_start = _shown_flat(members, starts, positions)
+        flat_start = shown_flat(members, starts, positions)
         static_before = [
             body.field.segments_clear(s[:-1], s[1:])
             for body, s in zip(self.bodies, starts, strict=True)
         ]
         others_before = [
-            _others(seen[i], flat_start).segments_clear(s[:-1], s[1:])
+            pieces_field(seen[i], flat_start).segments_clear(s[:-1], s[1:])
             for i, s in enumerate(starts)
         ]
         # Only a vertex that newly leaves its contact moves back, so that
@@ -1703,13 +1449,13 @@ class _Problem:
             """What `_Round` counts at `x`, and the coordinates of the
             variables to move back."""
             polylines, centres = layout.unflatten(x)
-            flat = _shown_flat(members, polylines, centres)
+            flat = shown_flat(members, polylines, centres)
             back = np.zeros(count, dtype=bool)
             counts: list[tuple[int, int]] = []
             via_counts = [0] * len(self.vias)
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
-                others = _others(seen[i], flat)
+                others = pieces_field(seen[i], flat)
                 crossing = (
                     static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
                 ) | (others_before[i] & ~others.segments_clear(a, b))
