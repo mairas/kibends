@@ -16,7 +16,6 @@ from kibends.neighbours import (
     _leave_out,  # pyright: ignore[reportPrivateUsage]
     _vertex_at,  # pyright: ignore[reportPrivateUsage]
     kept_spans,
-    neighbour_centrelines,
 )
 from kibends.obstacles import ChainCentreline
 
@@ -40,11 +39,26 @@ def chain(name: str, *xy: tuple[float, float]) -> ChainInput:
     )
 
 
+def kept(own: ChainInput, other: ChainInput) -> list[FloatArray]:
+    """The stretches of `other` that `kept_spans` keeps as obstacles to
+    `own`, each as its two ends."""
+    points = other.centreline.points
+    spans = kept_spans(own, other, points, REACH, margin=MARGIN)
+    arc = arc_lengths(points)
+    return [
+        np.array(
+            [
+                [np.interp(at, arc, points[:, 0]), np.interp(at, arc, points[:, 1])]
+                for at in span
+            ]
+        )
+        for span in ([(0.0, float(arc[-1]))] if spans is None else spans)
+    ]
+
+
 def kept_start(own: ChainInput, other: ChainInput) -> FloatArray:
-    (part,) = neighbour_centrelines(
-        own, other, other.centreline.points, REACH, margin=MARGIN
-    )
-    return part.points[0]
+    (part,) = kept(own, other)
+    return part[0]
 
 
 OWN = chain("own", (0.0, 0.0), (LEG, 0.0))
@@ -72,27 +86,19 @@ def test_a_stub_ending_beside_a_chain_is_kept_from_where_it_clears() -> None:
     bar.fixed[1] = True
     stub = chain("stub", (2.0, -3.0), (2.0, -0.1))
 
-    (part,) = neighbour_centrelines(
-        bar, stub, stub.centreline.points, REACH, margin=MARGIN
-    )
-    left, right = neighbour_centrelines(
-        stub, bar, bar.centreline.points, REACH, margin=MARGIN
-    )
+    (part,) = kept(bar, stub)
+    left, right = kept(stub, bar)
 
-    assert part.points[-1] == pytest.approx((2.0, -CLEAR))
-    assert math.dist(left.points[-1], (2.0, -0.1)) == pytest.approx(CLEAR)
-    assert math.dist(right.points[0], (2.0, -0.1)) == pytest.approx(CLEAR)
+    assert part[-1] == pytest.approx((2.0, -CLEAR))
+    assert math.dist(left[-1], (2.0, -0.1)) == pytest.approx(CLEAR)
+    assert math.dist(right[0], (2.0, -0.1)) == pytest.approx(CLEAR)
 
 
 def test_a_neighbour_departing_alongside_is_left_out_on_that_side() -> None:
     own = chain("own", (0.0, 0.0), (2 * LEG, 0.0))
     alongside = chain("alongside", (0.0, 0.1), (LEG, 0.1))
 
-    parts = neighbour_centrelines(
-        own, alongside, alongside.centreline.points, REACH, margin=MARGIN
-    )
-
-    assert parts == []
+    assert kept(own, alongside) == []
 
 
 def test_a_neighbour_touched_twice_is_kept_around_both_touches() -> None:
@@ -101,12 +107,10 @@ def test_a_neighbour_touched_twice_is_kept_around_both_touches() -> None:
     tips = ((2.0, -0.1), (4.0, -0.1))
     arch = chain("arch", tips[0], (2.0, -3.0), (4.0, -3.0), tips[1])
 
-    parts = neighbour_centrelines(
-        arch, bar, bar.centreline.points, REACH, margin=MARGIN
-    )
+    parts = kept(arch, bar)
 
     assert len(parts) == 3
-    first, middle, last = (p.points for p in parts)
+    first, middle, last = parts
     assert math.dist(first[-1], tips[0]) == pytest.approx(CLEAR)
     assert math.dist(middle[0], tips[0]) == pytest.approx(CLEAR)
     assert math.dist(middle[-1], tips[1]) == pytest.approx(CLEAR)

@@ -20,14 +20,17 @@ import numpy as np
 import pytest
 import scenarios
 from distance_fields import FloatArray, FreeSpace
+from reference_fields import chain_obstacles_for_via, via_obstacles_for_via
 from scenarios import ChainsScenario, PairsScenario, ViasScenario, selected
+from shapely.geometry import box
 
 import kibends.optimize as optimize_module
-from kibends.bursts import DEFAULT_SETTINGS
+from kibends.bursts import DEFAULT_SETTINGS, point_distance
 from kibends.energy import (
     BoolArray,
     EnergyParams,
     IntArray,
+    ObstacleField,
     bend_radius_energy,
     edge_integral,
     obstacle_integrand,
@@ -36,7 +39,13 @@ from kibends.energy import (
     shape_energy,
 )
 from kibends.neighbours import ChainInput, kept_spans
-from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainField
+from kibends.obstacles import (
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
+    ChainField,
+    CompositeField,
+    zones_on,
+)
 from kibends.optimize import (
     LIST_SKIN,
     Member,
@@ -47,6 +56,7 @@ from kibends.optimize import (
     shown,
 )
 from kibends.pair_blocks import PairBlock, pair_block
+from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
 
 Scenario = ChainsScenario | PairsScenario | ViasScenario
@@ -80,6 +90,7 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     scenarios.via_pair,
     lambda: _pair_tent_over("P"),
     lambda: _pair_tent_over("Q"),
+    lambda: _pair_tent_fanning_out(),
     lambda: scenarios.via_over_bowed("N"),
     lambda: scenarios.via_over_bowed("P"),
     lambda: scenarios.via_over_pinned("N"),
@@ -89,9 +100,10 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     lambda: scenarios.via_grid(3, 3),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-9]),
+    *(make.__name__ for make in SCENARIOS[:-10]),
     "pair_tent_over_its_own_net",
     "pair_tent_over_another_net",
+    "pair_tent_fanning_out",
     "via_over_bowed_same_net",
     "via_over_bowed_other_net",
     "via_over_pinned_same_net",
@@ -107,6 +119,27 @@ def _pair_tent_over(net: str) -> PairsScenario:
     near enough for the two to see each other, away from its fan-outs."""
     bar = selected("bar", net, FreeSpace(), (4.0, 2.2), (5.0, 2.4), (6.0, 2.2))
     return replace(scenarios.pair_tent(), chains=(bar,))
+
+
+def _pair_tent_fanning_out() -> PairsScenario:
+    """`scenarios.pair_tent` with a fan-out of each net leaving its track's
+    end, so that the section leaves each out near where it touches it."""
+    scenario = scenarios.pair_tent()
+    (section,) = scenario.pairs
+    fans = (
+        _fan_out("P", section.a.points[-1], -1.0),
+        _fan_out("N", section.b.points[-1], 0.5),
+    )
+    return replace(scenario, chains=(*scenario.chains, *fans))
+
+
+def _fan_out(net: str, end: FloatArray, drop: float) -> ChainInput:
+    """A chain of `net` from `end`, falling by `drop` over its first mm and
+    then running level."""
+    x, y = float(end[0]), float(end[1])
+    return selected(
+        f"fan {net}", net, FreeSpace(), (x, y), (x + 1.0, y + drop), (x + 2.0, y + drop)
+    )
 
 
 JITTER = 0.03
@@ -465,3 +498,184 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 rtol=1e-12,
                 atol=1e-12,
             )
+
+
+@pytest.mark.parametrize("make", SCENARIOS, ids=IDS)
+def test_the_neighbour_field_is_what_seen_parts_sees(
+    make: Callable[[], Scenario],
+) -> None:
+    """What frozen detection and the best-state guard judge against
+    (`_Problem.neighbour`) is what the energy, the boxes and the edge check
+    see of the other members (`seen_parts`): the same distances, at each
+    member's own points and around them, at the start and moved, a
+    section's leave-out near its own nets' chains included."""
+    scenario = make()
+    rng = np.random.default_rng(0)
+    for problem in _problems(scenario, scenario.params):
+        layout = problem.layout(problem.points)
+        for jitter in (0.0, JITTER):
+            x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
+            polylines, _ = layout.unflatten(x)
+            seen = seen_parts(problem.members, polylines, problem.reach)
+            flat = np.concatenate(
+                [
+                    points
+                    for member, line in zip(problem.members, polylines, strict=True)
+                    for _, points in shown(member, line)
+                ]
+            )
+            everywhere = np.concatenate(polylines)
+            queries = np.concatenate(
+                [
+                    everywhere,
+                    everywhere + rng.uniform(-0.5, 0.5, everywhere.shape),
+                ]
+            )
+            for i in range(len(problem.members)):
+                part = seen[i]
+                a, b = flat[part.vertex], flat[part.vertex + 1]
+                expected, _ = ChainField(
+                    a + part.start[:, None] * (b - a),
+                    a + part.end[:, None] * (b - a),
+                    part.inflation,
+                ).signed_distance(queries)
+                field = problem.neighbour(i, problem.neighbours[i], polylines)
+                got = (
+                    np.full(len(queries), np.inf)
+                    if field is None
+                    else field.signed_distance(queries)[0]
+                )
+                np.testing.assert_allclose(got, expected, rtol=1e-9, atol=1e-9)
+
+
+def _reference_free_distance(
+    vias: MovingVias,
+    v: int,
+    positions: Sequence[FloatArray],
+    polylines: Sequence[FloatArray],
+) -> float:
+    """Via v's free distance as the frozen judgement takes it, from fields
+    of its own: its limits, the chains of other nets on each layer it spans
+    with its zones there, and the other vias by its own zones alone."""
+    given = vias.vias[v]
+    via = given.via
+    fields: list[ObstacleField] = [given.limits]
+    for layer in dict.fromkeys(chain.layer for chain in vias.chains):
+        near = [
+            replace(chain.centreline, points=points)
+            for chain, points in zip(vias.chains, polylines, strict=True)
+            if chain.layer == layer
+            and via.reaches(layer)
+            and chain.centreline.net != via.net
+        ]
+        fields.append(
+            chain_obstacles_for_via(
+                via,
+                near,
+                vias.clearance_of,
+                hole_clearance=vias.hole_clearance,
+                zones=zones_on(given.zones, [layer]),
+            )
+        )
+    others = via_obstacles_for_via(
+        via,
+        [vias.at(u, positions) for u in range(len(vias.vias)) if u != v],
+        vias.clearance_of,
+        hole_clearance=vias.hole_clearance,
+        hole_to_hole=vias.hole_to_hole,
+        zones=given.zones,
+    )
+    if others is not None:
+        fields.append(others)
+    return point_distance(CompositeField(fields), positions[v])
+
+
+VIA_SCENARIOS = [
+    (make, name)
+    for make, name in zip(SCENARIOS, IDS, strict=True)
+    if name.startswith("via_")
+]
+
+
+ZONE_CLEARANCE = 0.4
+"""Wider than the scenarios' netclass clearance, so that a zone's clearance
+sets how far its via keeps from other-net copper, mm."""
+PLANE = box(-50.0, -50.0, 50.0, 50.0)
+"""A zone region reaching every via of the scenarios, far from all of them."""
+
+
+def _zoned(
+    scenario: ViasScenario, zones: Callable[[int], tuple[ViaZone, ...]]
+) -> ViasScenario:
+    """`scenario` with each via k staying inside `zones(k)`."""
+    return replace(
+        scenario,
+        vias=tuple(replace(via, zones=zones(k)) for k, via in enumerate(scenario.vias)),
+    )
+
+
+def _plane(layer: str, min_width: float = 0.2) -> ViaZone:
+    return ViaZone(f"plane {layer}", {layer: PLANE}, min_width, ZONE_CLEARANCE)
+
+
+ZONED_VIA_SCENARIOS: list[tuple[Callable[[], Scenario], str]] = [
+    (
+        lambda: _zoned(scenarios.via_beside_chain(), lambda _: (_plane("In1.Cu"),)),
+        "via_beside_chain_zoned_on_its_layer",
+    ),
+    (
+        lambda: _zoned(scenarios.via_beside_chain(), lambda _: (_plane("In2.Cu"),)),
+        "via_beside_chain_zoned_on_another_layer",
+    ),
+    (
+        lambda: _zoned(
+            scenarios.via_grid(3, 2, via_every=1),
+            lambda k: (_plane("B.Cu" if k % 2 else "F.Cu"),),
+        ),
+        "via_grid_zoned_on_alternating_layers",
+    ),
+    (
+        lambda: _zoned(
+            scenarios.via_pair(), lambda k: (_plane("In1.Cu", 0.2 + 0.6 * k),)
+        ),
+        "via_pair_zoned_with_different_margins",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "make",
+    [make for make, _ in (*VIA_SCENARIOS, *ZONED_VIA_SCENARIOS)],
+    ids=[n for _, n in (*VIA_SCENARIOS, *ZONED_VIA_SCENARIOS)],
+)
+def test_the_free_distance_judging_vias_frozen_is_their_own_fields(
+    make: Callable[[], Scenario],
+) -> None:
+    """The free distance `_problems` freezes vias by (`MovingVias.distances`)
+    is what a field of each via's own view gives, at the start and moved,
+    with each via's zones on the layers they lie on, and by its own zones
+    alone against another via."""
+    scenario = make()
+    assert isinstance(scenario, ViasScenario)
+    vias = MovingVias(
+        list(scenario.chains), list(scenario.vias), HOLE_CLEARANCE, HOLE_TO_HOLE
+    )
+    rng = np.random.default_rng(0)
+    originals = [chain.centreline.points for chain in vias.chains]
+    for jitter in (0.0, JITTER):
+        positions = [
+            at + jitter * rng.uniform(-1.0, 1.0, 2) for at in vias.starting_positions()
+        ]
+        polylines = [
+            points + jitter * rng.uniform(-1.0, 1.0, points.shape)
+            for points in originals
+        ]
+        np.testing.assert_allclose(
+            vias.distances(positions, polylines),
+            [
+                _reference_free_distance(vias, v, positions, polylines)
+                for v in range(len(vias.vias))
+            ],
+            rtol=1e-12,
+            atol=1e-12,
+        )

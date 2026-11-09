@@ -1,11 +1,12 @@
-"""Moving vias in the optimizer: the chain ends they carry, and the fields
-they make and see.
+"""Moving vias in the optimizer: the chain ends they carry, the fields they
+make and what they see.
 
 The optimizer (`kibends.optimize`) makes each moving via's centre a
 variable of its problem and carries the chain ends it joins at their
 offsets from it.
 """
 
+import math
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 
@@ -20,14 +21,12 @@ from kibends.energy import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
-    CompositeField,
-    chain_obstacles_for_via,
     moving_via_obstacles,
     via_chain_inflation,
-    via_obstacles_for_via,
     via_via_inflation,
     zones_on,
 )
+from kibends.seen import ViaSight
 from kibends.snapshot import Via
 from kibends.vias import ViaInput
 
@@ -50,7 +49,8 @@ Positions = Sequence[FloatArray]
 
 class MovingVias:
     """The moving vias of a run: the chain ends they carry, and the fields
-    they make and see with the vias at the positions the caller holds.
+    they make and what they see, with the vias at the positions the caller
+    holds.
 
     A via and a chain are near when the chain is on a layer the via spans
     and is of another net: each is then in the other's field. Copper of one
@@ -119,10 +119,6 @@ class MovingVias:
         x, y = positions[v]
         return replace(self.vias[v].via, position=(float(x), float(y)))
 
-    def chains_near(self, v: int) -> list[int]:
-        """The chains near via v: in its field, and it in theirs."""
-        return self._chains_near[v]
-
     def via_obstacles_for_chain(
         self, i: int, positions: Positions
     ) -> ObstacleField | None:
@@ -142,64 +138,10 @@ class MovingVias:
             zones=self._zones_by_id,
         )
 
-    def field(
-        self,
-        v: int,
-        positions: Positions,
-        polylines: Sequence[FloatArray],
-    ) -> ObstacleField:
-        """Via v's field with the chains near it at `polylines` and the other
-        vias at `positions`, by v's own zones alone: two vias keep the
-        larger of their zone distances, so when v starts inside the other's,
-        the other starts inside it too, stays, and is seen without its
-        zones (`standing`)."""
-        via, zones = self.vias[v].via, self.vias[v].zones
-        layers = dict.fromkeys(self.chains[i].layer for i in self._chains_near[v])
-        parts: list[ObstacleField] = [
-            self.vias[v].limits,
-            *(
-                chain_obstacles_for_via(
-                    via,
-                    [
-                        replace(self.chains[i].centreline, points=polylines[i])
-                        for i in self._chains_near[v]
-                        if self.chains[i].layer == layer
-                    ],
-                    self.clearance_of,
-                    hole_clearance=self.hole_clearance,
-                    zones=zones_on(zones, [layer]),
-                )
-                for layer in layers
-            ),
-        ]
-        moving = via_obstacles_for_via(
-            via,
-            [self.at(u, positions) for u in range(len(self.vias)) if u != v],
-            self.clearance_of,
-            hole_clearance=self.hole_clearance,
-            hole_to_hole=self.hole_to_hole,
-            zones=zones,
-        )
-        if moving is not None:
-            parts.append(moving)
-        return CompositeField(parts)
-
-    def ring(self, v: int, i: int) -> float:
-        """The distance chain i's centreline keeps from via v's centre, a
-        chain near it (`chains_near`)."""
-        ring = via_chain_inflation(
-            self.vias[v].via,
-            self.chains[i].centreline,
-            self.clearance_of,
-            hole_clearance=self.hole_clearance,
-            zones=zones_on(self.vias[v].zones, [self.chains[i].layer]),
-        )
-        assert ring is not None
-        return ring
-
-    def apart(self, v: int, u: int) -> float | None:
-        """The distance via v's centre keeps from via u's, the same as u's
-        from v's; None if no rule applies."""
+    def apart(self, v: int, u: int, *, own_zones_only: bool = False) -> float | None:
+        """The distance via v's centre keeps from via u's; None if no rule
+        applies. It is the same as u's from v's, the larger of both vias'
+        zone distances, unless `own_zones_only` counts v's zones alone."""
         return via_via_inflation(
             self.vias[v].via,
             self.vias[u].via,
@@ -207,10 +149,64 @@ class MovingVias:
             hole_clearance=self.hole_clearance,
             hole_to_hole=self.hole_to_hole,
             zones=self.vias[v].zones,
-            other_zones=self.vias[u].zones,
+            other_zones=() if own_zones_only else self.vias[u].zones,
         )
 
-    def distance(
-        self, v: int, positions: Positions, polylines: Sequence[FloatArray]
-    ) -> float:
-        return point_distance(self.field(v, positions, polylines), positions[v])
+    def rings(self, v: int) -> dict[int, float]:
+        """The chains near via v, in what it sees and seeing it, and how far
+        each keeps its centreline from v's centre, by v's zones on that
+        chain's layer."""
+        via, zones = self.vias[v].via, self.vias[v].zones
+        rings: dict[int, float] = {}
+        for i in self._chains_near[v]:
+            ring = via_chain_inflation(
+                via,
+                self.chains[i].centreline,
+                self.clearance_of,
+                hole_clearance=self.hole_clearance,
+                zones=zones_on(zones, [self.chains[i].layer]),
+            )
+            assert ring is not None
+            rings[i] = ring
+        return rings
+
+    def distances(
+        self, positions: Positions, polylines: Sequence[FloatArray]
+    ) -> list[float]:
+        """Each via's free distance (`free_distances`) with the chains near
+        it at `polylines` and the other vias at `positions`, by its own zones
+        alone: two vias keep the larger of their zone distances, so when a
+        via starts inside the other's, the other starts inside it too,
+        stays, and is seen without its zones (`standing`)."""
+        count = len(self.vias)
+        apart = [
+            {
+                u: d
+                for u in range(count)
+                if u != v and (d := self.apart(v, u, own_zones_only=True)) is not None
+            }
+            for v in range(count)
+        ]
+        sight = ViaSight(
+            range(count),
+            [self.rings(v) for v in range(count)],
+            apart,
+            len(self.chains),
+        )
+        return free_distances(self.vias, sight, polylines, positions)
+
+
+def free_distances(
+    vias: Sequence[ViaInput],
+    sight: ViaSight,
+    polylines: Sequence[FloatArray],
+    positions: Positions,
+) -> list[float]:
+    """The free distance of each via `sight` looks from, in order: to its
+    static copper and stops (`ViaInput.limits`), and to what `sight` finds
+    of the chains or members at `polylines` and the vias at `positions`."""
+    cross = sight.nearest(polylines, positions, math.inf).distance
+    return [
+        min(point_distance(vias[k].limits, positions[k]), float(d))
+        for k, d in zip(map(int, sight.looking), cross, strict=True)
+    ]

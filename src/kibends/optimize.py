@@ -210,8 +210,8 @@ from kibends.energy import (
 from kibends.neighbours import (
     ChainInput,
     chain_field,
-    kept_spans,
     neighbour_field,
+    obstacle_spans,
 )
 from kibends.obstacles import (
     HOLE_CLEARANCE,
@@ -222,7 +222,7 @@ from kibends.obstacles import (
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.pairs import BendCheck, bend_radii, too_tight
 from kibends.seen import NeighbourList, Seen, SeenParts, ViaNearest, ViaSight
-from kibends.via_moves import MovingVias
+from kibends.via_moves import MovingVias, free_distances
 from kibends.vias import ViaInput
 
 # A span only slightly longer than a multiple of the spacing gets no extra
@@ -877,8 +877,8 @@ def _problems(
     originals = [chain.centreline.points for chain in vias.chains]
     positions = vias.starting_positions()
     frozen = [
-        vias.distance(v, positions, originals) < -settings.bubble_tolerance
-        for v in range(len(vias.vias))
+        distance < -settings.bubble_tolerance
+        for distance in vias.distances(positions, originals)
     ]
     vias = vias.standing({v for v, still in enumerate(frozen) if still})
     # The ends a via that stays would carry are pinned, as at an unselected one.
@@ -958,7 +958,7 @@ def _problem_via(
         vias.vias[v],
         frozen,
         carried,
-        {local[i]: vias.ring(v, i) for i in vias.chains_near(v) if i in local},
+        {local[i]: ring for i, ring in vias.rings(v).items() if i in local},
         apart,
     )
 
@@ -1195,8 +1195,7 @@ def _body(member: Member) -> ChainInput:
 
 def _viewer(member: Member) -> tuple[ChainInput, Mapping[str, ChainInput] | None]:
     """The chain a member keeps clear of the others as, and, for a section,
-    that chain under each of its nets, as `neighbours.neighbour_field`
-    takes them."""
+    that chain under each of its nets, as `neighbours.obstacle_spans` takes them."""
     if isinstance(member, PairBlock):
         return member.facing, member.as_net
     return member, None
@@ -1235,11 +1234,10 @@ def seen_parts(
     rings: Sequence[Mapping[int, float]] = (),
 ) -> Seen:
     """For each chain or section at its polyline, the others on its layer at
-    theirs as `neighbours.neighbour_field` shows them to it: another net's
-    chain whole, inflated by both half widths and the larger clearance, and
-    nothing of a chain of its net. A section sees as its centreline of the
-    pair's outer extent, which leaves its own nets' chains out near where
-    they touch it (`PairBlock.as_net`), and is seen as its two tracks. Each
+    theirs as `neighbours.obstacle_spans` shows them to it, the rule
+    `neighbours.neighbour_field` builds its field by. A section sees as its
+    centreline of the pair's outer extent under either of its nets
+    (`PairBlock.as_net`), and is seen as its two tracks. Each
     via of `rings` is seen by the members it names, inflated by the distance
     it gives."""
     lines = [
@@ -1249,8 +1247,6 @@ def seen_parts(
     seen: list[SeenParts] = []
     for i, member in enumerate(chains):
         own, as_net = _viewer(member)
-        me = own.centreline
-        nets = as_net or {}
         vertices: list[IntArray] = [np.empty(0, dtype=np.intp)]
         starts: list[FloatArray] = [np.empty(0)]
         ends: list[FloatArray] = [np.empty(0)]
@@ -1259,25 +1255,18 @@ def seen_parts(
         for j, parts in enumerate(lines):
             for other, points in parts:
                 line += 1
-                them = other.centreline
-                if j == i or other.layer != own.layer or them.net == me.net:
+                if j == i or other.layer != own.layer:
                     continue
-                margin = max(me.clearance, them.clearance)
-                mine = nets.get(them.net)
-                spans = (
-                    None
-                    if mine is None
-                    else kept_spans(
-                        mine, other, points, reach, polylines[i], margin=margin
-                    )
+                kept = obstacle_spans(
+                    own, other, points, reach, polylines[i], as_net=as_net
                 )
-                edge, start, end = _pieces(points, spans)
+                if kept is None:
+                    continue
+                edge, start, end = _pieces(points, kept.spans)
                 vertices.append(first[line - 1] + edge)
                 starts.append(start)
                 ends.append(end)
-                inflations.append(
-                    np.full(len(edge), (me.width + them.width) / 2 + margin)
-                )
+                inflations.append(np.full(len(edge), kept.inflation))
         seeing = [(k, ring[i]) for k, ring in enumerate(rings) if i in ring]
         vertices.append(np.array([first[-1] + 2 * k for k, _ in seeing], dtype=np.intp))
         starts.append(np.zeros(len(seeing)))
@@ -1740,11 +1729,9 @@ class _Problem:
         """Each moving via's free distance, in order: to its static copper,
         the members near it at `polylines` and the other vias at
         `positions`."""
-        cross = self.via_sight.nearest(polylines, positions, math.inf).distance
-        return [
-            min(point_distance(self.vias[k].given.limits, positions[k]), float(d))
-            for k, d in zip(self.free_vias, cross, strict=True)
-        ]
+        return free_distances(
+            [via.given for via in self.vias], self.via_sight, polylines, positions
+        )
 
     def via_energy(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]

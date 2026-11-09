@@ -21,6 +21,7 @@ from conftest import (
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType
+from reference_fields import chain_obstacles_for_via, via_obstacles_for_via
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
@@ -32,12 +33,10 @@ from kibends.obstacles import (
     ChainCentreline,
     build_obstacles,
     build_via_obstacles,
-    chain_obstacles_for_via,
     contained,
     moving_via_obstacles,
     own_net_stops,
     via_chain_inflation,
-    via_obstacles_for_via,
 )
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
 

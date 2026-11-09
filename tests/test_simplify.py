@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import scenarios
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
+from reference_fields import chain_obstacles
 from scenarios import (
     DP_HALF_EXTENT,
     PAIR_CLEARANCE,
@@ -18,7 +19,7 @@ from shapely.geometry import LineString
 
 from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, chain_obstacles
+from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
     ChainResult,
     RunResult,
