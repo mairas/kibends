@@ -1,3 +1,10 @@
+"""Problems of several chains and junctions through
+`optimize.optimize_chains`.
+
+The problem's joint energy and gradient are checked against a reference
+built chain by chain (`fields`), and the shared junction's gradient against
+finite differences."""
+
 import itertools
 import math
 import re

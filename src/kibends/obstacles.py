@@ -8,6 +8,18 @@ Distances are measured to the raw geometry and the inflation subtracted,
 which is the exact signed distance to the inflated shape without buffering
 it. The board edge is the outside of the Edge.Cuts outline, inflated the
 same way.
+
+A chain's static field is one per (layer, net, width), from other nets'
+copper, holes, keepouts and the board edge, with every selected track and
+moving via removed (`build_obstacles`); no copper of the chain's net is an
+obstacle. A moving via's field spans every layer it spans, including rule
+areas keeping out vias (`build_via_obstacles`). What only limits a via
+without repelling it is held apart, as the board edge is: the outside of
+where its zones connect it (`containment`) and the fabrication rules
+within its net, hole-to-hole and pad overlap (`own_net_stops`). On a
+zone's layers the via also keeps the zone's clearance and margin from
+other-net copper where that exceeds the netclass rule (`_zone_inflation`),
+so the refill reconnects it wherever the other copper ends up.
 """
 
 import itertools

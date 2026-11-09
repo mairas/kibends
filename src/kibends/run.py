@@ -2,6 +2,24 @@
 
 The command line and the GUI both call `run_smooth` and present the reports
 it hands over; it prints nothing.
+
+`run_smooth` reads the board once, extracts the chains, and, if any
+selected via could have moved but stays fixed, extracts them again with
+that via's copper pinning. With `fixed_vias`, a via that carries no chain
+end is dropped from the candidates before the board is read. It then
+builds the fields, optimizes, simplifies and commits. A coupled section
+the run leaves bent too tightly is held, and the optimizer runs again from
+the previous run's best state. A chain whose result equals its selected
+tracks, and that shares no split track with a changed chain, is left out of
+the commit; nothing is committed when every chain is unchanged and no via
+moved.
+
+Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
+(per-chain, per-pair and per-via figures, termination, abnormal bursts,
+the optimize stage's wall time) to its `on_optimized` callback; it returns
+a `RunReport`, which adds whether it committed and any refusal. Positions
+in reports stay in the board frame; the `coords.UserFrame` they carry is
+what messages print positions in.
 """
 
 import importlib

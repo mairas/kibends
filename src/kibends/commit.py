@@ -1,6 +1,15 @@
 """Replace the tracks of one or more chains, and move the vias they join, in
 KiCad as one undoable commit.
 
+The changed chains' tracks and the moved vias are re-read in one request,
+and the run refuses if any changed since it read them. After the push, the
+created items are added to the editor's selection (`_select`); KiCad
+deselects the deleted ones. The selection is outside the undo history, so
+the run stays one undo step, and since the commit has landed by then, a
+failure to select is logged at debug and the run reports committed. A dry
+run, or one with nothing to commit, never gets here and leaves the
+selection alone.
+
 `commit_label`, `create_checked` and `push_checked` are copied and
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """

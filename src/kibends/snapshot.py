@@ -4,6 +4,19 @@ Everything returned is free of kipy: segments use integer nanometres as
 `kibends.chain` expects, the rest is mm floats and shapely geometry. Every
 coordinate is in KiCad's board frame, with y pointing down.
 
+A run reads the selection and the board once: the copper layers of the
+selection, or every enabled copper layer when a selected via may move.
+`BoardSnapshot.slice` gives one `LayerSnapshot` per layer without further
+requests.
+
+For each candidate via that may move, the snapshot records the zones of
+its net that may connect to it (`ViaZone`, `_via_zones`). kibends never
+reads a zone's fill, which holds where other copper stood at the last
+refill and turns stale once the run moves copper: a zone's region is built
+from outlines and priorities alone (`_zone_region`). Where such a via may
+go is `vias`' to decide (`ZoneUnion`, `zone_unions`). Thermal reliefs,
+island removal, hatched fills and minimum-width necks are not modelled.
+
 The converters `_ring`, `_polygon`, `arc_points`, `circle_points`,
 `_pad_shapes`, `_clearance_override`, the Edge.Cuts outline helpers and the
 canonical layer naming are copied and trimmed from kistitch's snapshot.py

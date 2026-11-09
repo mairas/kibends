@@ -4,6 +4,11 @@ make and what they see.
 The optimizer (`kibends.optimize`) makes each moving via's centre a
 variable of its problem and carries the chain ends it joins at their
 offsets from it.
+
+On a zone's layers a moving via keeps the zone's clearance from the
+chains and vias moving with it. A via that starts inside its clearance
+stays, and is then seen as an unselected via (`MovingVias.distances`,
+`MovingVias.standing`).
 """
 
 import math

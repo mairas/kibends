@@ -1,3 +1,6 @@
+"""Single chains through `optimize.optimize`: shapes, clearance, frozen
+vertices and stop rules, on the scenarios of `tests/scenarios.py`."""
+
 import json
 from dataclasses import replace
 from pathlib import Path

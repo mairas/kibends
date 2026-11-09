@@ -1,4 +1,10 @@
 # pyright: reportPrivateUsage=false
+"""Moving vias through `optimize.optimize_chains`: carried chain ends,
+stitching vias, zone containment and frozen vias.
+
+The problem's energy and gradient with moving vias are checked against a
+reference built via by via (`reference_via_energy`)."""
+
 import math
 from collections.abc import Sequence
 from dataclasses import replace
