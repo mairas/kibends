@@ -1169,3 +1169,29 @@ def test_a_junction_where_a_pair_starts_stays_whole() -> None:
             start = tuple(given.centreline.points[end])
             if start in at.values():
                 assert tuple(chain.polyline[end]) == start
+
+
+SHORT_PART = ((0.0, -5.0), (0.2, -5.0), (0.4, -4.8))
+"""A section's centreline whose end edges are shorter than the direction
+pins' room, so that every vertex is an end or a direction pin, none more
+than a spacing apart; clear of `pair_corner`."""
+
+
+def test_a_section_too_short_to_move_stays_as_routed() -> None:
+    short = scenarios.coupled(FreeSpace(), *SHORT_PART)
+    # Offsetting its centreline would drop track N's vertex of its own.
+    n = short.b.points
+    short = replace(
+        short,
+        b=replace(short.b, points=np.insert(n, 1, (n[0] + n[1]) / 2, axis=0)),
+        b_pinned=np.insert(short.b_pinned, 1, False),
+    )
+    (corner,) = scenarios.pair_corner().pairs
+
+    result = optimize_chains((), scenarios.PARAMS, COARSE, pairs=(short, corner))
+
+    kept, moved = result.pairs
+    np.testing.assert_array_equal(kept.a, short.a.points)
+    np.testing.assert_array_equal(kept.b, short.b.points)
+    assert kept.block.hold is Hold.SHORT
+    assert not np.array_equal(moved.a, corner.a.points)

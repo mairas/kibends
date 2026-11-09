@@ -61,6 +61,7 @@ class Hold(Enum):
     """Why a coupled section stays as it is."""
 
     COPPER = "same-net copper touches it between its ends"
+    SHORT = "it is too short between the copper at its ends to move"
     ROUTING = "its routing bends too tightly for the inner track"
     CROWDING = (
         "the copper around it kept it from rounding a corner too tight for "
@@ -368,10 +369,25 @@ def _start(
     if hold is not None:
         return _held_start(given, a_on_right), hold, None
     start = _moving_start(given, spacing, a_on_right)
+    if not _has_room(given, start, spacing):
+        return _held_start(given, a_on_right), Hold.SHORT, None
     bend = check_bend_radius(start.line, start.gaps.widest, given.a.width)
     if not bend.too_tight:
         return start, None, None
     return _held_start(given, a_on_right), Hold.ROUTING, bend
+
+
+def _has_room(given: PairInput, start: _Start, spacing: float) -> bool:
+    """Whether resampling at `spacing` leaves the centreline a vertex that
+    may move, some stretch between its fixed vertices, its ends and their
+    direction pins, longer than a spacing, and each track is longer than a
+    spacing. A section split at a pin close to another, or to its end, may
+    have no room."""
+    arc = arc_lengths(start.line)[start.fixed]
+    tracks = (given.a.points, given.b.points)
+    return bool((np.diff(arc) > spacing).any()) and all(
+        arc_lengths(track)[-1] > spacing for track in tracks
+    )
 
 
 def _moving_start(given: PairInput, spacing: float, a_on_right: bool) -> _Start:
