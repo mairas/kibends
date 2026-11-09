@@ -697,8 +697,8 @@ class TestSmooth:
                     "--stall-tolerance=0.01",
                     "--stall-window=5",
                     "--max-iterations=50",
-                    "--burst-iterations=50",
-                    "--lbfgs-ftol=1e-9",
+                    "--burst-iterations=40",
+                    "--lbfgs-ftol=1e-8",
                     "--lbfgs-gtol=1e-6",
                     "--time-limit=60",
                 ]
@@ -708,8 +708,8 @@ class TestSmooth:
         s = options.settings
         assert s.settled_change == 0.005
         assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
-        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 50, 60.0)
-        assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
+        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 40, 60.0)
+        assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-8, 1e-6)
 
     def test_no_move_bounds_reaches_the_settings(self) -> None:
         options = cli.smooth_options(cli.parse_args(["smooth", "--no-move-bounds"]))

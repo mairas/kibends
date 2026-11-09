@@ -47,8 +47,8 @@ def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
         return real(*args, **kwargs)
 
     monkeypatch.setattr(bursts_module, "minimize", spy)
-    settings = replace(DEFAULT_SETTINGS, lbfgs_ftol=1e-9, lbfgs_gtol=1e-6)
+    settings = replace(DEFAULT_SETTINGS, lbfgs_ftol=1e-8, lbfgs_gtol=1e-6)
 
     bounded_burst(squared, np.array([1.0, 2.0]), np.ones(2), nothing_crosses, settings)
 
-    assert (seen["ftol"], seen["gtol"]) == (1e-9, 1e-6)
+    assert (seen["ftol"], seen["gtol"]) == (1e-8, 1e-6)
