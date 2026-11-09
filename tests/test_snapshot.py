@@ -48,6 +48,8 @@ from kibends.snapshot import (
     CONTACT_MARGIN,
     BoardSnapshot,
     Disc,
+    GroundNets,
+    GroundSource,
     LayerSnapshot,
     PadKind,
     SelectionError,
@@ -1137,6 +1139,100 @@ class TestViaContacts:
 
         assert snap.via_contacts == {}
         assert fake.reads["get_pad_shapes_as_polygons"] == 1
+
+
+PLANE = kipy_rect(0, 0, 10, 10)
+INNER = (BL.BL_In1_Cu, BL.BL_In2_Cu)
+
+
+def plane(net: str, *layers: BL.ValueType, zone_id: str = "") -> kbt.Zone:
+    return kipy_copper_zone(zone_id or f"{net} plane", net, PLANE, list(layers))
+
+
+def ground_of(fake: FakeBoard, given: Sequence[str] = ()) -> GroundNets:
+    return BoardSnapshot.read(board(fake), ["F.Cu"]).ground_nets(given)
+
+
+class TestGroundNets:
+    def test_a_net_with_zones_on_two_inner_layers_is_ground(self) -> None:
+        fake = FakeBoard(zones=[plane("RET", *INNER), plane("GND", BL.BL_F_Cu)])
+
+        assert ground_of(fake) == GroundNets(
+            frozenset({"RET"}), GroundSource.INNER_ZONES
+        )
+
+    def test_its_inner_layers_may_come_from_separate_zones(self) -> None:
+        fake = FakeBoard(
+            zones=[
+                plane("RET", BL.BL_In1_Cu, zone_id="a"),
+                plane("RET", BL.BL_In2_Cu, zone_id="b"),
+            ]
+        )
+
+        assert ground_of(fake).nets == {"RET"}
+
+    def test_a_power_net_poured_on_two_inner_layers_is_ground_too(self) -> None:
+        fake = FakeBoard(zones=[plane("GND", *INNER), plane("+3V3", *INNER)])
+
+        assert ground_of(fake) == GroundNets(
+            frozenset({"GND", "+3V3"}), GroundSource.INNER_ZONES
+        )
+
+    def test_one_inner_and_one_outer_zone_is_not_enough(self) -> None:
+        fake = FakeBoard(zones=[plane("RET", BL.BL_In1_Cu, BL.BL_B_Cu)])
+
+        assert ground_of(fake) == GroundNets(frozenset(), GroundSource.NONE)
+
+    def test_a_rule_area_does_not_count(self) -> None:
+        keepout = kipy_zone(PLANE, list(INNER), zone_id="keepout")
+        fake = FakeBoard(zones=[plane("RET", BL.BL_In1_Cu), keepout])
+
+        assert ground_of(fake) == GroundNets(frozenset(), GroundSource.NONE)
+
+    @pytest.mark.parametrize("copper", ["zone", "via", "pad"])
+    def test_without_one_gnd_is_ground_when_it_has_copper(self, copper: str) -> None:
+        fake = FakeBoard(zones=[plane("RET", BL.BL_In1_Cu)])
+        if copper == "zone":
+            fake.zones.append(plane("GND", BL.BL_B_Cu))
+        elif copper == "via":
+            fake.vias.append(kipy_via("v", "GND", 5, 5))
+        else:
+            fake.pads.append(kipy_pad("p", "GND", 5, 5))
+
+        assert ground_of(fake) == GroundNets(frozenset({"GND"}), GroundSource.FALLBACK)
+
+    def test_a_gnd_track_alone_is_no_copper_to_fall_back_on(self) -> None:
+        fake = FakeBoard(tracks=[kipy_track("t", "GND", (0, 0), (1, 0))])
+
+        assert ground_of(fake) == GroundNets(frozenset(), GroundSource.NONE)
+
+    def test_given_nets_override_detection(self) -> None:
+        fake = FakeBoard(zones=[plane("GND", *INNER)])
+
+        assert ground_of(fake, ["PGND", "AGND"]) == GroundNets(
+            frozenset({"AGND", "PGND"}), GroundSource.GIVEN
+        )
+
+    def test_copper_nets_hold_zones_vias_and_pads_but_not_tracks(self) -> None:
+        fake = FakeBoard(
+            zones=[plane("Z", BL.BL_F_Cu), kipy_zone(PLANE, [BL.BL_F_Cu])],
+            vias=[kipy_via("v", "V", 5, 5)],
+            pads=[kipy_pad("p", "P", 5, 5)],
+            tracks=[kipy_track("t", "T", (0, 0), (1, 0))],
+        )
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"])
+
+        assert snap.copper_nets == {"Z", "V", "P"}
+
+    def test_detection_makes_no_read(self) -> None:
+        fake = FakeBoard(zones=[plane("GND", *INNER)])
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"])
+        reads = dict(fake.reads)
+
+        snap.ground_nets()
+
+        assert fake.reads == reads
 
 
 class TestGeometryHelpers:
