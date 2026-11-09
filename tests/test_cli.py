@@ -2236,10 +2236,20 @@ def plane_board() -> CommitBoard:
     )
 
 
-@pytest.mark.usefixtures("coarse_optimizer")
+PLANE_BURSTS = 25
+"""Outer iterations for `plane_board`: the via reaches its region's top in
+about 16, then creeps along it to the iteration cap
+(https://github.com/mairas/kibends/issues/21)."""
+
+
 def test_a_via_in_a_plane_moves_within_its_region_and_commits(
-    connect: Connector, log: list[str]
+    connect: Connector, log: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "optimize_chains",
+        at(replace(COARSE, max_iterations=PLANE_BURSTS)),
+    )
     board = connect.to(plane_board())
 
     run()
