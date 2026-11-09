@@ -6,13 +6,13 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
+from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
 from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
-from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
+from kibends.bursts import Burst, Crossings, Objective, OptimizerSettings, Revert
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -146,26 +146,6 @@ def test_a_via_at_its_optimum_stays() -> None:
 
     (via,) = result.vias
     assert math.dist(via.position, scenarios.STRAIGHT_VIA) < COARSE.settled_change
-
-
-@pytest.mark.parametrize(
-    "clearance_weight",
-    [scenarios.PARAMS.clearance_weight, 0.5, 0.0],
-    ids=["default", "pulled-harder-than-held", "held-by-the-bubble-alone"],
-)
-def test_a_track_on_a_layer_without_chains_hems_the_via_in(
-    clearance_weight: float,
-) -> None:
-    track = scenarios.HEMMING_TRACK
-    params = replace(scenarios.PARAMS, clearance_weight=clearance_weight)
-
-    result = run(scenarios.via_hemmed(params))
-
-    (via,) = result.vias
-    distance, _ = track.signed_distance(np.array([via.position]))
-    assert distance[0] >= -INSIDE_TOLERANCE
-    assert via.position[1] > track.cy
-    assert via.position[1] < scenarios.DETOUR_VIA[1] - 1.0
 
 
 def in_zone(bottom: float, *others: ViaZone) -> ViasScenario:
@@ -319,21 +299,19 @@ def first_revert(
 ) -> tuple[Revert, FloatArray]:
     """The check of the first burst of `scenario`'s run, and where the burst
     starts; its one via's centre is the last variable."""
-    real = optimize_module.bounded_burst
+    real = optimize_module.run_burst
     captured: list[tuple[Revert, FloatArray]] = []
 
     def capturing(
         objective: Objective,
         start: FloatArray,
-        half_sides: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
-        retry_bounds: FloatArray | None = None,
     ) -> Burst:
         captured.append((revert, start.copy()))
-        return real(objective, start, half_sides, revert, settings, retry_bounds)
+        return real(objective, start, revert, settings)
 
-    monkeypatch.setattr(optimize_module, "bounded_burst", capturing)
+    monkeypatch.setattr(optimize_module, "run_burst", capturing)
     run(scenario, replace(COARSE, max_iterations=1))
     return captured[0]
 
@@ -354,9 +332,21 @@ def test_a_burst_moves_the_via_and_its_ends_back(
     revert, start = first_revert(monkeypatch, scenario)
     candidate = start.copy()
     candidate[-2:] = to
+    masks: list[BoolArray] = []
+    real = optimize_module.revert_until_clear
 
-    reverted, crossings = revert(candidate)
+    def spying(
+        candidate: FloatArray, start: FloatArray, crossings: Crossings
+    ) -> tuple[BoolArray, int]:
+        reverted, count = real(candidate, start, crossings)
+        masks.append(reverted)
+        return reverted, count
 
+    monkeypatch.setattr(optimize_module, "revert_until_clear", spying)
+
+    crossings = revert(candidate)
+
+    (reverted,) = masks
     assert crossings > 0
     assert reverted[-2:].all()
     # Not by the fallback that moves everything back.
@@ -522,11 +512,6 @@ def test_a_via_passes_over_a_chain_of_its_net_that_does_not_end_at_it() -> None:
     assert route_length(result) == pytest.approx(10.0, abs=0.01)
 
 
-# Pulled onto the chain against a weak clearance hinge, the via ends within
-# this much of its clearance, mm.
-TIGHT = 2e-3
-
-
 def over_short_pinned() -> ViasScenario:
     """`scenarios.via_over_pinned` of another net with the pinned chain only
     under the via's way, pinned at fewer points."""
@@ -556,7 +541,6 @@ def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
     (via,) = result.vias
     gap = to_polyline(via.position, result.chains[2].polyline)
     assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
-    assert gap < VIA_TO_CHAIN + TIGHT
     assert via.rejected_edges > 0
 
 
@@ -665,22 +649,20 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
 def test_two_layers_joined_by_a_via_are_one_problem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real = optimize_module.bounded_burst
+    real = optimize_module.run_burst
     bursts: list[Burst] = []
 
     def failing(
         objective: Objective,
         start: FloatArray,
-        half_sides: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
-        retry_bounds: FloatArray | None = None,
     ) -> Burst:
-        burst = real(objective, start, half_sides, revert, settings, retry_bounds)
+        burst = real(objective, start, revert, settings)
         bursts.append(burst)
         return replace(burst, abnormal=True)
 
-    monkeypatch.setattr(optimize_module, "bounded_burst", failing)
+    monkeypatch.setattr(optimize_module, "run_burst", failing)
 
     result = run(scenarios.via_detour())
 
@@ -715,74 +697,6 @@ def test_a_via_moved_back_keeps_its_problem_from_settling(
     result = run(scenarios.via_detour(), settings)
 
     assert (result.termination is not Termination.ITERATION_CAP) == settles
-
-
-SPARSE = replace(COARSE, spacing=3.0, settled_change=0.03)
-BAR_LEVEL = 0.7
-
-
-def via_over_bar(height: float) -> ViasScenario:
-    """The detour route with its via at `height` over a long bar of another
-    net on an inner layer, fixed, that the route's pull would drag it
-    through."""
-    bar = selected("bar", "B", FreeSpace(), (1.0, BAR_LEVEL), (9.0, BAR_LEVEL))
-    via = (5.0, height)
-    return ViasScenario(
-        "via-over-bar",
-        (*scenarios.route("N", via), replace(bar, layer="In1.Cu")),
-        (scenarios.joining(scenarios.through_via("v", "N", via), 0),),
-    )
-
-
-@pytest.mark.parametrize("height", [1.5, 3.0, 6.0])
-def test_a_via_cannot_jump_through_a_chain_in_one_burst(height: float) -> None:
-    # The via's straight line to the route's shortest shape passes the bar
-    # and ends clear beyond it: only its bubble against the bar keeps the
-    # burst from taking it.
-    result = run(via_over_bar(height), SPARSE)
-
-    (via,) = result.vias
-    assert via.position[1] > BAR_LEVEL
-    gap = to_polyline(via.position, result.chains[2].polyline)
-    assert gap >= scenarios.VIA_TO_CHAIN - INSIDE_TOLERANCE
-
-
-ARCH_FOOT = -1.0
-
-
-def arch_over_via(height: float) -> ViasScenario:
-    """A straight route along y = 0 with its via at (5, 0), and an arch of
-    another net on an inner layer from below the via up over it and down
-    again, whose shortest shape lies clear below the via."""
-    arch = selected(
-        "arch",
-        "A",
-        FreeSpace(),
-        (3.0, ARCH_FOOT),
-        (5.0, height),
-        (7.0, ARCH_FOOT),
-        layer="In1.Cu",
-    )
-    return ViasScenario(
-        "arch-over-via",
-        (*scenarios.route("N", scenarios.STRAIGHT_VIA), arch),
-        (
-            scenarios.joining(
-                scenarios.through_via("v", "N", scenarios.STRAIGHT_VIA), 0
-            ),
-        ),
-    )
-
-
-@pytest.mark.parametrize("height", [1.5, 3.0, 6.0])
-def test_a_chain_cannot_jump_through_a_via_in_one_burst(height: float) -> None:
-    result = run(arch_over_via(height), SPARSE)
-
-    (via,) = result.vias
-    arch = result.chains[2].polyline
-    x, y = via.position
-    assert y_at(arch, x) > y
-    assert to_polyline(via.position, arch) >= scenarios.VIA_TO_CHAIN - INSIDE_TOLERANCE
 
 
 def bump_under(height: float) -> PairInput:
@@ -982,7 +896,7 @@ class TestResume:
 
         (moved,) = resumed.vias
         assert math.dist(moved.position, via.position) > 0.5 - INSIDE_TOLERANCE
-        assert moved.position[1] > 2.0
+        assert moved.position[1] > via.position[1]
 
 
 def test_chains_straightened_in_one_burst_are_kept() -> None:

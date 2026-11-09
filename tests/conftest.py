@@ -64,13 +64,13 @@ class BurstClock:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.bursts = 0
-        real = cast(Callable[..., object], optimize_module.bounded_burst)
+        real = cast(Callable[..., object], optimize_module.run_burst)
 
         def counted(*args: object, **kwargs: object) -> object:
             self.bursts += 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(optimize_module, "bounded_burst", counted)
+        monkeypatch.setattr(optimize_module, "run_burst", counted)
 
     def __call__(self) -> float:
         return float(self.bursts)

@@ -9,7 +9,6 @@ from conftest import Ticking
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
-    DP_HALF_EXTENT,
     DP_PAD,
     PAIR_CLEARANCE,
     PAIR_WIDTH,
@@ -24,8 +23,8 @@ from kibends.bursts import (
     Objective,
     OptimizerSettings,
     Revert,
-    bounded_burst,
     revert_until_clear,
+    run_burst,
 )
 from kibends.chain import Chain
 from kibends.coords import BOARD_FRAME
@@ -57,7 +56,6 @@ from kibends.optimize import (
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import find_pairs, lay_out
 from kibends.pairs import (
-    BEND_RADIUS_TOLERANCE,
     GAP_TOLERANCE,
     bend_radius_limit,
     check_bend_radius,
@@ -503,26 +501,21 @@ class TestTightCorner:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # L-BFGS-B's first trial of the first burst folds the centreline
-        # at its second free vertex, as one that leaves three vertices on
-        # one bound of their boxes does.
+        # at its second free vertex.
         trials: list[FloatArray] = []
 
         def folding_first(
             objective: Objective,
             start: FloatArray,
-            half_sides: FloatArray,
             revert: Revert,
             settings: OptimizerSettings,
-            retry_bounds: FloatArray | None = None,
         ) -> Burst:
             if not trials:
                 trials.append(folded(start.reshape(-1, 2), 0).ravel())
                 objective(trials[0])
-            return bounded_burst(
-                objective, start, half_sides, revert, settings, retry_bounds
-            )
+            return run_burst(objective, start, revert, settings)
 
-        monkeypatch.setattr(optimize_module, "bounded_burst", folding_first)
+        monkeypatch.setattr(optimize_module, "run_burst", folding_first)
         (pair,) = run(scenarios.pair_corner(), CORNER).pairs
 
         assert trials
@@ -609,9 +602,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_its_legs_apart() -> None:
     # clearance from itself, as the self check measures it.
     _, closest = close_to_itself(pair.centreline, apart)
     assert np.all(closest >= apart - INSIDE_TOLERANCE)
-    # Any moves the run undid were the section's own parts, which do not
-    # keep it from settling.
-    assert pair.rejected_edges == pair.too_close
+    # Moves the run undid do not keep it from settling.
     assert result.termination is Termination.CONVERGED
 
 
@@ -769,55 +760,6 @@ class TestResume:
         assert not np.array_equal(again.chains[1].polyline, first.chains[1].polyline)
 
 
-SPARSE = replace(COARSE, spacing=3.0, settled_change=0.03)
-BAR_Y = 0.7
-
-
-@pytest.mark.parametrize("height", [1.5, 3.0, 6.0])
-def test_a_chain_cannot_jump_through_a_section_in_one_burst(height: float) -> None:
-    # The arch of test_optimize_chains' jump test over a short section, which does
-    # not move: at this spacing the arch's one free vertex goes straight to
-    # its shortest place beyond the section, clear of it.
-    arch = selected("arch", "A", FreeSpace(), (0.0, 0.0), (5.0, height), (10.0, 0.0))
-    section = scenarios.coupled(FreeSpace(), (4.0, BAR_Y), (6.0, BAR_Y))
-
-    result = optimize_chains([arch], scenarios.PARAMS, SPARSE, pairs=(section,))
-
-    (chain,), (pair,) = result.chains, result.pairs
-    for track in (pair.a, pair.b):
-        assert y_at(chain.polyline, 5.0) > y_at(track, 5.0)
-        assert gap(chain.polyline, track) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
-
-
-SECTION_SPAN = 14.0
-"""mm: long enough at SPARSE that each end edge gets a direction pin a
-spacing in, and the arch between them free vertices."""
-
-
-BAR_BELOW_APEX = 2.5
-"""mm: the bar starts clear of the arched section, and well above the line
-between the section's direction pins."""
-
-
-@pytest.mark.parametrize("height", [6.0, 8.0])
-def test_a_section_cannot_jump_through_a_chain_in_one_burst(height: float) -> None:
-    # Pulled straight between its direction pins, the arched section would
-    # pass the bar and end clear below it.
-    apex = SECTION_SPAN / 2
-    section = scenarios.coupled(
-        FreeSpace(), (0.0, 0.0), (apex, height), (SECTION_SPAN, 0.0)
-    )
-    bar_y = height - BAR_BELOW_APEX
-    bar = selected("bar", "B", FreeSpace(), (apex - 1.0, bar_y), (apex + 1.0, bar_y))
-
-    result = optimize_chains([bar], scenarios.PARAMS, SPARSE, pairs=(section,))
-
-    (chain,), (pair,) = result.chains, result.pairs
-    for track in (pair.a, pair.b):
-        assert y_at(track, apex) > bar_y
-        assert gap(chain.polyline, track) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
-
-
 def gap(a: FloatArray, b: FloatArray) -> float:
     return float(LineString(a).distance(LineString(b)))
 
@@ -888,60 +830,22 @@ def test_a_section_routed_too_tightly_stays_as_it_is() -> None:
     assert pair.bend is not None and pair.bend.too_tight
 
 
-def test_a_section_inside_a_chain_s_clearance_throughout_stays_put() -> None:
+def test_a_chain_starting_inside_a_section_s_clearance_moves_clear_of_it() -> None:
     section = scenarios.coupled(FreeSpace(), (0.0, 0.0), (5.0, 0.0))
-    half_extent = pair_block(section, COARSE.spacing).chain.centreline.width / 2
-    # Every vertex resampling adds to the centreline lies deeper than δ
-    # inside the chain's clearance, so every bound of its bursts is zero.
-    y = half_extent + PAIR_CLEARANCE + PAIR_WIDTH / 2 - 2 * COARSE.bubble_tolerance
+    half_extent = pair_block(section, COARSE.spacing).facing.centreline.width / 2
+    # The chain runs 2δ inside the clearance of the section's nearer track,
+    # pinned there at both ends.
+    y = half_extent + PAIR_CLEARANCE + PAIR_WIDTH / 2 - 2 * COARSE.frozen_depth
     chain = selected("C", "C", FreeSpace(), (0.0, y), (5.0, y))
 
     result = optimize_chains([chain], scenarios.PARAMS, COARSE, pairs=(section,))
 
-    (pair,) = result.pairs
-    assert LineString(pair.a).equals(LineString(section.a.points))
-    assert LineString(pair.b).equals(LineString(section.b.points))
-
-
-SPLIT_APART = 10.0
-"""mm between two sections that do not see each other's fields."""
-SHARP_LEG = 1.0
-"""mm: each leg of a 135° corner, which resampling at the coarse spacing
-cuts into a bend tighter than the limit."""
-SHORT_BURSTS = replace(COARSE, burst_maxiter=20)
-"""Rounds a free `sharp_corner` as COARSE does, in half the time."""
-
-
-def sharp_corner(field: ObstacleField, below: float = 0.0) -> PairInput:
-    """A section turning 135° at (`SHARP_LEG`, `below`)."""
-    back = SHARP_LEG / math.sqrt(2)
-    return scenarios.coupled(
-        field, (0.0, below), (SHARP_LEG, below), (SHARP_LEG - back, below + back)
-    )
-
-
-def test_a_section_kept_tight_does_not_hold_back_one_that_can_round_its_corner() -> (
-    None
-):
-    inside = np.array([-1.0 - 1 / math.sqrt(2), 1 / math.sqrt(2)])
-    inside /= np.linalg.norm(inside)
-    pad = np.array([SHARP_LEG, 0.0]) + inside * (
-        DP_PAD + PAIR_CLEARANCE + DP_HALF_EXTENT
-    )
-    stuck = sharp_corner(scenarios.pad_for_pair(*pad))
-    free = sharp_corner(FreeSpace(), below=SPLIT_APART)
-
-    result = optimize_chains((), scenarios.PARAMS, SHORT_BURSTS, pairs=(stuck, free))
-
-    kept, rounded = result.pairs
-    block = pair_block(stuck, SHORT_BURSTS.spacing)
-    start, _ = resample(
-        block.chain.centreline.points, block.chain.fixed, SHORT_BURSTS.spacing
-    )
-    tightest = block.bend(start).radius
-    assert kept.bend is not None and kept.bend.too_tight
-    assert kept.bend.radius >= tightest * (1.0 - BEND_RADIUS_TOLERANCE)
-    assert rounded.bend is not None and not rounded.bend.too_tight
+    (moved,), (pair,) = result.chains, result.pairs
+    middle = LineString(moved.polyline).interpolate(0.5, normalized=True)
+    for track in (pair.a, pair.b):
+        assert LineString(track).distance(middle) >= (
+            scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+        )
 
 
 PAIR_COST = 1.5

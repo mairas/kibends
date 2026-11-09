@@ -4,38 +4,26 @@ from typing import cast
 
 import numpy as np
 import pytest
-from distance_fields import BoolArray, FloatArray
+from distance_fields import FloatArray
 from scipy.optimize import OptimizeResult
 
 import kibends.bursts as bursts_module
-from kibends.bursts import DEFAULT_SETTINGS, bounded_burst
-
-ROUNDED_AWAY = 1e-17
-"""A bound below the float spacing at 1 mm, so that it equals the start."""
+from kibends.bursts import DEFAULT_SETTINGS, run_burst
 
 
 def squared(x: FloatArray) -> tuple[float, FloatArray]:
     return float(x @ x), 2 * x
 
 
-def nothing_crosses(x: FloatArray) -> tuple[BoolArray, int]:
-    return np.zeros(len(x), dtype=bool), 0
+def nothing_crosses(x: FloatArray) -> int:
+    return 0
 
 
-def test_bounds_equal_to_the_start_in_floating_point_leave_it_unchanged() -> None:
-    start = np.array([1.0, 2.0])
+def test_a_burst_without_coordinates_ends_where_it_is() -> None:
+    burst = run_burst(squared, np.zeros(0), nothing_crosses, DEFAULT_SETTINGS)
 
-    burst = bounded_burst(
-        squared,
-        start,
-        np.full(len(start), ROUNDED_AWAY),
-        nothing_crosses,
-        DEFAULT_SETTINGS,
-    )
-
-    np.testing.assert_array_equal(burst.points, start)
+    assert burst.points.shape == (0,)
     assert not burst.abnormal
-    assert burst.rejected_edges == 0
 
 
 def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,6 +37,6 @@ def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bursts_module, "minimize", spy)
     settings = replace(DEFAULT_SETTINGS, lbfgs_ftol=1e-8, lbfgs_gtol=1e-6)
 
-    bounded_burst(squared, np.array([1.0, 2.0]), np.ones(2), nothing_crosses, settings)
+    run_burst(squared, np.array([1.0, 2.0]), nothing_crosses, settings)
 
     assert (seen["ftol"], seen["gtol"]) == (1e-8, 1e-6)

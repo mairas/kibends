@@ -1,13 +1,11 @@
-"""One bounded L-BFGS-B burst, which the optimizer runs over every free
-coordinate of a problem at once, and the optimizer's settings, which every
-module importing them takes from here.
+"""One L-BFGS-B burst, which the optimizer runs over every free coordinate
+of a problem at once, and the optimizer's settings, which every module
+importing them takes from here.
 
-Every coordinate moves only inside its bubble's box, so nothing jumps over
-an obstacle; a check after the run moves back whatever newly crosses one,
-and the run is repeated with halved bounds for what moved back.
+A burst does not bound its coordinates; a check after the run moves back
+whatever newly crosses an obstacle.
 """
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -20,15 +18,6 @@ from kibends.energy import BoolArray, DistanceField, FloatArray
 # noise: a track routed at exactly the clearance resamples to vertices about
 # 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
 INSIDE_TOLERANCE = 1e-7
-
-# The bounds of rejected vertices are halved, within one outer iteration,
-# until each is at most its `bounded_burst` retry bound, at most this many
-# times: enough to bring any step the optimizer's floor allows below a µm.
-# Beyond that they wait for the next one.
-MAX_BOUND_HALVINGS = 8
-
-# A retry's bounds need shrink no further than this share of a bubble.
-RETRY_SHARE = 16
 
 LBFGSB_ABNORMAL = 2
 
@@ -50,9 +39,10 @@ LBFGSB_GTOL = 1e-10
 class OptimizerSettings:
     spacing: float = 0.1
     """Target distance between resampled vertices, mm."""
-    bubble_tolerance: float = 0.01
-    """δ, mm: bubbles are measured to obstacles inflated by δ less than the
-    clearance, and vertices deeper than δ inside an obstacle are frozen."""
+    frozen_depth: float = 0.01
+    """δ, mm: vertices and vias that start deeper than δ inside an
+    obstacle's clearance are frozen; resampling also keeps vertices a few δ
+    inside the other members' clearance where they are."""
     settled_change: float = 1e-3
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles."""
@@ -64,9 +54,9 @@ class OptimizerSettings:
     by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
     burst_maxiter: int = 50
-    """L-BFGS-B iterations per burst of a problem. Shorter bursts re-bound
-    the variables to their bubbles more often, which on a large problem
-    reaches a given length in fewer energy evaluations. At 25 a coupled
+    """L-BFGS-B iterations per burst of a problem. Shorter bursts resample
+    and check the shapes more often, which on a large problem reaches a
+    given length in fewer energy evaluations. At 25 a coupled
     section settles visibly short of its shape, as measured in
     https://github.com/mairas/kibends/issues/70: the stall rule counts
     bursts, so its window shrinks with this."""
@@ -74,10 +64,6 @@ class OptimizerSettings:
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
     """L-BFGS-B's projected gradient below which a burst ends."""
-    move_bounds: bool = True
-    """Bound each variable to its bubble or the step floor in a burst. Without
-    the bounds only the edge check stops a track or via passing through
-    another within a burst, and it does not catch every such pass."""
     time_limit: float | None = None
     """Seconds after which the run stops at the next burst's end and keeps
     its best state, as at the iteration cap; None for no limit."""
@@ -95,18 +81,12 @@ class OptimizerSettings:
 DEFAULT_SETTINGS = OptimizerSettings()
 
 
-def half_side(distance: FloatArray, settings: OptimizerSettings) -> FloatArray:
-    """Half the side of the box inscribed in each bubble: half the free
-    distance, δ allowed inside the clearance."""
-    return np.maximum(distance + settings.bubble_tolerance, 0.0) / 2 / math.sqrt(2)
-
-
 def point_distance(field: DistanceField, point: FloatArray) -> float:
     return float(field.signed_distance(point[None])[0][0])
 
 
 Objective = Callable[[FloatArray], tuple[float, FloatArray]]
-Revert = Callable[[FloatArray], tuple[BoolArray, int]]
+Revert = Callable[[FloatArray], int]
 Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 
@@ -114,7 +94,6 @@ Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 class Burst:
     points: FloatArray
     """Where the burst left its flat coordinates."""
-    rejected_edges: int
     abnormal: bool
 
 
@@ -148,56 +127,33 @@ def revert_until_clear(
         reverted |= back
 
 
-def bounded_burst(
+def run_burst(
     objective: Objective,
     start: FloatArray,
-    half_sides: FloatArray,
     revert: Revert,
     settings: OptimizerSettings,
-    retry_bounds: FloatArray | None = None,
 ) -> Burst:
-    """Minimise `objective` from `start` with each coordinate within its
-    `half_sides` of it, retried with halved bounds where edges crossed.
+    """Minimise `objective` from `start` with L-BFGS-B, then move back what
+    `revert` finds.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
-    an obstacle, and returns which it moved and how many edges crossed. A
-    run L-BFGS-B ends abnormally is taken as its check leaves it, and so is
-    one whose moved-back coordinates all have bounds at most their
-    `retry_bounds` once halved, by default a sixteenth of their
-    `half_sides`. Where every coordinate's bounds coincide in floating
-    point, nothing can move, and the burst ends where it is.
+    an obstacle, and returns how many edges crossed. With no coordinate to
+    move, the burst ends where it is.
     """
-    if retry_bounds is None:
-        retry_bounds = half_sides / RETRY_SHARE
-    scale = np.ones(len(start))
-    current = start.copy()
-    rejected_edges = 0
-    abnormal = False
-    for _ in range(MAX_BOUND_HALVINGS + 1):
-        reach = half_sides * scale
-        lower, upper = start - reach, start + reach
-        if np.array_equal(lower, upper):
-            # L-BFGS-B would return a result without a status.
-            break
-        result = minimize(
-            objective,
-            current,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=list(zip(lower, upper, strict=True)),
-            options={
-                "maxiter": settings.burst_maxiter,
-                "ftol": settings.lbfgs_ftol,
-                "gtol": settings.lbfgs_gtol,
-            },
-        )
-        abnormal = result.status == LBFGSB_ABNORMAL
-        current = np.array(result.x, dtype=float)
-        reverted, crossings = revert(current)
-        if crossings == 0 or abnormal:
-            break
-        rejected_edges += crossings
-        scale[reverted] /= 2
-        if np.all(half_sides[reverted] * scale[reverted] <= retry_bounds[reverted]):
-            break
-    return Burst(current, rejected_edges, abnormal)
+    if len(start) == 0:
+        # L-BFGS-B would return a result without a status.
+        return Burst(start.copy(), False)
+    result = minimize(
+        objective,
+        start.copy(),
+        jac=True,
+        method="L-BFGS-B",
+        options={
+            "maxiter": settings.burst_maxiter,
+            "ftol": settings.lbfgs_ftol,
+            "gtol": settings.lbfgs_gtol,
+        },
+    )
+    current = np.array(result.x, dtype=float)
+    revert(current)
+    return Burst(current, result.status == LBFGSB_ABNORMAL)
