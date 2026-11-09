@@ -8,6 +8,7 @@ chains it touches like an unselected via.
 """
 
 import math
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -94,7 +95,10 @@ def movable_vias(
     `contacts` gives the same-net copper touching each via or the chain ends
     it carries, as `BoardSnapshot.read` finds it from `carried_copper`.
     """
-    chain_of = {s: k for k, c in enumerate(chains) for s in c.segment_ids}
+    chains_of: dict[str, set[int]] = defaultdict(set)
+    for k, c in enumerate(chains):
+        for s in c.segment_ids:
+            chains_of[s].add(k)
     movable: list[MovableVia] = []
     for via in vias:
         ends = carried_ends(via, chains)
@@ -102,7 +106,7 @@ def movable_vias(
         strangers = [
             c.description
             for c in contacts.get(via.id, ())
-            if c.track_id is None or chain_of.get(c.track_id) not in ended
+            if c.track_id is None or chains_of[c.track_id].isdisjoint(ended)
         ]
         reason = _fixed_reason(via, strangers, len(ends))
         if reason is None:

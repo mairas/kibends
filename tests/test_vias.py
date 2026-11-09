@@ -102,6 +102,20 @@ class TestMovableVias:
         assert via.ends == (ChainEnd(chain=0, last=False), ChainEnd(chain=1, last=True))
         assert warnings(log) == []
 
+    def test_track_split_at_a_junction_counts_for_its_part_at_the_via(
+        self, log: list[str]
+    ) -> None:
+        split = [
+            kipy_track("a", "SIG", VIA, (4, 10)),
+            kipy_track("s", "SIG", (0, 7), (4, 7)),
+        ]
+        v = kipy_via("v", "SIG", *VIA)
+
+        movable, _ = judge([*split, *back(), v], [*split, *back()], [v])
+
+        assert [len(m.ends) for m in movable] == [2]
+        assert warnings(log) == []
+
     @pytest.mark.parametrize(
         ("gap", "joins"),
         [
