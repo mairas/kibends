@@ -181,6 +181,10 @@ A chain the optimizer leaves as it was is not replaced, and a run that
 changes no chain still commits the stitching vias it moved. Without `--dry-run`, the
 changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
+After the commit, the new tracks and moved vias are added to the selection,
+so it covers the same copper as before the run and a second run needs no
+new selection; selected items the run left unchanged stay selected. A dry
+run, or a run that commits nothing, leaves the selection as it was.
 A track or via edited in KiCad since the run read it stops the commit.
 kibends does not refill zones and does not run KiCad's DRC: refill the
 zones yourself (B), or run the DRC, which refills them and checks the result
