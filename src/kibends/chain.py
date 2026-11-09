@@ -477,6 +477,7 @@ def _join_mid_track_ends(
     """`segments` of one net and layer, split where a stub meets a track,
     and where each moved end came from.
 
+    Tracks drawn along another first merge into it (`_merge_duplicates`).
     KiCad connects two tracks wherever their copper overlaps. An end `p`
     joins a track `r` that its copper reaches nearest a point inside `r`
     when every selected track ending at `p` may join `r` (`_may_join`). `r`
@@ -487,9 +488,10 @@ def _join_mid_track_ends(
     Other ends stay where they are, and copper overlap pins them. An STR
     tree narrows the candidates; the distances are exact.
     """
+    segments, merged = _merge_duplicates(segments, fixed)
     edges, _ = _unique_edges(segments)
     if not edges:
-        return list(segments), {}
+        return segments, merged
     adjacency = _adjacency(edges, ())
     piece_of = {p: k for k, piece in enumerate(_pieces(adjacency)) for p in piece}
     ends = sorted(adjacency)
@@ -521,11 +523,11 @@ def _join_mid_track_ends(
             continue
         # Ties go to the smaller point, so the input order does not matter.
         best = min(reaching, key=lambda r: (r.distance_sq, r.at))
-        if best.at == p or not _reaches(fixed, _mm(p), widest / NM_PER_MM / 2):
+        if best.at == p or not _reaches(fixed, Point(_mm(p)), widest / NM_PER_MM / 2):
             moved[p] = best.at
             cuts[frozenset((best.track.start, best.track.end))].add(best.at)
     if not moved:
-        return list(segments), {}
+        return segments, merged
     joined: list[Segment] = []
     for s in segments:
         inside = sorted(
@@ -534,15 +536,212 @@ def _join_mid_track_ends(
         )
         path = [moved.get(s.start, s.start), *inside, moved.get(s.end, s.end)]
         joined += [replace(s, start=a, end=b) for a, b in pairwise(path)]
-    return joined, moved
+    return joined, moved | {p: moved.get(at, at) for p, at in merged.items()}
 
 
-def _reaches(copper: Iterable[SameNetCopper], p: Point2, half_width: float) -> bool:
-    """Whether any of `copper` reaches the disc of `half_width` around `p`."""
+type _Key = frozenset[NmPoint]
+
+
+def _key(s: Segment) -> _Key:
+    return frozenset((s.start, s.end))
+
+
+class _Merge(NamedTuple):
+    """`track` merging into `host`, each end of it landing on `targets[end]`."""
+
+    track: Segment
+    host: Segment
+    targets: dict[NmPoint, NmPoint]
+
+
+def _merge_duplicates(
+    segments: Sequence[Segment], fixed: Sequence[SameNetCopper]
+) -> tuple[list[Segment], dict[NmPoint, NmPoint]]:
+    """`segments` with every track drawn along another merged into it, and
+    where each moved end went.
+
+    One track merges at a time, longest first, into the host nearest it
+    (`_next_merge`), and the rest are judged again on the result until none
+    merges. A host is no shorter than the tracks drawn along it, so it has
+    merged, if it can, before any of them would merge into it. The host's
+    line is cut where the track's ends land, and the track becomes copies
+    of the host's pieces between them, which `_unique_edges` drops and whose
+    ids the host's chains carry. Every track ending at a moved end moves
+    with it.
+    """
+    hosts, _ = _unique_edges(segments)
+    tree = shapely.STRtree([LineString([r.start, r.end]) for r in hosts])
+    current = list(segments)
+    moved: dict[NmPoint, NmPoint] = {}
+    done: set[_Key] = set()
+    cuts: dict[_Key, set[NmPoint]] = defaultdict(set)
+    while merge := _next_merge(current, hosts, tree, done, cuts, moved, fixed):
+        s, r, targets = merge
+        done.add(_key(s))
+        pieces = {frozenset(e) for e in pairwise(_vertices(r, cuts[_key(r)]))}
+        cuts[_key(r)] |= set(targets.values()) - {r.start, r.end}
+        vertices = _vertices(r, cuts[_key(r)])
+        ends = {x: at for x, at in targets.items() if x != at}
+        moved |= ends
+        merged: list[Segment] = []
+        for e in current:
+            if _key(e) == _key(s):
+                path = _between(r, vertices, targets[e.start], targets[e.end])
+            elif _key(e) in pieces:
+                path = _between(r, vertices, e.start, e.end)
+            else:
+                path = [ends.get(e.start, e.start), ends.get(e.end, e.end)]
+            merged += [replace(e, start=a, end=b) for a, b in pairwise(path)]
+        current = merged
+    return current, moved
+
+
+def _vertices(r: Segment, cuts: Iterable[NmPoint]) -> list[NmPoint]:
+    """`r`'s ends and `cuts` on it, in order along it."""
+    return sorted({r.start, r.end, *cuts}, key=lambda v: _along(r, v))
+
+
+def _between(
+    r: Segment, vertices: Sequence[NmPoint], a: NmPoint, b: NmPoint
+) -> list[NmPoint]:
+    """The `vertices` on `r` from `a` to `b`, both included, in that order."""
+    low, high = sorted((_along(r, a), _along(r, b)))
+    path = [v for v in vertices if low <= _along(r, v) <= high]
+    return path if _along(r, a) <= _along(r, b) else path[::-1]
+
+
+def _next_merge(
+    current: Sequence[Segment],
+    hosts: Sequence[Segment],
+    tree: shapely.STRtree,
+    done: Collection[_Key],
+    cuts: Mapping[_Key, Collection[NmPoint]],
+    moved: Collection[NmPoint],
+    fixed: Sequence[SameNetCopper],
+) -> _Merge | None:
+    """The longest track of `current` that may merge into a host now, with
+    its host.
+
+    The track is no piece of a host's line and has not merged, so that each
+    merges at most once and the merging ends. Its host is
+    one of `hosts`, the drawn tracks, of its width, that it runs along
+    (`_runs_along`), that has not merged and none of whose ends or cuts has
+    moved, so that its pieces still lie on its line; the nearest such host
+    whose merge closes no loop (`_closes_no_loop`) and leaves no copper
+    behind (`_keeps_copper`).
+    """
+    edges, _ = _unique_edges(current)
+    vertices = {
+        _key(r): _vertices(r, cuts.get(_key(r), ()))
+        for r in hosts
+        if _key(r) not in done
+        and not {r.start, r.end, *cuts.get(_key(r), ())} & set(moved)
+    }
+    on_hosts = {frozenset(e) for v in vertices.values() for e in pairwise(v)}
+    tracks = sorted(edges, key=lambda s: (-_along(s, s.end), s.start, s.end))
+    for s in tracks:
+        if _key(s) in done or (_key(s) in on_hosts and _key(s) not in vertices):
+            continue
+        candidates = [
+            merge
+            for i in tree.query(
+                LineString([s.start, s.end]),
+                predicate="dwithin",
+                distance=s.width + CANDIDATE_MARGIN_NM,
+            )
+            for r in [hosts[int(i)]]
+            if r.width == s.width and _key(r) in vertices and _key(r) != _key(s)
+            for merge in [_runs_along(s, r, vertices[_key(r)])]
+            if merge is not None
+        ]
+        candidates.sort(
+            key=lambda m: (
+                max(_nearest_on(m.host, x)[0] for x in (s.start, s.end)),
+                sorted(_key(m.host)),
+            )
+        )
+        for merge in candidates:
+            if _closes_no_loop(edges, merge, cuts) and _keeps_copper(
+                edges, merge, fixed
+            ):
+                return merge
+    return None
+
+
+def _runs_along(s: Segment, r: Segment, vertices: Collection[NmPoint]) -> _Merge | None:
+    """`s` merging into `r` if `s` is drawn along `r`, else None.
+
+    Both of `s`'s ends lie inside `r`'s copper on one side of its
+    centreline, at least `r`'s width apart along it, so that `s` is a
+    stretch of `r`'s line rather than a patch across `r`, which would
+    collapse onto one point of it. Each end is one of `r`'s `vertices`, its
+    ends and cuts, where it stays, or lies beside a point inside `r`, the
+    nanometre point of its centreline nearest the end, where it lands.
+    """
+    p, q = s.start, s.end
+    length_sq = _along(r, r.end)
+    if _across(r, p) * _across(r, q) < 0:
+        return None
+    if (_along(r, p) - _along(r, q)) ** 2 < r.width**2 * length_sq:
+        return None
+    targets: dict[NmPoint, NmPoint] = {}
+    for x in (p, q):
+        if x in vertices:
+            targets[x] = x
+            continue
+        distance_sq, at = _nearest_on(r, x)
+        if at is None or 4 * distance_sq > r.width**2:
+            return None
+        targets[x] = at
+    return _Merge(s, r, targets)
+
+
+def _closes_no_loop(
+    edges: Sequence[Segment], merge: _Merge, cuts: Mapping[_Key, Collection[NmPoint]]
+) -> bool:
+    """Whether the merge joins no two points the selection already connects.
+
+    Without the track, each of its ends that lands off the host's vertices
+    joins its piece of the selection to the host's there, so each must lie
+    in a piece other than the host's.
+    """
+    s, r, targets = merge
+    rest = [e for e in edges if _key(e) != _key(s)]
+    piece_of = {
+        p: k for k, piece in enumerate(_pieces(_adjacency(rest, ()))) for p in piece
+    }
+    vertices = {r.start, r.end, *cuts.get(_key(r), ())}
+    return all(
+        piece_of.get(x, NO_PIECE) != piece_of[r.start]
+        for x in targets
+        if x not in vertices
+    )
+
+
+def _keeps_copper(
+    edges: Sequence[Segment], merge: _Merge, fixed: Sequence[SameNetCopper]
+) -> bool:
+    """Whether all other copper of the net that reaches the track's copper
+    reaches the host's too, so that none loses its connection when the
+    track's copper outside the host's goes."""
+    s, r, _ = merge
+    s_line, r_line = _same_net_track(s).centreline, _same_net_track(r).centreline
+    half = r.width / NM_PER_MM / 2
+    others = [*fixed, *(_same_net_track(e) for e in edges if _key(e) != _key(s))]
+    return not any(
+        _reaches([item], s_line, half) and not _reaches([item], r_line, half)
+        for item in others
+    )
+
+
+def _reaches(
+    copper: Iterable[SameNetCopper], shape: BaseGeometry, half_width: float
+) -> bool:
+    """Whether any of `copper` reaches `shape` grown by `half_width`."""
     return any(
-        item.centreline.distance(Point(p)) <= half_width + item.width / 2
+        item.centreline.distance(shape) <= half_width + item.width / 2
         if isinstance(item, SameNetTrack)
-        else item.distance(Point(p)) <= half_width
+        else item.distance(shape) <= half_width
         for item in copper
     )
 
