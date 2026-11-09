@@ -68,12 +68,20 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
-   it, and no other copper touches it or those chain ends on any layer. Any
-   other selected via stays where it is; a debug log line names it and the
-   reason: it is locked, it is not a through via, other copper touches it
-   or a chain end it would carry (an unselected track, a pad, a copper
-   shape, another via or a zone of its net, on any layer), or fewer than
-   two selected tracks end at it. Teardrops are ignored, here and in the
+   it, and no other copper touches it or those chain ends on any layer,
+   except the fill of a zone of its net: a via in a plane moves within the
+   zone's current fill, on each layer where the fill touches it, keeping
+   its centre half the zone's minimum width plus 0.005 mm (KiCad's default
+   arc error) inside it, so that the next refill connects it again. A fill
+   older than a higher-priority zone of another net or a rule area keeping
+   out copper pour still covers them; the via stays out of them as the
+   next refill will. Refill the zones before running kibends if they are
+   out of date otherwise. Any other selected via stays where it is; a
+   debug log line names it and the reason: it is locked, it is not a
+   through via, other copper touches it or a chain end it would carry (an
+   unselected track, a pad, a copper shape or another via of its net, on
+   any layer), it sits at the edge of a zone's fill, or fewer than two
+   selected tracks end at it. Teardrops are ignored, here and in the
    DRC check: KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
@@ -227,7 +235,8 @@ custom rule stricter than those (a larger clearance for vias, say) can be
 violated by the smoothed tracks; only the DRC check below sees it. The
 API does not expose the edge and hole clearances either; they come from
 the options above. The optimizer does not see copper zones either, which
-reflow after an edit, nor rule areas that keep out vias.
+reflow after an edit, except the fills that keep a moving via inside the
+zones it connects to, nor rule areas that keep out vias.
 
 The DRC check covers what the optimizer cannot see. Before committing,
 kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch

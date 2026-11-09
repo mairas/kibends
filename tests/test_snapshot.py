@@ -30,6 +30,7 @@ from conftest import (
     kipy_zone,
     layer_snapshot,
     netclass,
+    nm,
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -37,7 +38,7 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
 from kipy.util.board_layer import iter_copper_layers
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
 from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
@@ -51,6 +52,7 @@ from kibends.snapshot import (
     Via,
     ViaContact,
     ViaKind,
+    ViaZone,
     arc_points,
     edge_paths_closed,
     outline_from_edge_paths,
@@ -824,7 +826,6 @@ class TestViaContacts:
                 ViaContact("track front on F.Cu", "front"),
                 ViaContact("track inner on In1.Cu", "inner"),
                 ViaContact("via w"),
-                ViaContact("zone fill on In2.Cu"),
             )
         }
 
@@ -836,10 +837,126 @@ class TestViaContacts:
 
         snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via], carried={"v": [end]})
 
-        assert {
-            ViaContact("track far on F.Cu", "far"),
-            ViaContact("zone away on In3.Cu"),
-        } <= set(snap.via_contacts["v"])
+        assert ViaContact("track far on F.Cu", "far") in snap.via_contacts["v"]
+        # A zone touching only a carried end is no zone the via connects to.
+        assert [z.name for z in snap.via_zones["v"]] == ["fill"]
+
+    def via_zones(self, *zones: kbt.Zone) -> tuple[ViaZone, ...]:
+        """The zones recorded for the via, with `zones` added to the board."""
+        fake = self.contact_board()
+        fake.zones = [*fake.zones, *zones]
+        (via,) = read_selection(board(fake)).vias
+        return BoardSnapshot.read(board(fake), ["F.Cu"], [via]).via_zones["v"]
+
+    def test_same_net_zones_are_recorded_by_their_fill_on_each_layer(self) -> None:
+        x, y = self.VIA
+        fills = {
+            BL.BL_In1_Cu: kipy_rect(x - 1, y - 1, x + 1, y + 1),
+            BL.BL_In2_Cu: kipy_rect(x - 2, y - 2, x + 2, y + 2),
+        }
+
+        fill, plane = self.via_zones(
+            kipy_filled_zone(
+                "plane", "SIG", fills, outline=kipy_rect(0, 0, 9, 9), min_width=0.25
+            )
+        )
+
+        assert (fill.name, fill.layers, fill.min_width) == ("fill", ("In2.Cu",), 0.0)
+        assert fill.fills["In2.Cu"].equals(box(4, 4, 6, 6))
+        assert (plane.name, plane.layers, plane.min_width) == (
+            "plane",
+            ("In1.Cu", "In2.Cu"),
+            0.25,
+        )
+        assert plane.fills["In1.Cu"].equals(box(4, 4, 6, 6))
+        assert plane.fills["In2.Cu"].equals(box(3, 3, 7, 7))
+        assert plane.description == "zone plane on In1.Cu and In2.Cu"
+
+    def test_a_hole_in_the_fill_is_kept(self) -> None:
+        holed = kipy_rect(2, 2, 8, 8)
+        holed.add_hole(kipy_rect(5.5, 4, 6.5, 6).outline)
+
+        (_, plane) = self.via_zones(
+            kipy_filled_zone("plane", "SIG", {BL.BL_In1_Cu: holed})
+        )
+
+        hole = box(5.5, 4, 6.5, 6)
+        assert plane.fills["In1.Cu"].equals(box(2, 2, 8, 8).difference(hole))
+
+    def test_only_the_pieces_of_the_fill_touching_the_via_are_kept(self) -> None:
+        pieces = [kipy_rect(4, 4, 6, 6), kipy_rect(7, 4, 9, 6)]
+
+        (_, plane) = self.via_zones(
+            kipy_filled_zone("plane", "SIG", {BL.BL_In1_Cu: pieces})
+        )
+
+        assert plane.fills["In1.Cu"].equals(box(4, 4, 6, 6))
+
+    def test_a_fill_touching_the_via_at_its_ring_counts(self) -> None:
+        x, y = self.VIA
+        ring = kipy_via("v", "SIG", x, y).diameter / NM_PER_MM / 2
+
+        (_, plane) = self.via_zones(
+            kipy_filled_zone(
+                "plane", "SIG", {BL.BL_In1_Cu: kipy_rect(x + ring, 0, 9, 9)}
+            )
+        )
+
+        assert plane.layers == ("In1.Cu",)
+
+    def plane_fill(self, *others: kbt.Zone) -> BaseGeometry:
+        """The fill on In1.Cu of a SIG plane with clearance 0.2 whose stale
+        fill covers its whole outline, with `others` on the board."""
+        whole = {BL.BL_In1_Cu: kipy_rect(0, 0, 10, 10)}
+        plane = kipy_filled_zone("plane", "SIG", whole)
+        plane.clearance = nm(0.2)
+        (_, found) = self.via_zones(plane, *others)
+        return found.fills["In1.Cu"]
+
+    @staticmethod
+    def drawn_zone(
+        net: str, priority: int, clearance: float = 0.0, layer: int = BL.BL_In1_Cu
+    ) -> kbt.Zone:
+        """An unfilled copper zone over y < 3."""
+        z = kipy_zone(kipy_rect(0, 0, 10, 3), [layer], rule_area=False, net=net)
+        z.priority = priority
+        z.clearance = nm(clearance)
+        return z
+
+    @pytest.mark.parametrize("clearance", [0.1, 0.3])
+    def test_a_higher_priority_zone_of_another_net_cuts_it_at_the_clearance(
+        self, clearance: float
+    ) -> None:
+        fill = self.plane_fill(self.drawn_zone("PWR", 1, clearance))
+
+        _, top, _, _ = fill.bounds
+        assert top == pytest.approx(3 + max(clearance, 0.2))
+
+    @pytest.mark.parametrize(
+        ("net", "priority", "layer"),
+        [
+            ("PWR", 0, BL.BL_In1_Cu),
+            ("SIG", 1, BL.BL_In1_Cu),
+            ("PWR", 1, BL.BL_In2_Cu),
+        ],
+        ids=["same priority", "same net", "another layer"],
+    )
+    def test_other_zones_leave_it(self, net: str, priority: int, layer: int) -> None:
+        fill = self.plane_fill(self.drawn_zone(net, priority, 0.3, layer))
+
+        assert fill.equals(box(0, 0, 10, 10))
+
+    @pytest.mark.parametrize("pour", [True, False])
+    def test_a_rule_area_keeping_out_pour_cuts_it_at_its_outline(
+        self, pour: bool
+    ) -> None:
+        area = kipy_zone(kipy_rect(0, 0, 10, 3), [BL.BL_In1_Cu], keepout_tracks=False)
+        area.proto.rule_area_settings.keepout_copper = pour
+
+        fill = self.plane_fill(area)
+
+        _, top, _, _ = fill.bounds
+        assert top == (3 if pour else 0)
 
     def test_pads_on_layers_not_read_cost_one_read_per_layer(self) -> None:
         fake = self.contact_board()

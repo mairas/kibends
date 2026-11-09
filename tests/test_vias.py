@@ -11,6 +11,7 @@ from conftest import (
     kipy_rect,
     kipy_track,
     kipy_via,
+    kipy_zone,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
@@ -18,7 +19,7 @@ from kipy.wrapper import Wrapper
 
 from kibends.chain import Chain, extract_chains
 from kibends.coords import BOARD_FRAME, UserFrame
-from kibends.snapshot import BoardSnapshot, read_selection
+from kibends.snapshot import KICAD_MAX_ERROR, BoardSnapshot, read_selection
 from kibends.vias import ChainEnd, MovableVia, carried_copper, movable_vias
 
 VIA = (4.0, 4.0)
@@ -71,7 +72,9 @@ def judge(
         lambda layer, net: snapshots[layer].same_net_copper(net),
         frame=BOARD_FRAME,
     )
-    movable = movable_vias(chosen.vias, whole.via_contacts, chains, frame=frame)
+    movable = movable_vias(
+        chosen.vias, whole.via_contacts, chains, frame=frame, zones=whole.via_zones
+    )
     return movable, chains
 
 
@@ -197,18 +200,82 @@ class TestMovableVias:
         (warning,) = warnings(log)
         assert "pad p" in warning
 
-    def test_same_net_zone_on_an_inner_layer_pins_it(self, log: list[str]) -> None:
+    def test_same_net_zone_leaves_it_movable_inside_the_zone(
+        self, log: list[str]
+    ) -> None:
         v = kipy_via("v", "SIG", *VIA)
-        fills = {BL.BL_In2_Cu: kipy_rect(3, 3, 5, 5)}
+        fills = {L: kipy_rect(3, 3, 5, 5) for L in (BL.BL_In1_Cu, BL.BL_In2_Cu)}
         zone = kipy_filled_zone("plane", "SIG", fills)
 
         movable, _ = judge(
             [*front(), *back(), v], [*front(), *back()], [v], zones=[zone]
         )
 
+        (via,) = movable
+        (inside,) = via.zones
+        assert inside.description == "zone plane on In1.Cu and In2.Cu"
+        assert warnings(log) == []
+
+    def test_zone_and_unselected_track_fix_it_naming_only_the_track(
+        self, log: list[str]
+    ) -> None:
+        v = kipy_via("v", "SIG", *VIA)
+        zone = kipy_filled_zone("plane", "SIG", {BL.BL_In2_Cu: kipy_rect(3, 3, 5, 5)})
+        stub = kipy_track("s", "SIG", VIA, (4, 6), layer=BL.BL_In1_Cu)
+
+        movable, _ = judge(
+            [*front(), *back(), v], [*front(), *back(), stub], [v], zones=[zone]
+        )
+
         assert movable == []
         (warning,) = warnings(log)
-        assert "zone plane on In2.Cu" in warning
+        assert warning.rstrip().endswith(
+            "stays fixed: track s on In1.Cu connects to it"
+        )
+
+    @pytest.mark.parametrize(("past", "moves"), [(0.001, True), (-0.001, False)])
+    def test_moves_only_with_its_centre_deep_enough_in_the_fill(
+        self, log: list[str], past: float, moves: bool
+    ) -> None:
+        # The fill ends inside the ring, as it does where the zone's
+        # clearance to another net's copper reaches it; the refill still
+        # connects the via when its centre lies half the zone's minimum width
+        # and the arc error inside.
+        v = kipy_via("v", "SIG", *VIA)
+        min_width = 0.2
+        edge = VIA[0] + min_width / 2 + KICAD_MAX_ERROR + past
+        fill = {BL.BL_In2_Cu: kipy_rect(2, 2, edge, 6)}
+        zone = kipy_filled_zone("plane", "SIG", fill, min_width=min_width)
+
+        movable, _ = judge(
+            [*front(), *back(), v], [*front(), *back()], [v], zones=[zone]
+        )
+
+        assert len(movable) == int(moves)
+        if moves:
+            assert warnings(log) == []
+        else:
+            (warning,) = warnings(log)
+            assert warning.rstrip().endswith(
+                "stays fixed: it sits at the edge of zone plane on In2.Cu"
+            )
+
+    def test_a_fill_the_refill_will_not_keep_fixes_it(self, log: list[str]) -> None:
+        # A rule area keeping out pour, drawn over the via since the last
+        # refill, leaves nothing of the fill around it.
+        v = kipy_via("v", "SIG", *VIA)
+        fill = {BL.BL_In2_Cu: kipy_rect(3, 3, 5, 5)}
+        zone = kipy_filled_zone("plane", "SIG", fill)
+        area = kipy_zone(kipy_rect(2, 2, 6, 6), [BL.BL_In2_Cu], keepout_tracks=False)
+        area.proto.rule_area_settings.keepout_copper = True
+
+        movable, _ = judge(
+            [*front(), *back(), v], [*front(), *back()], [v], zones=[zone, area]
+        )
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert warning.rstrip().endswith("it sits at the edge of zone plane on In2.Cu")
 
     def test_teardrop_leaves_it_movable(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
