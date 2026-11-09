@@ -152,6 +152,13 @@ members alike, so that the refill reaches the via wherever the others
 move. The chains a via carries are of its net, so it does not see them,
 nor they it.
 
+A vertex that keeps a pad or a via that stays (`ChainInput.contacts`)
+is free, and the boxes are not what keep it inside the contact: it has a
+stop, the clearance hinge at its distance to the region's edge
+(`contact_stops`), which limits without repelling, and the check below
+moves it back if it ends outside (`contacts_left`). Every state a burst
+leaves, and so the best state, has it inside, with or without the boxes.
+
 What the boxes allow is coming too close: ending inside another chain's
 clearance, or an edge ending across one. The check after each run catches
 that. An edge clear of the other chains at the burst's start that is not
@@ -310,11 +317,15 @@ class OptimizeResult:
 class ChainResult:
     polyline: FloatArray
     fixed: BoolArray
-    """Pinned and frozen vertices of `polyline`; simplification keeps them."""
+    """Pinned and frozen vertices of `polyline`, and those that keep a
+    contact; simplification keeps them."""
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
     frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
+    contact_of: IntArray
+    """Per vertex of `polyline`, the index among its input's contacts of
+    the one it keeps, -1 for none."""
 
 
 @dataclass(frozen=True)
@@ -696,8 +707,9 @@ Member = ChainInput | PairBlock
 """What a problem optimises: a chain, or a coupled section as its
 centreline."""
 
-Resumed = tuple[FloatArray, BoolArray]
-"""Where a member resumes: its polyline and the vertices that stay."""
+Resumed = tuple[FloatArray, BoolArray, IntArray]
+"""Where a member resumes: its polyline, the vertices that stay and, per
+vertex, the contact it keeps (`_Problem.contact_of`)."""
 
 
 def optimize_chains(
@@ -1010,26 +1022,72 @@ def _resumed(
     section the earlier run moved comes back without its direction pins
     among its fixed vertices, as simplification may merge across them;
     here they are pinned again."""
-    resumed: list[Resumed | None] = [
-        (start.chains[i].polyline, start.chains[i].fixed) for i in chains
-    ]
+    resumed: list[Resumed | None] = []
+    for i in chains:
+        chain = start.chains[i]
+        contact_of = chain.contact_of
+        resumed.append((chain.polyline, chain.fixed & (contact_of < 0), contact_of))
     for k in sections:
         block = blocks[k]
         if block.held:
             resumed.append(None)
             continue
         points = start.pairs[k].centreline
-        resumed.append((points, start.pairs[k].fixed | block.direction_pins(points)))
+        pinned = start.pairs[k].fixed | block.direction_pins(points)
+        resumed.append((points, pinned, no_contacts(points)))
     return resumed
 
 
+def contact_stops(
+    points: FloatArray,
+    contact_of: IntArray,
+    within: Sequence[DistanceField],
+    width: float,
+    limit: Integrand,
+) -> tuple[float, FloatArray]:
+    """The stops that keep each vertex v of `points` that keeps a contact
+    inside its region, and their gradient at every vertex: `limit`, the
+    clearance hinge, at its distance to the edge of `within[contact_of[v]]`,
+    weighted by the chain's `width`, as a via's ring stands for a track as
+    long as it is wide. They limit without repelling: the hinge rises only
+    within its standoff of the edge."""
+    gradient = np.zeros_like(points)
+    value = 0.0
+    for v in np.flatnonzero(contact_of >= 0):
+        field = within[int(contact_of[v])]
+        distance, direction = field.signed_distance(points[v][None])
+        term, slope = limit(distance)
+        value += width * float(term[0])
+        gradient[v] += width * slope[0] * direction[0]
+    return value, gradient
+
+
+def contacts_left(
+    points: FloatArray, contact_of: IntArray, within: Sequence[DistanceField]
+) -> BoolArray:
+    """The vertices of `points` that keep a contact and lie outside its
+    region, beyond INSIDE_TOLERANCE."""
+    outside = np.zeros(len(points), dtype=bool)
+    for v in np.flatnonzero(contact_of >= 0):
+        distance, _ = within[int(contact_of[v])].signed_distance(points[v][None])
+        outside[v] = distance[0] < -INSIDE_TOLERANCE
+    return outside
+
+
+def no_contacts(points: FloatArray) -> IntArray:
+    """`ChainResult.contact_of` for a polyline that keeps no contact."""
+    return np.full(len(points), -1, dtype=np.intp)
+
+
 def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
-    """The chain ends that are not fixed, grouped by the point, layer and net
-    they share; raises ValueError for one that meets no other."""
+    """The chain ends that are neither fixed nor keep a contact, grouped by
+    the point, layer and net they share; raises ValueError for one that
+    meets no other."""
     groups: dict[tuple[str, str, float, float], list[End]] = {}
     for i, chain in enumerate(chains):
-        for end in (0, -1):
-            if not chain.fixed[end]:
+        sliding = {v for v, _ in chain.contacts}
+        for end, at in ((0, 0), (-1, len(chain.fixed) - 1)):
+            if not chain.fixed[end] and at not in sliding:
                 x, y = chain.centreline.points[end]
                 key = (chain.layer, chain.centreline.net, float(x), float(y))
                 groups.setdefault(key, []).append((i, end))
@@ -1352,20 +1410,25 @@ def _pull(
 def _resample(
     points: FloatArray,
     mask: BoolArray,
+    contact_of: IntArray,
     loose: Sequence[int],
     spacing: float,
     kept: BoolArray | None = None,
-) -> tuple[FloatArray, BoolArray]:
-    """`optimize.resample`, keeping the `loose` ends and the `kept` vertices
-    where they are, as free vertices."""
-    anchors = mask.copy()
+) -> tuple[FloatArray, BoolArray, IntArray]:
+    """`optimize.resample`, keeping the `loose` ends, the vertices that keep
+    a contact (`contact_of`) and the `kept` vertices where they are, as free
+    vertices, and where each contact went."""
+    anchors = mask | (contact_of >= 0)
     anchors[list(loose)] = True
     if kept is not None:
         anchors |= kept
     points, fixed = resample(points, anchors, spacing)
     # Resampling keeps the anchors, in order.
-    fixed[np.flatnonzero(fixed)[~mask[anchors]]] = False
-    return points, fixed
+    at = np.flatnonzero(fixed)
+    fixed[at[~mask[anchors]]] = False
+    moved = no_contacts(points)
+    moved[at] = contact_of[anchors]
+    return points, fixed, moved
 
 
 def _variables(
@@ -1557,6 +1620,16 @@ class _Problem:
             )
             self.anchors.append(given.fixed | mask)
             self.frozen.append(records)
+        # A vertex that stays keeps its contact without one.
+        self.within = [[field for _, field in body.contacts] for body in self.bodies]
+        self.sliding = [i for i, body in enumerate(self.bodies) if body.contacts]
+        self.given_contact_of: list[IntArray] = []
+        for body, anchors in zip(self.bodies, self.anchors, strict=True):
+            contact_of = no_contacts(body.centreline.points)
+            for k, (v, _) in enumerate(body.contacts):
+                contact_of[v] = k
+            contact_of[anchors] = -1
+            self.given_contact_of.append(contact_of)
         self.before: list[PolylineStats] = [
             measure(points, field, settings.spacing)
             for points, field in zip(self.originals, start_fields, strict=True)
@@ -1566,16 +1639,26 @@ class _Problem:
         # Resampling would put free vertices between a held section's pins.
         self.points: list[FloatArray] = []
         self.masks: list[BoolArray] = []
-        for member, original, anchors, loose in zip(
-            self.members, self.originals, self.anchors, self.loose, strict=True
+        self.contact_of: list[IntArray] = []
+        """Per member, each vertex's contact among `within`, -1 for none."""
+        for member, original, anchors, given, loose in zip(
+            self.members,
+            self.originals,
+            self.anchors,
+            self.given_contact_of,
+            self.loose,
+            strict=True,
         ):
             if isinstance(member, PairBlock) and member.held:
-                points, mask = original, anchors
+                points, mask, contact_of = original, anchors, given
             else:
-                points, mask = _resample(original, anchors, loose, settings.spacing)
+                points, mask, contact_of = _resample(
+                    original, anchors, given, loose, settings.spacing
+                )
             moves = not mask.all()
             self.points.append(points if moves else original)
             self.masks.append(mask if moves else anchors)
+            self.contact_of.append(contact_of if moves else given)
         self.positions = list(self.start_positions)
         self.free = [
             i for i, mask in enumerate(self.masks) if not mask.all() or self.carried[i]
@@ -1597,6 +1680,7 @@ class _Problem:
         self.start_energy = self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
+        self.best_contact_of = list(self.contact_of)
         self.best_positions = list(self.positions)
         self.lowest = [self.energy]
         self.rejected_edges = [0] * count
@@ -1615,10 +1699,11 @@ class _Problem:
         is all pins, which `violations` cannot count, and a burst leaves an
         edge that starts across another member as it is."""
         points, masks = list(self.points), list(self.masks)
+        contact_of = list(self.contact_of)
         for i in self.free:
             given = state.members[i]
             if given is not None:
-                points[i], masks[i] = given
+                points[i], masks[i], contact_of[i] = given
         positions = [
             at if k in self.free_vias else self.positions[k]
             for k, at in enumerate(state.positions)
@@ -1632,6 +1717,7 @@ class _Problem:
             count <= before for count, before in across
         ):
             self.points, self.masks, self.positions = points, masks, positions
+            self.contact_of = contact_of
             self.resampled = [
                 done and given is None
                 for done, given in zip(self.resampled, state.members, strict=True)
@@ -1782,6 +1868,13 @@ class _Problem:
                     distance[p, n], direction[p, n] = d[0], g[0]
         return distance, direction
 
+    def left(self, i: int, points: FloatArray) -> BoolArray:
+        """Member i's vertices at `points` that lie outside the contact
+        they keep (`contacts_left`)."""
+        if i not in self.sliding:
+            return np.zeros(len(points), dtype=bool)
+        return contacts_left(points, self.contact_of[i], self.within[i])
+
     def energy_masks(self, masks: Sequence[BoolArray]) -> list[BoolArray]:
         """`masks` with the ends the moving vias carry loose."""
         loose = [mask.copy() for mask in masks]
@@ -1817,6 +1910,17 @@ class _Problem:
         own, pulls, own_gradients = self.via_energy(polylines, positions)
         for g, pull in zip(gradients, pulls, strict=True):
             g += pull
+        for i in self.sliding:
+            points = polylines[i]
+            stop, push = contact_stops(
+                points,
+                self.contact_of[i],
+                self.within[i],
+                self.bodies[i].centreline.width,
+                self.limit,
+            )
+            value += stop
+            gradients[i] += push
         return value + own, gradients, via_gradients + own_gradients
 
     def energy_of(
@@ -1835,12 +1939,15 @@ class _Problem:
 
     def result(self, k: int, *, best: bool) -> ChainResult:
         """Chain k's best state, with `best`, else its input."""
+        contact_of = self.best_contact_of[k] if best else self.given_contact_of[k]
+        mask = self.best_masks[k] if best else self.anchors[k]
         return ChainResult(
             polyline=self.best[k] if best else self.originals[k],
-            fixed=self.best_masks[k] if best else self.anchors[k],
+            fixed=mask | (contact_of >= 0),
             rejected_edges=self.rejected_edges[k],
             frozen=self.frozen[k],
             before=self.before[k],
+            contact_of=contact_of,
         )
 
     def pair_result(self, k: int, *, best: bool) -> PairResult:
@@ -1886,15 +1993,19 @@ class _Problem:
         ]
         starts: list[FloatArray] = []
         masks: list[BoolArray] = []
+        contact_of: list[IntArray] = []
         pressed = self.pressed(self.points, self.positions)
-        for i, (points, mask) in enumerate(zip(self.points, self.masks, strict=True)):
+        for i, (points, mask, kept) in enumerate(
+            zip(self.points, self.masks, self.contact_of, strict=True)
+        ):
             if i in self.free and not self.resampled[i]:
-                points, mask = _resample(
-                    points, mask, self.loose[i], settings.spacing, pressed[i]
+                points, mask, kept = _resample(
+                    points, mask, kept, self.loose[i], settings.spacing, pressed[i]
                 )
             starts.append(points)
             masks.append(mask)
-        self.masks = masks
+            contact_of.append(kept)
+        self.masks, self.contact_of = masks, contact_of
         self.resampled = [False] * len(starts)
         burst = self.burst(starts)
         change = max(
@@ -1920,6 +2031,7 @@ class _Problem:
             self.points, self.masks, self.positions
         ):
             self.best, self.best_masks = list(self.points), list(self.masks)
+            self.best_contact_of = list(self.contact_of)
             self.best_positions = list(self.positions)
             self.best_energy = self.energy
         self.lowest.append(min(self.lowest[-1], self.energy))
@@ -2030,6 +2142,9 @@ class _Problem:
             _others(seen[i], flat_start).segments_clear(s[:-1], s[1:])
             for i, s in enumerate(starts)
         ]
+        # Only a vertex that newly leaves its contact moves back, so that
+        # moving back always ends.
+        left_before = [self.left(i, s) for i, s in enumerate(starts)]
         checks = [
             SelfCheck.of(s, member.limit, member.apart)
             if isinstance(member, PairBlock)
@@ -2062,7 +2177,9 @@ class _Problem:
                 ends[1:] |= crossing
                 for k, end in self.carried[i]:
                     via_counts[k] += int(ends[end])
-                rejected, close = int(crossing.sum()), 0
+                outside = self.left(i, points) & ~left_before[i]
+                ends |= outside
+                rejected, close = int(crossing.sum()) + int(outside.sum()), 0
                 check = checks[i]
                 if check is not None:
                     own, more, close = check(points)

@@ -59,6 +59,7 @@ from kibends.optimize import (
     RunResult,
     Termination,
     measure,
+    no_contacts,
     optimize_chains,
 )
 from kibends.pair_blocks import Hold, PairInput
@@ -793,7 +794,12 @@ def _simplify(
     ]
     results = [
         *run.chains,
-        *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
+        *(
+            ChainResult(
+                r.centreline, r.fixed, 0, (), r.before, no_contacts(r.centreline)
+            )
+            for r in run.pairs
+        ),
     ]
     simplified = simplify_chains(
         _with_vias(

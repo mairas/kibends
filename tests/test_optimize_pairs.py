@@ -49,6 +49,7 @@ from kibends.optimize import (
     Termination,
     close_to_itself,
     layer_energy,
+    no_contacts,
     optimize_chains,
     resample,
     seen_parts,
@@ -359,7 +360,14 @@ class TestPairOverPad:
         # back exactly as the run offset them for `offset_kept` to find them.
         (pair,) = over_pad.pairs
         block = pair.block
-        result = ChainResult(pair.centreline, pair.fixed, 0, (), pair.before)
+        result = ChainResult(
+            pair.centreline,
+            pair.fixed,
+            0,
+            (),
+            pair.before,
+            no_contacts(pair.centreline),
+        )
 
         (centreline,) = simplify_chains(
             [block.facing],
