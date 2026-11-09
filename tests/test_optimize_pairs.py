@@ -856,6 +856,8 @@ SPLIT_APART = 10.0
 SHARP_LEG = 1.0
 """mm: each leg of a 135° corner, which resampling at the coarse spacing
 cuts into a bend tighter than the limit."""
+SHORT_BURSTS = replace(COARSE, burst_maxiter=20)
+"""Rounds a free `sharp_corner` as COARSE does, in half the time."""
 
 
 def sharp_corner(field: ObstacleField, below: float = 0.0) -> PairInput:
@@ -877,12 +879,12 @@ def test_a_section_kept_tight_does_not_hold_back_one_that_can_round_its_corner()
     stuck = sharp_corner(scenarios.pad_for_pair(*pad))
     free = sharp_corner(FreeSpace(), below=SPLIT_APART)
 
-    result = optimize_chains((), scenarios.PARAMS, COARSE, pairs=(stuck, free))
+    result = optimize_chains((), scenarios.PARAMS, SHORT_BURSTS, pairs=(stuck, free))
 
     kept, rounded = result.pairs
-    block = pair_block(stuck, COARSE.spacing)
+    block = pair_block(stuck, SHORT_BURSTS.spacing)
     start, _ = resample(
-        block.chain.centreline.points, block.chain.fixed, COARSE.spacing
+        block.chain.centreline.points, block.chain.fixed, SHORT_BURSTS.spacing
     )
     tightest = block.bend(start).radius
     assert kept.bend is not None and kept.bend.too_tight
