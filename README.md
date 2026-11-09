@@ -192,9 +192,24 @@ against every rule of the board.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
-they are, unless it ends at a moving via, as does every point where other
-copper of the same net (a pad, via, track or copper shape, or the end of
-another selected chain) touches the chain.
+they are, unless it ends at a moving via or slides within a pad or via
+(below), as does every point where other copper of the same net (a track
+or copper shape, or the end of another selected chain) touches the chain.
+
+A pad of the chain's net, or a via of its net that does not move, only
+needs to keep touching the chain somewhere. A chain that ends inside one
+keeps its end inside it, 5 µm within its outline, but the end may slide
+anywhere there, and the rest of the chain, including what ran inside the
+pad, is free. A chain that runs over one partway along keeps one vertex
+inside it, where two of its new tracks meet, free to slide there in the
+same way, however many times it entered the pad. This rests on KiCad
+connecting a track to a pad or via when an end of the track lies inside
+its shape. A pad or via pins the chain where it touches it, as other
+copper does, where the chain only grazes it without its centreline
+entering, where it also touches an end that other copper holds, and at the
+junction of branching tracks. An end whose copper reaches another selected
+track of its net stays where it is too, since that track keeps it there. The tracks of a differential pair keep the
+vertex inside it where it is.
 
 A vertex that starts inside another item's clearance stays where it is,
 with a warning. When that item is another selected chain, the warning names

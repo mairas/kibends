@@ -59,6 +59,7 @@ from kibends.optimize import (
     RunResult,
     Termination,
     measure,
+    no_contacts,
     optimize_chains,
 )
 from kibends.pair_blocks import Hold, PairInput
@@ -366,7 +367,7 @@ def _read(
         every_copper_layer=bool(may),
     )
     snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
-    # A moving via's copper must not pin the chains it carries where they
+    # A moving via's copper must not hold the chains it carries where they
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates, frame)
     movable = movable_vias(
@@ -391,7 +392,12 @@ def _read(
 def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     moving = {m.via.id for m in read.movable}
     whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
-    pairs = find_pairs(read.chains, options.chord_tolerance, frame=read.frame)
+    # A pair's tracks keep their contacts where they are.
+    pairs = find_pairs(
+        [chain.with_slides_pinned() for chain in read.chains],
+        options.chord_tolerance,
+        frame=read.frame,
+    )
 
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float
@@ -661,17 +667,18 @@ def _extract_chains(
     kept: Sequence[Segment],
     locked: Sequence[Segment],
     snapshots: Mapping[str, LayerSnapshot],
-    unpinning: Collection[str],
+    moving: Collection[str],
     frame: UserFrame,
 ) -> list[Chain]:
-    """The chains of the selection split into `kept` and `locked`, pinned by
-    the same-net copper of their layers but the vias `unpinning`."""
+    """The chains of the selection split into `kept` and `locked`, held by
+    the same-net copper of their layers but the vias `moving`: pinned where
+    it touches them, or, for pads and vias, kept by a vertex inside."""
 
     def copper(layer: str, net: str) -> list[SameNetCopper]:
         snapshot = snapshots[layer]
-        if unpinning:
-            pinning = tuple(v for v in snapshot.vias if v.id not in unpinning)
-            snapshot = replace(snapshot, vias=pinning)
+        if moving:
+            staying = tuple(v for v in snapshot.vias if v.id not in moving)
+            snapshot = replace(snapshot, vias=staying)
         return snapshot.same_net_copper(net)
 
     return split_chains(kept, locked, copper, frame=frame)
@@ -710,7 +717,13 @@ def _chain_inputs(
             np.array(chain.points),
         )
         inputs.append(
-            ChainInput(centreline, chain.layer, np.array(chain.pinned), fields[key])
+            ChainInput(
+                centreline,
+                chain.layer,
+                np.array(chain.pinned),
+                fields[key],
+                tuple((i, Obstacles((), region)) for i, region in chain.slides),
+            )
         )
     return inputs
 
@@ -793,7 +806,12 @@ def _simplify(
     ]
     results = [
         *run.chains,
-        *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
+        *(
+            ChainResult(
+                r.centreline, r.fixed, 0, (), r.before, no_contacts(r.centreline)
+            )
+            for r in run.pairs
+        ),
     ]
     simplified = simplify_chains(
         _with_vias(

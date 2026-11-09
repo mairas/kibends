@@ -297,6 +297,7 @@ def lay_out(
                 whole[k],
                 centreline=replace(whole[k].centreline, points=track.points),
                 fixed=track.pinned,
+                contacts=(),
             )
             for k, track in ((p.a, pair.a), (p.b, pair.b))
         )

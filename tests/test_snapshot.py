@@ -42,9 +42,10 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
 from kibends import snapshot as snapshot_module
-from kibends.chain import NM_PER_MM, SameNetTrack, Segment, extract_chain
+from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment, extract_chain
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import (
+    CONTACT_MARGIN,
     BoardSnapshot,
     Disc,
     LayerSnapshot,
@@ -360,13 +361,26 @@ class TestSameNetCopper:
         copper = snapshot(fake, frozenset({"sel"})).same_net_copper("SIG")
 
         pad, via, stub, shape = copper
-        assert isinstance(pad, Polygon) and pad.contains(Point(0, 0))
-        assert isinstance(via, Polygon)
-        assert via.area == pytest.approx(math.pi * 0.3**2, rel=1e-2)
+        assert isinstance(pad, Contact) and pad.shape.contains(Point(0, 0))
+        assert isinstance(via, Contact)
+        assert via.shape.area == pytest.approx(math.pi * 0.3**2, rel=1e-2)
+        assert pad.margin == via.margin == CONTACT_MARGIN
         assert isinstance(stub, SameNetTrack)
         assert stub.centreline.equals(LineString([(2, 0), (2, 3)]))
         assert stub.width == pytest.approx(0.3)
         assert isinstance(shape, Polygon) and shape.contains(Point(2, 7))
+
+    def test_a_pad_keeps_its_vertex_5_um_inside_its_outline(self) -> None:
+        # KiCad's arc error, 5 um, plus the commit's rounding, 1 nm: a vertex
+        # 4 um inside the pad's edge is too close, one 6 um inside is not.
+        fake = FakeBoard(pads=[kipy_pad("p", "SIG", 0, 0)])
+
+        (pad,) = snapshot(fake).same_net_copper("SIG")
+
+        assert isinstance(pad, Contact)
+        edge = PAD_HALF_SIZE
+        assert pad.inside.covers(Point(edge - 0.006, 0))
+        assert not pad.inside.covers(Point(edge - 0.004, 0))
 
     def test_same_net_copper_shape_over_the_route_pins_the_chain(self) -> None:
         fake = FakeBoard(

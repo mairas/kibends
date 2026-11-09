@@ -387,9 +387,10 @@ class TestMovableVias:
         assert "track a on F.Cu" in warning
 
     @pytest.mark.parametrize("selected", [False, True])
-    def test_unselected_via_pins_as_before(
+    def test_unselected_via_holds_the_chain_as_before(
         self, log: list[str], selected: bool
     ) -> None:
+        # The chain passes over it, so it keeps one vertex inside it.
         v = kipy_via("v", "SIG", 2, 0)
 
         movable, chains = judge([*front(), *([v] if selected else [])], front(), [v])
@@ -397,7 +398,8 @@ class TestMovableVias:
         assert movable == []
         (chain,) = chains
         pinned = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
-        assert pinned == [(0, 0), pytest.approx((1.7, 0)), pytest.approx((2.3, 0)), VIA]
+        assert pinned == [(0, 0), VIA]
+        assert [chain.points[i] for i, _ in chain.slides] == [pytest.approx((2, 0))]
         assert len(warnings(log)) == int(selected)
 
 

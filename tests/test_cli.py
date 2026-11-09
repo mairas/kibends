@@ -39,7 +39,8 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from kipy.util.board_layer import iter_copper_layers
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, MultiLineString, Point, box
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 from kibends import cli, plot
@@ -64,7 +65,7 @@ from kibends.optimize import (
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
-from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot
+from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -1308,6 +1309,7 @@ def test_prints_only_the_outcome(
 
 
 VIA = (4.0, 4.0)
+VIA_DIAMETER = 0.6
 """Where `l_chain` ends: the via that takes SIG down to B.Cu."""
 BOARD_WIDE_READS = (
     "get_selection",
@@ -1344,7 +1346,7 @@ def via_route_board(
     return CommitBoard(
         selection=list(route),
         tracks=[*route, gnd, *unselected],
-        vias=[kipy_via("v", "SIG", *VIA)],
+        vias=[kipy_via("v", "SIG", *VIA, VIA_DIAMETER)],
         pads=[kipy_pad("pad", "GND", *pad, layers=pad_layers)],
     )
 
@@ -1355,6 +1357,15 @@ def created_on(board: CommitBoard, layer: BL.ValueType) -> list[kbt.Track]:
 
 def ends(tracks: Sequence[kbt.Track]) -> set[tuple[int, int]]:
     return {(p.x, p.y) for t in tracks for p in (t.start, t.end)}
+
+
+def keeps_the_via(tracks: Sequence[kbt.Track]) -> bool:
+    """Whether an end of `tracks` lies inside the via at VIA, as far inside
+    its ring as a contact keeps."""
+    inside = Point(VIA).buffer(VIA_DIAMETER / 2 - CONTACT_MARGIN)
+    return any(
+        inside.covers(Point(x / NM_PER_MM, y / NM_PER_MM)) for x, y in ends(tracks)
+    )
 
 
 def layout(board: CommitBoard) -> set[tuple[int, int, int, int, int]]:
@@ -1377,9 +1388,9 @@ class TestSeveralLayers:
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         front, back = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_B_Cu)
         assert len(front) + len(back) == len(board.created)
-        via = (nm(VIA[0]), nm(VIA[1]))
-        assert {(0, 0), via} <= ends(front)
-        assert {via, (nm(8), nm(8))} <= ends(back)
+        assert (0, 0) in ends(front)
+        assert (nm(8), nm(8)) in ends(back)
+        assert keeps_the_via(front) and keeps_the_via(back)
 
     def test_inner_layer_route_is_committed_on_it(self, connect: Connector) -> None:
         board = connect.to(via_route_board(back_layer=BL.BL_In1_Cu))
@@ -1389,8 +1400,8 @@ class TestSeveralLayers:
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         front, inner = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_In1_Cu)
         assert len(front) + len(inner) == len(board.created)
-        via = (nm(VIA[0]), nm(VIA[1]))
-        assert {via, (nm(8), nm(8))} <= ends(inner)
+        assert (nm(8), nm(8)) in ends(inner)
+        assert keeps_the_via(inner)
 
     def test_each_chain_keeps_touches_of_its_own_layers_copper(
         self, connect: Connector
@@ -2706,7 +2717,8 @@ class TestPairs:
     ) -> None:
         # As on the board of https://github.com/mairas/kibends/issues/42:
         # each track runs over the edge of a pad of its own net beyond the
-        # pair's corners, which pins it where it crosses the pad's outline.
+        # pair's corners. A pair keeps its contacts where they are, so each
+        # track stays pinned at the middle of its stretch over the pad.
         inside = PAD_HALF_SIZE - PAD_OVERLAP
         pads = [
             kipy_pad(f"pad{net}", net, PADS_AT, 3.0 + side * (PAIR_HALF_PITCH + inside))
@@ -2723,8 +2735,7 @@ class TestPairs:
             joined = linemerge(lines[net])
             assert isinstance(joined, LineString)
             y = 3.0 + side * PAIR_HALF_PITCH
-            for x in (PADS_AT - PAD_HALF_SIZE, PADS_AT + PAD_HALF_SIZE):
-                assert (x, y) in joined.coords
+            assert (PADS_AT, y) in joined.coords
             # Both corners ahead of the pads are rounded off.
             mitre = math.tan(math.pi / 8) * PAIR_HALF_PITCH
             for corner in ((5.0, y - 3.0), (8.0, y)):
@@ -3895,3 +3906,105 @@ def test_a_pair_keeps_its_side_by_side_gap_though_closer_across_a_turn() -> None
     message = pinched(given, *laps, gap=wide - PINCH_MARGIN)
 
     assert message is not None and "across" not in message
+
+
+def pad_inside(at: tuple[float, float]) -> BaseGeometry:
+    """Where a vertex keeping the fake board's pad at `at` may lie."""
+    x, y = at
+    h = PAD_HALF_SIZE - CONTACT_MARGIN
+    return box(x - h, y - h, x + h, y + h)
+
+
+def committed_route(board: CommitBoard) -> LineString:
+    """The created tracks, joined into one route."""
+    joined = linemerge([segment(t) for t in cast(list[kbt.Track], board.created)])
+    assert isinstance(joined, LineString)
+    return joined
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestContacts:
+    def test_a_tap_ending_in_a_pad_on_the_trunk_stays_on_the_trunk(
+        self, connect: Connector
+    ) -> None:
+        # The tap's end lies in a pad and its copper on the trunk's: the pad
+        # keeps it from joining the trunk, so it must not slide off it.
+        route = [
+            kipy_track("trunk", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("tap", "SIG", (5, 0.2), (5, 3), width=WIDTH),
+        ]
+        pads = [
+            kipy_pad(f"p{k}", "SIG", *at)
+            for k, at in enumerate([(0, 0), (10, 0), (5, 0.4), (5, 3)])
+        ]
+        board = connect.to(
+            CommitBoard(selection=list(route), tracks=list(route), pads=pads)
+        )
+
+        run()
+
+        merged = linemerge([segment(t) for t in cast(list[kbt.Track], board.created)])
+        assert isinstance(merged, MultiLineString)
+        tap_end = Point(5, 0.2)
+        # The tap still ends where it did, and its copper reaches the trunk's.
+        ending = [
+            tap_end.equals(Point(line.coords[0]))
+            or tap_end.equals(Point(line.coords[-1]))
+            for line in merged.geoms
+        ]
+        assert sorted(ending) == [False, True]
+        trunk = merged.geoms[ending.index(False)]
+        assert trunk.distance(tap_end) <= WIDTH
+
+    def test_a_route_from_a_resistor_pad_slides_within_it_and_stays_connected(
+        self, connect: Connector
+    ) -> None:
+        # One track lies inside pad 1, the corner where the second leaves it
+        # on the pad's edge: pinned at both, the route could not move.
+        route = [
+            kipy_track("in", "SIG", (0, 0), (PAD_HALF_SIZE, 0), width=WIDTH),
+            kipy_track("out", "SIG", (PAD_HALF_SIZE, 0), (3, 3), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(route),
+                tracks=list(route),
+                pads=[kipy_pad("r1", "SIG", 0, 0)],
+            )
+        )
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert sorted(board.deleted) == ["in", "out"]
+        joined = committed_route(board)
+        start, end = joined.coords[0], joined.coords[-1]
+        assert end == (3, 3) or start == (3, 3)
+        near = start if end == (3, 3) else end
+        assert pad_inside((0, 0)).covers(Point(near))
+        assert near != (0, 0)
+
+    def test_a_route_passing_over_a_pad_keeps_a_vertex_inside_it(
+        self, connect: Connector
+    ) -> None:
+        route = [
+            kipy_track("a", "SIG", (0, 0), (5, 1), width=WIDTH),
+            kipy_track("b", "SIG", (5, 1), (10, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(route),
+                tracks=list(route),
+                pads=[kipy_pad("p", "SIG", 5, 1)],
+            )
+        )
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        joined = committed_route(board)
+        assert {joined.coords[0], joined.coords[-1]} == {(0, 0), (10, 0)}
+        inside = pad_inside((5, 1))
+        kept = [c for c in joined.coords[1:-1] if inside.covers(Point(c))]
+        assert kept
+        assert joined.length < 2 * math.hypot(5, 1)

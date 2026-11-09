@@ -20,6 +20,7 @@ import numpy as np
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
+    DistanceField,
     FloatArray,
     IntArray,
     ObstacleField,
@@ -50,6 +51,11 @@ class ChainInput:
     fixed: BoolArray
     field: ObstacleField
     """Obstacles for its net and width, without any selected chain."""
+    contacts: tuple[tuple[int, DistanceField], ...] = ()
+    """The vertices that keep a pad or via, by index, each with the outside
+    of the region it may lie in, held as the board edge is: positive inside.
+    Such a vertex is free, but a stop keeps it inside and a burst never
+    leaves it outside. A fixed vertex keeps its contact by staying."""
 
 
 def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:

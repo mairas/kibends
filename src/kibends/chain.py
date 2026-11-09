@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from functools import cached_property
 from itertools import accumulate, pairwise
 from typing import NamedTuple
 
@@ -68,7 +69,26 @@ class SameNetTrack(NamedTuple):
     width: float
 
 
-SameNetCopper = BaseGeometry | SameNetTrack
+@dataclass(frozen=True, eq=False)
+class Contact:
+    """A pad or a via that stays: a region a chain need only keep one vertex
+    inside, anywhere, to stay connected to it.
+
+    KiCad connects a track to a pad or via when an end of the track lies
+    inside its shape, so a vertex, where two tracks end, connects both.
+    `margin`, mm, is how far inside its outline that vertex stays."""
+
+    shape: BaseGeometry
+    margin: float
+
+    @cached_property
+    def inside(self) -> BaseGeometry:
+        """Where a vertex that keeps the contact may lie, shrunk once, when
+        a chain first touches it."""
+        return self.shape.buffer(-self.margin)
+
+
+SameNetCopper = BaseGeometry | SameNetTrack | Contact
 
 
 @dataclass(frozen=True)
@@ -77,6 +97,8 @@ class Chain:
 
     `pinned[i]` tells whether `points[i]` must stay where it is: the two
     endpoints and every point where same-net copper touches the chain.
+    `slides` lists, by index, the vertices that keep a `Contact` instead:
+    each may move anywhere inside its region, and is not pinned.
     `segment_ids` includes duplicate and zero-length segments, which the
     chain also replaces. A track split where another ends inside it is in
     the `segment_ids` of every chain that has a part of it
@@ -89,6 +111,13 @@ class Chain:
     layer: str
     net: str
     segment_ids: tuple[str, ...]
+    slides: tuple[tuple[int, BaseGeometry], ...] = ()
+
+    def with_slides_pinned(self) -> Chain:
+        """The chain with each sliding vertex pinned where it is."""
+        sliding = {i for i, _ in self.slides}
+        pinned = tuple(pin or i in sliding for i, pin in enumerate(self.pinned))
+        return replace(self, pinned=pinned, slides=())
 
 
 def extract_chains(
@@ -208,10 +237,19 @@ def split_chains(
             [*fixed, *(t for _, t in ends)],
             [*(NO_PIECE for _ in fixed), *(k for k, _ in ends)],
         )
+        # An end on another piece's track holds it there, though it does not
+        # pin it, so it must not slide off it.
+        tracks = [
+            (k, _same_net_track(s))
+            for k, (_, adjacency, _) in enumerate(pieces)
+            for s in dict.fromkeys(_edges_of(adjacency))
+        ]
+        bodies = _CopperIndex([t for _, t in tracks], [k for k, _ in tracks])
         net_chains = [
             _chain(
                 adjacency,
                 copper,
+                bodies,
                 piece=k,
                 width=width,
                 layer=layer,
@@ -291,7 +329,9 @@ def extract_chain(
 
     `same_net_copper` holds the copper of the chain's net on its layer: pad,
     via and copper shape outlines (polygons) and unselected tracks. A track
-    touches the chain where its copper reaches the chain's copper.
+    touches the chain where its copper reaches the chain's copper. Pads and
+    vias given as `Contact`s hold the chain by one sliding vertex instead
+    (`_slides`).
     Zones must not be passed: they reflow after the edit, so they never pin.
     Locked segments stay out of the chain, with a warning; where one touches
     the chain, it pins it like unselected copper.
@@ -339,9 +379,7 @@ class _CopperIndex:
     def __init__(self, items: Sequence[SameNetCopper], pieces: Sequence[int]) -> None:
         self._items = items
         self._pieces = pieces
-        self._tree = shapely.STRtree(
-            [i.centreline if isinstance(i, SameNetTrack) else i for i in items]
-        )
+        self._tree = shapely.STRtree([_outline(i) for i in items])
         self._track_reach = max(
             (i.width / 2 for i in items if isinstance(i, SameNetTrack)), default=0.0
         )
@@ -363,6 +401,7 @@ class _CopperIndex:
 def _chain(
     adjacency: Adjacency,
     copper: _CopperIndex,
+    bodies: _CopperIndex,
     *,
     piece: int,
     width: int,
@@ -388,9 +427,16 @@ def _chain(
     reached = shapely.union_all(
         [LineString(walked), *(_reached_from(p, o) for p, o in loose.items())]
     )
-    points, pinned = _pin_touches(
-        walked, copper.near(reached, half_width, piece), half_width, loose
-    )
+    held = {
+        p
+        for p in (walked[0], walked[-1])
+        if _reaches(
+            [t for t, _ in bodies.near(Point(p), half_width, piece)], p, half_width
+        )
+    }
+    near = copper.near(reached, half_width, piece)
+    slides = _slides(walked, near, half_width, loose, {*loose, *held})
+    points, pinned, within = _pin_touches(walked, slides, half_width, loose)
     return Chain(
         points=tuple(points),
         pinned=tuple(pinned),
@@ -398,6 +444,9 @@ def _chain(
         layer=layer,
         net=net,
         segment_ids=tuple(segment_ids),
+        slides=tuple(
+            (i, region) for i, region in enumerate(within) if region is not None
+        ),
     )
 
 
@@ -549,9 +598,18 @@ def _reaches(copper: Iterable[SameNetCopper], p: Point2, half_width: float) -> b
     return any(
         item.centreline.distance(Point(p)) <= half_width + item.width / 2
         if isinstance(item, SameNetTrack)
-        else item.distance(Point(p)) <= half_width
+        else _outline(item).distance(Point(p)) <= half_width
         for item in copper
     )
+
+
+def _outline(item: SameNetCopper) -> BaseGeometry:
+    """A track's centreline, or the copper of anything else."""
+    if isinstance(item, SameNetTrack):
+        return item.centreline
+    if isinstance(item, Contact):
+        return item.shape
+    return item
 
 
 def _may_join(s: Segment, p: NmPoint, r: Segment, *, connected: bool) -> bool:
@@ -744,21 +802,102 @@ def _walk(adjacency: Adjacency) -> list[NmPoint]:
     return ordered
 
 
+class _Slides(NamedTuple):
+    """How the copper near a chain holds it."""
+
+    pinning: list[tuple[SameNetCopper, bool]]
+    """Copper that pins wherever it touches, each item flagged with whether
+    it is a selected track."""
+    ends: dict[int, BaseGeometry]
+    """The ends, 0 or -1, that slide, each within its region."""
+    passing: list[tuple[Point2, BaseGeometry]]
+    """A vertex to insert at each point, sliding within its region."""
+
+
+def _slides(
+    points: Sequence[Point2],
+    near: Sequence[tuple[SameNetCopper, bool]],
+    half_width: float,
+    loose: Mapping[Point2, Collection[Point2]],
+    held: Collection[Point2],
+) -> _Slides:
+    """Which vertex keeps each `Contact` in `near` that the chain touches.
+
+    An end that is not `held`, at a junction (`loose`) or on another
+    selected track, and that no other copper reaches slides when it lies
+    inside every contact that reaches it, within all of them. A contact
+    that no sliding end keeps and that reaches no other end gets one vertex
+    instead, at the middle of the longest stretch of the chain inside it.
+    Any other contact pins as other copper does.
+    """
+    pinning: list[tuple[SameNetCopper, bool]] = [
+        (item, sel) for item, sel in near if not isinstance(item, Contact)
+    ]
+    contacts = [item for item, _ in near if isinstance(item, Contact)]
+    if not contacts:
+        return _Slides(pinning, {}, [])
+    others = [item for item, _ in pinning]
+    ends: dict[int, BaseGeometry] = {}
+    kept: set[int] = set()
+    for end in (0, -1):
+        p = points[end]
+        reaching = [k for k, c in enumerate(contacts) if _reaches([c], p, half_width)]
+        insides = [contacts[k].inside for k in reaching]
+        if (
+            p in held
+            or not reaching
+            or _reaches(others, p, half_width)
+            or not all(inside.covers(Point(p)) for inside in insides)
+        ):
+            continue
+        ends[end] = shapely.intersection_all(insides)
+        kept |= set(reaching)
+    still = [
+        _reached_from(p, loose.get(p, ()))
+        for end, p in ((0, points[0]), (-1, points[-1]))
+        if end not in ends
+    ]
+    line = LineString(points)
+    passing: list[tuple[Point2, BaseGeometry]] = []
+    for k, c in enumerate(contacts):
+        if k in kept:
+            continue
+        stretch = _longest_line(line.intersection(c.inside))
+        if stretch is None or any(c.shape.distance(at) <= half_width for at in still):
+            pinning.append((c.shape, False))
+            continue
+        middle = stretch.interpolate(0.5, normalized=True)
+        passing.append(((middle.x, middle.y), c.inside))
+    return _Slides(pinning, ends, passing)
+
+
+def _longest_line(geometry: BaseGeometry) -> LineString | None:
+    """The longest line of `geometry`, if it has one of some length."""
+    lines = [
+        part
+        for part in shapely.get_parts(geometry)
+        if isinstance(part, LineString) and part.length > 0.0
+    ]
+    return max(lines, key=lambda line: line.length, default=None)
+
+
 class _Station(NamedTuple):
     along: float
     point: Point2
     pinned: bool
     original: bool
+    within: BaseGeometry | None = None
 
 
 def _pin_touches(
     points: Sequence[Point2],
-    copper: Iterable[tuple[SameNetCopper, bool]],
+    slides: _Slides,
     half_width: float,
     loose: Mapping[Point2, Collection[Point2]],
-) -> tuple[list[Point2], list[bool]]:
-    """Insert and pin a vertex wherever `copper`, each item flagged with
-    whether it is a selected track, touches the chain.
+) -> tuple[list[Point2], list[bool], list[BaseGeometry | None]]:
+    """Insert and pin a vertex wherever the pinning copper of `slides`
+    touches the chain, and insert or free the vertices that slide, each
+    with its region; a pin merged with a sliding vertex pins it.
 
     An end at a `loose` point, a junction, is pinned only by copper that
     is not a selected track, as those are the junction's branches, and
@@ -769,10 +908,10 @@ def _pin_touches(
         (
             (item.centreline, half_width + item.width / 2)
             if isinstance(item, SameNetTrack)
-            else (item, half_width),
+            else (_outline(item), half_width),
             selected,
         )
-        for item, selected in copper
+        for item, selected in slides.pinning
     ]
     still_loose = {
         p
@@ -784,13 +923,23 @@ def _pin_touches(
     }
     line = LineString(points)
     last = len(points) - 1
+    ends = {0 if end == 0 else last: region for end, region in slides.ends.items()}
     lengths = (math.dist(a, b) for a, b in pairwise(points))
     stations = [
-        _Station(along, p, i in (0, last) and p not in still_loose, original=True)
+        _Station(
+            along,
+            p,
+            i in (0, last) and p not in still_loose and i not in ends,
+            original=True,
+            within=ends.get(i),
+        )
         for i, (along, p) in enumerate(
             zip(accumulate(lengths, initial=0.0), points, strict=True)
         )
     ]
+    for p, region in slides.passing:
+        along = line.project(Point(p))
+        stations.append(_Station(along, p, False, original=False, within=region))
     for (geometry, reach), selected in items:
         for touch in _touch_points(line, geometry, reach):
             if selected and any(
@@ -815,8 +964,25 @@ def _pin_touches(
             merged.append(station)
             continue
         keep = prev if prev.original else station
-        merged[-1] = keep._replace(pinned=prev.pinned or station.pinned)
-    return [st.point for st in merged], [st.pinned for st in merged]
+        pinned = prev.pinned or station.pinned
+        merged[-1] = keep._replace(
+            pinned=pinned,
+            within=None if pinned else _within_both(prev.within, station.within),
+        )
+    return (
+        [st.point for st in merged],
+        [st.pinned for st in merged],
+        [st.within for st in merged],
+    )
+
+
+def _within_both(a: BaseGeometry | None, b: BaseGeometry | None) -> BaseGeometry | None:
+    """Where a vertex keeping both regions may lie; None for neither."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a.intersection(b)
 
 
 def _reached_from(p: Point2, origins: Collection[Point2]) -> BaseGeometry:
