@@ -953,8 +953,9 @@ def build_via_obstacles(
     zones: Sequence[ViaZone] = (),
 ) -> ObstacleField:
     """Obstacles for `via` at any position, over every layer of `layers` it
-    spans, and the outside of the region of each of `zones`
-    (`zone_containment`).
+    spans. The outside of the regions of `zones` is not among them, nor are
+    the vias of its net: they only limit where the via may go and do not
+    repel it (`containment`, `own_net_vias`).
 
     Rule areas keeping out vias on those layers keep its ring out, as track
     keepouts keep out a track's copper.
@@ -982,7 +983,12 @@ def build_via_obstacles(
         touches_own_net=True,
         enters_own_pads=allow_via_in_pad,
     )
-    others = {v.id: v for s in spanned for v in s.vias if v.id not in left_out}.values()
+    others = {
+        v.id: v
+        for s in spanned
+        for v in s.vias
+        if v.id not in left_out and v.net != via.net
+    }.values()
 
     def on(layers: Iterable[str]) -> _Keeper:
         return replace(keeper, zones=zones_on(zones, layers))
@@ -1005,14 +1011,51 @@ def build_via_obstacles(
         ),
     ]
     outline = _board_outline(spanned[0].edge_paths)
-    board = (
-        Obstacles(items)
-        if outline is None
-        else Obstacles(items, outline, edge_clearance + keeper.radius)
-    )
-    if not zones:
-        return board
-    return CompositeField([board, *(f for z in zones for f in zone_containment(z))])
+    if outline is None:
+        return Obstacles(items)
+    return Obstacles(items, outline, edge_clearance + keeper.radius)
+
+
+def own_net_vias(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    *,
+    moving: Collection[str] = frozenset(),
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+) -> ObstacleField | None:
+    """The vias of `via`'s net on the layers of `layers` it spans, but those
+    in `moving`, as obstacles to it, or None if there are none: their holes
+    kept at hole-to-hole and nothing else, as two moving vias of one net
+    keep (`via_via_inflation`). Copper of its own net only limits a via, so
+    these are apart from that field."""
+    spanned = [s for s in layers if via.reaches(s.layer)]
+    if not spanned:
+        raise ValueError(f"no layer that via {via.id} spans was given")
+    left_out = {via.id, *moving}
+    own = {
+        v.id: v
+        for s in spanned
+        for v in s.vias
+        if v.id not in left_out and v.net == via.net
+    }.values()
+    clearance = spanned[0].clearance(via.net)
+    keeper = _via_keeper(via, clearance, hole_clearance, hole_to_hole)
+    return _vias_field(keeper, own, lambda _: clearance)
+
+
+def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
+    """The outside of the regions of `zones` (`zone_containment`), as one
+    field, or None without zones."""
+    parts = [f for z in zones for f in zone_containment(z)]
+    return CompositeField(parts) if parts else None
+
+
+def contained(field: ObstacleField, zones: Iterable[ViaZone]) -> ObstacleField:
+    """`field` with the outside of the regions of `zones`: every limit on
+    where a via may go."""
+    inside = containment(zones)
+    return field if inside is None else CompositeField([field, inside])
 
 
 def zone_containment(zone: ViaZone) -> list[Obstacles]:

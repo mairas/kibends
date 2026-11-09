@@ -94,11 +94,11 @@ def commit_chains(
     a copy at its new position that replaces it. The tracks and vias are
     re-read first, so one edited since the selection was read aborts the
     run instead of being overwritten. Zones are not refilled: a refill would
-    be a second undo step. An empty `chains` raises ValueError, since it
-    would push an empty undo step.
+    be a second undo step. Empty `chains` and `vias` raise ValueError, since
+    they would push an empty undo step.
     """
-    if not chains:
-        raise ValueError("No chains to commit")
+    if not chains and not vias:
+        raise ValueError("Nothing to commit")
     # A track split at a junction belongs to each chain that meets there.
     track_ids = list(dict.fromkeys(i for chain, _ in chains for i in chain.segment_ids))
     current, current_vias = _unchanged_items(board, track_ids, selected, vias)
@@ -121,11 +121,19 @@ def commit_chains(
 
     # Outside the try above: once pushed, the commit can't be dropped.
     push_checked(board, commit, label)
-    moved = f" and moved {len(vias)} vias" if vias else ""
-    logger.info(
-        f"Committed '{label}': replaced {len(track_ids)} tracks with "
-        f"{len(new_items) - len(vias)}{moved}"
-    )
+    parts: list[str] = []
+    if track_ids:
+        parts.append(
+            f"replaced {_count(len(track_ids), 'track')} with "
+            f"{len(new_items) - len(vias)}"
+        )
+    if vias:
+        parts.append(f"moved {_count(len(vias), 'via')}")
+    logger.info(f"Committed '{label}': {' and '.join(parts)}")
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
 def _unchanged_items(

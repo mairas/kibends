@@ -373,7 +373,10 @@ def route(
 def joining(via: Via, first: int, field: ObstacleField | None = None) -> ViaInput:
     """`via` joining the last end of chain `first` to the first of the next."""
     return ViaInput(
-        via, (ChainEnd(first, True), ChainEnd(first + 1, False)), field or FreeSpace()
+        via,
+        (ChainEnd(first, True), ChainEnd(first + 1, False)),
+        field or FreeSpace(),
+        PAIR_CLEARANCE,
     )
 
 
@@ -423,6 +426,7 @@ def via_fermat() -> ViasScenario:
                 via,
                 (ChainEnd(0, True), ChainEnd(1, False), ChainEnd(2, False)),
                 FreeSpace(),
+                PAIR_CLEARANCE,
             ),
         ),
     )

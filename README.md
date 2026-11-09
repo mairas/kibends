@@ -67,7 +67,15 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
    it, and no other copper touches it or those chain ends on any layer,
-   except a zone of its net. A via in a plane stays inside the zone on each
+   except a zone of its net. A selected stitching via, an unlocked through
+   via that no selected track ends at and no copper but a zone of its net
+   touches, moves too: it has no length to shorten, so it stays where it
+   is unless copper within `--range` of its clearance crowds it (a selected
+   track cutting a corner, a via of another net, a pad or other static
+   copper), and then backs off until the pushes balance or nothing is in
+   range. The edge of its zone and the vias of its own net only stop it;
+   they do not push it. One that no zone of its net reaches stays where it
+   is. A via in a plane stays inside the zone on each
    layer where the zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
    the outlines or the copper; it works from outlines and priorities alone.
@@ -90,8 +98,9 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    through via, other copper touches it or a chain end it would carry (an
    unselected track, a pad, a copper shape or another via of its net, on
    any layer), it sits at the edge of a zone's region (closer to it than
-   that margin, so moving might lose a connection it has now), or fewer
-   than two selected tracks end at it. A moving via that starts closer to other
+   that margin, so moving might lose a connection it has now), only one
+   selected track ends at it, or none does and no zone of its net reaches
+   it. A moving via that starts closer to other
    copper than its clearance stays where it is too, connected as it is, and other chains keep only the netclass clearance from it. Teardrops are ignored:
    KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
@@ -114,7 +123,15 @@ vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A selected
 via that starts inside its clearance or inside such a rule area stays where
-it is.
+it is. Vias of one net, moving or not, keep only the hole-to-hole distance
+from a moving via, their rings free to overlap, and do not repel it, so a
+grid of selected stitching vias keeps its spacing, as does a selected one
+beside an unselected one; a moving via does not repel from the edge of a
+zone it stays inside either, which only stops it, while the board edge and other
+copper still repel it. A track of the via's own net still repels it within
+`--range`. Each moving via adds to the run's time: leave stitching vias out
+of the selection, lock them, or pass `--fixed-vias` where they should
+stay.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on
@@ -140,7 +157,8 @@ Every position kibends prints, in errors and warnings, is in millimetres relativ
 pointing down: as the PCB editor shows coordinates with the grid origin
 chosen under Preferences > PCB Editor > Origins & Axes and neither axis
 inverted.
-A chain the optimizer leaves as it was is not replaced. Without `--dry-run`, the
+A chain the optimizer leaves as it was is not replaced, and a run that
+changes no chain still commits the stitching vias it moved. Without `--dry-run`, the
 changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
 A track or via edited in KiCad since the run read it stops the commit.
@@ -233,6 +251,7 @@ into coupling.
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. KiCad's DRC catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
+| `--fixed-vias` | | Keep every selected stitching via (one no selected track ends at) where it is, as if it were not selected, and spend no time moving it. Vias that carry selected tracks still move. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 

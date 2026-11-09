@@ -50,6 +50,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     build_via_obstacles,
+    own_net_vias,
 )
 from kibends.optimize import (
     ChainResult,
@@ -74,7 +75,9 @@ from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
 from kibends.simplify import simplify_chains
 from kibends.snapshot import (
     BoardSnapshot,
+    Disc,
     LayerSnapshot,
+    Via,
     read_selection,
     read_user_frame,
 )
@@ -115,6 +118,9 @@ class SmoothOptions:
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
+    fixed_vias: bool = False
+    """Keep every selected stitching via, one that carries no chain end,
+    where it is, as an unselected via."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
     """Its time limit covers the whole optimize stage, re-runs included."""
 
@@ -213,6 +219,12 @@ class RunReport(OptimizerReport):
     refusal: str | None
     """Why nothing was committed, when that is a failure of the run."""
 
+    @property
+    def changes(self) -> bool:
+        """Whether some chain changed or some via moved: whether there is
+        anything to commit."""
+        return any(c.changed for c in self.chains) or any(v.moved for v in self.vias)
+
 
 @dataclass(frozen=True)
 class _Read:
@@ -289,7 +301,12 @@ def run_smooth(
         _require_plot()
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
-    read = _read(board, options.chord_tolerance, read_user_frame(board))
+    read = _read(
+        board,
+        options.chord_tolerance,
+        read_user_frame(board),
+        fixed_vias=options.fixed_vias,
+    )
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
@@ -310,16 +327,22 @@ def run_smooth(
     return _commit(board, read, optimized, outcome, options)
 
 
-def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> _Read:
+def _read(
+    board: kipy.board.Board,
+    chord_tolerance: float,
+    frame: UserFrame,
+    *,
+    fixed_vias: bool,
+) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
-    judge which selected vias move, giving positions in `frame`."""
+    judge which selected vias move, no stitching via with `fixed_vias`,
+    giving positions in `frame`."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}
     may = [v for v in selection.vias if may_move(v)]
-    candidates = {v.id for v in may}
     kept, locked = split_locked(selected)
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
@@ -331,6 +354,10 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
         if may
         else {}
     )
+    judged = list(selection.vias)
+    if fixed_vias:
+        judged, may = _carrying(judged, may, carried, frame)
+    candidates = {v.id for v in may}
     # A moving via meets the copper of every layer it spans, so a selection
     # holding one reads them all.
     whole = BoardSnapshot.read(
@@ -345,7 +372,7 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates, frame)
     movable = movable_vias(
-        selection.vias,
+        judged,
         whole.via_contacts,
         chains,
         frame=frame,
@@ -558,6 +585,8 @@ def _commit(
         return report(refusal=ABNORMAL_MESSAGE)
     if outcome.pinched is not None:
         return report(refusal=outcome.pinched)
+    if options.dry_run or not report().changes:
+        return report()
     changed = [
         (chain, polyline)
         for chain, polyline, r in zip(
@@ -565,15 +594,11 @@ def _commit(
         )
         if r.changed
     ]
-    if not changed:
-        return report()
     moves = [
         ViaMove(m.via, r.end)
         for m, r in zip(read.movable, outcome.via_reports, strict=True)
         if r.moved
     ]
-    if options.dry_run:
-        return report()
     commit_chains(board, changed, read.selected, moves)
     return report(committed=True)
 
@@ -585,6 +610,28 @@ def _optimizing(chains: int, pairs: int, vias: int) -> str:
     if not vias:
         return message
     return f"{message} and {vias} moving via{'' if vias == 1 else 's'}"
+
+
+def _carrying(
+    vias: Sequence[Via],
+    may: Sequence[Via],
+    carried: Mapping[str, Sequence[Disc]],
+    frame: UserFrame,
+) -> tuple[list[Via], list[Via]]:
+    """`vias` and `may` without the vias of `may` that carry no chain end,
+    which stay fixed, each with a debug line; so a selection whose only
+    candidates are those reads no more layers than one without them."""
+    stitching = {v.id for v in may if not carried[v.id]}
+    for v in may:
+        if v.id in stitching:
+            logger.debug(
+                f"Via {v.id} at {frame.point(v.position)} stays fixed: "
+                "no selected track ends at it and --fixed-vias is given"
+            )
+    return (
+        [v for v in vias if v.id not in stitching],
+        [v for v in may if v.id not in stitching],
+    )
 
 
 def _off_pairs(
@@ -693,7 +740,14 @@ def _via_inputs(
                 allow_via_in_pad=options.allow_via_in_pad,
                 zones=m.zones,
             ),
+            layers[0].clearance(m.via.net),
             m.zones,
+            own_net_vias(
+                layers,
+                m.via,
+                moving=moving,
+                hole_clearance=options.hole_clearance,
+            ),
         )
         for m in movable
     ]

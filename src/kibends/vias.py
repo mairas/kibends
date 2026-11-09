@@ -2,23 +2,26 @@
 
 A selected via moves only when it is an unlocked through via, every copper
 item touching it on any layer is the end of a selected chain or a zone of
-its net, no other copper touches those ends, and at least two such ends
-meet it. A via that moves stays inside the region of every zone of its net
-whose region reaches its ring, on each layer where it does, with its
-centre at least `ViaZone.margin` inside, so that the next refill
-reconnects it; one whose centre does not start that deep inside, and may
-be connected only now, stays fixed, with a debug line naming the zone and
-layer. One that starts closer to other nets' copper than the zone's
-clearance and the margin is left to the optimizer, which keeps it where it
-is as it keeps any via starting inside its clearance. Every other selected
-via stays fixed, with a debug line naming the reason, and pins the chains
-it touches like an unselected via.
+its net, no other copper touches those ends, and either at least two such
+ends meet it or none does and a zone of its net reaches it: a stitching
+via, which carries no chain and moves only where other copper crowds it. A
+via that moves stays inside the region of every zone of its net whose
+region reaches its ring, on each layer where it does, with its centre at
+least `ViaZone.margin` inside, so that the next refill reconnects it; one
+whose centre does not start that deep inside, and may be connected only
+now, stays fixed, with a debug line naming the zone and layer. One that
+starts closer to other nets' copper than the zone's clearance and the
+margin is left to the optimizer, which keeps it where it is as it keeps any
+via starting inside its clearance. Every other selected via stays fixed,
+with a debug line naming the reason, and pins the chains it touches like an
+unselected via.
 """
 
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import NamedTuple
 
 from loguru import logger
@@ -29,6 +32,7 @@ from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
+from kibends.obstacles import CompositeField, containment
 from kibends.snapshot import Disc, Via, ViaContact, ViaKind, ViaZone
 
 
@@ -61,9 +65,29 @@ class ViaInput:
     """Obstacles for the via over every layer it spans, as
     `build_via_obstacles` gives them: without the selected chains and the
     moving vias, which the optimizer adds at their current shapes."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
     zones: tuple[ViaZone, ...] = ()
     """The zones it stays inside, whose clearance it keeps from the chains
     and vias of other nets on their layers."""
+
+    own_net: ObstacleField | None = None
+    """The vias of its net that stand still, as `own_net_vias` gives them,
+    which only stop it."""
+
+    @cached_property
+    def stops(self) -> ObstacleField | None:
+        """What stands still and only stops it, without repelling it: the
+        outside of its zones' regions and `own_net`."""
+        parts = [f for f in (containment(self.zones), self.own_net) if f is not None]
+        return CompositeField(parts) if parts else None
+
+    @cached_property
+    def limits(self) -> ObstacleField:
+        """Everything that stands still and limits where it may go: `field`
+        and `stops`."""
+        stops = self.stops
+        return self.field if stops is None else CompositeField([self.field, stops])
 
 
 def may_move(via: Via) -> bool:
@@ -128,7 +152,9 @@ def movable_vias(
             if c.track_id is None or chains_of[c.track_id].isdisjoint(ended)
         ]
         inside = tuple(zones.get(via.id, ()))
-        reason = _fixed_reason(via, strangers, len(ends)) or _edge_reason(via, inside)
+        reason = _fixed_reason(via, strangers, len(ends), bool(inside)) or (
+            _edge_reason(via, inside)
+        )
         if reason is None:
             for zone in inside:
                 logger.debug(f"Via {via.id} stays inside {zone.description}")
@@ -140,7 +166,9 @@ def movable_vias(
     return movable
 
 
-def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
+def _fixed_reason(
+    via: Via, strangers: Sequence[str], ends: int, zoned: bool
+) -> str | None:
     if via.locked:
         return "it is locked"
     if via.kind is not ViaKind.THROUGH:
@@ -149,7 +177,10 @@ def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
         verb = "connects" if len(strangers) == 1 else "connect"
         return f"{', '.join(strangers)} {verb} to it"
     if ends == 0:
-        return "no selected track ends at it"
+        # A stitching via: its zones keep it connected wherever it moves.
+        if zoned:
+            return None
+        return "no selected track ends at it and no zone of its net reaches it"
     if ends == 1:
         return "only one selected track ends at it"
     return None

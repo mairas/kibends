@@ -41,15 +41,19 @@ via's centre plus its offset at the start, at every evaluation, so they keep
 their offsets exactly and their gradient goes to the via. Its own obstacle
 terms are its ring's, standing for a track as long as it is wide, against
 its static field over every layer it spans, the members near it on those
-layers and the other vias, with their gradient also at the edge or via that
-answers it; the members see it as a disc on each of its layers, so that
-where the obstacle term pulls on it, the gradient reaches its centre too. A
-section and a via see each other as the section's centreline as wide as
-`PairBlock.chain`. A moving via ties the layers it spans into one problem,
-every member on them included, since moving vias are through vias and share
-every layer. A via that starts more than δ inside its clearance stands
-still, as copper the members see; its own terms then could only push them a
-second time, so they are left out, and it ties no layers together.
+layers and the vias of other nets, with their gradient also at the edge
+or via that answers it, and the clearance hinge alone, which limits without
+repelling, against the outside of its zones' regions and the vias of its
+net, moving or standing still; the members see it as a disc on each of its
+layers, so that where the obstacle term pulls on it, the gradient reaches
+its centre too. A section and a via see each other as the section's
+centreline as wide as `PairBlock.chain`. A stitching via carries no chain
+ends, so with no length term only repulsion moves it. A moving via ties the
+layers it spans into one problem, every member on them included, since moving vias are
+through vias and share every layer. A via that starts more than δ inside
+its clearance stands still, as copper the members see; its own terms then
+could only push them a second time, so they are left out, and it ties no
+layers together.
 
 How much of a same-net chain is left out near a touch depends on the
 angles both chains leave it at. A burst fixes it, as pieces of the other
@@ -132,7 +136,7 @@ members near it and the other vias and the floor, which it takes only when
 it starts clear of its clearance, and the boxes of the ends it carries,
 which move with it: so each carried end moves inside its own box too, and
 the chain ends it carries keep their topology as any vertex does. A zone
-the via stays inside is part of its static field as the board edge is,
+the via stays inside limits it as its static field does (`ViaInput.limits`),
 the outside of the zone's region on each layer it reaches the via's ring, inflated
 by the margin the refill needs (`obstacles.zone_containment`): its box
 lies within its free distance to that boundary, so it does not leave the
@@ -186,10 +190,12 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     IntArray,
+    Integrand,
     ObstacleField,
     arc_lengths,
     bend_radius_energy,
     edge_integral,
+    hinge_integrand,
     obstacle_integrand,
     obstacle_reach,
     quadrature_points,
@@ -209,7 +215,7 @@ from kibends.obstacles import (
 )
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.pairs import BendCheck, bend_radii, too_tight
-from kibends.seen import NeighbourList, Seen, SeenParts, ViaSight
+from kibends.seen import NeighbourList, Seen, SeenParts, ViaNearest, ViaSight
 from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
 
@@ -1465,9 +1471,23 @@ class _Problem:
                 self.carried[i].append((k, end))
                 self.siblings[i] += [j for j, _, _ in vias[k].carried if j != i]
         self.rings = [via.rings for via in vias]
-        self.via_sight = ViaSight(
-            self.free_vias, self.rings, [via.apart for via in vias], count
+        apart = [via.apart for via in vias]
+        self.via_sight = ViaSight(self.free_vias, self.rings, apart, count)
+        # Vias of one net only stop each other; the rest repel.
+        own_net = [
+            {u: d for u, d in a.items() if _one_net(vias[k], vias[u])}
+            for k, a in enumerate(apart)
+        ]
+        self.via_repel = ViaSight(
+            self.free_vias,
+            self.rings,
+            [
+                {u: d for u, d in a.items() if u not in own}
+                for a, own in zip(apart, own_net, strict=True)
+            ],
+            count,
         )
+        self.via_stop = ViaSight(self.free_vias, [{} for _ in vias], own_net, count)
         # The chains as their neighbours see them; their own masks below
         # leave the junction ends loose.
         self.members: list[Member] = [*_pinned(chains, self.groups), *sections]
@@ -1484,6 +1504,7 @@ class _Problem:
         self.settings = settings
         self.reach = obstacle_reach(params)
         self.integrand = obstacle_integrand(params)
+        self.limit = hinge_integrand(params)
         self.originals = [body.centreline.points for body in self.bodies]
         self.start_positions = [
             np.array(via.given.via.position, dtype=float) for via in vias
@@ -1676,7 +1697,7 @@ class _Problem:
         `positions`."""
         cross = self.via_sight.nearest(polylines, positions, math.inf).distance
         return [
-            min(point_distance(self.vias[k].given.field, positions[k]), float(d))
+            min(point_distance(self.vias[k].given.limits, positions[k]), float(d))
             for k, d in zip(self.free_vias, cross, strict=True)
         ]
 
@@ -1686,34 +1707,70 @@ class _Problem:
         """The moving vias' own obstacle terms, each via's ring standing for
         a track as long as it is wide, and their gradient at every vertex and
         at every via's centre. Where a member's edge or another via answers a
-        via, the gradient also pulls on it."""
+        via, the gradient also pulls on it.
+
+        Each via has two terms, each for the nearest of what it covers: the
+        full integrand for its static field and the members and vias of
+        other nets, and the clearance hinge alone for what only stops it, its
+        zones' regions and the vias of its net, moving or standing still."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
         value = 0.0
-        near = self.via_sight.nearest(polylines, positions, self.reach)
+        repel = self.via_repel.nearest(polylines, positions, self.reach)
+        stop = self.via_stop.nearest(polylines, positions, self.reach)
         for n, k in enumerate(self.free_vias):
-            at = positions[k][None]
-            diameter = self.vias[k].given.via.diameter
-            static, static_direction = self.vias[k].given.field.signed_distance(
-                at, self.reach
-            )
-            nearer = bool(near.distance[n] < static[0])
-            distance = near.distance[n : n + 1] if nearer else static
-            direction = near.gradient[n] if nearer else static_direction[0]
-            term, slope = self.integrand(distance)
-            value += diameter * float(term[0])
-            push = diameter * slope[0] * direction
-            via_gradients[k] += push
-            if not nearer:
-                continue
+            given = self.vias[k].given
+            for static, near, integrand in (
+                (given.field, repel, self.integrand),
+                (given.stops, stop, self.limit),
+            ):
+                value += self._via_term(
+                    n,
+                    k,
+                    positions[k],
+                    static,
+                    near,
+                    integrand,
+                    gradients,
+                    via_gradients,
+                )
+        return value, gradients, via_gradients
+
+    def _via_term(
+        self,
+        n: int,
+        k: int,
+        position: FloatArray,
+        static: ObstacleField | None,
+        near: ViaNearest,
+        integrand: Integrand,
+        gradients: list[FloatArray],
+        via_gradients: FloatArray,
+    ) -> float:
+        """Via k's term, the nth of its sight, for the nearest of `static`
+        and what `near` found under `integrand`, adding its gradient to
+        `gradients` and `via_gradients`."""
+        at = position[None]
+        distance, direction = np.full(1, math.inf), np.zeros(2)
+        if static is not None:
+            distance, static_direction = static.signed_distance(at, self.reach)
+            direction = static_direction[0]
+        nearer = bool(near.distance[n] < distance[0])
+        if nearer:
+            distance, direction = near.distance[n : n + 1], near.gradient[n]
+        diameter = self.vias[k].given.via.diameter
+        term, slope = integrand(distance)
+        push = diameter * slope[0] * direction
+        via_gradients[k] += push
+        if nearer:
             j, first = int(near.member[n]), int(near.vertex[n])
             if j < 0:
                 via_gradients[first] -= push
-                continue
-            t = _parameters(at, near.starts[n : n + 1], near.ends[n : n + 1])[0]
-            gradients[j][first] -= (1 - t) * push
-            gradients[j][first + 1] -= t * push
-        return value, gradients, via_gradients
+            else:
+                t = _parameters(at, near.starts[n : n + 1], near.ends[n : n + 1])[0]
+                gradients[j][first] -= (1 - t) * push
+                gradients[j][first + 1] -= t * push
+        return diameter * float(term[0])
 
     def energy_masks(self, masks: Sequence[BoolArray]) -> list[BoolArray]:
         """`masks` with the ends the moving vias carry loose."""
@@ -2094,7 +2151,7 @@ class _Problem:
         ):
             at = positions[k]
             v = layout.via_index[k]
-            static[v] = min(static[v], point_distance(self.vias[k].given.field, at))
+            static[v] = min(static[v], point_distance(self.vias[k].given.limits, at))
             cross[v] = min(cross[v], float(near))
             clear[v] &= via_clear
         floor = np.where(clear, self.step_floor(seen, apart) / math.sqrt(2), 0.0)
@@ -2151,3 +2208,7 @@ def _description(layers: Sequence[str], vias: bool) -> str:
         layers[0] if len(layers) == 1 else f"{', '.join(layers[:-1])} and {layers[-1]}"
     )
     return f"the chains and vias on {named}" if vias else f"the chains on {named}"
+
+
+def _one_net(via: _Via, other: _Via) -> bool:
+    return via.given.via.net == other.given.via.net

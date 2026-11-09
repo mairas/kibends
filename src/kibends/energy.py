@@ -218,6 +218,18 @@ def obstacle_integrand(params: EnergyParams) -> Integrand:
     return obstacle
 
 
+def hinge_integrand(params: EnergyParams) -> Integrand:
+    """The clearance hinge of `obstacle_integrand` alone, weighted: for what
+    only limits where a thing may go and does not repel it."""
+    hinge = _hinge(params.standoff)
+
+    def limit(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
+        value, slope = hinge(distance)
+        return params.clearance_weight * value, params.clearance_weight * slope
+
+    return limit
+
+
 def obstacle_reach(params: EnergyParams) -> float:
     """Distance from an obstacle beyond which both obstacle terms of the
     energy are zero, mm, so farther copper need not be looked up."""

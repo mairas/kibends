@@ -131,7 +131,7 @@ def smooth(options: SmoothOptions) -> None:
     report = run_smooth(options, show)
     if report.refusal is not None:
         raise RunRefusedError(report.refusal)
-    if not any(c.changed for c in report.chains):
+    if not report.changes:
         logger.info("Nothing to do: the optimizer leaves the selection as it is")
     elif options.dry_run:
         logger.info("Dry run: nothing committed")
@@ -360,6 +360,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "does not check via-in-pad; without this option a moving via never "
         "overlaps a pad",
     )
+    smooth_parser.add_argument(
+        "--fixed-vias",
+        action="store_true",
+        help="Keep every selected stitching via, one that no selected track "
+        "ends at, where it is, as if it were not selected; vias that carry "
+        "selected tracks still move. Saves the time moving vias cost",
+    )
     return parser.parse_args(argv)
 
 
@@ -378,6 +385,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         dry_run=args.dry_run,
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
+        fixed_vias=args.fixed_vias,
         settings=replace(
             DEFAULT_SETTINGS,
             settled_change=args.settled_change,
