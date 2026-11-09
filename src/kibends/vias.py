@@ -15,8 +15,8 @@ fixed, with a debug line naming the zones and layers. One that starts
 closer to other nets' copper than the zone's clearance and the
 margin is left to the optimizer, which keeps it where it is as it keeps any
 via starting inside its clearance. Every other selected via stays fixed,
-with a debug line naming the reason, and pins the chains it touches like an
-unselected via.
+with a debug line naming the reason, and holds the chains it touches like
+an unselected via: each keeps a vertex inside it.
 """
 
 import math

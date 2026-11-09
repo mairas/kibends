@@ -7,6 +7,7 @@ from kibends.chain import (
     NM_PER_MM,
     Chain,
     ChainError,
+    Contact,
     SameNetTrack,
     Segment,
     extract_chain,
@@ -263,6 +264,188 @@ class TestPinning:
         chain = extract_chain(l_z_segments(), [], frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
+
+
+CONTACT_MARGIN_MM = 0.01
+
+
+def contact(shape: Polygon) -> Contact:
+    return Contact(shape, CONTACT_MARGIN_MM)
+
+
+def slide_points(chain: Chain) -> list[tuple[float, float]]:
+    return [chain.points[i] for i, _ in chain.slides]
+
+
+def assert_slides_within(chain: Chain, index: int, shape: Polygon) -> None:
+    (slide,) = [region for i, region in chain.slides if i == index]
+    assert slide.equals(shape.buffer(-CONTACT_MARGIN_MM))
+
+
+class TestContacts:
+    """A pad or a via that stays is a region: the chain keeps one vertex
+    inside it, free to slide there, and the rest is free."""
+
+    def test_an_end_inside_a_pad_slides_and_the_pad_pins_nothing_else(
+        self,
+    ) -> None:
+        # The resistor pad: one track lies inside it, and the corner where
+        # the second leaves it lies on its edge.
+        pad = box(-0.6, -0.4, 0.5, 0.4)
+        segments = [seg("in", (0, 0), (0.5, 0)), seg("out", (0.5, 0), (3, 3))]
+
+        chain = extract_chain(segments, [contact(pad)], frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (0.5, 0), (3, 3)])
+        assert chain.pinned == (False, False, True)
+        assert [i for i, _ in chain.slides] == [0]
+        assert_slides_within(chain, 0, pad)
+
+    def test_a_chain_passing_over_a_pad_keeps_one_sliding_vertex_inside(
+        self,
+    ) -> None:
+        pad = box(4, -1, 6, 1)
+
+        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, False, False, False, True)
+        assert [i for i, _ in chain.slides] == [1]
+        assert_slides_within(chain, 1, pad)
+
+    def test_a_pad_touched_at_two_points_keeps_one(self) -> None:
+        # The chain enters the pad twice: 2.5 mm inside on the first pass,
+        # 2 mm on the second; the longer one keeps the sliding vertex.
+        pad = box(4.5, -1, 9, 1)
+        segments = [
+            seg("a", (0, 0), (6, 0)),
+            seg("b", (6, 0), (6, 3)),
+            seg("c", (6, 3), (8, 3)),
+            seg("d", (8, 3), (8, 0)),
+            seg("e", (8, 0), (14, 0)),
+        ]
+
+        chain = extract_chain(segments, [contact(pad)], frame=BOARD_FRAME)
+
+        assert sum(chain.pinned) == 2
+        assert slide_points(chain) == [
+            pytest.approx((4.5 + 1.25, 0), abs=PIN_TOLERANCE_MM)
+        ]
+        assert_slides_within(chain, chain.slides[0][0], pad)
+
+    def test_an_end_inside_a_via_slides_within_its_ring(self) -> None:
+        via = Point(0, 0).buffer(0.3)
+
+        chain = extract_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
+
+        assert chain.pinned == (False, False, False, True)
+        assert_slides_within(chain, 0, via)
+
+    def test_an_end_that_other_copper_also_reaches_stays_pinned(self) -> None:
+        pad = box(-1, -1, 1, 1)
+        stub = SameNetTrack(LineString([(0, -3), (0, 0)]), WIDTH_MM)
+
+        chain = extract_chain(l_z_segments(), [contact(pad), stub], frame=BOARD_FRAME)
+
+        assert chain.pinned[0]
+        assert chain.slides == ()
+
+    def test_an_end_in_two_overlapping_contacts_slides_within_both(self) -> None:
+        pad = box(-1, -1, 1, 1)
+        via = Point(0.2, 0).buffer(0.3)
+
+        chain = extract_chain(
+            l_z_segments(),
+            [contact(pad), contact(via)],
+            frame=BOARD_FRAME,
+        )
+
+        assert chain.pinned == (False, False, False, True)
+        ((index, region),) = chain.slides
+        assert index == 0
+        both = pad.buffer(-CONTACT_MARGIN_MM).intersection(
+            via.buffer(-CONTACT_MARGIN_MM)
+        )
+        assert region.equals(both)
+
+    def test_a_contact_grazing_the_chain_copper_pins_as_other_copper(self) -> None:
+        half_width = WIDTH_NM / NM_PER_MM / 2
+        pad = box(4, half_width / 2, 6, 2)
+
+        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+
+        assert len(pinned_points(chain)) == 3
+        assert chain.slides == ()
+
+    def test_an_end_reaching_another_selected_track_s_body_stays_pinned(
+        self,
+    ) -> None:
+        # X ends inside the pad, its copper on Y's; the pad keeps X's end
+        # from joining Y, so Y keeps X only where X's end is.
+        pad = box(-0.5, -0.5, 0.5, 0.5)
+        width = 200_000
+        segments = [
+            seg("x1", (-3, 2), (-3, 0), width=width),
+            seg("x2", (-3, 0), (0.45, 0), width=width),
+            seg("y1", (0.62, -3), (0.62, 3), width=width),
+            seg("y2", (0.62, 3), (3, 3), width=width),
+        ]
+
+        x, y = extract_chains(
+            segments, lambda _l, _n: [contact(pad)], frame=BOARD_FRAME
+        )
+
+        assert x.points[-1] == pytest.approx((0.45, 0))
+        assert x.pinned[-1]
+        assert all(i != len(x.points) - 1 for i, _ in x.slides)
+        assert (0.62, 0.0) in [pytest.approx(p) for p in pinned_points(y)]
+
+    def test_a_vertex_in_two_contacts_slides_within_both(self) -> None:
+        # The chain passes over a via inside a pad: both keep the one
+        # vertex at their middle.
+        pad = box(4, -1, 6, 1)
+        via = Point(5, 0).buffer(0.3)
+
+        chain = extract_chain(
+            l_z_segments(), [contact(pad), contact(via)], frame=BOARD_FRAME
+        )
+
+        ((index, region),) = chain.slides
+        assert chain.points[index] == pytest.approx((5, 0))
+        both = pad.buffer(-CONTACT_MARGIN_MM).intersection(
+            via.buffer(-CONTACT_MARGIN_MM)
+        )
+        assert region.equals(both)
+
+    def test_a_pin_where_a_vertex_would_slide_pins_it(self) -> None:
+        pad = box(4, -1, 6, 1)
+        stub = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
+
+        chain = extract_chain(l_z_segments(), [contact(pad), stub], frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, True, False, False, True)
+        assert chain.slides == ()
+
+    def test_a_contact_on_a_junction_pins_every_branch(self) -> None:
+        pad = Point(10, 0).buffer(0.3)
+
+        chains = extract_chains(
+            tee_segments(), lambda _l, _n: [contact(pad)], frame=BOARD_FRAME
+        )
+
+        for chain in chains:
+            assert (10.0, 0.0) in pinned_points(chain)
+            assert all(chain.points[i] != (10.0, 0.0) for i, _ in chain.slides)
+
+    def test_pinning_the_slides_pins_their_vertices(self) -> None:
+        pad = box(4, -1, 6, 1)
+        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+
+        pinned = chain.with_slides_pinned()
+
+        assert pinned.pinned == (True, True, False, False, True)
+        assert pinned.slides == ()
 
 
 class TestLocked:

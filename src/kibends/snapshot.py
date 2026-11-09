@@ -45,7 +45,14 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize, unary_union
 
-from kibends.chain import NM_PER_MM, Point2, SameNetCopper, SameNetTrack, Segment
+from kibends.chain import (
+    NM_PER_MM,
+    Contact,
+    Point2,
+    SameNetCopper,
+    SameNetTrack,
+    Segment,
+)
 from kibends.coords import UserFrame
 
 EDGE_CUTS = "Edge.Cuts"
@@ -140,6 +147,11 @@ KICAD_MAX_ERROR = 0.005
 """How far, in mm, KiCad lets a polygon stray from the arc it approximates:
 the board's "maximum allowed deviation", at its default. The API does not
 expose the board's setting."""
+
+CONTACT_MARGIN = KICAD_MAX_ERROR + 1 / NM_PER_MM
+"""How far, in mm, a vertex that keeps a pad or via (`Contact`) stays inside
+its outline: the pad shape KiCad hands out approximates its rounded edges
+within KICAD_MAX_ERROR, and the commit rounds the vertex to the nanometre."""
 
 
 @dataclass(frozen=True)
@@ -277,14 +289,20 @@ class LayerSnapshot:
         return self.diff_pair_gaps.get(net)
 
     def same_net_copper(self, net: str) -> list[SameNetCopper]:
-        """Pad, via and copper shape outlines and the tracks of `net` on the layer.
+        """Pad and via outlines, as contacts, copper shape outlines and the
+        tracks of `net` on the layer.
 
-        This is what `extract_chain` pins the chain to.
+        This is what `extract_chain` pins the chain to, or, for the pads and
+        vias, keeps one vertex of the chain inside.
         """
         return [
-            *(p.shape for p in self.pads if p.net == net and p.shape is not None),
             *(
-                Point(v.position).buffer(v.diameter / 2)
+                Contact(p.shape, CONTACT_MARGIN)
+                for p in self.pads
+                if p.net == net and p.shape is not None
+            ),
+            *(
+                Contact(Point(v.position).buffer(v.diameter / 2), CONTACT_MARGIN)
                 for v in self.vias
                 if v.net == net
             ),
