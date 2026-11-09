@@ -103,7 +103,7 @@ vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A selected
 via that starts inside its clearance or inside such a rule area stays where
-it is, with a warning.
+it is.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on

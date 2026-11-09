@@ -155,7 +155,8 @@ class ViaReport:
     end: Point2
     """On KiCad's 1 nm grid, mm."""
     frozen: bool
-    """It started inside its clearance and was left in place."""
+    """It started inside its clearance or a rule area keeping out vias and
+    was left in place."""
     rejected_edges: int
 
     @property

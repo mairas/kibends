@@ -121,6 +121,13 @@ def smooth(options: SmoothOptions) -> None:
         print(format_outcome(optimized))
         for warning in report_warnings(optimized):
             logger.warning(warning)
+        for v in optimized.vias:
+            if v.frozen:
+                logger.debug(
+                    f"Left via {v.id} at {optimized.frame.point(v.start)} in "
+                    "place: it starts inside another item's clearance or a rule "
+                    "area keeping out vias"
+                )
         for description, n in optimized.abnormal:
             logger.debug(
                 f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of "
@@ -155,16 +162,10 @@ def format_outcome(report: OptimizerReport) -> str:
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """Frozen vertices and vias and an iteration cap or time limit, one
-    line each, positions in the report's frame."""
+    """Frozen vertices and an iteration cap or time limit, one line each,
+    positions in the report's frame."""
     frame = report.frame
     warnings = [_frozen_warning(v, frame) for c in report.chains for v in c.frozen]
-    warnings += [
-        f"Left via {v.id} at {frame.point(v.start)} in place: it starts inside "
-        "another item's clearance"
-        for v in report.vias
-        if v.frozen
-    ]
     warnings += [_frozen_warning(v, frame) for p in report.pairs for v in p.frozen]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
