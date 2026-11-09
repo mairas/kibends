@@ -12,9 +12,10 @@ same way.
 
 import itertools
 import math
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
+from types import MappingProxyType
 from typing import NamedTuple
 
 import numpy as np
@@ -702,13 +703,18 @@ class _Keeper:
     than ignored."""
     enters_own_pads: bool = False
     """Whether pads of its own net are ignored even with `touches_own_net`."""
+    zones: tuple[ViaZone, ...] = ()
+    """For a via, the zones it stays inside on the layers at hand."""
 
     def copper(self, net: str, extent: float, clearance: float) -> float | None:
         """For copper of `net` reaching `extent` mm beyond its geometry, with
         `clearance` its own clearance."""
         if net == self.net:
             return extent + self.radius if self.touches_own_net else None
-        inflation = extent + max(self.clearance, clearance) + self.radius
+        inflation = max(
+            extent + max(self.clearance, clearance) + self.radius,
+            _zone_inflation(self.zones, extent, self.clearance, clearance),
+        )
         if self.hole_radius is None:
             return inflation
         return max(inflation, extent + self.hole_radius + self.hole_clearance)
@@ -724,11 +730,36 @@ class _Keeper:
         return max(inflations, default=None)
 
 
+def _zone_inflation(
+    zones: Iterable[ViaZone], extent: float, *clearances: float
+) -> float:
+    """How far a via's centre keeps from other-net copper reaching `extent`
+    mm beyond its geometry for the next refill of `zones` to connect it: the
+    refill keeps the larger of the zone's clearance and `clearances` from
+    that copper, and the fill reaches the via's centre by the zone's margin.
+    -inf without zones."""
+    return max(
+        (extent + max(*clearances, z.clearance) + z.margin for z in zones),
+        default=-math.inf,
+    )
+
+
+def zones_on(zones: Iterable[ViaZone], layers: Iterable[str]) -> tuple[ViaZone, ...]:
+    """The zones among `zones` a via stays inside on any of `layers`."""
+    wanted = set(layers)
+    return tuple(z for z in zones if wanted.intersection(z.layers))
+
+
 def _copper_items(
-    snapshot: LayerSnapshot, keeper: _Keeper, vias: Iterable[Via]
+    snapshot: LayerSnapshot,
+    keeper: _Keeper,
+    vias: Iterable[Via],
+    via_keeper: Callable[[Via], _Keeper] | None = None,
 ) -> list[Obstacle]:
     """The snapshot layer's copper and track keepouts, with `vias` in place
-    of the layer's vias, holes left out."""
+    of the layer's vias, holes left out; `via_keeper` gives the keeper of
+    each via's ring, `keeper` by default."""
+    keeper_of: Callable[[Via], _Keeper] = via_keeper or (lambda _: keeper)
     candidates: list[tuple[str, BaseGeometry, float | None]] = []
     for pad in snapshot.pads:
         if pad.shape is not None:
@@ -755,7 +786,7 @@ def _copper_items(
         (
             f"via {v.id}",
             Point(v.position),
-            keeper.copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
+            keeper_of(v).copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
         )
         for v in vias
     ]
@@ -907,7 +938,9 @@ def build_via_obstacles(
 
     Its ring keeps the copper clearance, as a track of its diameter would,
     and its hole keeps the hole clearance, to other nets' copper on each of
-    those layers. Its ring may touch copper of its own net but not overlap
+    those layers. On a layer of one of `zones`, its centre also keeps the
+    zone's clearance and margin from that copper (`_zone_inflation`), so
+    that the refill reaches it. Its ring may touch copper of its own net but not overlap
     it, so that it neither sinks into a pad nor makes a new connection; with
     `allow_via_in_pad`, pads of its own net are no obstacle to its ring,
     which KiCad's DRC does not flag either. Its
@@ -927,13 +960,20 @@ def build_via_obstacles(
         enters_own_pads=allow_via_in_pad,
     )
     others = {v.id: v for s in spanned for v in s.vias if v.id not in left_out}.values()
+
+    def on(layers: Iterable[str]) -> _Keeper:
+        return replace(keeper, zones=zones_on(zones, layers))
+
+    def via_keeper(other: Via) -> _Keeper:
+        return on(s.layer for s in spanned if other.reaches(s.layer))
+
     # The via spans every layer here, so another via's ring counts once, as
     # do pads' holes, which are the same on every layer.
     items = [
         # The copper items include track keepouts, which hold the via back as
         # well, since the chain ends it joins sit at its centre.
-        *_copper_items(spanned[0], keeper, others),
-        *(o for s in spanned[1:] for o in _copper_items(s, keeper, ())),
+        *_copper_items(spanned[0], on([spanned[0].layer]), others, via_keeper),
+        *(o for s in spanned[1:] for o in _copper_items(s, on([s.layer]), ())),
         *_hole_items(spanned[0].pads, others, keeper),
         *(
             Obstacle("via keepout", k, keeper.radius)
@@ -959,7 +999,9 @@ def zone_containment(zone: ViaZone) -> list[Obstacles]:
 
     The region, not the current fill: the fill holds where other copper
     stood at the last refill, which the run may move, and is a polygon with
-    a hole for every other net's item in the zone.
+    a hole for every other net's item in the zone. The clearance the refill
+    keeps from that copper is the via's to keep instead, at the copper's
+    current place (`_zone_inflation`).
     """
     return [Obstacles((), region, zone.margin) for region in zone.regions.values()]
 
@@ -973,6 +1015,7 @@ def moving_via_obstacles(
     clearance_of: Callable[[str], float],
     *,
     hole_clearance: float = HOLE_CLEARANCE,
+    zones: Mapping[str, Sequence[ViaZone]] = MappingProxyType({}),
 ) -> ChainField | None:
     """`vias`, at their positions, as obstacles to a track of `net`, `width`
     and netclass `clearance` (mm) on `layer`, or None if none is one.
@@ -982,7 +1025,9 @@ def moving_via_obstacles(
     via's netclass clearance. A via of `net` may touch the track but not
     overlap it, so that it makes no new connection; the vias the track ends
     at are the caller's to leave out. Vias not spanning `layer` are no
-    obstacle.
+    obstacle. A via of another net in one of the zones `zones` gives by via
+    id, on `layer`, keeps the zone's clearance and margin from the track, as
+    `via_chain_inflation` keeps it.
     """
     keeper = _Keeper(net, width / 2, clearance, hole_clearance)
     return _vias_field(
@@ -990,6 +1035,7 @@ def moving_via_obstacles(
         (v for v in vias if v.reaches(layer)),
         clearance_of,
         touching=True,
+        zones_of=lambda v: zones_on(zones.get(v.id, ()), [layer]),
     )
 
 
@@ -1000,16 +1046,20 @@ def via_obstacles_for_via(
     *,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
+    zones: Sequence[ViaZone] = (),
 ) -> ChainField | None:
     """`others`, at their positions, as obstacles to `via`, or None if none
     is one; `via` itself among them is left out.
 
     Each counts as `build_via_obstacles` counts a via on the board: rings
     and holes of another net keep the copper and hole clearances, and holes
-    of any net keep hole-to-hole. Moving vias are through vias, so every
-    pair shares a layer.
+    of any net keep hole-to-hole, and rings of another net the clearance and
+    margin of the zones `via` stays inside. Moving vias are through vias, so
+    every pair shares a layer, those of the zones included.
     """
-    keeper = _via_keeper(via, clearance_of(via.net), hole_clearance, hole_to_hole)
+    keeper = _via_keeper(
+        via, clearance_of(via.net), hole_clearance, hole_to_hole, zones
+    )
     return _vias_field(keeper, (v for v in others if v.id != via.id), clearance_of)
 
 
@@ -1020,11 +1070,16 @@ def via_via_inflation(
     *,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
+    zones: Sequence[ViaZone] = (),
+    other_zones: Sequence[ViaZone] = (),
 ) -> float | None:
     """The distance `via`'s centre keeps from `other`'s, as
-    `via_obstacles_for_via` counts it, mm; None if no rule applies."""
-    keeper = _via_keeper(via, clearance_of(via.net), hole_clearance, hole_to_hole)
-    return _via_inflation(keeper, other, clearance_of)
+    `via_obstacles_for_via` counts it, mm, the same both ways; None if no
+    rule applies."""
+    keeper = _via_keeper(
+        via, clearance_of(via.net), hole_clearance, hole_to_hole, zones
+    )
+    return _via_inflation(keeper, other, clearance_of, zones=other_zones)
 
 
 def chain_obstacles_for_via(
@@ -1033,17 +1088,25 @@ def chain_obstacles_for_via(
     clearance_of: Callable[[str], float],
     *,
     hole_clearance: float = HOLE_CLEARANCE,
+    zones: Sequence[ViaZone] = (),
 ) -> ChainField:
     """Other chains' centrelines as obstacles to `via`, with `clearance_of`
     giving its net's netclass clearance.
 
     Another net's chain keeps the larger of the copper clearance from the
-    via's ring and the hole clearance from its hole. A chain of the via's
-    net may touch its ring but not overlap it, so that the via makes no new
-    connection; the chains that end at the via are the caller's to leave out.
+    via's ring and the hole clearance from its hole, and the clearance and
+    margin of `zones`, the zones the via stays inside on the chains' layer.
+    A chain of the via's net may touch its ring but not overlap it, so that
+    the via makes no new connection; the chains that end at the via are the
+    caller's to leave out.
     """
     return _chains_field(
-        (o, via_chain_inflation(via, o, clearance_of, hole_clearance=hole_clearance))
+        (
+            o,
+            via_chain_inflation(
+                via, o, clearance_of, hole_clearance=hole_clearance, zones=zones
+            ),
+        )
         for o in others
     )
 
@@ -1054,6 +1117,7 @@ def via_chain_inflation(
     clearance_of: Callable[[str], float],
     *,
     hole_clearance: float = HOLE_CLEARANCE,
+    zones: Sequence[ViaZone] = (),
 ) -> float:
     """The distance `via`'s centre keeps from `chain`'s centreline, as
     `chain_obstacles_for_via` counts it, mm."""
@@ -1061,7 +1125,12 @@ def via_chain_inflation(
         return chain.width / 2 + via.diameter / 2
     # Chains have no holes, so the keeper's hole-to-hole is never asked.
     keeper = _Keeper(
-        via.net, via.diameter / 2, clearance_of(via.net), hole_clearance, via.drill / 2
+        via.net,
+        via.diameter / 2,
+        clearance_of(via.net),
+        hole_clearance,
+        via.drill / 2,
+        zones=tuple(zones),
     )
     inflation = keeper.copper(chain.net, chain.width / 2, chain.clearance)
     assert inflation is not None
@@ -1069,7 +1138,11 @@ def via_chain_inflation(
 
 
 def _via_keeper(
-    via: Via, clearance: float, hole_clearance: float, hole_to_hole: float
+    via: Via,
+    clearance: float,
+    hole_clearance: float,
+    hole_to_hole: float,
+    zones: Sequence[ViaZone] = (),
 ) -> _Keeper:
     return _Keeper(
         via.net,
@@ -1078,6 +1151,7 @@ def _via_keeper(
         hole_clearance,
         via.drill / 2,
         hole_to_hole,
+        zones=tuple(zones),
     )
 
 
@@ -1087,14 +1161,18 @@ def _vias_field(
     clearance_of: Callable[[str], float],
     *,
     touching: bool = False,
+    zones_of: Callable[[Via], Sequence[ViaZone]] = lambda _: (),
 ) -> ChainField | None:
     """The vias' rings and holes as obstacles to `keeper`, or None if none
     is one; with `touching`, vias of its net keep their rings from touching
-    distance."""
+    distance. `zones_of` gives the zones each via stays inside where the
+    keeper is."""
     centres: list[Point2] = []
     inflations: list[float] = []
     for v in vias:
-        inflation = _via_inflation(keeper, v, clearance_of, touching=touching)
+        inflation = _via_inflation(
+            keeper, v, clearance_of, touching=touching, zones=zones_of(v)
+        )
         if inflation is not None:
             centres.append(v.position)
             inflations.append(inflation)
@@ -1111,10 +1189,20 @@ def _via_inflation(
     clearance_of: Callable[[str], float],
     *,
     touching: bool = False,
+    zones: Sequence[ViaZone] = (),
 ) -> float | None:
-    """How far `keeper` keeps from `via`'s centre, by its ring and hole."""
+    """How far `keeper` keeps from `via`'s centre, by its ring and hole, and
+    by the zones `via` stays inside where the keeper is, as the via keeps
+    from it (`_Keeper.copper`)."""
     ring = keeper.copper(via.net, via.diameter / 2, clearance_of(via.net))
     if touching and via.net == keeper.net:
         ring = via.diameter / 2 + keeper.radius
+    elif ring is not None and via.net != keeper.net:
+        ring = max(
+            ring,
+            _zone_inflation(
+                zones, keeper.radius, keeper.clearance, clearance_of(via.net)
+            ),
+        )
     hole = keeper.hole(via.net, via.drill / 2, plated=True)
     return max((i for i in (ring, hole) if i is not None), default=None)

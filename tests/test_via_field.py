@@ -33,6 +33,7 @@ from kibends.obstacles import (
     build_via_obstacles,
     chain_obstacles_for_via,
     moving_via_obstacles,
+    via_chain_inflation,
     via_obstacles_for_via,
 )
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
@@ -297,6 +298,157 @@ class TestZoneContainment:
         clear = field.segments_clear(points((0, 0), (0, 0)), points((0, 0.9), (0, 1.2)))
 
         assert list(clear) == [True, False]
+
+
+ZONE_CLEARANCE = 0.5
+"""More than the default netclass clearance, so that it is the rule."""
+PLANE = ViaZone("plane", {"In1.Cu": box(-10, -10, 10, 10)}, 0.25, ZONE_CLEARANCE)
+"""A zone of the via's net on In1.Cu, its region far from the via."""
+THREE_LAYERS = ("F.Cu", "In1.Cu", "B.Cu")
+
+
+def track_at_y2(net: str, layer: BL.ValueType) -> kbt.Track:
+    return kipy_track("t", net, (-5, 2), (5, 2), layer=layer)
+
+
+class TestZoneClearance:
+    """Inside a zone, the refill keeps the zone's clearance from other nets'
+    copper, and the via's centre stays the margin inside the fill."""
+
+    def test_other_net_copper_on_the_zone_s_layer_keeps_it(self) -> None:
+        fake = FakeBoard(tracks=[track_at_y2("GND", BL.BL_In1_Cu)], vias=[moving_via()])
+        snaps = slices(fake, THREE_LAYERS)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        inflation = TRACK_HALF + ZONE_CLEARANCE + PLANE.margin
+        assert inflation > TRACK_HALF + DEFAULT_CLEARANCE + RADIUS
+        assert distance[0] == pytest.approx(2 - inflation, abs=NM_TOLERANCE)
+
+    def test_copper_on_another_layer_keeps_the_netclass_clearance(self) -> None:
+        fake = FakeBoard(tracks=[track_at_y2("GND", BL.BL_F_Cu)], vias=[moving_via()])
+        snaps = slices(fake, THREE_LAYERS)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        expected = 2 - (TRACK_HALF + DEFAULT_CLEARANCE + RADIUS)
+        assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
+
+    def test_a_via_of_another_net_through_the_zone_keeps_it(self) -> None:
+        fake = FakeBoard(vias=[moving_via(), GND_VIA])
+        snaps = slices(fake, THREE_LAYERS)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        expected = 3 - (0.4 + ZONE_CLEARANCE + PLANE.margin)
+        assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
+
+    @pytest.mark.parametrize(
+        ("span", "in_zone"),
+        [((BL.BL_F_Cu, BL.BL_In1_Cu), True), ((BL.BL_In2_Cu, BL.BL_B_Cu), False)],
+        ids=["reaching the zone", "below it"],
+    )
+    def test_a_blind_via_keeps_it_only_where_it_reaches_the_zone(
+        self, span: tuple[BL.ValueType, BL.ValueType], in_zone: bool
+    ) -> None:
+        blind = kipy_via(
+            "gnd", "GND", 3, 0, diameter=0.8, via_type=ViaType.VT_BLIND, span=span
+        )
+        fake = FakeBoard(vias=[moving_via(), blind])
+        snaps = slices(fake, THREE_LAYERS)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        zone = 0.4 + ZONE_CLEARANCE + PLANE.margin
+        netclass = 0.4 + DEFAULT_CLEARANCE + RADIUS
+        expected = 3 - (zone if in_zone else netclass)
+        assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
+
+    def test_a_smaller_zone_clearance_leaves_the_netclass_rule(self) -> None:
+        fake = FakeBoard(tracks=[track_at_y2("GND", BL.BL_In1_Cu)], vias=[moving_via()])
+        snaps = slices(fake, THREE_LAYERS)
+        tight = replace(PLANE, clearance=0.1)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[tight])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        expected = 2 - (TRACK_HALF + DEFAULT_CLEARANCE + RADIUS)
+        assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
+
+    def test_copper_of_its_own_net_is_still_touched(self) -> None:
+        fake = FakeBoard(tracks=[track_at_y2(NET, BL.BL_In1_Cu)], vias=[moving_via()])
+        snaps = slices(fake, THREE_LAYERS)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        assert distance[0] == pytest.approx(2 - (TRACK_HALF + RADIUS))
+
+    def test_a_moving_chain_on_the_zone_s_layer_keeps_it(self) -> None:
+        via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
+
+        field = chain_obstacles_for_via(
+            via, [gnd_chain()], lambda _: DEFAULT_CLEARANCE, zones=[PLANE]
+        )
+        distance, _ = field.signed_distance(points((0, 0)))
+
+        assert distance[0] == pytest.approx(2 - (0.15 + ZONE_CLEARANCE + PLANE.margin))
+
+    def test_a_moving_via_of_another_net_keeps_it(self) -> None:
+        fake = FakeBoard(vias=[moving_via(), GND_VIA])
+        via, other = board_via(fake, VIA_ID), board_via(fake, "gnd")
+
+        field = via_obstacles_for_via(
+            via, [other], lambda _: DEFAULT_CLEARANCE, zones=[PLANE]
+        )
+
+        assert field is not None
+        distance, _ = field.signed_distance(points((0, 0)))
+        assert distance[0] == pytest.approx(3 - (0.4 + ZONE_CLEARANCE + PLANE.margin))
+
+    def test_a_chain_sees_the_moving_via_as_the_via_sees_it(self) -> None:
+        via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
+        chain = gnd_chain()
+
+        field = moving_via_obstacles(
+            "In1.Cu",
+            chain.net,
+            chain.width,
+            chain.clearance,
+            [via],
+            lambda _: DEFAULT_CLEARANCE,
+            zones={VIA_ID: [PLANE]},
+        )
+
+        assert field is not None
+        distance, _ = field.signed_distance(points((0, 2)))
+        ring = via_chain_inflation(
+            via, chain, lambda _: DEFAULT_CLEARANCE, zones=[PLANE]
+        )
+        assert ring == pytest.approx(0.15 + ZONE_CLEARANCE + PLANE.margin)
+        assert distance[0] == pytest.approx(2 - ring)
+
+    def test_a_chain_on_a_layer_outside_the_zone_sees_the_ring(self) -> None:
+        via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
+        chain = gnd_chain()
+
+        field = moving_via_obstacles(
+            "F.Cu",
+            chain.net,
+            chain.width,
+            chain.clearance,
+            [via],
+            lambda _: DEFAULT_CLEARANCE,
+            zones={VIA_ID: [PLANE]},
+        )
+
+        assert field is not None
+        distance, _ = field.signed_distance(points((0, 2)))
+        assert distance[0] == pytest.approx(2 - (0.15 + 0.3 + RADIUS))
 
 
 def via_keepout(layer: BL.ValueType, keepout_tracks: bool = False) -> kbt.Zone:

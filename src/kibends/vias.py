@@ -60,6 +60,9 @@ class ViaInput:
     """Obstacles for the via over every layer it spans, as
     `build_via_obstacles` gives them: without the selected chains and the
     moving vias, which the optimizer adds at their current shapes."""
+    zones: tuple[ViaZone, ...] = ()
+    """The zones it stays inside, whose clearance it keeps from the chains
+    and vias of other nets on their layers."""
 
 
 def may_move(via: Via) -> bool:
