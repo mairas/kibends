@@ -384,7 +384,7 @@ def optimize(
     )
 
 
-def frozen_vertices(
+def _frozen_vertices(
     chain: ChainInput,
     field: ObstacleField,
     dynamic: dict[int, ObstacleField | None],
@@ -531,7 +531,7 @@ def _clearance(
     return {"min_clearance": float(distance.min()), "mean_clearance": mean}
 
 
-def shape_change(before: FloatArray, after: FloatArray) -> float:
+def _shape_change(before: FloatArray, after: FloatArray) -> float:
     """Local symmetric distance between two polylines, mm.
 
     Vertices sliding along an unchanged shape do not count: resampling to
@@ -1586,7 +1586,7 @@ class _Problem:
             others: dict[int, ObstacleField | None] = {
                 j: self.neighbour(i, [j], self.originals) for j in self.neighbours[i]
             }
-            mask, records = frozen_vertices(
+            mask, records = _frozen_vertices(
                 body, start_fields[i], others, self.bodies, settings
             )
             self.anchors.append(given.fixed | mask)
@@ -1968,7 +1968,7 @@ class _Problem:
         burst = self.burst(starts)
         change = max(
             [
-                *(shape_change(before[i], burst.polylines[i]) for i in self.free),
+                *(_shape_change(before[i], burst.polylines[i]) for i in self.free),
                 *(
                     float(np.linalg.norm(burst.positions[k] - self.positions[k]))
                     for k in self.free_vias
