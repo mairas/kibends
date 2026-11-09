@@ -53,6 +53,8 @@ Parts of `snapshot`, `commit` and `cli` are copied and trimmed from kistitch (ht
 
 Tests never need a running KiCad. `tests/conftest.py` provides kipy object builders and fake boards (`FakeBoard`, `CommitBoard`). `tests/scenarios.py` holds optimizer scenarios, which `scripts/plot_scenarios.py` also renders for tuning. `tests/test_optimize.py` runs single chains through `optimize.optimize`; `tests/test_optimize_chains.py`, `_pairs.py` and `_vias.py` run problems of several chains, junctions, coupled sections and moving vias through `optimize.optimize_chains`, and check the problem's energy and gradient against references built member by member. `tests/test_shared_search.py` checks the shared search against fields built for each member and via alone, on every scenario with moving members and a grid of routes through vias (`scenarios.via_grid`). `conftest.BurstClock` is a clock that reads one per burst of a problem.
 
+The optimizer's floating-point result differs between platforms (BLAS, CPU), so a test compares what passes through it within a named tolerance that says what it stands for (`NM_ROUNDING`, `REPORTED`, `STRAIGHT_TOLERANCE`), or by a property simplification makes exact, such as a straight route merging into one segment. It compares exactly only what the optimizer does not produce (pins, frozen and unchanged copper, ids, widths, nets, commit inputs) or two results of the same machine.
+
 ### Test speed
 
 A slow suite slows every edit-test cycle for the person running it. Treat test run time as a requirement, not a detail.

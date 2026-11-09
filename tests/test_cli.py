@@ -2850,17 +2850,16 @@ class TestPairs:
         assert held == [[None], [hold]]
         # Whether a net's chain is committed depends on how far repulsion
         # bends its fan-out (some 25 µm, varying with the BLAS) against the
-        # chord tolerance; either way the held section, all pins, stays
-        # exactly as routed.
-        created = {
-            (t.start.x, t.start.y, t.end.x, t.end.y)
-            for t in cast(list[kbt.Track], board.created)
+        # chord tolerance; either way the held section, all pins, stays as
+        # routed, however its tracks are split.
+        copper = {
+            net: unary_union(lines).buffer(NM_ROUNDING)
+            for net, lines in by_net(board).items()
         }
         for t in pair_tracks():
             if not t.id.value.endswith("1"):
-                assert (
-                    t.id.value not in board.deleted
-                    or (t.start.x, t.start.y, t.end.x, t.end.y) in created
+                assert t.id.value not in board.deleted or copper[t.net.name].covers(
+                    segment(t)
                 )
         (line,) = [w for w in log if "too tight" in w]
         assert line.startswith("DEBUG")
