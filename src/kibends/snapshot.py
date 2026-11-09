@@ -306,16 +306,21 @@ class LayerSnapshot:
         tracks of `net` on the layer.
 
         This is what `extract_chain` pins the chain to, or, for the pads and
-        vias, keeps one vertex of the chain inside.
+        vias, keeps one vertex of the chain inside, unless a vertex lies on
+        the pad's position or the via's centre, which pins it there.
         """
         return [
             *(
-                Contact(p.shape, CONTACT_MARGIN)
+                Contact(p.shape, CONTACT_MARGIN, p.position)
                 for p in self.pads
                 if p.net == net and p.shape is not None
             ),
             *(
-                Contact(Point(v.position).buffer(v.diameter / 2), CONTACT_MARGIN)
+                Contact(
+                    Point(v.position).buffer(v.diameter / 2),
+                    CONTACT_MARGIN,
+                    v.position,
+                )
                 for v in self.vias
                 if v.net == net
             ),

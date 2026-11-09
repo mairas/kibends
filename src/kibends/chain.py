@@ -4,7 +4,8 @@ A chain is one connected piece of one layer, net and width
 (`extract_chains`). Same-net copper holds it where it touches: unselected
 tracks and copper shapes pin it, and a pad or a via that stays is a region
 it keeps a vertex inside (`Contact`), an end sliding within it where it may
-(`_slides`). Where three or more selected tracks of one net end, the
+(`_slides`), unless a vertex of the chain lies on its anchor, which pins
+that vertex there. Where three or more selected tracks of one net end, the
 selection splits into chains that end there, loose unless copper pins them;
 an end that reaches into another selected track may join it there
 (`_join_mid_track_ends`, `_may_join`). Pins never change a chain's order or
@@ -99,10 +100,16 @@ class Contact:
     KiCad connects two items of one net when their copper overlaps on a
     layer they share (`CN_VISITOR` in its connectivity code), so a vertex
     inside the pad or via connects both tracks that end there. `margin`,
-    mm, is how far inside its outline that vertex stays."""
+    mm, is how far inside its outline that vertex stays.
+
+    `anchor` is the pad's position or the via's centre. KiCad's drag of a
+    via or a footprint carries only the track ends there, so a chain vertex
+    on it stays on it. It is converted from integer nanometres as the
+    chain's vertices are, so float equality is nanometre equality."""
 
     shape: BaseGeometry
     margin: float
+    anchor: Point2
 
     @cached_property
     def inside(self) -> BaseGeometry:
@@ -846,9 +853,11 @@ def _slides(
 ) -> _Slides:
     """Which vertex keeps each `Contact` in `near` that the chain touches.
 
-    An end that is not `held`, at a junction (`loose`) or on another
-    selected track, and that no other copper reaches slides when it lies
-    inside every contact that reaches it, within all of them. A contact
+    A vertex on a contact's anchor is pinned there. Every contact that
+    reaches such a vertex is kept by it and gets no sliding vertex.
+    Otherwise, an end that is not `held`, at a junction (`loose`) or on
+    another selected track, and that no other copper reaches slides when it
+    lies inside every contact that reaches it, within all of them. A contact
     that no sliding end keeps and that reaches no other end gets one vertex
     instead, at the middle of the longest stretch of the chain inside it.
     Any other contact pins as other copper does.
@@ -859,9 +868,17 @@ def _slides(
     contacts = [item for item, _ in near if isinstance(item, Contact)]
     if not contacts:
         return _Slides(pinning, {}, [])
+    vertices = set(points)
+    # Exact float equality is nanometre equality: see `Contact.anchor`.
+    anchored = {c.anchor for c in contacts if c.anchor in vertices}
+    pinning += [(Point(a), False) for a in anchored]
     others = [item for item, _ in pinning]
     ends: dict[int, BaseGeometry] = {}
-    kept: set[int] = set()
+    kept = {
+        k
+        for k, c in enumerate(contacts)
+        if any(_reaches([c], a, half_width) for a in anchored)
+    }
     for end in (0, -1):
         p = points[end]
         reaching = [k for k, c in enumerate(contacts) if _reaches([c], p, half_width)]

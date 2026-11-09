@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 from typing import NoReturn, cast
 
+import conftest
 import kipy.board_types as kbt
 import numpy as np
 import pytest
@@ -1346,13 +1347,9 @@ def ends(tracks: Sequence[kbt.Track]) -> set[tuple[int, int]]:
     return {(p.x, p.y) for t in tracks for p in (t.start, t.end)}
 
 
-def keeps_the_via(tracks: Sequence[kbt.Track]) -> bool:
-    """Whether an end of `tracks` lies inside the via at VIA, as far inside
-    its ring as a contact keeps."""
-    inside = Point(VIA).buffer(VIA_DIAMETER / 2 - CONTACT_MARGIN)
-    return any(
-        inside.covers(Point(x / NM_PER_MM, y / NM_PER_MM)) for x, y in ends(tracks)
-    )
+VIA_NM = (nm(VIA[0]), nm(VIA[1]))
+"""The via's centre in KiCad's nanometres, where the tracks ending at it
+must end exactly, or dragging the via in KiCad leaves them behind."""
 
 
 def layout(board: CommitBoard) -> set[tuple[int, int, int, int, int]]:
@@ -1375,9 +1372,8 @@ class TestSeveralLayers:
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         front, back = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_B_Cu)
         assert len(front) + len(back) == len(board.created)
-        assert (0, 0) in ends(front)
-        assert (nm(8), nm(8)) in ends(back)
-        assert keeps_the_via(front) and keeps_the_via(back)
+        assert {(0, 0), VIA_NM} <= ends(front)
+        assert {VIA_NM, (nm(8), nm(8))} <= ends(back)
 
     def test_inner_layer_route_is_committed_on_it(self, connect: Connector) -> None:
         board = connect.to(via_route_board(back_layer=BL.BL_In1_Cu))
@@ -1387,8 +1383,7 @@ class TestSeveralLayers:
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         front, inner = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_In1_Cu)
         assert len(front) + len(inner) == len(board.created)
-        assert (nm(8), nm(8)) in ends(inner)
-        assert keeps_the_via(inner)
+        assert {VIA_NM, (nm(8), nm(8))} <= ends(inner)
 
     def test_each_chain_keeps_touches_of_its_own_layers_copper(
         self, connect: Connector
@@ -1471,6 +1466,8 @@ class TestSeveralLayers:
         assert board.reads == without.reads
         assert board.deleted == without.deleted
         assert len([line for line in log if "stays fixed" in line]) == 1
+        assert VIA_NM in ends(created_on(board, BL.BL_F_Cu))
+        assert VIA_NM in ends(created_on(board, BL.BL_B_Cu))
 
     @pytest.mark.parametrize(
         "fixed",
@@ -1553,6 +1550,8 @@ class TestSeveralLayers:
         assert board.deleted == without.deleted
         assert len([line for line in log if "stays fixed" in line]) == 1
         assert len([line for line in log if "Leaving locked" in line]) == 1
+        assert VIA_NM in ends(created_on(board, BL.BL_F_Cu))
+        assert VIA_NM in ends(created_on(board, BL.BL_B_Cu))
 
     def test_reads_only_the_selected_layers_without_a_moving_via(
         self, connect: Connector, log: list[str]
@@ -2018,7 +2017,7 @@ class TestMovingVias:
         assert created_vias(board) == [] and "v" not in board.deleted
         (warning,) = [line for line in log if "stays fixed" in line]
         assert "pad p" in warning
-        assert (nm(VIA[0]), nm(VIA[1])) in ends(created_on(board, BL.BL_F_Cu))
+        assert VIA_NM in ends(created_on(board, BL.BL_F_Cu))
 
     @pytest.mark.parametrize("in_pad", [False, True])
     def test_same_net_pad_on_its_path_stops_the_via_unless_allowed(
@@ -3864,14 +3863,15 @@ class TestContacts:
         self, connect: Connector
     ) -> None:
         # The tap's end lies in a pad and its copper on the trunk's: the pad
-        # keeps it from joining the trunk, so it must not slide off it.
+        # keeps it from joining the trunk, so it must not slide off it. The
+        # ends lie off their pads' anchors, so that they may slide.
         route = [
             kipy_track("trunk", "SIG", (0, 0), (10, 0), width=WIDTH),
             kipy_track("tap", "SIG", (5, 0.2), (5, 3), width=WIDTH),
         ]
         pads = [
             kipy_pad(f"p{k}", "SIG", *at)
-            for k, at in enumerate([(0, 0), (10, 0), (5, 0.4), (5, 3)])
+            for k, at in enumerate([(0.1, 0), (9.9, 0), (5, 0.4), (5, 2.9)])
         ]
         board = connect.to(
             CommitBoard(selection=list(route), tracks=list(route), pads=pads)
@@ -3896,16 +3896,19 @@ class TestContacts:
         self, connect: Connector
     ) -> None:
         # One track lies inside pad 1, the corner where the second leaves it
-        # on the pad's edge: pinned at both, the route could not move.
+        # on the pad's edge: pinned at both, the route could not move. The
+        # route starts off the pad's anchor, so that its end may slide.
+        pad = (-0.05, 0.0)
+        edge = pad[0] + PAD_HALF_SIZE
         route = [
-            kipy_track("in", "SIG", (0, 0), (PAD_HALF_SIZE, 0), width=WIDTH),
-            kipy_track("out", "SIG", (PAD_HALF_SIZE, 0), (3, 3), width=WIDTH),
+            kipy_track("in", "SIG", (0, 0), (edge, 0), width=WIDTH),
+            kipy_track("out", "SIG", (edge, 0), (3, 3), width=WIDTH),
         ]
         board = connect.to(
             CommitBoard(
                 selection=list(route),
                 tracks=list(route),
-                pads=[kipy_pad("r1", "SIG", 0, 0)],
+                pads=[kipy_pad("r1", "SIG", *pad)],
             )
         )
 
@@ -3917,12 +3920,13 @@ class TestContacts:
         start, end = joined.coords[0], joined.coords[-1]
         assert end == (3, 3) or start == (3, 3)
         near = start if end == (3, 3) else end
-        assert pad_inside((0, 0)).covers(Point(near))
+        assert pad_inside(pad).covers(Point(near))
         assert near != (0, 0)
 
     def test_a_route_passing_over_a_pad_keeps_a_vertex_inside_it(
         self, connect: Connector
     ) -> None:
+        # The corner lies in the pad, off its anchor.
         route = [
             kipy_track("a", "SIG", (0, 0), (5, 1), width=WIDTH),
             kipy_track("b", "SIG", (5, 1), (10, 0), width=WIDTH),
@@ -3931,7 +3935,7 @@ class TestContacts:
             CommitBoard(
                 selection=list(route),
                 tracks=list(route),
-                pads=[kipy_pad("p", "SIG", 5, 1)],
+                pads=[kipy_pad("p", "SIG", 5, 0.9)],
             )
         )
 
@@ -3940,7 +3944,123 @@ class TestContacts:
         assert board.calls == COMMIT_CALLS
         joined = committed_route(board)
         assert {joined.coords[0], joined.coords[-1]} == {(0, 0), (10, 0)}
-        inside = pad_inside((5, 1))
+        inside = pad_inside((5, 0.9))
         kept = [c for c in joined.coords[1:-1] if inside.covers(Point(c))]
         assert kept
         assert joined.length < 2 * math.hypot(5, 1)
+
+    @pytest.mark.parametrize("kind", ["pad", "via"])
+    def test_an_end_on_an_anchor_commits_exactly_there(
+        self, connect: Connector, kind: str
+    ) -> None:
+        # KiCad drags only the track ends at a pad's anchor or a via's
+        # centre along with it; this one lies off the millimetre grid.
+        anchor = (4.000_123_457, 3.999_876_543)
+        route = [
+            kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH),
+            kipy_track("b", "SIG", (4, 0), anchor, width=WIDTH),
+        ]
+        board = connect.to(anchored_board(route, kind, anchor))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert (nm(anchor[0]), nm(anchor[1])) in ends(created_on(board, BL.BL_F_Cu))
+
+    @pytest.mark.parametrize("kind", ["pad", "via"])
+    def test_a_route_through_an_anchor_keeps_its_vertex_there(
+        self, connect: Connector, kind: str
+    ) -> None:
+        # The corner before the anchor is smoothed; the anchor stays.
+        anchor = (5.000_123_457, 1.000_987_654)
+        route = [
+            kipy_track("a", "SIG", (0, 0), (3, 0), width=WIDTH),
+            kipy_track("b", "SIG", (3, 0), anchor, width=WIDTH),
+            kipy_track("c", "SIG", anchor, (10, 0), width=WIDTH),
+        ]
+        board = connect.to(anchored_board(route, kind, anchor))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert (nm(anchor[0]), nm(anchor[1])) in ends(created_on(board, BL.BL_F_Cu))
+        drawn = 3 + math.dist((3, 0), anchor) + math.dist(anchor, (10, 0))
+        assert committed_route(board).length < drawn
+
+    def test_a_junction_at_a_via_s_centre_keeps_every_branch_there(
+        self, connect: Connector
+    ) -> None:
+        centre = (5.000_123_457, 5.000_987_654)
+        route = [
+            kipy_track("a1", "SIG", (0, 0), (0, 5), width=WIDTH),
+            kipy_track("a2", "SIG", (0, 5), centre, width=WIDTH),
+            kipy_track("b1", "SIG", (10, 0), (10, 5), width=WIDTH),
+            kipy_track("b2", "SIG", (10, 5), centre, width=WIDTH),
+            kipy_track("c1", "SIG", (2, 10), (5, 10), width=WIDTH),
+            kipy_track("c2", "SIG", (5, 10), centre, width=WIDTH),
+        ]
+        board = connect.to(anchored_board(route, "via", centre))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        at = (nm(centre[0]), nm(centre[1]))
+        reaching = [
+            t
+            for t in created_on(board, BL.BL_F_Cu)
+            if at in {(t.start.x, t.start.y), (t.end.x, t.end.y)}
+        ]
+        assert len(reaching) == 3
+
+    def test_a_collinear_vertex_on_an_anchor_survives_simplification(
+        self, connect: Connector
+    ) -> None:
+        # Merging the straight run would drop the vertex on the pad's anchor.
+        anchor = (5.000_123_457, 0.0)
+        route = [
+            kipy_track("a", "SIG", (0, 0), anchor, width=WIDTH),
+            kipy_track("b", "SIG", anchor, (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (10, 0), (10, 5), width=WIDTH),
+        ]
+        board = connect.to(anchored_board(route, "pad", anchor))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert (nm(anchor[0]), nm(anchor[1])) in ends(created_on(board, BL.BL_F_Cu))
+
+    def test_a_pair_keeps_its_vertex_on_a_pad_anchor_in_a_straight(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A pad no wider than the track, so that it keeps clear of the other.
+        monkeypatch.setattr(conftest, "PAD_HALF_SIZE", PAIR_WIDTH / 2)
+        y = 3.0 + PAIR_HALF_PITCH
+        anchor = (PADS_AT, y)
+        board = pair_board()
+        (last,) = [t for t in board.tracks if t.id.value == "p4"]
+        start = (last.start.x / NM_PER_MM, last.start.y / NM_PER_MM)
+        split = [
+            kipy_track("p4", "USB_D+", start, anchor, width=PAIR_WIDTH),
+            kipy_track("p5", "USB_D+", anchor, (13.0, y), width=PAIR_WIDTH),
+        ]
+        board.tracks = [*(t for t in board.tracks if t is not last), *split]
+        board.selection = [*(t for t in board.selection if t is not last), *split]
+        board.pads = [kipy_pad("pad", "USB_D+", *anchor)]
+        connect.to(board)
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        plus = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == "USB_D+"]
+        assert (nm(anchor[0]), nm(anchor[1])) in ends(plus)
+        low, high = coupled_gaps(*by_net(board).values())
+        assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
+
+
+def anchored_board(
+    route: Sequence[kbt.Track], kind: str, at: tuple[float, float]
+) -> CommitBoard:
+    """`route`, selected, with a SIG pad or via anchored `at`."""
+    pads = [kipy_pad("p", "SIG", *at)] if kind == "pad" else []
+    vias = [kipy_via("v", "SIG", *at)] if kind == "via" else []
+    return CommitBoard(selection=list(route), tracks=list(route), pads=pads, vias=vias)
