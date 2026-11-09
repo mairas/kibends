@@ -373,6 +373,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "selected tracks still move. Saves the time moving vias cost",
     )
     smooth_parser.add_argument(
+        "--ground-nets",
+        nargs="+",
+        default=(),
+        metavar="NET",
+        help="The ground nets, whose vias are return vias for the other nets' "
+        "vias; by default the nets with copper zones on at least two inner "
+        "layers, else GND if it has copper",
+    )
+    smooth_parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -398,6 +407,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
         fixed_vias=args.fixed_vias,
+        ground_nets=tuple(args.ground_nets),
         settings=replace(
             DEFAULT_SETTINGS,
             settled_change=args.settled_change,

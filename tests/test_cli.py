@@ -2252,6 +2252,94 @@ ZONE_REGION_TOP = 8 + 0.2
 OTHER zone over y < 8, grown by the zones' 0.2 mm clearance."""
 
 
+INNER_PLANES = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu]
+
+
+def ground_lines(log: Sequence[str]) -> list[str]:
+    return [line.rstrip() for line in log if "round net" in line]
+
+
+class TestGroundNets:
+    def test_names_those_with_zones_on_two_inner_layers(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = moving_via_board()
+        board.enabled_layers = INNER_PLANES
+        planes = [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        board.zones = [kipy_copper_zone("p", "RET", kipy_rect(20, 20, 30, 30), planes)]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert ground_lines(log) == [
+            "INFO Ground net RET: zones on at least two inner layers"
+        ]
+
+    def test_falls_back_on_gnd_with_copper(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pushed_stitching_board())
+
+        run("--dry-run")
+
+        assert ground_lines(log) == [
+            "INFO Ground net GND: no net has zones on at least two inner layers"
+        ]
+
+    def test_with_none_says_so_and_the_run_goes_on(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(moving_via_board())
+
+        run()
+
+        assert ground_lines(log) == [
+            "INFO No ground nets: no net has zones on at least two inner layers and "
+            "GND has no zones, vias or pads"
+        ]
+        assert board.calls == COMMIT_CALLS
+
+    def test_given_ones_override_and_one_without_copper_warns(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pushed_stitching_board())
+
+        run("--dry-run", "--ground-nets", "PGND", "GND")
+
+        assert ground_lines(log) == [
+            "WARNING Ground net PGND has no zones, vias or pads on the board; "
+            "check --ground-nets",
+            "INFO Ground nets GND and PGND, as given",
+        ]
+
+    @pytest.mark.parametrize(
+        ("board", "args"),
+        [(straight_board, ()), (pushed_stitching_board, ("--fixed-vias",))],
+    )
+    def test_are_not_named_without_a_via_that_may_move(
+        self,
+        connect: Connector,
+        log: list[str],
+        board: Callable[[], CommitBoard],
+        args: tuple[str, ...],
+    ) -> None:
+        connect.to(board())
+
+        run("--dry-run", "--ground-nets", "PGND", *args)
+
+        assert ground_lines(log) == []
+
+    @pytest.mark.parametrize(
+        ("args", "expected"), [((), ()), (("--ground-nets", "A", "B"), ("A", "B"))]
+    )
+    def test_the_option_reaches_the_run(
+        self, args: tuple[str, ...], expected: tuple[str, ...]
+    ) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+
+        assert options.ground_nets == expected
+
+
 def plane_board() -> CommitBoard:
     """A SIG route bending at the via at (10, 10) in the SIG plane on
     In2.Cu, which pulls the via toward (6, 6), into the higher-priority

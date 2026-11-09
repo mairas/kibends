@@ -91,8 +91,10 @@ from kibends.results import (
 )
 from kibends.simplify import simplify_chains
 from kibends.snapshot import (
+    FALLBACK_GROUND,
     BoardSnapshot,
     Disc,
+    GroundSource,
     LayerSnapshot,
     Via,
     read_selection,
@@ -140,6 +142,9 @@ class SmoothOptions:
     where it is, as an unselected via."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
     """Its time limit covers the whole optimize stage, re-runs included."""
+    ground_nets: tuple[str, ...] = ()
+    """The ground nets, overriding their detection when not empty
+    (`BoardSnapshot.ground_nets`)."""
 
 
 @dataclass(frozen=True)
@@ -253,6 +258,9 @@ class _Read:
     movable: list[MovableVia]
     frame: UserFrame
     """The frame warnings and descriptions give positions in."""
+    ground_nets: frozenset[str]
+    """Empty when no selected via may move, as they are then not looked
+    for."""
 
 
 @dataclass(frozen=True)
@@ -323,6 +331,7 @@ def run_smooth(
         options.chord_tolerance,
         read_user_frame(board),
         fixed_vias=options.fixed_vias,
+        ground_nets=options.ground_nets,
     )
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
@@ -350,10 +359,12 @@ def _read(
     frame: UserFrame,
     *,
     fixed_vias: bool,
+    ground_nets: Collection[str] = (),
 ) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
     judge which selected vias move, no stitching via with `fixed_vias`,
-    giving positions in `frame`."""
+    giving positions in `frame`. When a selected via may move, find the
+    ground nets, `ground_nets` if given, and name them."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
@@ -385,6 +396,7 @@ def _read(
         every_copper_layer=bool(may),
     )
     snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
+    ground = _ground_nets(whole, ground_nets) if may else frozenset[str]()
     # A moving via's copper must not hold the chains it carries where they
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates, frame)
@@ -404,7 +416,35 @@ def _read(
     moving = {m.via.id for m in movable}
     if moving != candidates:
         chains = _extract_chains(kept, locked, snapshots, moving, frame)
-    return _Read(selected, chains, snapshots, movable, frame)
+    return _Read(selected, chains, snapshots, movable, frame, ground)
+
+
+def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]:
+    """The ground nets `whole.ground_nets` finds, logged with where they come
+    from, warning of each of `given` without copper."""
+    for net in sorted(set(given) - whole.copper_nets):
+        logger.warning(
+            f"Ground net {net} has no zones, vias or pads on the board; "
+            "check --ground-nets"
+        )
+    found = whole.ground_nets(given)
+    names = " and ".join(sorted(found.nets))
+    noun = "Ground net" if len(found.nets) == 1 else "Ground nets"
+    match found.source:
+        case GroundSource.GIVEN:
+            logger.info(f"{noun} {names}, as given")
+        case GroundSource.INNER_ZONES:
+            logger.info(f"{noun} {names}: zones on at least two inner layers")
+        case GroundSource.FALLBACK:
+            logger.info(
+                f"{noun} {names}: no net has zones on at least two inner layers"
+            )
+        case GroundSource.NONE:
+            logger.info(
+                "No ground nets: no net has zones on at least two inner layers and "
+                f"{FALLBACK_GROUND} has no zones, vias or pads"
+            )
+    return found.nets
 
 
 def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
