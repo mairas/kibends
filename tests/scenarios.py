@@ -621,6 +621,50 @@ def via_across_chain(nudge: float = 0.0) -> ViasScenario:
     )
 
 
+GRID_ROW_PITCH = 1.2
+"""Close enough that neighbouring rows repel, far enough that no via starts
+inside its clearance."""
+GRID_CELL = 12.0
+GRID_BOW = 0.25
+
+
+def via_grid(rows: int, columns: int, via_every: int = 2) -> ViasScenario:
+    """Rows of cells, each its own net, bowed towards the next row: every
+    `via_every`-th cell a route from F.Cu through a via to B.Cu, the others a
+    chain on each layer, so that the vias tie both layers into one problem
+    the size of a board region."""
+    chains: list[ChainInput] = []
+    vias: list[ViaInput] = []
+    for row in range(rows):
+        y = row * GRID_ROW_PITCH
+        bow = GRID_BOW if row % 2 else -GRID_BOW
+        for column in range(columns):
+            x = column * GRID_CELL
+            net = f"N{row}.{column}"
+            middle = (x + GRID_CELL / 2, y)
+            top = selected(
+                f"{net} top", net, FreeSpace(), (x, y), (x + 3.0, y + bow), middle
+            )
+            bottom = selected(
+                f"{net} bottom",
+                net,
+                FreeSpace(),
+                middle,
+                (x + 9.0, y - bow),
+                (x + GRID_CELL - 1.0, y),
+                layer="B.Cu",
+            )
+            if (row * columns + column) % via_every == 0:
+                vias.append(joining(through_via(net, net, middle), len(chains)))
+            chains += [top, bottom]
+    return ViasScenario(
+        f"via-grid-{rows}x{columns}",
+        tuple(chains),
+        tuple(vias),
+        replace(PARAMS, repulsion=0.5),
+    )
+
+
 DP_GAP = 0.15
 DP_PITCH = PAIR_WIDTH + DP_GAP
 """Between the two tracks' centrelines."""

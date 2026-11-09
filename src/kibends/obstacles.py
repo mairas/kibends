@@ -364,11 +364,12 @@ class ChainField:
     The same answers as `Obstacles` with each centreline as an obstacle,
     except that zero-length edges and zero-length query segments count like
     any other, where shapely's tree query skips them. Done in numpy instead
-    of shapely because the optimizer rebuilds this field for every burst and
-    queries it on every energy evaluation. A k-d tree over the edge midpoints
-    finds the edges near each query, and the exact distances to those edges
-    are computed in bulk. Points are complex numbers inside, which keeps
-    every gather one-dimensional.
+    of shapely because the optimizer rebuilds fields like this for every
+    burst and check. A k-d tree over the edge midpoints finds the edges near
+    each query, and the exact distances to those edges are computed in bulk
+    (`nearest_of_pairs`), as `kibends.seen` computes them for many members
+    at once. Points are complex numbers inside, which keeps every gather
+    one-dimensional.
     """
 
     def __init__(
@@ -376,8 +377,8 @@ class ChainField:
     ) -> None:
         """Edges from starts[i] to ends[i], (m, 2) in mm, each inflated by
         inflations[i]."""
-        self._starts = _complex(starts)
-        self._along = _complex(ends) - self._starts
+        self._starts = complex_points(starts)
+        self._along = complex_points(ends) - self._starts
         self._inflations = inflations
         self._max_inflation = float(inflations.max(initial=0.0))
         self._max_half_length = float(np.abs(self._along).max(initial=0.0)) / 2
@@ -385,8 +386,7 @@ class ChainField:
 
     @cached_property
     def _tree(self) -> cKDTree | None:
-        # Built on first use: an evaluation given its pairs (`nearest_among`)
-        # needs none.
+        # Built on first use: a field whose checks all end early needs none.
         return cKDTree(self._middles) if len(self._middles) else None
 
     @staticmethod
@@ -421,7 +421,7 @@ class ChainField:
         edges = np.full(len(coords), -1, dtype=np.intp)
         if self._tree is None or not len(coords):
             return NearestEdge(distance, gradient, edges)
-        query = _complex(coords)
+        query = complex_points(coords)
         if math.isfinite(reach):
             # An edge is within reach once inflated only if it is within reach
             # plus the largest inflation.
@@ -444,47 +444,6 @@ class ChainField:
             point_limit = limits[point]
         return self._nearest_of(query, point, edge, point_limit)
 
-    def nearest_among(
-        self, points: FloatArray, reach: float, pairs: tuple[IntArray, IntArray]
-    ) -> NearestEdge:
-        """`nearest` with a finite `reach`, looking at the (point, edge)
-        `pairs` alone: the same answer when they hold every pair within
-        reach plus the largest inflation of each other, as `candidates`
-        finds them."""
-        coords = np.asarray(points, dtype=float).reshape(-1, 2)
-        point, edge = pairs
-        return self._nearest_of(
-            _complex(coords), point, edge, reach + self._max_inflation
-        )
-
-    def candidates(
-        self, points: FloatArray, reach: float, slack: float
-    ) -> tuple[IntArray, IntArray]:
-        """The (point, edge) pairs that `nearest` with a finite `reach` can
-        answer a point with once the distance from each point to each edge
-        has changed by at most `slack`, mm."""
-        coords = np.asarray(points, dtype=float).reshape(-1, 2)
-        empty = np.empty(0, dtype=np.intp)
-        if self._tree is None or not len(coords):
-            return empty, empty
-        within = reach + self._max_inflation
-        limit = within + slack + 2 * DEGENERATE_DISTANCE
-        point, edge = _pairs_within(self._tree, coords, limit + self._max_half_length)
-        raw = np.abs(
-            _offsets(_complex(coords)[point], self._starts[edge], self._along[edge])
-        )
-        keep = raw <= limit
-        point, edge, raw = point[keep], edge[keep], raw[keep]
-        # Only the nearest edge answers a point. An edge that stays within
-        # reach however its distance changes bounds how far away that is,
-        # and an edge that cannot come nearer than the bound never answers.
-        distance = raw - self._inflations[edge]
-        bound = np.full(len(coords), np.inf)
-        sure = raw + slack <= within
-        np.minimum.at(bound, point[sure], distance[sure] + slack)
-        keep = distance - slack <= bound[point] + 2 * DEGENERATE_DISTANCE
-        return point[keep], edge[keep]
-
     def _nearest_of(
         self,
         query: ComplexArray,
@@ -494,23 +453,18 @@ class ChainField:
     ) -> NearestEdge:
         """`nearest` at `query` over the (point, edge) pairs given, each
         looked at within `point_limit` of its point."""
-        distance = np.full(len(query), np.inf)
-        gradient = np.zeros((len(query), 2))
-        edges = np.full(len(query), -1, dtype=np.intp)
-        if not len(point):
-            return NearestEdge(distance, gradient, edges)
-        offset = _offsets(query[point], self._starts[edge], self._along[edge])
-        raw = np.abs(offset)
-        candidate = np.where(
-            raw <= point_limit + DEGENERATE_DISTANCE,
-            raw - self._inflations[edge],
-            np.inf,
+        found = nearest_of_pairs(
+            query,
+            point,
+            self._starts[edge],
+            self._along[edge],
+            self._inflations[edge],
+            point_limit,
         )
-        np.minimum.at(distance, point, candidate)
-        best = np.flatnonzero((candidate == distance[point]) & (candidate < np.inf))
-        gradient[point[best]] = self._unit_gradient(offset[best], raw[best], edge[best])
-        edges[point[best]] = edge[best]
-        return NearestEdge(distance, gradient, edges)
+        answered = found.edge >= 0
+        edges = np.full(len(query), -1, dtype=np.intp)
+        edges[answered] = edge[found.edge[answered]]
+        return NearestEdge(found.distance, found.gradient, edges)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -521,8 +475,8 @@ class ChainField:
         Touching an inflated boundary, which is exactly at clearance, is clear,
         and so is entering it by at most `tolerance` mm.
         """
-        a = _complex(np.asarray(starts, dtype=float).reshape(-1, 2))
-        b = _complex(np.asarray(ends, dtype=float).reshape(-1, 2))
+        a = complex_points(np.asarray(starts, dtype=float).reshape(-1, 2))
+        b = complex_points(np.asarray(ends, dtype=float).reshape(-1, 2))
         clear = np.ones(len(a), dtype=np.bool_)
         reach = self._max_inflation - tolerance
         if self._tree is None or reach <= 0.0 or not len(a):
@@ -541,25 +495,94 @@ class ChainField:
         clear[segment[gap < self._inflations[edge] - tolerance - ROUND_OFF]] = False
         return clear
 
-    def _unit_gradient(
-        self, offset: ComplexArray, length: FloatArray, edge: IntArray
-    ) -> FloatArray:
-        """The direction away from each edge; its normal on the centreline."""
-        degenerate = length < DEGENERATE_DISTANCE
-        direction = offset / np.where(degenerate, 1.0, length)
-        if degenerate.any():
-            along = self._along[edge[degenerate]]
-            norm = np.abs(along)
-            # A quarter turn of the tangent, as `_outward_normal` turns it.
-            direction[degenerate] = np.where(
-                norm > 0.0,
-                1j * along / np.where(norm > 0.0, norm, 1.0),
-                complex(*FALLBACK_DIRECTION),
-            )
-        return np.column_stack([direction.real, direction.imag])
+
+def nearest_of_pairs(
+    query: ComplexArray,
+    point: IntArray,
+    starts: ComplexArray,
+    along: ComplexArray,
+    inflations: FloatArray,
+    limit: FloatArray | float,
+) -> NearestEdge:
+    """`ChainField.nearest` at the points `query` over (point, segment)
+    pairs: pair k is the segment from starts[k] along along[k], inflated by
+    inflations[k], looked at within `limit`, one or per pair, of
+    query[point[k]]. The edge that answers a point is its pair's index."""
+    distance = np.full(len(query), np.inf)
+    gradient = np.zeros((len(query), 2))
+    edges = np.full(len(query), -1, dtype=np.intp)
+    if not len(point):
+        return NearestEdge(distance, gradient, edges)
+    offset = _offsets(query[point], starts, along)
+    raw = np.abs(offset)
+    candidate = np.where(raw <= limit + DEGENERATE_DISTANCE, raw - inflations, np.inf)
+    np.minimum.at(distance, point, candidate)
+    best = np.flatnonzero((candidate == distance[point]) & (candidate < np.inf))
+    gradient[point[best]] = _unit_gradient(offset[best], raw[best], along[best])
+    edges[point[best]] = best
+    return NearestEdge(distance, gradient, edges)
 
 
-def _complex(points: FloatArray) -> ComplexArray:
+def candidate_pairs(
+    query: ComplexArray,
+    point: IntArray,
+    starts: ComplexArray,
+    along: ComplexArray,
+    inflations: FloatArray,
+    within: FloatArray | float,
+    slack: float,
+) -> BoolArray:
+    """Which (point, segment) pairs, as `nearest_of_pairs` takes them, can
+    answer their point within `within`, one or per pair, once the distance
+    from each point to each segment has changed by at most `slack`, mm."""
+    raw = np.abs(_offsets(query[point], starts, along))
+    keep = raw <= within + slack + 2 * DEGENERATE_DISTANCE
+    # Only the nearest edge answers a point. An edge that stays within reach
+    # however its distance changes bounds how far away that is, and an edge
+    # that cannot come nearer than the bound never answers.
+    distance = raw - inflations
+    bound = np.full(len(query), np.inf)
+    sure = raw + slack <= within
+    np.minimum.at(bound, point[sure], distance[sure] + slack)
+    keep &= distance - slack <= bound[point] + 2 * DEGENERATE_DISTANCE
+    return keep
+
+
+def near_segments(
+    starts: FloatArray, ends: FloatArray, points: FloatArray, radius: float
+) -> tuple[IntArray, IntArray]:
+    """(point, segment) index pairs, among them every pair whose segment
+    from starts[k] to ends[k] comes within `radius` of points[i], found with
+    one tree over the segments' middles."""
+    empty = np.empty(0, dtype=np.intp)
+    if not len(starts) or not len(points):
+        return empty, empty
+    half_length = float(np.max(np.hypot(*(ends - starts).T))) / 2
+    tree = cKDTree((starts + ends) / 2)
+    return _pairs_within(tree, points, radius + half_length + DEGENERATE_DISTANCE)
+
+
+def _unit_gradient(
+    offset: ComplexArray, length: FloatArray, along: ComplexArray
+) -> FloatArray:
+    """The direction away from each segment along `along`; its normal on
+    the segment."""
+    degenerate = length < DEGENERATE_DISTANCE
+    direction = offset / np.where(degenerate, 1.0, length)
+    if degenerate.any():
+        along = along[degenerate]
+        norm = np.abs(along)
+        # A quarter turn of the tangent, as `_outward_normal` turns it.
+        direction[degenerate] = np.where(
+            norm > 0.0,
+            1j * along / np.where(norm > 0.0, norm, 1.0),
+            complex(*FALLBACK_DIRECTION),
+        )
+    return np.column_stack([direction.real, direction.imag])
+
+
+def complex_points(points: FloatArray) -> ComplexArray:
+    """(n, 2) points as n complex numbers."""
     return points[:, 0] + 1j * points[:, 1]
 
 
