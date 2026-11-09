@@ -83,8 +83,9 @@ class PairInput:
     """Track b's section, running the same way as `a`, of the same width."""
     a_pinned: BoolArray
     b_pinned: BoolArray
-    """Where same-net copper touches each track. A section with a pin
-    between its ends stays as it is."""
+    """Where same-net copper touches each track. `pairs.find_pair` ends a
+    section at every pin where both tracks run straight; one left with a
+    pin between its ends stays as it is."""
     gap: float
     """Edge to edge between the two tracks, mm."""
     layer: str

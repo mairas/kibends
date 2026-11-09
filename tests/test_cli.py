@@ -2426,7 +2426,7 @@ class TestPairs:
         assert any("1 moving via" in line for line in log)
         assert seen == [{"w"}]
 
-    def test_section_with_copper_between_its_ends_is_held(
+    def test_section_with_copper_between_its_ends_is_split_there(
         self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         stub = kipy_track(
@@ -2437,7 +2437,7 @@ class TestPairs:
         run("--dry-run")
 
         ((pair,),) = (r.pairs for r in reports)
-        assert pair.held == 1
+        assert (pair.sections, pair.held) == (2, 0)
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]
@@ -3412,6 +3412,7 @@ def test_a_pair_routed_below_its_clearance_keeps_it_across_a_turn() -> None:
 def test_a_sharp_pair_held_as_routed_is_not_refused(
     connect: Connector,
     log: list[str],
+    reports: list[pipeline.RunReport],
     turn: float,
     width: float,
     gap: float,
@@ -3424,8 +3425,9 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
         for net, track in zip(USB, (p, n), strict=True)
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    # Same-net copper on P between the section's ends holds it as routed.
-    held_by = kipy_pad("pad", USB[0], 1.0, float(p[0, 1]))
+    # Same-net copper on P's apex, whose outline crosses P closer to the
+    # turn than two pitches, holds the section as routed.
+    held_by = kipy_pad("pad", USB[0], float(p[1, 0]), float(p[1, 1]))
     usb = netclass("USB", clearance, gap)
     board = connect.to(
         CommitBoard(
@@ -3438,6 +3440,8 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
 
     run()
 
+    ((pair,),) = (r.pairs for r in reports)
+    assert (pair.sections, pair.held) == (1, 1)
     assert not any(line.startswith("ERROR") for line in log)
     assert board.calls == []
 
