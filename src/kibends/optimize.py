@@ -209,6 +209,7 @@ from kibends.obstacles import (
 )
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.pairs import BendCheck, bend_radii, too_tight
+from kibends.seen import NeighbourList, Seen, SeenParts, ViaSight
 from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
 
@@ -1046,7 +1047,7 @@ def layer_energy(
     masks: Sequence[BoolArray],
     params: EnergyParams,
     short_edge: float,
-    seen: Sequence[SeenParts] | None = None,
+    seen: Seen | None = None,
 ) -> tuple[float, list[FloatArray]]:
     """The summed energy of chains and sections of one layer, each in its
     static field plus what it sees of the others at `polylines`, by default
@@ -1074,14 +1075,14 @@ def members_energy(
     masks: Sequence[BoolArray],
     params: EnergyParams,
     short_edge: float,
-    seen: Sequence[SeenParts],
+    seen: Seen,
     positions: Sequence[FloatArray],
     listed: NeighbourList | None = None,
 ) -> tuple[float, list[FloatArray], FloatArray]:
     """`layer_energy` of members on any layers, each seeing the others on its
     own as `seen` shows them, with vias at `positions` among them; and the
     gradient at each via's centre. With `listed`, made for `seen`, each
-    member looks only at the pieces it lists."""
+    layer looks only at the pieces it lists."""
     reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge
@@ -1092,17 +1093,12 @@ def members_energy(
     at_shown = np.zeros_like(flat)
     gradients: list[FloatArray] = []
     value = 0.0
+    every_query = [quadrature_points(points, k) for points in polylines]
+    nearest = seen.nearest(every_query, flat, reach, listed)
     for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
-        queries = quadrature_points(points, k)
+        queries = every_query[i]
         static, static_direction = _body(member).field.signed_distance(queries, reach)
-        others = _others(seen[i], flat)
-        near = (
-            others.field.nearest(queries, reach)
-            if listed is None
-            else others.field.nearest_among(
-                queries, reach, listed.pairs(i, queries, flat, others.field)
-            )
-        )
+        near = nearest[i]
         nearer = near.distance < static
         distance = np.where(nearer, near.distance, static)
         direction = np.where(nearer[:, None], near.gradient, static_direction)
@@ -1121,10 +1117,10 @@ def members_energy(
         gradients.append(gradient)
         pulled = np.flatnonzero(nearer & (slopes != 0.0))
         if len(pulled):
-            edge = near.edge[pulled]
-            start = others.vertex[edge]
-            along = _parameters(queries[pulled], others.starts[edge], others.ends[edge])
-            t = others.start[edge] + along * (others.end[edge] - others.start[edge])
+            piece = near.edge[pulled]
+            start = seen.vertex[piece]
+            along = _parameters(queries[pulled], *seen.segments(piece, flat))
+            t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
             push = slopes[pulled, None] * near.gradient[pulled]
             np.add.at(at_shown, start, -push * (1 - t)[:, None])
             np.add.at(at_shown, start + 1, -push * t[:, None])
@@ -1196,27 +1192,12 @@ def _flat(
     )
 
 
-@dataclass(frozen=True)
-class SeenParts:
-    """What one chain of a layer sees of the others: pieces of their edges,
-    each inflated by its own amount."""
-
-    vertex: IntArray
-    """Each piece's edge's first vertex, numbered across what the others
-    see of every chain and section (`shown`), one after another, then two
-    for each via (`_shown_flat`)."""
-    start: FloatArray
-    """Where along its edge each piece starts, from 0 to 1."""
-    end: FloatArray
-    inflation: FloatArray
-
-
 def seen_parts(
     chains: Sequence[Member],
     polylines: Sequence[FloatArray],
     reach: float,
     rings: Sequence[Mapping[int, float]] = (),
-) -> list[SeenParts]:
+) -> Seen:
     """For each chain or section at its polyline, the others on its layer at
     theirs as `neighbours.neighbour_field` shows them to it: another net's
     chain whole, inflated by both half widths and the larger clearance, and
@@ -1274,52 +1255,7 @@ def seen_parts(
                 np.concatenate(inflations),
             )
         )
-    return seen
-
-
-class NeighbourList:
-    """A Verlet list: per member, the pairs of its quadrature points and the
-    pieces it sees of the others (`SeenParts`) that can answer each other
-    while every one of them stays within `skin` of where it was when the
-    pairs were found. A member whose points or pieces have moved farther
-    finds its pairs again where they are. Either way the energy is the one a
-    search over every piece gives; the list only spares the search."""
-
-    def __init__(self, seen: Sequence[SeenParts], reach: float, skin: float) -> None:
-        self.seen = seen
-        self.reach = reach
-        self.skin = skin
-        self._found: list[tuple[FloatArray, FloatArray] | None] = [None] * len(seen)
-        self._pairs: list[tuple[IntArray, IntArray]] = [
-            (np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp))
-        ] * len(seen)
-
-    def pairs(
-        self, i: int, queries: FloatArray, flat: FloatArray, field: ChainField
-    ) -> tuple[IntArray, IntArray]:
-        """Member i's pairs with its quadrature points at `queries` and what
-        it sees of the others at `flat`, as `field`."""
-        vertex = self.seen[i].vertex
-        ends = flat[np.concatenate([vertex, vertex + 1])]
-        found = self._found[i]
-        if (
-            found is None
-            or _moved(queries, found[0]) > self.skin
-            or _moved(ends, found[1]) > self.skin
-        ):
-            # A point's distance to a piece changes by at most its own move
-            # plus the larger move of the piece's ends.
-            self._pairs[i] = field.candidates(queries, self.reach, 2 * self.skin)
-            self._found[i] = (queries, ends)
-        return self._pairs[i]
-
-
-def _moved(points: FloatArray, start: FloatArray) -> float:
-    """The largest distance from start[i] to points[i], mm."""
-    if not len(points):
-        return 0.0
-    delta = points - start
-    return math.sqrt(float(np.max(np.einsum("ij,ij->i", delta, delta))))
+    return Seen(seen, [_viewer(member)[0].layer for member in chains])
 
 
 def _subset(seen: SeenParts, keep: BoolArray) -> SeenParts:
@@ -1350,35 +1286,13 @@ def _pieces(
     return np.concatenate(found), np.concatenate(starts), np.concatenate(ends)
 
 
-@dataclass(frozen=True)
-class _Others:
-    """What one chain of a layer sees of the others, at given shapes."""
-
-    field: ChainField
-    starts: FloatArray
-    ends: FloatArray
-    vertex: IntArray
-    """Each piece's edge's first vertex, numbered across every chain of the
-    layer."""
-    start: FloatArray
-    """Where along its edge each piece starts, from 0 to 1."""
-    end: FloatArray
-
-
-def _others(seen: SeenParts, flat: FloatArray) -> _Others:
-    """The pieces of `seen` with the layer's chains at `flat`, their
-    polylines one after another."""
+def _others(seen: SeenParts, flat: FloatArray) -> ChainField:
+    """The pieces of `seen` as obstacles, with the layer's chains at `flat`,
+    their polylines one after another."""
     a, b = flat[seen.vertex], flat[seen.vertex + 1]
     along = b - a
-    starts = a + seen.start[:, None] * along
-    ends = a + seen.end[:, None] * along
-    return _Others(
-        ChainField(starts, ends, seen.inflation),
-        starts,
-        ends,
-        seen.vertex,
-        seen.start,
-        seen.end,
+    return ChainField(
+        a + seen.start[:, None] * along, a + seen.end[:, None] * along, seen.inflation
     )
 
 
@@ -1485,20 +1399,6 @@ class _Layout:
 
 
 @dataclass(frozen=True)
-class _ViaView:
-    """What a via sees of the members near it and the other vias, as edges,
-    and whose each edge is."""
-
-    field: ChainField
-    starts: FloatArray
-    ends: FloatArray
-    member: IntArray
-    """Each edge's member, -1 for a via."""
-    vertex: IntArray
-    """Each edge's first vertex in its member, or the via's index."""
-
-
-@dataclass(frozen=True)
 class _Round:
     """What one check of a burst found: per member, its edges that newly
     crossed and, of those, a section's vertex pairs too close; per via, what
@@ -1565,6 +1465,9 @@ class _Problem:
                 self.carried[i].append((k, end))
                 self.siblings[i] += [j for j, _, _ in vias[k].carried if j != i]
         self.rings = [via.rings for via in vias]
+        self.via_sight = ViaSight(
+            self.free_vias, self.rings, [via.apart for via in vias], count
+        )
         # The chains as their neighbours see them; their own masks below
         # leave the junction ends loose.
         self.members: list[Member] = [*_pinned(chains, self.groups), *sections]
@@ -1688,11 +1591,7 @@ class _Problem:
         seen = seen_parts(self.members, polylines, self.reach, self.rings)
         flat = _shown_flat(self.members, polylines, positions)
         return [
-            int(
-                np.count_nonzero(
-                    ~_others(part, flat).field.segments_clear(p[:-1], p[1:])
-                )
-            )
+            int(np.count_nonzero(~_others(part, flat).segments_clear(p[:-1], p[1:])))
             for p, part in zip(polylines, seen, strict=True)
         ]
 
@@ -1769,58 +1668,17 @@ class _Problem:
             )
         ]
 
-    def via_view(
-        self,
-        k: int,
-        polylines: Sequence[FloatArray],
-        positions: Sequence[FloatArray],
-    ) -> _ViaView:
-        """What via k sees of the members near it at `polylines` and of the
-        other vias at `positions`."""
-        via = self.vias[k]
-        starts: list[FloatArray] = [np.empty((0, 2))]
-        ends: list[FloatArray] = [np.empty((0, 2))]
-        inflations: list[FloatArray] = [np.empty(0)]
-        member: list[IntArray] = [np.empty(0, dtype=np.intp)]
-        vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
-        for j, ring in via.rings.items():
-            points = polylines[j]
-            starts.append(points[:-1])
-            ends.append(points[1:])
-            inflations.append(np.full(len(points) - 1, ring))
-            member.append(np.full(len(points) - 1, j, dtype=np.intp))
-            vertex.append(np.arange(len(points) - 1, dtype=np.intp))
-        for u, apart in via.apart.items():
-            starts.append(positions[u][None])
-            ends.append(positions[u][None])
-            inflations.append(np.array([apart]))
-            member.append(np.array([-1], dtype=np.intp))
-            vertex.append(np.array([u], dtype=np.intp))
-        a, b = np.concatenate(starts), np.concatenate(ends)
-        return _ViaView(
-            ChainField(a, b, np.concatenate(inflations)),
-            a,
-            b,
-            np.concatenate(member),
-            np.concatenate(vertex),
-        )
-
-    def via_distance(
-        self, k: int, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> float:
-        """Via k's free distance: to its static copper, the members near it
-        and the other vias."""
-        at = positions[k]
-        return min(
-            point_distance(self.vias[k].given.field, at),
-            point_distance(self.via_view(k, polylines, positions).field, at),
-        )
-
     def via_distances(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
     ) -> list[float]:
-        """`via_distance` of every via that moves, in order."""
-        return [self.via_distance(k, polylines, positions) for k in self.free_vias]
+        """Each moving via's free distance, in order: to its static copper,
+        the members near it at `polylines` and the other vias at
+        `positions`."""
+        cross = self.via_sight.nearest(polylines, positions, math.inf).distance
+        return [
+            min(point_distance(self.vias[k].given.field, positions[k]), float(d))
+            for k, d in zip(self.free_vias, cross, strict=True)
+        ]
 
     def via_energy(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
@@ -1832,29 +1690,27 @@ class _Problem:
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
         value = 0.0
-        for k in self.free_vias:
+        near = self.via_sight.nearest(polylines, positions, self.reach)
+        for n, k in enumerate(self.free_vias):
             at = positions[k][None]
             diameter = self.vias[k].given.via.diameter
             static, static_direction = self.vias[k].given.field.signed_distance(
                 at, self.reach
             )
-            view = self.via_view(k, polylines, positions)
-            near = view.field.nearest(at, self.reach)
-            nearer = bool(near.distance[0] < static[0])
-            distance = near.distance if nearer else static
-            direction = near.gradient[0] if nearer else static_direction[0]
+            nearer = bool(near.distance[n] < static[0])
+            distance = near.distance[n : n + 1] if nearer else static
+            direction = near.gradient[n] if nearer else static_direction[0]
             term, slope = self.integrand(distance)
             value += diameter * float(term[0])
             push = diameter * slope[0] * direction
             via_gradients[k] += push
             if not nearer:
                 continue
-            e = int(near.edge[0])
-            j, first = int(view.member[e]), int(view.vertex[e])
+            j, first = int(near.member[n]), int(near.vertex[n])
             if j < 0:
                 via_gradients[first] -= push
                 continue
-            t = _parameters(at, view.starts[e : e + 1], view.ends[e : e + 1])[0]
+            t = _parameters(at, near.starts[n : n + 1], near.ends[n : n + 1])[0]
             gradients[j][first] -= (1 - t) * push
             gradients[j][first + 1] -= t * push
         return value, gradients, via_gradients
@@ -1872,7 +1728,7 @@ class _Problem:
         polylines: Sequence[FloatArray],
         positions: Sequence[FloatArray],
         masks: Sequence[BoolArray],
-        seen: Sequence[SeenParts] | None = None,
+        seen: Seen | None = None,
         listed: NeighbourList | None = None,
     ) -> tuple[float, list[FloatArray], FloatArray]:
         """The problem's energy, by default with what each member sees of
@@ -2041,8 +1897,7 @@ class _Problem:
         seen = seen_parts(self.members, polylines, self.reach, self.rings)
         flat = _shown_flat(self.members, polylines, positions)
         return [
-            CROSS_SHARE
-            * _others(_subset(part, keep), flat).field.signed_distance(points)[0]
+            CROSS_SHARE * _others(_subset(part, keep), flat).signed_distance(points)[0]
             < -self.settings.bubble_tolerance
             for points, part, keep in zip(
                 polylines, seen, self.apart(seen, polylines), strict=True
@@ -2067,7 +1922,7 @@ class _Problem:
     def objective(
         self,
         layout: _Layout,
-        seen: Sequence[SeenParts] | None = None,
+        seen: Seen | None = None,
         listed: bool = True,
     ) -> Callable[[FloatArray], tuple[float, FloatArray]]:
         """The problem's energy as a function of `layout`'s variables, with
@@ -2107,7 +1962,7 @@ class _Problem:
             for body, s in zip(self.bodies, starts, strict=True)
         ]
         others_before = [
-            _others(seen[i], flat_start).field.segments_clear(s[:-1], s[1:])
+            _others(seen[i], flat_start).segments_clear(s[:-1], s[1:])
             for i, s in enumerate(starts)
         ]
         checks = [
@@ -2133,7 +1988,7 @@ class _Problem:
             via_counts = [0] * len(self.vias)
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
-                others = _others(seen[i], flat).field
+                others = _others(seen[i], flat)
                 crossing = (
                     static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
                 ) | (others_before[i] & ~others.segments_clear(a, b))
@@ -2150,11 +2005,10 @@ class _Problem:
                     rejected += more
                 counts.append((rejected, close))
                 back[index[i][ends & free[i]]] = True
-            for k in self.free_vias:
-                if (
-                    clear_before[k]
-                    and self.via_distance(k, polylines, centres) < -INSIDE_TOLERANCE
-                ):
+            for k, distance in zip(
+                self.free_vias, self.via_distances(polylines, centres), strict=True
+            ):
+                if clear_before[k] and distance < -INSIDE_TOLERANCE:
                     back[layout.via_index[k]] = True
                     via_counts[k] += 1
             return _Round(counts, via_counts), np.repeat(back, 2)
@@ -2228,18 +2082,20 @@ class _Problem:
             free = layout.index[i] >= 0
             index = layout.index[i][free]
             np.minimum.at(static, index, body.field.signed_distance(points[free])[0])
-            others = _others(_subset(seen[i], apart[i]), flat).field
+            others = _others(_subset(seen[i], apart[i]), flat)
             np.minimum.at(cross, index, others.signed_distance(points[free])[0])
             ends = np.ones(len(points), dtype=bool)
             ends[:-1] &= edges_clear[i]
             ends[1:] &= edges_clear[i]
             np.logical_and.at(clear, index, ends[free])
-        for k, via_clear in zip(self.free_vias, vias_clear, strict=True):
+        via_cross = self.via_sight.nearest(starts, positions, math.inf).distance
+        for k, via_clear, near in zip(
+            self.free_vias, vias_clear, via_cross, strict=True
+        ):
             at = positions[k]
             v = layout.via_index[k]
             static[v] = min(static[v], point_distance(self.vias[k].given.field, at))
-            view = self.via_view(k, starts, positions)
-            cross[v] = min(cross[v], point_distance(view.field, at))
+            cross[v] = min(cross[v], float(near))
             clear[v] &= via_clear
         floor = np.where(clear, self.step_floor(seen, apart) / math.sqrt(2), 0.0)
         static_side = half_side(static, self.settings)
