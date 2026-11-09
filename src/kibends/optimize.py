@@ -966,6 +966,16 @@ class _Via:
 
 
 @dataclass(frozen=True)
+class _ViaPart:
+    """One of each moving via's two terms: the integrand applied to the
+    nearest of what `static` gives of the via and what `sight` finds."""
+
+    static: Callable[[ViaInput], ObstacleField | None]
+    sight: ViaSight
+    integrand: Integrand
+
+
+@dataclass(frozen=True)
 class _Resume:
     members: list[Resumed | None]
     positions: list[FloatArray]
@@ -1311,6 +1321,31 @@ def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> Flo
     return np.clip(projection / np.where(squared > 0.0, squared, 1.0), 0.0, 1.0)
 
 
+def _pull(
+    near: ViaNearest,
+    nearer: BoolArray,
+    at: FloatArray,
+    push: FloatArray,
+    gradients: list[FloatArray],
+    via_gradients: FloatArray,
+) -> None:
+    """Subtract each via's `push` from what `near` found answering it, where
+    that is `nearer` than its static copper: the other via, or the ends of a
+    member's edge in proportion to where along it the via's centre at `at`
+    is nearest."""
+    answered = np.flatnonzero(nearer)
+    member, vertex = near.member[answered], near.vertex[answered]
+    on_via = member < 0
+    np.subtract.at(via_gradients, vertex[on_via], push[answered[on_via]])
+    for j in np.unique(member[~on_via]):
+        edge = answered[member == j]
+        first = near.vertex[edge]
+        t = _parameters(at[edge], near.starts[edge], near.ends[edge])[:, None]
+        gradient = gradients[int(j)]
+        np.subtract.at(gradient, first, (1 - t) * push[edge])
+        np.subtract.at(gradient, first + 1, t * push[edge])
+
+
 def _resample(
     points: FloatArray,
     mask: BoolArray,
@@ -1448,6 +1483,9 @@ class _Problem:
     ) -> None:
         self.vias = list(vias)
         self.free_vias = [k for k, via in enumerate(vias) if not via.frozen]
+        self.via_diameters = np.array(
+            [vias[k].given.via.diameter for k in self.free_vias], dtype=float
+        )
         self.description = _description(layers, bool(self.free_vias))
         self.groups = junctions(chains)
         count = len(chains) + len(sections)
@@ -1505,6 +1543,10 @@ class _Problem:
         self.reach = obstacle_reach(params)
         self.integrand = obstacle_integrand(params)
         self.limit = hinge_integrand(params)
+        self.via_parts = (
+            _ViaPart(lambda given: given.field, self.via_repel, self.integrand),
+            _ViaPart(lambda given: given.stops, self.via_stop, self.limit),
+        )
         self.originals = [body.centreline.points for body in self.bodies]
         self.start_positions = [
             np.array(via.given.via.position, dtype=float) for via in vias
@@ -1715,62 +1757,40 @@ class _Problem:
         zones' regions and the vias of its net, moving or standing still."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
+        if not self.free_vias:
+            return 0.0, gradients, via_gradients
+        at = np.array([positions[k] for k in self.free_vias])
+        distances, directions = self.via_statics(at)
         value = 0.0
-        repel = self.via_repel.nearest(polylines, positions, self.reach)
-        stop = self.via_stop.nearest(polylines, positions, self.reach)
-        for n, k in enumerate(self.free_vias):
-            given = self.vias[k].given
-            for static, near, integrand in (
-                (given.field, repel, self.integrand),
-                (given.stops, stop, self.limit),
-            ):
-                value += self._via_term(
-                    n,
-                    k,
-                    positions[k],
-                    static,
-                    near,
-                    integrand,
-                    gradients,
-                    via_gradients,
-                )
+        for part, static, toward in zip(
+            self.via_parts, distances, directions, strict=True
+        ):
+            near = part.sight.nearest(polylines, positions, self.reach)
+            nearer = near.distance < static
+            distance = np.where(nearer, near.distance, static)
+            direction = np.where(nearer[:, None], near.gradient, toward)
+            term, slope = part.integrand(distance)
+            value += float(self.via_diameters @ term)
+            push = (self.via_diameters * slope)[:, None] * direction
+            via_gradients[self.free_vias] += push
+            _pull(near, nearer, at, push, gradients, via_gradients)
         return value, gradients, via_gradients
 
-    def _via_term(
-        self,
-        n: int,
-        k: int,
-        position: FloatArray,
-        static: ObstacleField | None,
-        near: ViaNearest,
-        integrand: Integrand,
-        gradients: list[FloatArray],
-        via_gradients: FloatArray,
-    ) -> float:
-        """Via k's term, the nth of its sight, for the nearest of `static`
-        and what `near` found under `integrand`, adding its gradient to
-        `gradients` and `via_gradients`."""
-        at = position[None]
-        distance, direction = np.full(1, math.inf), np.zeros(2)
-        if static is not None:
-            distance, static_direction = static.signed_distance(at, self.reach)
-            direction = static_direction[0]
-        nearer = bool(near.distance[n] < distance[0])
-        if nearer:
-            distance, direction = near.distance[n : n + 1], near.gradient[n]
-        diameter = self.vias[k].given.via.diameter
-        term, slope = integrand(distance)
-        push = diameter * slope[0] * direction
-        via_gradients[k] += push
-        if nearer:
-            j, first = int(near.member[n]), int(near.vertex[n])
-            if j < 0:
-                via_gradients[first] -= push
-            else:
-                t = _parameters(at, near.starts[n : n + 1], near.ends[n : n + 1])[0]
-                gradients[j][first] -= (1 - t) * push
-                gradients[j][first + 1] -= t * push
-        return diameter * float(term[0])
+    def via_statics(self, at: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """The distance (parts, n) and unit gradient (parts, n, 2) of each
+        moving via, at its row of `at`, to what the static field of each of
+        `via_parts` gives of it, in one loop over the vias; +inf and zero
+        where it gives none or it is beyond the reach."""
+        distance = np.full((len(self.via_parts), len(at)), math.inf)
+        direction = np.zeros((len(self.via_parts), len(at), 2))
+        for n, (k, point) in enumerate(zip(self.free_vias, at, strict=True)):
+            given = self.vias[k].given
+            for p, part in enumerate(self.via_parts):
+                field = part.static(given)
+                if field is not None:
+                    d, g = field.signed_distance(point[None], self.reach)
+                    distance[p, n], direction[p, n] = d[0], g[0]
+        return distance, direction
 
     def energy_masks(self, masks: Sequence[BoolArray]) -> list[BoolArray]:
         """`masks` with the ends the moving vias carry loose."""
