@@ -137,14 +137,15 @@ it starts clear of its clearance, and the boxes of the ends it carries,
 which move with it: so each carried end moves inside its own box too, and
 the chain ends it carries keep their topology as any vertex does. A zone
 the via stays inside limits it as its static field does (`ViaInput.limits`),
-the outside of the zone's region on each layer it reaches the via's ring, inflated
-by the margin the refill needs (`obstacles.zone_containment`): its box
-lies within its free distance to that boundary, so it does not leave the
-region within a burst, and the check below moves it back if it ends
-outside the margin. On those layers I also holds the zone's clearance
-and margin, against static copper and members alike, so that the refill
-reaches the via wherever the others move. The chains a via carries are
-siblings, as a junction's branches are.
+the outside of where its zones, taken together on each layer where one
+reaches the via's ring, connect it at the next refill
+(`obstacles.containment`): its box lies within its free distance to that
+boundary, so it does not leave that area within a burst, and the check
+below moves it back if it ends outside it. On those layers I
+also holds the zone's clearance and margin, against static copper and
+members alike, so that the refill reaches the via wherever the others
+move. The chains a via carries are siblings, as a junction's branches
+are.
 
 What the boxes allow is coming too close: ending inside another chain's
 clearance, or an edge ending across one. The check after each run catches

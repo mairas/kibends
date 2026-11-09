@@ -37,6 +37,7 @@ from kibends.snapshot import (
     ViaZone,
     edge_paths_closed,
     outline_from_edge_paths,
+    zone_unions,
 )
 
 ObjectArray = NDArray[np.object_]
@@ -1045,9 +1046,18 @@ def own_net_vias(
 
 
 def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
-    """The outside of the regions of `zones` (`zone_containment`), as one
-    field, or None without zones."""
-    parts = [f for z in zones for f in zone_containment(z)]
+    """The outside of where `zones` connect a via, as one field for its
+    centre, or None without zones: on each layer where they reach the via's
+    ring, the outside of where its centre may lie for the next refill to
+    connect it again through one of them (`ZoneUnion.centres`), held as the
+    board edge is.
+
+    The regions are built from outlines alone; kibends never reads a fill.
+    The clearance the refill keeps from other nets' copper in a zone is the
+    via's to keep instead, at the copper's current place
+    (`_zone_inflation`).
+    """
+    parts = [Obstacles((), union.centres) for union in zone_unions(zones).values()]
     return CompositeField(parts) if parts else None
 
 
@@ -1056,19 +1066,6 @@ def contained(field: ObstacleField, zones: Iterable[ViaZone]) -> ObstacleField:
     where a via may go."""
     inside = containment(zones)
     return field if inside is None else CompositeField([field, inside])
-
-
-def zone_containment(zone: ViaZone) -> list[Obstacles]:
-    """The outside of `zone`'s region on each layer where it reaches the
-    via's ring, as an obstacle to the via's centre inflated as the board edge
-    is, by `ViaZone.margin`, so that the next refill connects the via again.
-
-    The region is built from outlines alone; kibends never reads a fill.
-    The clearance the refill keeps from other nets' copper in the zone is
-    the via's to keep instead, at the copper's current place
-    (`_zone_inflation`).
-    """
-    return [Obstacles((), region, zone.margin) for region in zone.regions.values()]
 
 
 def moving_via_obstacles(

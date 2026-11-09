@@ -5,12 +5,14 @@ item touching it on any layer is the end of a selected chain or a zone of
 its net, no other copper touches those ends, and either at least two such
 ends meet it or none does and a zone of its net reaches it: a stitching
 via, which carries no chain and moves only where other copper crowds it. A
-via that moves stays inside the region of every zone of its net whose
-region reaches its ring, on each layer where it does, with its centre at
-least `ViaZone.margin` inside, so that the next refill reconnects it; one
-whose centre does not start that deep inside, and may be connected only
-now, stays fixed, with a debug line naming the zone and layer. One that
-starts closer to other nets' copper than the zone's clearance and the
+via that moves stays inside the zones of its net whose region reaches its
+ring, taken together on each layer where one does (`zone_unions`): its
+centre stays inside the region of one of them by that zone's margin
+(`ViaZone.margin`), or inside the union of their regions by the largest of
+their margins, so that the next refill reconnects it through one of them.
+One whose centre does not start so, and may be connected only now, stays
+fixed, with a debug line naming the zones and layers. One that starts
+closer to other nets' copper than the zone's clearance and the
 margin is left to the optimizer, which keeps it where it is as it keeps any
 via starting inside its clearance. Every other selected via stays fixed,
 with a debug line naming the reason, and pins the chains it touches like an
@@ -33,7 +35,15 @@ from kibends.chain import Chain
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment
-from kibends.snapshot import Disc, Via, ViaContact, ViaKind, ViaZone
+from kibends.snapshot import (
+    Disc,
+    Via,
+    ViaContact,
+    ViaKind,
+    ViaZone,
+    ZoneUnion,
+    zone_unions,
+)
 
 
 class ChainEnd(NamedTuple):
@@ -50,7 +60,7 @@ class MovableVia:
     """The chain ends whose copper overlaps the via, in chain order."""
     zones: tuple[ViaZone, ...]
     """The zones of its net whose region reaches its ring, which it stays
-    inside."""
+    inside taken together on each layer (`zone_unions`)."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -68,8 +78,10 @@ class ViaInput:
     clearance: float
     """Its net's netclass clearance, mm."""
     zones: tuple[ViaZone, ...] = ()
-    """The zones it stays inside, whose clearance it keeps from the chains
-    and vias of other nets on their layers."""
+    """The zones of its net whose region reaches its ring, which it stays
+    inside taken together on each layer (`containment`), and whose
+    clearance it keeps from the chains and vias of other nets on their
+    layers."""
 
     own_net: ObstacleField | None = None
     """The vias of its net that stand still, as `own_net_vias` gives them,
@@ -78,7 +90,8 @@ class ViaInput:
     @cached_property
     def stops(self) -> ObstacleField | None:
         """What stands still and only stops it, without repelling it: the
-        outside of its zones' regions and `own_net`."""
+        outside of where its zones, taken together on each layer, connect it
+        (`containment`) and `own_net`."""
         parts = [f for f in (containment(self.zones), self.own_net) if f is not None]
         return CompositeField(parts) if parts else None
 
@@ -135,8 +148,8 @@ def movable_vias(
     `contacts` gives the same-net copper touching each via or the chain ends
     it carries, as `BoardSnapshot.read` finds it from `carried_copper`, and
     `zones` the zones of its net whose region reaches each one's ring,
-    which keep it from moving only when its centre does not start
-    `ViaZone.margin` inside their regions.
+    which keep it from moving only when, on some layer, its centre does not
+    start where they connect it taken together (`ZoneUnion.centres`).
     """
     chains_of: dict[str, set[int]] = defaultdict(set)
     for k, c in enumerate(chains):
@@ -152,12 +165,15 @@ def movable_vias(
             if c.track_id is None or chains_of[c.track_id].isdisjoint(ended)
         ]
         inside = tuple(zones.get(via.id, ()))
+        unions = zone_unions(inside)
         reason = _fixed_reason(via, strangers, len(ends), bool(inside)) or (
-            _edge_reason(via, inside)
+            _edge_reason(via, unions)
         )
         if reason is None:
-            for zone in inside:
-                logger.debug(f"Via {via.id} stays inside {zone.description}")
+            for layer, union in unions.items():
+                logger.debug(
+                    f"Via {via.id} stays inside {_zones(union.names)} on {layer}"
+                )
             movable.append(MovableVia(via, ends, inside))
         else:
             logger.debug(
@@ -186,19 +202,25 @@ def _fixed_reason(
     return None
 
 
-def _edge_reason(via: Via, zones: Sequence[ViaZone]) -> str | None:
-    """Why `via` cannot stay inside the regions of `zones`: on some layer,
-    it does not start inside the region by the zone's margin."""
+def _edge_reason(via: Via, unions: Mapping[str, ZoneUnion]) -> str | None:
+    """Why `via` cannot stay inside its zones: on some layer, its centre
+    does not start where they connect it taken together, by layer in
+    `unions`."""
     centre = Point(via.position)
-    edges = [
-        f"zone {zone.name} on {layer}"
-        for zone in zones
-        for layer, region in zone.regions.items()
-        if _depth(region, centre) < zone.margin - INSIDE_TOLERANCE
-    ]
+    edges: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    for layer, union in unions.items():
+        if _depth(union.centres, centre) < -INSIDE_TOLERANCE:
+            edges[union.names].append(layer)
     if not edges:
         return None
-    return f"it sits at the edge of {' and '.join(edges)}"
+    named = (
+        f"{_zones(names)} on {' and '.join(layers)}" for names, layers in edges.items()
+    )
+    return f"it sits at the edge of {'; '.join(named)}"
+
+
+def _zones(names: Sequence[str]) -> str:
+    return f"{'zone' if len(names) == 1 else 'zones'} {' and '.join(names)}"
 
 
 def _depth(area: BaseGeometry, point: Point) -> float:

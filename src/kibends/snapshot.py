@@ -12,8 +12,10 @@ canonical layer naming are copied and trimmed from kistitch's snapshot.py
 
 import enum
 import math
+from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import NamedTuple
 
 import kipy.board
@@ -174,6 +176,55 @@ class ViaZone:
         copper reaches the ring, the fill cuts through it, and KiCad
         connects a via whose ring the fill only partly covers."""
         return self.min_width / 2 + KICAD_MAX_ERROR
+
+
+class ZoneUnion(NamedTuple):
+    """The zones of a via's net on one layer, taken together: the refill
+    connects the via through any of them."""
+
+    names: tuple[str, ...]
+    centres: BaseGeometry
+    """Where the via's centre may lie for the next refill to connect it:
+    inside the region of one of them by that zone's margin
+    (`ViaZone.margin`), or inside the union of their regions by the largest
+    of their margins, as on the seam of two zones that meet edge to edge,
+    where each zone's fill reaches the seam."""
+
+
+def zone_unions(zones: Iterable[ViaZone]) -> dict[str, ZoneUnion]:
+    """By layer, `zones` there taken together."""
+    on: dict[str, list[ViaZone]] = defaultdict(list)
+    for zone in zones:
+        for layer in zone.layers:
+            on[layer].append(zone)
+    return {
+        layer: ZoneUnion(
+            tuple(z.name for z in found),
+            _centres(tuple((z.regions[layer], z.margin) for z in found)),
+        )
+        for layer, found in on.items()
+    }
+
+
+ZONE_SHAPES_CACHED = 256
+"""How many shrunk regions and unions `zone_unions` keeps. The vias of one
+plane share its region objects (`_via_zones`), so a run shrinks each region
+once however many vias it reaches."""
+
+
+@lru_cache(maxsize=ZONE_SHAPES_CACHED)
+def _centres(zones: tuple[tuple[BaseGeometry, float], ...]) -> BaseGeometry:
+    """`ZoneUnion.centres` of zones given as (region, margin) pairs."""
+    shrunk = [_shrunk(region, margin) for region, margin in zones]
+    if len(zones) == 1:
+        return shrunk[0]
+    whole = unary_union([region for region, _ in zones])
+    return unary_union([*shrunk, whole.buffer(-max(m for _, m in zones))])
+
+
+@lru_cache(maxsize=ZONE_SHAPES_CACHED)
+def _shrunk(region: BaseGeometry, margin: float) -> BaseGeometry:
+    return region.buffer(-margin)
 
 
 @dataclass(frozen=True)

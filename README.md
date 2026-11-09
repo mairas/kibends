@@ -75,8 +75,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    copper), and then backs off until the pushes balance or nothing is in
    range. The edge of its zone and the vias of its own net only stop it;
    they do not push it. One that no zone of its net reaches stays where it
-   is. A via in a plane stays inside the zone on each
-   layer where the zone's region reaches its ring, so that the next refill
+   is. A via in a plane stays inside the zones of its net on each layer
+   where a zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
    the outlines or the copper; it works from outlines and priorities alone.
    A zone's region on a layer is its outline, out of the zone's own
@@ -86,7 +86,13 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    as connected to that zone, even where the current fill misses it; a via
    whose ring no such region reaches moves as in free space. A moving
    via's centre stays half the zone's minimum width plus 0.005 mm (KiCad's
-   default arc error) inside the region, and it keeps the zone's clearance plus that margin from
+   default arc error) inside the region. Zones of its net that overlap or
+   meet on a layer count together there: the centre stays that deep inside
+   one of them by its own minimum width, or inside the union of their
+   regions by the largest minimum width among them, so a via deep inside a
+   large plane moves although a smaller zone of the same net drawn over it
+   ends at the via, and one on the seam of two zones meeting edge to edge
+   moves too. It keeps the zone's clearance plus that margin from
    other nets' copper on those layers, where that is more than the netclass
    clearance, including tracks and vias that move in the same run. Thermal
    reliefs, island removal, hatched fills and a zone's minimum width

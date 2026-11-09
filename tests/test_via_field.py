@@ -288,9 +288,9 @@ class TestZoneContainment:
         holed = REGION.difference(box(1, -0.5, 1.5, 0.5))
 
         field = limits(snaps, via_of(snaps), zones=[zone({"In1.Cu": holed})])
-        distance, gradient = field.signed_distance(points((0.5, 0), (1.25, 0)))
+        distance, gradient = field.signed_distance(points((0.5, 0), (1.2, 0)))
 
-        assert distance == pytest.approx([0.5 - MARGIN, -0.25 - MARGIN])
+        assert distance == pytest.approx([0.5 - MARGIN, -0.2 - MARGIN])
         assert gradient == pytest.approx(np.array([(-1, 0), (-1, 0)]))
 
     def test_keeps_the_centre_inside_the_region_on_each_layer(self) -> None:
@@ -314,6 +314,88 @@ class TestZoneContainment:
         distance, _ = field.signed_distance(points((0, 0.5), (0.4, 0)))
 
         assert distance == pytest.approx([0.5 - MARGIN, 0.1 - MARGIN])
+
+    def test_keeps_the_centre_inside_the_union_of_overlapping_regions(
+        self,
+    ) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        small = ViaZone("small", {"In1.Cu": box(-2, -1, 0.1, 1)}, 0.0, 0.0)
+
+        field = limits(snaps, via_of(snaps), zones=[zone(), small])
+        distance, _ = field.signed_distance(points((0, 0), (0.5, 0.5)))
+
+        # Past the edge of `small`, deep inside the other.
+        assert distance == pytest.approx([1 - MARGIN, 0.5 - MARGIN])
+
+    def test_lets_the_centre_cross_the_seam_of_regions_meeting_edge_to_edge(
+        self,
+    ) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        left = ViaZone("left", {"In1.Cu": box(-2, -1, 0, 1)}, 0.0, 0.0)
+        right = ViaZone("right", {"In1.Cu": box(0, -1, 2, 1)}, 0.0, 0.0)
+
+        field = limits(snaps, via_of(snaps), zones=[left, right])
+        distance, _ = field.signed_distance(points((0, 0), (0, 1.2)))
+        clear = field.segments_clear(points((-1, 0)), points((1, 0)))
+
+        assert distance == pytest.approx([1 - MARGIN, -0.2 - MARGIN])
+        assert list(clear) == [True]
+
+    @pytest.mark.parametrize("swapped", [False, True])
+    def test_across_a_seam_the_union_keeps_the_largest_margin_of_its_zones(
+        self, swapped: bool
+    ) -> None:
+        # (0.3, 0) lies too close to the seam for either zone alone.
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        left = ViaZone("left", {"In1.Cu": box(-2, -1, 0, 1)}, 0.0, 0.0)
+        wide = ViaZone("wide", {"In1.Cu": box(0, -1, 2, 1)}, 1.0, 0.0)
+        zones = [wide, left] if swapped else [left, wide]
+
+        field = limits(snaps, via_of(snaps), zones=zones)
+        distance, _ = field.signed_distance(points((0.3, 0)))
+
+        assert distance[0] == pytest.approx(1 - wide.margin)
+
+    @pytest.mark.parametrize("swapped", [False, True])
+    def test_keeps_the_centre_deep_enough_in_one_zone_by_its_own_margin(
+        self, swapped: bool
+    ) -> None:
+        # `zone()` forms the union's edge, `wide` lies inside it.
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        wide = ViaZone("wide", {"In1.Cu": box(-1, -0.5, 1, 0.5)}, 1.0, 0.0)
+        zones = [wide, zone()] if swapped else [zone(), wide]
+
+        field = limits(snaps, via_of(snaps), zones=zones)
+        distance, _ = field.signed_distance(points((0, 0.7)))
+
+        assert distance[0] == pytest.approx(0.3 - MARGIN)
+
+    def test_keeps_the_centre_inside_one_of_disjoint_pieces(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        pieces = box(-2, -1, -0.2, 1).union(box(0.2, -1, 2, 1))
+
+        field = limits(snaps, via_of(snaps), zones=[zone({"In1.Cu": pieces})])
+        distance, _ = field.signed_distance(points((-1, 0), (1, 0), (0, 0)))
+        clear = field.segments_clear(points((-1, 0)), points((1, 0)))
+
+        assert distance == pytest.approx([0.8 - MARGIN, 0.8 - MARGIN, -0.2 - MARGIN])
+        assert list(clear) == [False]
+
+    def test_keeps_the_centre_inside_the_union_on_each_layer_apart(self) -> None:
+        # `zone()` covers (1.5, 0) on In1.Cu, but on In2.Cu only `narrow`
+        # holds it.
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        narrow = ViaZone(
+            "narrow",
+            {"In1.Cu": box(-2, -1, 1, 1), "In2.Cu": box(-2, -1, 1, 1)},
+            0.0,
+            0.0,
+        )
+
+        field = limits(snaps, via_of(snaps), zones=[zone(), narrow])
+        distance, _ = field.signed_distance(points((1.5, 0)))
+
+        assert distance[0] == pytest.approx(-0.5 - MARGIN)
 
     def test_a_move_out_of_the_region_is_not_clear(self) -> None:
         snaps = slices(FakeBoard(vias=[moving_via()]))

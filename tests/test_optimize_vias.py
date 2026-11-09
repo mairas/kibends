@@ -168,14 +168,14 @@ def test_a_track_on_a_layer_without_chains_hems_the_via_in(
     assert via.position[1] < scenarios.DETOUR_VIA[1] - 1.0
 
 
-def in_zone(bottom: float) -> ViasScenario:
+def in_zone(bottom: float, *others: ViaZone) -> ViasScenario:
     """The detour route with its via in a zone of its net whose region ends at
-    y = `bottom`, short of the straight route at y = 0."""
+    y = `bottom`, short of the straight route at y = 0, and in `others`."""
     via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
     return ViasScenario(
         "via-in-zone",
         scenarios.route("N", scenarios.DETOUR_VIA),
-        (replace(scenarios.joining(via, 0), zones=(plane(bottom),)),),
+        (replace(scenarios.joining(via, 0), zones=(plane(bottom), *others)),),
     )
 
 
@@ -204,6 +204,39 @@ class TestInsideAZone:
         assert not via.frozen
         # The clearance hinge, which starts `standoff` from the margin, holds
         # it against the pull of the route.
+        edge = bottom + MARGIN
+        assert edge - INSIDE_TOLERANCE <= via.position[1]
+        assert via.position[1] <= edge + scenarios.PARAMS.standoff
+
+    def test_the_via_moves_within_the_union_of_its_zones(self) -> None:
+        # `plane` ends short of the straight route, `big` reaches past it.
+        big = ViaZone("big", {"In1.Cu": box(3, -1, 7, 5)}, 0.2, 0.0)
+
+        result = run(in_zone(1.5, big))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+
+    def test_the_via_crosses_the_seam_of_zones_meeting_edge_to_edge(self) -> None:
+        # Neither zone alone holds the via near y = 1.5 by its margin; their
+        # union does.
+        below = ViaZone("below", {"In1.Cu": box(3, -1, 7, 1.5)}, 0.2, 0.0)
+
+        result = run(in_zone(1.5, below))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+
+    def test_a_pull_toward_the_union_s_edge_is_held_at_it(self) -> None:
+        bottom = 1.5
+        inner = ViaZone("inner", {"In1.Cu": box(3, 2.5, 7, 5)}, 0.2, 0.0)
+
+        result = run(in_zone(bottom, inner))
+
+        (via,) = result.vias
+        assert not via.frozen
         edge = bottom + MARGIN
         assert edge - INSIDE_TOLERANCE <= via.position[1]
         assert via.position[1] <= edge + scenarios.PARAMS.standoff
