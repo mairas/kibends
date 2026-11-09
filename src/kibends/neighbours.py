@@ -178,15 +178,18 @@ def kept_spans(
         return None
     mine = me.points if own_points is None else own_points
     clear = (me.width + them.width) / 2 + reach + margin
+    own_arc = arc_lengths(mine)
     arc = arc_lengths(points)
     left_out: list[tuple[float, float]] = []
     for at_own, at_other in touches:
         own_pin = _vertex_at(me.points, mine, at_own)
         other_pin = _vertex_at(them.points, points, at_other)
-        own_headings = [heading for _, heading in _departures(mine, own_pin, clear)]
+        own_headings = [
+            heading for _, heading in _departures(mine, own_arc, own_pin, clear)
+        ]
         offset: FloatArray = points[other_pin] - mine[own_pin]
         along = float(arc[other_pin])
-        for forward, heading in _departures(points, other_pin, clear):
+        for forward, heading in _departures(points, arc, other_pin, clear):
             length = _leave_out(own_headings, offset, heading, clear)
             left_out.append(
                 (along, along + length) if forward else (along - length, along)
@@ -219,15 +222,19 @@ def _vertex_at(original: FloatArray, points: FloatArray, pin: FloatArray) -> int
 
 
 def _departures(
-    points: FloatArray, k: int, length: float
+    points: FloatArray, arc: FloatArray, k: int, length: float
 ) -> list[tuple[bool, FloatArray]]:
-    """Each way the polyline continues from vertex k: whether it is forward,
-    and its unit direction."""
+    """Each way the polyline, with arc lengths `arc`, continues from vertex
+    k: whether it is forward, and its unit direction to the point `length`
+    along that way, or to the end if it is shorter."""
     departures: list[tuple[bool, FloatArray]] = []
     if k < len(points) - 1:
-        departures.append((True, _heading(points[k:], length)))
+        at = min(float(arc[k]) + length, float(arc[-1]))
+        departures.append((True, _heading(points, arc, k, at)))
     if k > 0:
-        departures.append((False, _heading(points[k::-1], length)))
+        departures.append(
+            (False, _heading(points, arc, k, max(float(arc[k]) - length, 0.0)))
+        )
     return departures
 
 
@@ -293,15 +300,15 @@ def _complement(
     return kept
 
 
-def _heading(points: FloatArray, length: float) -> FloatArray:
-    """Unit direction from the first vertex to the point `length` along."""
-    arc = arc_lengths(points)
-    at = min(length, float(arc[-1]))
-    ahead = np.stack(
-        [np.interp([at], arc, points[:, 0]), np.interp([at], arc, points[:, 1])],
-        axis=1,
-    )
-    step: FloatArray = ahead[0] - points[0]
+def _heading(points: FloatArray, arc: FloatArray, k: int, at: float) -> FloatArray:
+    """Unit direction from vertex k to the point at arc length `at`."""
+    after = int(np.searchsorted(arc, at))
+    ahead = points[after]
+    if after > 0 and arc[after] > at:
+        before = after - 1
+        part = (at - arc[before]) / (arc[after] - arc[before])
+        ahead = points[before] + (points[after] - points[before]) * part
+    step: FloatArray = ahead - points[k]
     return step / max(float(np.linalg.norm(step)), MIN_EDGE_LENGTH)
 
 
