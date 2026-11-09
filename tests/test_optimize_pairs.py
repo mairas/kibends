@@ -27,6 +27,7 @@ from shapely.geometry import LineString, Point
 import kibends.members as members_module
 import kibends.optimize as optimize_module
 from kibends.bursts import (
+    INSIDE_TOLERANCE,
     Burst,
     Objective,
     OptimizerSettings,
@@ -48,7 +49,7 @@ from kibends.energy import (
 from kibends.members import Member, layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline, ChainField
-from kibends.optimize import INSIDE_TOLERANCE, optimize_chains
+from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import find_pairs, lay_out
 from kibends.pairs import (

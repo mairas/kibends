@@ -18,7 +18,14 @@ from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
-from kibends.bursts import Burst, Crossings, Objective, OptimizerSettings, Revert
+from kibends.bursts import (
+    INSIDE_TOLERANCE,
+    Burst,
+    Crossings,
+    Objective,
+    OptimizerSettings,
+    Revert,
+)
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -27,7 +34,7 @@ from kibends.obstacles import (
     build_via_obstacles,
     own_net_stops,
 )
-from kibends.optimize import INSIDE_TOLERANCE, MAX_ABNORMAL_BURSTS, optimize_chains
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaZone

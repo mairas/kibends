@@ -47,9 +47,9 @@ from kibends.obstacles import (
     CompositeField,
     zones_on,
 )
-from kibends.optimize import LIST_SKIN, NeighbourList
+from kibends.optimize import LIST_SKIN
 from kibends.pair_blocks import PairBlock, pair_block
-from kibends.seen import SeenParts
+from kibends.seen import NeighbourList, SeenParts
 from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
 

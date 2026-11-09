@@ -11,16 +11,16 @@ statistics, violations, shape change and a section's self check),
 (what a run returns).
 
 The energy of a problem is the sum of each chain's energy in its static
-field plus the other chains on its layer (`energy.total_energy` with those
-chains in its field), taken as one function of every free vertex: where a
-quadrature point of one chain is nearest another chain's edge, the obstacle
-term's gradient also reaches that edge's two vertices. Without moving vias
-the layers do not interact, so each layer is a problem of its own, and an
-outer iteration gives every problem that has not settled one burst:
-resample each chain to the spacing between its fixed vertices and those
-pressed into the others' clearance, which resampling keeps where they are
-(`_Problem.pressed`), run L-BFGS-B (`bursts.run_burst`) over every free
-vertex without bounds, and move back what the checks reject.
+field plus the other chains on its layer (`members.members_energy`), taken
+as one function of every free vertex: where a quadrature point of one chain
+is nearest another chain's edge, the obstacle term's gradient also reaches
+that edge's two vertices. Without moving vias the layers do not interact,
+so each layer is a problem of its own, and an outer iteration gives every
+problem that has not settled one burst: resample each chain to the spacing
+between its fixed vertices and those pressed into the others' clearance,
+which resampling keeps where they are (`_Problem.pressed`), run L-BFGS-B
+(`bursts.run_burst`) over every free vertex without bounds, and move back
+what the checks reject.
 
 Copper of one net does not interact: a chain sees nothing of the chains,
 tracks and vias of its net (`neighbours.neighbour_field`), and its static
