@@ -67,17 +67,20 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
    it, and no other copper touches it or those chain ends on any layer,
-   except the fill of a zone of its net. A via in a plane stays inside the
-   zone on each layer where the fill touches it, so that the next refill
-   connects it again: its centre stays half the zone's minimum width plus
-   0.005 mm (KiCad's default arc error) inside the zone's outline, out of
-   the zone's own cut-outs, zones of other nets of higher or equal
-   priority (grown by the larger of the two zones' clearances) and rule areas keeping out
-   copper pour, and it keeps the zone's clearance plus that margin from
+   except a zone of its net. A via in a plane stays inside the zone on each
+   layer where the zone's region reaches its ring, so that the next refill
+   connects it again. kibends never reads a zone's fill, which may be out of date with
+   the outlines or the copper; it works from outlines and priorities alone.
+   A zone's region on a layer is its outline, out of the zone's own
+   cut-outs, zones of other nets of higher or equal priority (grown by the
+   larger of the two zones' clearances) and rule areas keeping out copper
+   pour. A via whose ring such a region reaches on a layer it spans counts
+   as connected to that zone, even where the current fill misses it; a via
+   whose ring no such region reaches moves as in free space. A moving
+   via's centre stays half the zone's minimum width plus 0.005 mm (KiCad's
+   default arc error) inside the region, and it keeps the zone's clearance plus that margin from
    other nets' copper on those layers, where that is more than the netclass
-   clearance, including tracks and vias that move in the same run. The
-   current fill only tells which zones the via connects to, so a fill out
-   of date with the outlines or the copper does not mislead it. Thermal
+   clearance, including tracks and vias that move in the same run. Thermal
    reliefs, island removal, hatched fills and a zone's minimum width
    through narrow necks are not modelled: a via can end up in a part of the
    zone the refill leaves out, in a gap of a hatch, or connected only
@@ -86,10 +89,10 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    debug log line names it and the reason: it is locked, it is not a
    through via, other copper touches it or a chain end it would carry (an
    unselected track, a pad, a copper shape or another via of its net, on
-   any layer), it sits at the edge of a zone's outline, or fewer than two
-   selected tracks end at it. A moving via that starts closer to other
-   copper than its clearance stays where it is too, connected by its fill
-   as it is, and other chains keep only the netclass clearance from it. Teardrops are ignored:
+   any layer), it sits at the edge of a zone's region (closer to it than
+   that margin, so moving might lose a connection it has now), or fewer
+   than two selected tracks end at it. A moving via that starts closer to other
+   copper than its clearance stays where it is too, connected as it is, and other chains keep only the netclass clearance from it. Teardrops are ignored:
    KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
