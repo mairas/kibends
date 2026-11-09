@@ -1074,8 +1074,9 @@ def reference_via_energy(
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
     """The moving vias' own terms built via by via: the full integrand for
-    the nearest of the via's static field and what `via_repel` finds, and
-    the hinge alone for the nearest of its stops and what `via_stop` finds."""
+    the nearest of what stands still and repels the via and what
+    `via_repel` finds, and the hinge alone for the nearest of its stops and
+    what `via_stop` finds."""
     gradients = [np.zeros_like(points) for points in polylines]
     via_gradients = np.zeros((len(problem.vias), 2))
     value = 0.0
@@ -1087,7 +1088,7 @@ def reference_via_energy(
         given = problem.vias[k].given
         at = positions[k]
         for static, near, integrand in (
-            (given.field, sights[0], problem.integrand),
+            (given.repelling, sights[0], problem.integrand),
             (given.stops, sights[1], problem.limit),
         ):
             distance, direction = math.inf, np.zeros(2)

@@ -20,7 +20,13 @@ from kipy.wrapper import Wrapper
 from kibends.chain import Chain, extract_chains
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import KICAD_MAX_ERROR, BoardSnapshot, read_selection
-from kibends.vias import ChainEnd, MovableVia, carried_copper, movable_vias
+from kibends.vias import (
+    ChainEnd,
+    MovableVia,
+    carried_copper,
+    movable_vias,
+    pairs_with,
+)
 
 VIA = (4.0, 4.0)
 
@@ -723,3 +729,27 @@ class TestCopperAtCarriedEnds:
         assert len(held) == 2
         assert "Via v " in held[0] and "via w" in held[0]
         assert "Via w " in held[1] and "via v" in held[1]
+
+
+GROUND = frozenset({"GND", "AGND"})
+
+
+@pytest.mark.parametrize(
+    ("net", "other", "expected"),
+    [
+        ("SIG", "GND", True),
+        ("GND", "SIG", True),
+        ("GND", "AGND", True),
+        ("GND", "GND", False),
+        ("SIG", "SIG", False),
+        ("SIG", "PWR", False),
+    ],
+)
+def test_pairs_are_ground_and_regular_or_two_ground_nets(
+    net: str, other: str, expected: bool
+) -> None:
+    assert pairs_with(net, other, GROUND) is expected
+
+
+def test_without_ground_nets_nothing_pairs() -> None:
+    assert not pairs_with("SIG", "GND", frozenset())

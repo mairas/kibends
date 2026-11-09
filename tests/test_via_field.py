@@ -18,6 +18,7 @@ from conftest import (
     kipy_via,
     kipy_zone,
     netclass,
+    via_ids,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType
@@ -36,9 +37,11 @@ from kibends.obstacles import (
     contained,
     moving_via_obstacles,
     own_net_stops,
+    static_via_obstacles,
     via_chain_inflation,
 )
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
+from kibends.vias import ViaInput, pairs_with
 
 NET = "SIG"
 VIA_ID = "moving"
@@ -904,3 +907,115 @@ class TestMovingViasAsObstaclesToAVia:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
 
         assert via_obstacles_for_via(via, [via], lambda _: DEFAULT_CLEARANCE) is None
+
+
+SPLIT_GROUND = frozenset({"GND", "AGND"})
+
+
+def split_board(net: str) -> FakeBoard:
+    """The moving via of `net` amid a GND via, an AGND via, a via of
+    another signal net, a via of its own net and a GND track, all within
+    range, and a board edge."""
+    return FakeBoard(
+        vias=[
+            kipy_via(VIA_ID, net, 0, 0, diameter=DIAMETER, drill=DRILL),
+            kipy_via("gnd", "GND", 1.2, 0.1),
+            kipy_via("agnd", "AGND", -1.1, 0.4, diameter=0.8, drill=0.4),
+            kipy_via("other", "OTHER", 0.2, 1.3),
+            kipy_via("own", net, -0.3, -1.2),
+        ],
+        tracks=[kipy_track("t", "GND", (-3, -2), (3, -2), layer=BL.BL_B_Cu)],
+        shapes=edge_segments([(-4, -4), (4, -4), (4, 4), (-4, 4)]),
+    )
+
+
+def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
+    """The moving via of `split_board` as an input with its field whole, and
+    with the vias it pairs with split out, both in an In1.Cu zone."""
+    snaps = slices(split_board(net), ("F.Cu", "In1.Cu", "B.Cu"))
+    via = via_of(snaps)
+    zones = (zone({"In1.Cu": box(-3, -3, 3, 3)}, min_width=0.25),)
+
+    def split(other: Via) -> bool:
+        return pairs_with(via.net, other.net, SPLIT_GROUND)
+
+    own = own_net_stops(snaps, via)
+    whole = ViaInput(
+        via,
+        (),
+        build_via_obstacles(snaps, via, zones=zones),
+        DEFAULT_CLEARANCE,
+        zones,
+        own,
+    )
+    apart = ViaInput(
+        via,
+        (),
+        build_via_obstacles(snaps, via, zones=zones, split=split),
+        DEFAULT_CLEARANCE,
+        zones,
+        own,
+        ground=via.net in SPLIT_GROUND,
+        static_vias=static_via_obstacles(snaps, via, split, zones=zones),
+    )
+    return whole, apart
+
+
+def around() -> FloatArray:
+    """Points over the board and past its edge, near each via."""
+    xs = np.linspace(-4.5, 4.5, 61)
+    grid = np.array([(x, y) for x in xs for y in xs])
+    return np.concatenate([grid, grid[::7] + 0.013])
+
+
+class TestStaticViasSplit:
+    @pytest.mark.parametrize(
+        ("net", "others", "split"),
+        [
+            ("SIG", {"gnd", "agnd", "other"}, {"gnd", "agnd"}),
+            ("GND", {"agnd", "other"}, {"agnd", "other"}),
+        ],
+    )
+    def test_the_vias_it_pairs_with_leave_its_field(
+        self, net: str, others: set[str], split: set[str]
+    ) -> None:
+        whole, apart = split_inputs(net)
+
+        assert via_ids(whole.field) == others
+        assert via_ids(apart.field) == others - split
+        assert via_ids(apart.static_vias) == split
+
+    @pytest.mark.parametrize("net", ["SIG", "GND"])
+    def test_limits_are_the_unsplit_field_s(self, net: str) -> None:
+        whole, apart = split_inputs(net)
+        at = around()
+
+        distance, gradient = apart.limits.signed_distance(at)
+        expected, expected_gradient = whole.limits.signed_distance(at)
+
+        np.testing.assert_array_equal(distance, expected)
+        np.testing.assert_array_equal(gradient, expected_gradient)
+        starts, ends = at[:-1], at[1:]
+        np.testing.assert_array_equal(
+            apart.limits.segments_clear(starts, ends),
+            whole.limits.segments_clear(starts, ends),
+        )
+
+    @pytest.mark.parametrize("net", ["SIG", "GND"])
+    def test_what_repels_it_is_the_unsplit_field(self, net: str) -> None:
+        whole, apart = split_inputs(net)
+        at = around()
+
+        for reach in (0.5, math.inf):
+            distance, gradient = apart.repelling.signed_distance(at, reach)
+            expected, expected_gradient = whole.field.signed_distance(at, reach)
+            near = expected <= reach
+            np.testing.assert_array_equal(distance[near], expected[near])
+            np.testing.assert_array_equal(gradient[near], expected_gradient[near])
+            assert (distance[~near] > reach).all()
+
+    def test_without_a_pair_nothing_is_split(self) -> None:
+        snaps = slices(split_board("SIG"))
+        via = via_of(snaps)
+
+        assert static_via_obstacles(snaps, via, lambda _: False) is None

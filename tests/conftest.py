@@ -38,6 +38,8 @@ from loguru import logger
 
 import kibends.optimize as optimize_module
 from kibends.chain import NM_PER_MM
+from kibends.energy import ObstacleField
+from kibends.obstacles import Obstacles
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
@@ -670,3 +672,13 @@ class FakeKiCad:
 
     def get_board(self) -> FakeBoard:
         return self.board
+
+
+def via_ids(field: ObstacleField | None) -> set[str]:
+    """The vias whose rings `field` holds."""
+    assert isinstance(field, Obstacles)
+    return {
+        o.description.removeprefix("via ")
+        for o in field.items
+        if o.description.startswith("via ")
+    }

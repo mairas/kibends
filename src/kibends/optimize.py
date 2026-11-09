@@ -50,7 +50,8 @@ ends of the chains it joins are not variables of their own: each is the
 via's centre plus its offset at the start, at every evaluation, so they keep
 their offsets exactly and their gradient goes to the via. Its own obstacle
 terms are its ring's, standing for a track as long as it is wide, against
-its static field over every layer it spans, the members of other nets near
+what stands still and repels it over every layer it spans
+(`ViaInput.repelling`), the members of other nets near
 it on those layers and the vias of other nets, with their gradient also at
 the edge or via that answers it, and the clearance hinge alone, which limits
 without repelling, against the outside of its zones' regions and the
@@ -881,7 +882,7 @@ class _Problem:
         self.integrand = obstacle_integrand(params)
         self.limit = hinge_integrand(params)
         self.via_parts = (
-            _ViaPart(lambda given: given.field, self.via_repel, self.integrand),
+            _ViaPart(lambda given: given.repelling, self.via_repel, self.integrand),
             _ViaPart(lambda given: given.stops, self.via_stop, self.limit),
         )
         self.originals = [body.centreline.points for body in self.bodies]

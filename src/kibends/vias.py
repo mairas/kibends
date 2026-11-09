@@ -18,11 +18,17 @@ via starting inside its clearance. Every other selected via stays fixed,
 with a debug line naming the reason, and holds the chains it touches like
 an unselected via: a chain vertex on its centre stays there, and a chain
 with none there keeps a vertex inside it.
+
+Every via is a ground via, on one of the run's ground nets, or a regular
+one, on any other net (`ViaInput.ground`, `StaticVia`). A ground via and a
+regular one, or two ground vias of different ground nets, are a pair
+(`pairs_with`); the vias standing still that a moving via pairs with are
+held apart from its field (`ViaInput.static_vias`).
 """
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
@@ -88,6 +94,18 @@ class ViaInput:
     """What of its net stands still and only stops it, as `own_net_stops`
     gives it: the holes of its net's vias and plated pads, and its net's
     pads."""
+    ground: bool = False
+    """Whether it is on a ground net."""
+    static_vias: ObstacleField | None = None
+    """The vias standing still that it pairs with (`pairs_with`), split out of
+    `field` as `static_via_obstacles` gives them."""
+
+    @cached_property
+    def repelling(self) -> ObstacleField:
+        """What stands still and repels it: `field` and `static_vias`."""
+        if self.static_vias is None:
+            return self.field
+        return CompositeField([self.field, self.static_vias])
 
     @cached_property
     def stops(self) -> ObstacleField | None:
@@ -99,10 +117,26 @@ class ViaInput:
 
     @cached_property
     def limits(self) -> ObstacleField:
-        """Everything that stands still and limits where it may go: `field`
-        and `stops`."""
-        stops = self.stops
-        return self.field if stops is None else CompositeField([self.field, stops])
+        """Everything that stands still and limits where it may go: `field`,
+        `static_vias` and `stops`, as `field` unsplit with `stops`."""
+        parts = [f for f in (self.static_vias, self.stops) if f is not None]
+        return CompositeField([self.field, *parts]) if parts else self.field
+
+
+class StaticVia(NamedTuple):
+    """A via of the board that is none of a run's moving vias, standing
+    still, and its class."""
+
+    via: Via
+    ground: bool
+    """Whether it is on a ground net."""
+
+
+def pairs_with(net: str, other: str, ground: Collection[str]) -> bool:
+    """Whether a via of `net` and one of `other` are a pair of a ground via
+    and a regular one, or of ground vias of two ground nets, among the
+    `ground` nets."""
+    return net != other and (net in ground or other in ground)
 
 
 def may_move(via: Via) -> bool:

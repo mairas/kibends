@@ -406,7 +406,8 @@ def _reference_vias(
     for k in problem.free_vias:
         via = problem.vias[k]
         at = positions[k][None]
-        static, static_direction = via.given.field.signed_distance(at, problem.reach)
+        repelling = via.given.repelling
+        static, static_direction = repelling.signed_distance(at, problem.reach)
         field, a, b, owner = _reference_view(problem, k, polylines, positions)
         near = field.nearest(at, problem.reach)
         nearer = bool(near.distance[0] < static[0])
