@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
 from kibends.energy import ObstacleField
+from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.optimize import (
     INSIDE_TOLERANCE,
@@ -22,6 +23,7 @@ from kibends.optimize import (
 )
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.via_moves import MovingVias
+from kibends.vias import ChainEnd, ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -386,6 +388,34 @@ def test_a_via_starting_deep_in_its_clearance_stays() -> None:
     assert via.frozen
     assert via.position == scenarios.DETOUR_VIA
     assert tuple(top[-1]) == tuple(bottom[0]) == scenarios.DETOUR_VIA
+
+
+def test_a_junction_at_a_via_that_stays_stays_on_it() -> None:
+    at = (5.0, 3.0)
+
+    def loose(chain: ChainInput, end: int) -> ChainInput:
+        fixed = chain.fixed.copy()
+        fixed[end] = False
+        return replace(chain, fixed=fixed)
+
+    chains = [
+        loose(selected("N a", "N", FreeSpace(), (0.0, 0.0), at), -1),
+        loose(selected("N b", "N", FreeSpace(), at, (10.0, 0.0)), 0),
+        loose(selected("N c", "N", FreeSpace(), at, (5.0, -4.0)), 0),
+        selected("N bottom", "N", FreeSpace(), at, (10.0, 5.0), layer="B.Cu"),
+    ]
+    ends = (ChainEnd(0, True), ChainEnd(1, False), ChainEnd(2, False))
+    via = ViaInput(
+        scenarios.through_via("v", "N", at),
+        (*ends, ChainEnd(3, False)),
+        Disc(*at, 1.0),
+    )
+
+    result = optimize_chains(chains, scenarios.PARAMS, COARSE, [via])
+
+    assert result.vias[0].frozen
+    a, b, c, _ = (chain.polyline for chain in result.chains)
+    assert tuple(a[-1]) == tuple(b[0]) == tuple(c[0]) == at
 
 
 def test_layers_without_a_moving_via_stay_independent() -> None:

@@ -694,7 +694,8 @@ def optimize_chains(
     and returns each chain's, section's and via's best state; a junction's
     ends come back at one point, loose. A via keeps `hole_clearance` and
     `hole_to_hole` where holes are involved, and one that starts more than
-    δ inside its clearance stays where it is, `frozen` in its result. Each
+    δ inside its clearance stays where it is, `frozen` in its result, with
+    the chain ends it carries pinned. Each
     problem keeps its best state, replaced only after a burst that does not
     raise its energy, leaves no chain or section with more violations than
     it started with, and leaves no via deeper inside its clearance than it
@@ -839,6 +840,15 @@ def _problems(
         vias.distance(v, positions, originals) < -settings.bubble_tolerance
         for v in range(len(vias.vias))
     ]
+    # The ends a via that stays would carry are pinned, as at an unselected one.
+    chains = _pinned(
+        chains,
+        [
+            [(end.chain, end.index) for end in vias.ends[v]]
+            for v, still in enumerate(frozen)
+            if still
+        ],
+    )
     layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
     tied = [
         layer
