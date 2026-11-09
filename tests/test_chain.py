@@ -9,6 +9,7 @@ from kibends.chain import (
     Segment,
     extract_chain,
     extract_chains,
+    shared_track_groups,
 )
 from kibends.coords import BOARD_FRAME, UserFrame
 
@@ -61,6 +62,20 @@ def assert_points(chain: Chain, expected: list[tuple[float, float]]) -> None:
 
 def pinned_points(chain: Chain) -> list[tuple[float, float]]:
     return [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
+
+
+@pytest.mark.parametrize(
+    ("segment_ids", "groups"),
+    [
+        ([{"a"}, {"a", "b"}, {"b"}, {"c"}], [0, 0, 0, 3]),
+        ([{"x"}, {"y"}, {"z"}, {"y", "x"}, {"z", "y"}], [0, 0, 0, 0, 0]),
+        ([{"x"}, {"y"}], [0, 1]),
+    ],
+)
+def test_shared_track_groups_join_chains_through_others(
+    segment_ids: list[set[str]], groups: list[int]
+) -> None:
+    assert shared_track_groups(segment_ids) == groups
 
 
 class TestOrdering:

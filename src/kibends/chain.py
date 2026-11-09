@@ -214,6 +214,24 @@ def split_chains(
     )
 
 
+def shared_track_groups(segment_ids: Sequence[Collection[str]]) -> list[int]:
+    """For each chain, given by its `segment_ids`, the smallest index of the
+    chains it shares a track with, directly or through others.
+
+    A track split at a junction belongs to every chain that meets there, so
+    those chains are replaced together and count as one.
+    """
+    group = list(range(len(segment_ids)))
+    first_with: dict[str, int] = {}
+    for k, ids in enumerate(segment_ids):
+        for i in ids:
+            other = group[first_with.setdefault(i, k)]
+            if other != group[k]:
+                low, high = sorted((other, group[k]))
+                group = [low if g == high else g for g in group]
+    return group
+
+
 def _pin_junctions_whole(
     chains: Sequence[Chain], junctions: Collection[Point2]
 ) -> list[Chain]:
