@@ -20,6 +20,8 @@ from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
 from kibends.bursts import OptimizerSettings, revert_until_clear
+from kibends.chain import Chain
+from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
@@ -28,6 +30,7 @@ from kibends.energy import (
     total_energy,
 )
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
+from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     ChainResult,
@@ -43,6 +46,7 @@ from kibends.optimize import (
     seen_parts,
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
+from kibends.pair_layout import find_pairs, lay_out
 from kibends.pairs import (
     BEND_RADIUS_TOLERANCE,
     GAP_TOLERANCE,
@@ -52,7 +56,7 @@ from kibends.pairs import (
     gaps_across,
     offset_pair,
 )
-from kibends.simplify import simplify_chains
+from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 CORNER = OptimizerSettings(burst_maxiter=30)
@@ -1043,3 +1047,48 @@ def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_part
         assert result.termination is Termination.NOTHING_TO_DO
     else:
         assert result.termination is Termination.ITERATION_CAP
+
+
+def test_a_junction_where_a_pair_starts_stays_whole() -> None:
+    # Each net forks where the pair starts: two branches couple, the third
+    # leaves on its own, the pair's two in opposite directions.
+    at = {"D+": (10.0, 0.0), "D-": (9.5, 0.5)}
+
+    def branches(net: str, side: float) -> list[Chain]:
+        x, y = at[net]
+        return [
+            Chain(((0.0, y), (x, y)), (True, False), 0.25, "F.Cu", net, ()),
+            Chain(((x, y), (20.0, y)), (False, True), 0.25, "F.Cu", net, ()),
+            Chain(((x, y), (x, 10.0 * side)), (False, True), 0.25, "F.Cu", net, ()),
+        ]
+
+    chains = [*branches("D+", -1.0), *branches("D-", 1.0)]
+    whole = [
+        ChainInput(
+            ChainCentreline(c.net, c.net, c.width, PAIR_CLEARANCE, np.array(c.points)),
+            c.layer,
+            np.array(c.pinned),
+            FreeSpace(),
+        )
+        for c in chains
+    ]
+
+    def free(
+        _layer: str, _a: ChainCentreline, _b: ChainCentreline, _gap: float
+    ) -> ObstacleField:
+        return FreeSpace()
+
+    layout = lay_out(
+        whole, find_pairs(chains, DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME), free
+    )
+
+    result = optimize_chains(
+        layout.inputs, scenarios.PARAMS, COARSE, pairs=layout.sections
+    )
+
+    assert layout.sections
+    for given, chain in zip(layout.inputs, result.chains, strict=True):
+        for end in (0, -1):
+            start = tuple(given.centreline.points[end])
+            if start in at.values():
+                assert tuple(chain.polyline[end]) == start

@@ -327,4 +327,37 @@ def lay_out(
                     )
                 )
             by_chain[k] = sorted(stretches, key=lambda stretch: stretch.start)
+    inputs = _pinned_where_fixed(inputs, sections)
     return Layout(inputs, sections, slots, by_chain, pair_sections)
+
+
+def _pinned_where_fixed(
+    inputs: Sequence[ChainInput], sections: Sequence[PairInput]
+) -> list[ChainInput]:
+    """`inputs` with every loose end pinned that meets a fixed one, of an
+    uncoupled piece or a section's track, as same-net copper pins a
+    junction: a junction where a pair starts would otherwise keep some of
+    its branches and let the others move off."""
+    fixed = {
+        (chain.layer, chain.centreline.net, float(x), float(y))
+        for chain in inputs
+        for end in (0, -1)
+        if chain.fixed[end]
+        for x, y in [chain.centreline.points[end]]
+    } | {
+        (section.layer, track.net, float(x), float(y))
+        for section in sections
+        for track in (section.a, section.b)
+        for x, y in track.points[[0, -1]]
+    }
+    pinned: list[ChainInput] = []
+    for chain in inputs:
+        ends = chain.fixed.copy()
+        for end in (0, -1):
+            x, y = chain.centreline.points[end]
+            key = (chain.layer, chain.centreline.net, float(x), float(y))
+            ends[end] |= key in fixed
+        pinned.append(
+            chain if np.array_equal(ends, chain.fixed) else replace(chain, fixed=ends)
+        )
+    return pinned
