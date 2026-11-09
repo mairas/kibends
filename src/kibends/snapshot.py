@@ -324,7 +324,7 @@ class BoardSnapshot:
             default_clearance=self.default_clearance,
             diff_pair_gaps=self.diff_pair_gaps,
         )
-        logger.info(
+        logger.debug(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
             f"{len(snap.vias)} vias, {len(snap.graphics)} copper graphics, "
             f"{len(snap.keepouts)} track keepouts"
