@@ -269,8 +269,13 @@ class TestPinning:
 CONTACT_MARGIN_MM = 0.01
 
 
-def contact(shape: Polygon) -> Contact:
-    return Contact(shape, CONTACT_MARGIN_MM)
+def contact(shape: Polygon, anchor: tuple[float, float] | None = None) -> Contact:
+    """`shape` as a contact, anchored at `anchor` or else at its centre, as
+    pads and vias usually are."""
+    if anchor is None:
+        x0, y0, x1, y1 = shape.bounds
+        anchor = ((x0 + x1) / 2, (y0 + y1) / 2)
+    return Contact(shape, CONTACT_MARGIN_MM, anchor)
 
 
 def slide_points(chain: Chain) -> list[tuple[float, float]]:
@@ -284,7 +289,8 @@ def assert_slides_within(chain: Chain, index: int, shape: Polygon) -> None:
 
 class TestContacts:
     """A pad or a via that stays is a region: the chain keeps one vertex
-    inside it, free to slide there, and the rest is free."""
+    inside it, free to slide there, and the rest is free, unless a vertex
+    lies on its anchor, which pins it there."""
 
     def test_an_end_inside_a_pad_slides_and_the_pad_pins_nothing_else(
         self,
@@ -334,18 +340,53 @@ class TestContacts:
         assert_slides_within(chain, chain.slides[0][0], pad)
 
     def test_an_end_inside_a_via_slides_within_its_ring(self) -> None:
-        via = Point(0, 0).buffer(0.3)
+        via = Point(0.1, 0).buffer(0.3)
 
         chain = extract_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
 
         assert chain.pinned == (False, False, False, True)
         assert_slides_within(chain, 0, via)
 
+    def test_an_end_on_a_contact_s_anchor_is_pinned_there(self) -> None:
+        # KiCad drags only the track ends at a via's centre along with it.
+        via = Point(0, 0).buffer(0.3)
+
+        chain = extract_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
+
+        assert chain.points[0] == (0, 0)
+        assert chain.pinned == (True, False, False, True)
+        assert chain.slides == ()
+
+    def test_a_vertex_on_a_contact_s_anchor_is_pinned_there(self) -> None:
+        pad = box(9, -1, 11, 1)
+
+        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, True, False, True)
+        assert chain.slides == ()
+
+    def test_an_anchored_vertex_holds_every_contact_reaching_it(self) -> None:
+        # A via on the corner, in a pad off the pad's anchor: the corner
+        # stays on the via's centre and holds the pad too.
+        pad = box(8, -1, 11, 1)
+        via = Point(10, 0).buffer(0.3)
+
+        chain = extract_chain(
+            l_z_segments(), [contact(pad), contact(via)], frame=BOARD_FRAME
+        )
+
+        assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, True, False, True)
+        assert chain.slides == ()
+
     def test_an_end_that_other_copper_also_reaches_stays_pinned(self) -> None:
         pad = box(-1, -1, 1, 1)
         stub = SameNetTrack(LineString([(0, -3), (0, 0)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [contact(pad), stub], frame=BOARD_FRAME)
+        chain = extract_chain(
+            l_z_segments(), [contact(pad, (0.5, 0)), stub], frame=BOARD_FRAME
+        )
 
         assert chain.pinned[0]
         assert chain.slides == ()
@@ -356,7 +397,7 @@ class TestContacts:
 
         chain = extract_chain(
             l_z_segments(),
-            [contact(pad), contact(via)],
+            [contact(pad, (0.5, 0)), contact(via)],
             frame=BOARD_FRAME,
         )
 
@@ -416,6 +457,32 @@ class TestContacts:
             via.buffer(-CONTACT_MARGIN_MM)
         )
         assert region.equals(both)
+
+    def test_a_contact_the_anchored_vertex_misses_keeps_its_own_slide(
+        self,
+    ) -> None:
+        via = Point(10, 0).buffer(0.3)
+        pad = box(14, 4, 16, 6)
+
+        chain = extract_chain(
+            l_z_segments(), [contact(via), contact(pad)], frame=BOARD_FRAME
+        )
+
+        assert pinned_points(chain) == [(0, 0), (10, 0), (20, 5)]
+        assert slide_points(chain) == [pytest.approx((15, 5))]
+        assert_slides_within(chain, chain.slides[0][0], pad)
+
+    def test_an_end_in_a_pad_anchored_at_the_next_vertex_slides(self) -> None:
+        # The corner on the anchor stays there and keeps the pad; the end
+        # beside it is held by nothing else, so it slides within the pad.
+        pad = box(-0.6, -0.4, 0.6, 0.4)
+        segments = [seg("in", (0, 0), (0.5, 0)), seg("out", (0.5, 0), (3, 3))]
+
+        chain = extract_chain(segments, [contact(pad, (0.5, 0))], frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (0.5, 0), (3, 3)])
+        assert chain.pinned == (False, True, True)
+        assert_slides_within(chain, 0, pad)
 
     def test_a_pin_where_a_vertex_would_slide_pins_it(self) -> None:
         pad = box(4, -1, 6, 1)

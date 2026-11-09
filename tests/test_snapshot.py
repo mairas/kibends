@@ -365,6 +365,7 @@ class TestSameNetCopper:
         assert isinstance(via, Contact)
         assert via.shape.area == pytest.approx(math.pi * 0.3**2, rel=1e-2)
         assert pad.margin == via.margin == CONTACT_MARGIN
+        assert (pad.anchor, via.anchor) == ((0, 0), (2, 0))
         assert isinstance(stub, SameNetTrack)
         assert stub.centreline.equals(LineString([(2, 0), (2, 3)]))
         assert stub.width == pytest.approx(0.3)
