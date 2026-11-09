@@ -2327,6 +2327,25 @@ def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
     assert "INFO Optimizing 1 chain\n" in log
 
 
+def test_says_when_setup_and_optimization_start(
+    connect: Connector, log: list[str]
+) -> None:
+    connect.to(straight_board())
+
+    run("--dry-run")
+
+    infos = [line for line in log if line.startswith("INFO ")]
+    setting_up = infos.index("INFO Setting up the optimizer\n")
+    starting = next(
+        k for k, line in enumerate(infos) if line.startswith("INFO Optimizer set up")
+    )
+    assert setting_up < starting
+    assert re.search(
+        r"set up in \d+\.\d s: 1 problem, length \d+\.\d{3} mm, energy \d+\.\d{3}",
+        infos[starting],
+    )
+
+
 PAIR_WIDTH = 0.2
 PAIR_GAP = 0.15
 PAIR_CLEARANCE = 0.1
@@ -3323,6 +3342,10 @@ def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
     run()
 
     assert any(Hold.CROWDING.value in line for line in log)
+    # The repeated run says it repeats, rather than seeming to start over.
+    assert log.count("INFO Setting up the optimizer\n") == 1
+    assert "INFO Setting up the optimizer again, with held sections\n" in log
+    assert any(line.startswith("INFO Optimizer set up again") for line in log)
     created = cast(list[kbt.Track], board.created)
     final = {
         net: unary_union([segment(t) for t in created if t.net.name == net])
