@@ -107,9 +107,7 @@ class TestReadSelection:
 
         assert read_selection(board(fake)).segments[0].layer == "In1.Cu"
 
-    def test_other_selected_items_are_ignored_with_a_warning(
-        self, log: list[str]
-    ) -> None:
+    def test_other_selected_items_are_ignored_silently(self, log: list[str]) -> None:
         fake = FakeBoard(
             selection=[
                 kipy_footprint("fp"),
@@ -122,9 +120,7 @@ class TestReadSelection:
 
         assert [s.id for s in selection.segments] == ["a"]
         assert selection.vias == ()
-        warnings = [line for line in log if line.startswith("WARNING")]
-        assert len(warnings) == 1
-        assert "2 FootprintInstance" in warnings[0]
+        assert not [line for line in log if line.startswith("WARNING")]
 
     def test_selected_vias_are_kept_with_type_span_and_lock(
         self, log: list[str]
