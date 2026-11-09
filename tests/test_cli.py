@@ -16,6 +16,7 @@ import pytest
 import scenarios
 import shapely
 from conftest import (
+    COMMIT_CALLS,
     PAD_HALF_SIZE,
     BurstClock,
     CommitBoard,
@@ -508,6 +509,10 @@ class TestSmooth:
         (report,) = reports
         assert report.committed
         assert sorted(board.deleted) == ["r1", "r2", "r3"]
+        assert board.selected_ids() == [
+            "stub",
+            *board.assigned_ids,
+        ]
         created = cast(list[kbt.Track], board.created)
         points = [(p.x, p.y) for t in created for p in (t.start, t.end)]
         assert all(abs(y) < nm(0.01) for _, y in points)
@@ -527,7 +532,22 @@ class TestSmooth:
         run("--dry-run")
 
         assert board.calls == []
+        assert board.selected_ids() == ["a", "b"]
         assert "Optimizer: converged" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_failure_to_select_after_the_push_still_reports_committed(
+        self, connect: Connector, reports: list[pipeline.RunReport], log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        board.select_error = ApiError("busy", code=ApiStatusCode.AS_BUSY)
+
+        run()
+
+        (report,) = reports
+        assert report.committed
+        lines = [line for line in log if "Could not select" in line]
+        assert [line.split()[0] for line in lines] == ["DEBUG"]
 
     def test_nothing_to_do_begins_no_commit(
         self, connect: Connector, log: list[str]
@@ -1005,7 +1025,7 @@ class TestSeveralChains:
 
         run()
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == [*OUTER, *INNER]
         created = cast(list[kbt.Track], board.created)
         by_net = {
@@ -1089,6 +1109,7 @@ class TestSeveralChains:
         run()
 
         assert board.calls == []
+        assert board.selection == tracks
         assert any("Nothing to do" in line for line in log)
 
     def test_abnormal_run_commits_nothing(
@@ -1349,7 +1370,7 @@ class TestSeveralLayers:
 
         run()
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         front, back = created_on(board, BL.BL_F_Cu), created_on(board, BL.BL_B_Cu)
         assert len(front) + len(back) == len(board.created)
@@ -1678,7 +1699,7 @@ class TestMovingVias:
 
         run()
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "b", "e", "f", "v"]
         (via,) = created_vias(board)
         moved = (via.position.x, via.position.y)
@@ -1707,7 +1728,7 @@ class TestMovingVias:
         run()
 
         assert "stays fixed" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "b", "s"]
         (via,) = created_vias(board)
         assert via.net.name == "GND"
@@ -1723,7 +1744,7 @@ class TestMovingVias:
 
         assert "stays fixed" not in "".join(log)
         assert "Nothing to do" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert board.deleted == ["s"]
         (via,) = board.created
         assert isinstance(via, kbt.Via)
@@ -1808,7 +1829,7 @@ class TestMovingVias:
 
         run(*(["--fixed-vias"] if fixed else []))
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         moved = {"a", "b", "e", "f", "v", *([] if fixed else ["s"])}
         assert sorted(board.deleted) == sorted(moved)
         created = {v.net.name: v for v in created_vias(board)}
@@ -1844,7 +1865,7 @@ class TestMovingVias:
         run()
 
         assert "stays fixed" not in "".join(log)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         (via,) = created_vias(board)
         y = via.position.y / 1e6
         assert refill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
@@ -1936,7 +1957,7 @@ class TestMovingVias:
         assert not [
             line for line in log if line.startswith("WARNING") and "in place" in line
         ]
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert created_vias(board) == [] and "v" not in board.deleted
         assert {"o1", "o2"} <= set(board.deleted)
 
@@ -2289,7 +2310,7 @@ def test_a_via_in_a_plane_moves_within_its_region_and_commits(
     run()
 
     assert "stays fixed" not in "".join(log)
-    assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+    assert board.calls == COMMIT_CALLS
     (via,) = created_vias(board)
     y = via.position.y / 1e6
     assert ZONE_REGION_TOP + ZONE_MARGIN - NM_ROUNDING <= y < 9.5
@@ -2513,7 +2534,7 @@ class TestPairs:
 
         run()
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == list(PAIR_IDS)
         gaps = coupled_gaps(*by_net(board).values())
         assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
@@ -2538,7 +2559,7 @@ class TestPairs:
         run()
 
         assert "INFO Optimizing 4 chains, 2 differential pairs among them\n" in log
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         for nets, at in ((USB, 0.0), (eth, SECOND_PAIR)):
             lines = by_net(board, nets)
             for net, side in zip(nets, (1.0, -1.0), strict=True):
@@ -2693,7 +2714,7 @@ class TestPairs:
 
         run()
 
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         lines = by_net(board)
         for net, side in zip(USB, (1.0, -1.0), strict=True):
             joined = linemerge(lines[net])
@@ -2757,7 +2778,7 @@ class TestPairs:
 
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.sections, pair.held) == (3, 1)
-        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.calls == COMMIT_CALLS
         assert not unexpected_warnings(log)
 
     def test_netclass_gap_unlike_the_measured_one_warns(
@@ -2998,7 +3019,7 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
 
     run()
 
-    assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+    assert board.calls == COMMIT_CALLS
     sections = [p for r in results for p in r.pairs]
     assert sections
     for p in sections:

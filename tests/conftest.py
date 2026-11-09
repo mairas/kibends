@@ -21,15 +21,18 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common.commands import base_commands_pb2
 from kipy.proto.common.commands.editor_commands_pb2 import (
+    AddToSelection,
     CreateItems,
     CreateItemsResponse,
     DeleteItems,
     DeleteItemsResponse,
     ItemDeletionStatus,
     ItemStatusCode,
+    SelectionResponse,
 )
 from kipy.proto.common.types import base_types_pb2, project_settings_pb2
 from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
+from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
 
@@ -446,6 +449,9 @@ class FakeBoard:
         self.reads["get_selection"] += 1
         return self.selection
 
+    def selected_ids(self) -> list[str]:
+        return [cast(kbt.BoardItem, i).id.value for i in self.selection]
+
     def get_pads(self) -> list[kbt.Pad]:
         self.reads["get_pads"] += 1
         return self.pads
@@ -519,6 +525,10 @@ def layer_snapshot(
     )
 
 
+COMMIT_CALLS = ["begin_commit", "delete", "create", "push_commit", "select"]
+"""`CommitBoard.calls` after a committed run."""
+
+
 @dataclass
 class CommitClient(FakeClient):
     """Answers the item commands commit.py sends directly, besides text shapes."""
@@ -531,6 +541,8 @@ class CommitClient(FakeClient):
             return self.board.answer_create(command)
         if isinstance(command, DeleteItems):
             return self.board.answer_delete(command)
+        if isinstance(command, AddToSelection):
+            return self.board.answer_select(command)
         return super().send(command, response_type)
 
 
@@ -539,11 +551,18 @@ class CommitBoard(FakeBoard):
     """A FakeBoard that also records commits, deletions and creations.
 
     `calls` lists the commit lifecycle in order: begin_commit, delete,
-    create, push_commit, drop_commit, and refill_zones, which kibends must
-    never call. `short_create` answers CreateItems with one item fewer than
+    create, push_commit, select, drop_commit, and refill_zones, which
+    kibends must never call. `short_create` answers CreateItems with one item fewer than
     sent, all reported as created. `refuse_create_nets` refuses only the
     tracks on those nets, `refuse_create_vias` only the vias.
     `unanswered_delete` leaves those ids out of the DeleteItems answer.
+
+    Like KiCad, the CreateItems answer gives each created item sent without
+    an id a new one, listed in `assigned_ids`; an item sent with an id keeps
+    it, so a test sees whether kibends cleared it. The push deselects the
+    deleted items. AddToSelection, recorded in `calls` as select, raises
+    `select_error` when it is set, and answers with an item kipy cannot
+    unwrap, so reading the answer would fail.
     """
 
     calls: list[str] = field(default_factory=list[str])
@@ -557,6 +576,8 @@ class CommitBoard(FakeBoard):
     refuse_delete: frozenset[str] = frozenset()
     unanswered_delete: frozenset[str] = frozenset()
     push_error: BaseException | None = None
+    assigned_ids: list[str] = field(default_factory=list[str])
+    select_error: BaseException | None = None
     document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
 
     def __post_init__(self) -> None:
@@ -576,6 +597,11 @@ class CommitBoard(FakeBoard):
         self.labels.append(message)
         if self.push_error is not None:
             raise self.push_error
+        self.selection = [
+            i
+            for i in self.selection
+            if cast(kbt.BoardItem, i).id.value not in self.deleted
+        ]
 
     def drop_commit(self, commit: Commit) -> None:
         self.calls.append("drop_commit")
@@ -598,12 +624,26 @@ class CommitBoard(FakeBoard):
                 or (isinstance(item, kbt.Via) and self.refuse_create_vias)
             )
             result = response.created_items.add()
-            result.item.CopyFrom(packed)
             result.status.code = (
                 ItemStatusCode.ISC_INVALID_DATA if refused else ItemStatusCode.ISC_OK
             )
             if not refused:
+                kiid = cast(kbt.BoardItem, item).id
+                if not kiid.value:
+                    kiid.value = f"new-{len(self.assigned_ids)}"
+                    self.assigned_ids.append(kiid.value)
                 self.created.append(item)
+            result.item.CopyFrom(pack_any(item.proto))
+        return response
+
+    def answer_select(self, command: AddToSelection) -> SelectionResponse:
+        self.calls.append("select")
+        if self.select_error is not None:
+            raise self.select_error
+        created = {cast(kbt.BoardItem, i).id.value: i for i in self.created}
+        self.selection += [created[i.value] for i in command.items]
+        response = SelectionResponse()
+        response.items.append(pack_any(KIID(value="not a board item")))
         return response
 
     def answer_delete(self, command: DeleteItems) -> DeleteItemsResponse:
