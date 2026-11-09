@@ -60,7 +60,6 @@ from kibends.optimize import (
     Termination,
     measure,
     optimize_chains,
-    pinned_at_junctions,
 )
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
@@ -491,10 +490,9 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
-    # The statistics see the moved vias where they end up, and the branches
-    # of a junction leave each other out there as at any touch.
-    final_inputs = pinned_at_junctions(
-        _with_vias(optimized.whole, optimized.via_inputs, via_reports, options)
+    # The statistics see the moved vias where they end up.
+    final_inputs = _with_vias(
+        optimized.whole, optimized.via_inputs, via_reports, options
     )
     reports = _chain_reports(
         read.chains,
@@ -798,13 +796,11 @@ def _simplify(
         *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
     ]
     simplified = simplify_chains(
-        pinned_at_junctions(
-            _with_vias(
-                inputs,
-                _laid_out_vias(layout, optimized.via_inputs),
-                via_reports,
-                options,
-            )
+        _with_vias(
+            inputs,
+            _laid_out_vias(layout, optimized.via_inputs),
+            via_reports,
+            options,
         ),
         replace(run, chains=tuple(results)),
         options.params,

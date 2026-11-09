@@ -34,7 +34,6 @@ from kibends.optimize import (
     measure,
     optimize,
     optimize_chains,
-    pinned_at_junctions,
     resample,
     seen_parts,
 )
@@ -967,8 +966,7 @@ def test_a_tee_moves_its_junction_to_where_the_branches_meet_at_120_degrees(
     np.testing.assert_allclose(junction_of(result), scenarios.FERMAT_POINT, atol=0.05)
     assert angles_at_junction(result) == pytest.approx([120.0] * 3, abs=2.0)
     assert all(
-        c >= -INSIDE_TOLERANCE
-        for c in min_clearances(pinned_at_junctions(chains), result, scenarios.PARAMS)
+        c >= -INSIDE_TOLERANCE for c in min_clearances(chains, result, scenarios.PARAMS)
     )
     for chain, given in zip(result.chains, chains, strict=True):
         np.testing.assert_array_equal(chain.polyline[-1], given.centreline.points[-1])
@@ -1012,7 +1010,7 @@ def test_simplified_and_snapped_branches_still_share_the_junction() -> None:
     chains = fermat_tee((0.2, 0.4, 0.3))
     result = optimize_chains(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
 
-    simplified = simplify_chains(pinned_at_junctions(chains), result, scenarios.PARAMS)
+    simplified = simplify_chains(chains, result, scenarios.PARAMS)
 
     junction = junction_of(result)
     for polyline in simplified:
@@ -1027,13 +1025,11 @@ class TestJunctionEnergy:
     def test_straight_branches_pull_the_junction_along_themselves(self) -> None:
         # Straight branches meeting at right angles: only their lengths
         # count, and each pulls the junction straight along itself.
-        chains = pinned_at_junctions(
-            [
-                branch("left", (0.0, 0.0), (-2.0, 0.0), (-4.0, 0.0)),
-                branch("right", (0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
-                branch("up", (0.0, 0.0), (0.0, 2.0), (0.0, 4.0)),
-            ]
-        )
+        chains = [
+            branch("left", (0.0, 0.0), (-2.0, 0.0), (-4.0, 0.0)),
+            branch("right", (0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
+            branch("up", (0.0, 0.0), (0.0, 2.0), (0.0, 4.0)),
+        ]
         polylines = [c.centreline.points for c in chains]
         masks = [np.array([False, False, True])] * 3
 
@@ -1138,9 +1134,8 @@ def test_a_junction_cannot_pass_what_lies_between_it_and_its_best_place(
 
     result = optimize_chains(chains, scenarios.PARAMS, BLOCKED)
 
-    views = pinned_at_junctions(chains)
     assert all(
-        c >= -INSIDE_TOLERANCE for c in min_clearances(views, result, scenarios.PARAMS)
+        c >= -INSIDE_TOLERANCE for c in min_clearances(chains, result, scenarios.PARAMS)
     )
     a, b, c = (r.polyline for r in result.chains[:3])
     junction = Point(junction_of(replace(result, chains=result.chains[:3])))

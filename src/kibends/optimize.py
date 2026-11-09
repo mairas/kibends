@@ -1043,13 +1043,6 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     return list(groups.values())
 
 
-def pinned_at_junctions(chains: Sequence[ChainInput]) -> list[ChainInput]:
-    """The chains with their ends at junctions fixed, as neighbour fields
-    need them: chains of one net leave each other out near where they touch
-    at fixed points."""
-    return _pinned(chains, junctions(chains))
-
-
 def _pinned(
     chains: Sequence[ChainInput], groups: Sequence[Sequence[End]]
 ) -> list[ChainInput]:
@@ -1103,8 +1096,6 @@ def layer_energy(
     A section's centreline is what it keeps clear as, and its two tracks,
     offset from it, are what the others keep clear of: their part of the
     gradient is taken back through the offset (`PairBlock.offset_pullback`).
-    Chains whose loose ends meet must come with those ends fixed
-    (`pinned_at_junctions`), so that they leave each other out there.
     """
     if seen is None:
         seen = seen_parts(chains, polylines, obstacle_reach(params))
@@ -1538,8 +1529,8 @@ class _Problem:
             count,
         )
         self.via_stop = ViaSight(self.free_vias, [{} for _ in vias], own_net, count)
-        # The chains as their neighbours see them; their own masks below
-        # leave the junction ends loose.
+        # The chains with their junction ends pinned, so that those are
+        # never frozen: their own masks below leave them loose.
         self.members: list[Member] = [*_pinned(chains, self.groups), *sections]
         self.bodies = [_body(member) for member in self.members]
         self.neighbours = [
