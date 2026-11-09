@@ -2216,9 +2216,6 @@ PRINTED = 1e-3
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
-FAN_OUT_STRAIGHT_TOLERANCE = 0.025
-"""mm: above the up to 0.014 mm by which the optimizer bows `pair_board`'s
-straight fan-outs where they meet the coupled section."""
 OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
@@ -2566,17 +2563,23 @@ class TestPairs:
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         board = connect.to(pair_board())
 
-        run(f"--chord-tolerance={FAN_OUT_STRAIGHT_TOLERANCE}")
+        run()
 
         assert held == [[None], [hold]]
-        # Repulsion may bend the fan-outs apart; the section stays as routed.
+        # Whether a net's chain is committed depends on how far repulsion
+        # bends its fan-out (some 25 µm, varying with the BLAS) against the
+        # chord tolerance; either way the held section, all pins, stays
+        # exactly as routed.
         created = {
             (t.start.x, t.start.y, t.end.x, t.end.y)
             for t in cast(list[kbt.Track], board.created)
         }
         for t in pair_tracks():
             if not t.id.value.endswith("1"):
-                assert (t.start.x, t.start.y, t.end.x, t.end.y) in created
+                assert (
+                    t.id.value not in board.deleted
+                    or (t.start.x, t.start.y, t.end.x, t.end.y) in created
+                )
         (warning,) = [w for w in log if "too tight" in w]
         assert warning.startswith("WARNING")
         assert hold.value in warning and "again" in warning
