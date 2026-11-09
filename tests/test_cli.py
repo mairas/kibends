@@ -1633,6 +1633,65 @@ class TestMovingVias:
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
 
+    def test_a_stitching_via_the_chain_crowds_moves_in_the_same_commit(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # Inside the L, where the chain cutting its corner presses on it.
+        start = (3.0, 1.0)
+        stitching = kipy_via("s", "GND", *start)
+        plane = kipy_rect(-2, -3, 10, 10)
+        board = connect.to(
+            CommitBoard(
+                selection=[*l_chain(), stitching],
+                tracks=[*l_chain()],
+                vias=[stitching],
+                zones=[
+                    kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+                ],
+            )
+        )
+
+        run()
+
+        assert "stays fixed" not in "".join(log)
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert sorted(board.deleted) == ["a", "b", "s"]
+        (via,) = created_vias(board)
+        assert via.net.name == "GND"
+        moved = (via.position.x / 1e6, via.position.y / 1e6)
+        assert math.dist(moved, start) > 0.05
+
+    def test_a_stitching_via_moves_though_no_chain_changes(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The straight chain is far from it; an unselected PWR track within
+        # range above it pushes it down.
+        start = (2.0, 3.0)
+        straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
+        pwr = kipy_track("p", "PWR", (0, 3.8), (4, 3.8), width=WIDTH)
+        stitching = kipy_via("s", "GND", *start)
+        plane = kipy_rect(-2, -3, 10, 10)
+        board = connect.to(
+            CommitBoard(
+                selection=[*straight, stitching],
+                tracks=[*straight, pwr],
+                vias=[stitching],
+                zones=[
+                    kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+                ],
+            )
+        )
+
+        run()
+
+        assert "stays fixed" not in "".join(log)
+        assert "Nothing to do" not in "".join(log)
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.deleted == ["s"]
+        (via,) = board.created
+        assert isinstance(via, kbt.Via)
+        assert via.position.y / 1e6 < start[1] - 0.05
+
     @pytest.mark.parametrize("unfilled", ["pwr pour", "pour keepout"])
     def test_a_via_in_a_zone_of_its_net_moves_within_its_region_and_commits(
         self, connect: Connector, log: list[str], unfilled: str

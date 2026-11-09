@@ -84,8 +84,8 @@ class MovingVias:
         ]
         self.incident = [frozenset(end.chain for end in ends) for ends in self.ends]
         self._zones_by_id = {v.via.id: v.zones for v in self.vias}
-        # A moving via joins chains of its net, so every net asked about has one.
         clearances = {c.centreline.net: c.centreline.clearance for c in chains}
+        clearances |= {v.via.net: v.clearance for v in self.vias}
         self.clearance_of: Callable[[str], float] = clearances.__getitem__
         self._chains_near = [
             [

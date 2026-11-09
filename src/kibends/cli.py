@@ -131,7 +131,7 @@ def smooth(options: SmoothOptions) -> None:
     report = run_smooth(options, show)
     if report.refusal is not None:
         raise RunRefusedError(report.refusal)
-    if not any(c.changed for c in report.chains):
+    if not report.changes:
         logger.info("Nothing to do: the optimizer leaves the selection as it is")
     elif options.dry_run:
         logger.info("Dry run: nothing committed")

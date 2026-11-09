@@ -45,7 +45,8 @@ layers and the other vias, with their gradient also at the edge or via that
 answers it; the members see it as a disc on each of its layers, so that
 where the obstacle term pulls on it, the gradient reaches its centre too. A
 section and a via see each other as the section's centreline as wide as
-`PairBlock.chain`. A moving via ties the layers it spans into one problem,
+`PairBlock.chain`. A stitching via carries no chain ends, so with no
+length term only repulsion moves it. A moving via ties the layers it spans into one problem,
 every member on them included, since moving vias are through vias and share
 every layer. A via that starts more than δ inside its clearance stands
 still, as copper the members see; its own terms then could only push them a

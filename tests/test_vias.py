@@ -363,7 +363,10 @@ class TestMovableVias:
 
         assert movable == []
         (warning,) = warnings(log)
-        assert "stays fixed: no selected track ends at it" in warning
+        assert warning.rstrip().endswith(
+            "stays fixed: no selected track ends at it and no zone of its net "
+            "reaches it"
+        )
 
     def test_via_ending_one_selected_chain_stays_fixed(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -396,6 +399,77 @@ class TestMovableVias:
         pinned = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
         assert pinned == [(0, 0), pytest.approx((1.7, 0)), pytest.approx((2.3, 0)), VIA]
         assert len(warnings(log)) == int(selected)
+
+
+def plane(name: str = "plane") -> kbt.Zone:
+    """A zone of the stitching net around `VIA` on both outer layers."""
+    outline = kipy_rect(2, 2, 6, 6)
+    return kipy_copper_zone(name, "GND", outline, [BL.BL_F_Cu, BL.BL_B_Cu])
+
+
+def nearby() -> kbt.Track:
+    """A selected track of another net beside `VIA`."""
+    return kipy_track("x", "SIG", (0, 3), (8, 3))
+
+
+def stitching() -> kbt.Via:
+    return kipy_via("s", "GND", *VIA)
+
+
+class TestStitchingVias:
+    """Vias that no selected track ends at, which only zones of their net touch."""
+
+    def test_one_a_zone_of_its_net_touches_is_movable(self, log: list[str]) -> None:
+        s = stitching()
+        movable, _ = judge([nearby(), s], [nearby()], [s], zones=[plane()])
+
+        (via,) = movable
+        assert via.via.id == "s"
+        assert via.ends == ()
+        (inside,) = via.zones
+        assert inside.description == "zone plane on F.Cu and B.Cu"
+        assert warnings(log) == []
+
+    def test_one_no_zone_touches_stays_fixed(self, log: list[str]) -> None:
+        s = stitching()
+        movable, _ = judge([nearby(), s], [nearby()], [s])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert warning.rstrip().endswith(
+            "stays fixed: no selected track ends at it and no zone of its net "
+            "reaches it"
+        )
+
+    def test_locked_one_stays_fixed(self, log: list[str]) -> None:
+        s = kipy_via("s", "GND", *VIA, locked=True)
+
+        movable, _ = judge([nearby(), s], [nearby()], [s], zones=[plane()])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert warning.rstrip().endswith("stays fixed: it is locked")
+
+    def test_blind_one_stays_fixed(self, log: list[str]) -> None:
+        s = kipy_via(
+            "s", "GND", *VIA, via_type=ViaType.VT_BLIND, span=(BL.BL_F_Cu, BL.BL_B_Cu)
+        )
+
+        movable, _ = judge([nearby(), s], [nearby()], [s], zones=[plane()])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert "blind via" in warning and "only through vias move" in warning
+
+    def test_one_an_unselected_track_reaches_stays_fixed(self, log: list[str]) -> None:
+        s = stitching()
+        stub = kipy_track("t", "GND", VIA, (4, 7))
+
+        movable, _ = judge([nearby(), s], [nearby(), stub], [s], zones=[plane()])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert warning.rstrip().endswith("stays fixed: track t on F.Cu connects to it")
 
 
 SHARED_END = (4.45, 4.0)

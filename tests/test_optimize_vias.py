@@ -593,6 +593,7 @@ def test_a_junction_at_a_via_that_stays_stays_on_it() -> None:
         scenarios.through_via("v", "N", at),
         (*ends, ChainEnd(3, False)),
         Disc(*at, 1.0),
+        scenarios.PAIR_CLEARANCE,
     )
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE, [via])
@@ -887,3 +888,63 @@ def test_chains_straightened_in_one_burst_are_kept() -> None:
 
     assert result.termination is Termination.CONVERGED
     assert route_length(result) == pytest.approx(10.0, abs=0.01)
+
+
+STITCH_X = 5.0
+STITCH_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
+
+
+def stitched(at_y: float, top: float) -> ViasScenario:
+    """A straight chain of net S on F.Cu along y = 0, pinned at every vertex
+    so that it cannot bow away, and a stitching via of net G at `at_y` above
+    it, inside a G zone on F.Cu and B.Cu whose region ends at y = `top`."""
+    regions = {layer: box(0, -5, 10, top) for layer in ("F.Cu", "B.Cu")}
+    zone = ViaZone("plane", regions, 0.2, 0.0)
+    via = scenarios.through_via("g", "G", (STITCH_X, at_y))
+    vertices = [(float(x), 0.0) for x in np.linspace(0.0, 10.0, 41)]
+    chain = selected("S", "S", FreeSpace(), *vertices)
+    return ViasScenario(
+        "stitching-via",
+        (replace(chain, fixed=np.ones(len(vertices), dtype=bool)),),
+        (
+            ViaInput(
+                via,
+                (),
+                CompositeField(zone_containment(zone)),
+                scenarios.PAIR_CLEARANCE,
+                (zone,),
+            ),
+        ),
+        STITCH_PARAMS,
+    )
+
+
+class TestStitchingVia:
+    def test_a_crowded_one_backs_off_but_stays_inside_its_zone(self) -> None:
+        start, top = 0.8, 1.3
+
+        result = run(stitched(start, top))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
+        assert via.position[1] > start + 0.1
+        assert via.position[1] <= top - MARGIN + INSIDE_TOLERANCE
+
+    def test_one_with_nothing_in_range_stays(self) -> None:
+        start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
+
+        result = run(stitched(start, start + 2.0))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
+
+    def test_one_starting_inside_its_clearance_stays_as_unselected(self) -> None:
+        start = scenarios.VIA_TO_CHAIN / 2
+
+        result = run(stitched(start, 1.3))
+
+        (via,) = result.vias
+        assert via.frozen
+        assert via.position == (STITCH_X, start)

@@ -213,6 +213,12 @@ class RunReport(OptimizerReport):
     refusal: str | None
     """Why nothing was committed, when that is a failure of the run."""
 
+    @property
+    def changes(self) -> bool:
+        """Whether some chain changed or some via moved: whether there is
+        anything to commit."""
+        return any(c.changed for c in self.chains) or any(v.moved for v in self.vias)
+
 
 @dataclass(frozen=True)
 class _Read:
@@ -558,6 +564,8 @@ def _commit(
         return report(refusal=ABNORMAL_MESSAGE)
     if outcome.pinched is not None:
         return report(refusal=outcome.pinched)
+    if options.dry_run or not report().changes:
+        return report()
     changed = [
         (chain, polyline)
         for chain, polyline, r in zip(
@@ -565,15 +573,11 @@ def _commit(
         )
         if r.changed
     ]
-    if not changed:
-        return report()
     moves = [
         ViaMove(m.via, r.end)
         for m, r in zip(read.movable, outcome.via_reports, strict=True)
         if r.moved
     ]
-    if options.dry_run:
-        return report()
     commit_chains(board, changed, read.selected, moves)
     return report(committed=True)
 
@@ -693,6 +697,7 @@ def _via_inputs(
                 allow_via_in_pad=options.allow_via_in_pad,
                 zones=m.zones,
             ),
+            layers[0].clearance(m.via.net),
             m.zones,
         )
         for m in movable
