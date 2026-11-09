@@ -33,6 +33,7 @@ from kibends.snapshot import (
     Pad,
     PadKind,
     Via,
+    ViaZone,
     edge_paths_closed,
     outline_from_edge_paths,
 )
@@ -895,9 +896,11 @@ def build_via_obstacles(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     allow_via_in_pad: bool = False,
-) -> Obstacles:
+    zones: Sequence[ViaZone] = (),
+) -> ObstacleField:
     """Obstacles for `via` at any position, over every layer of `layers` it
-    spans.
+    spans, and the outside of the fill of each of `zones`
+    (`zone_containment`).
 
     Its ring keeps the copper clearance, as a track of its diameter would,
     and its hole keeps the hole clearance, to other nets' copper on each of
@@ -908,7 +911,7 @@ def build_via_obstacles(
     hole keeps hole-to-hole from every other hole the layers hold, of any
     net. One field over all the layers' items is their minimum. The via
     itself and the vias in `moving`, which the caller adds at their current
-    positions, are left out; so are copper zones, which the DRC check
+    positions, are left out; so is the copper of zones, which the DRC check
     refills.
     """
     spanned = [s for s in layers if via.reaches(s.layer)]
@@ -932,9 +935,32 @@ def build_via_obstacles(
         *_hole_items(spanned[0].pads, others, keeper),
     ]
     outline = _board_outline(spanned[0].edge_paths)
-    if outline is None:
-        return Obstacles(items)
-    return Obstacles(items, outline, edge_clearance + keeper.radius)
+    board = (
+        Obstacles(items)
+        if outline is None
+        else Obstacles(items, outline, edge_clearance + keeper.radius)
+    )
+    if not zones:
+        return board
+    return CompositeField([board, *(f for z in zones for f in zone_containment(z))])
+
+
+def zone_containment(zone: ViaZone) -> list[Obstacles]:
+    """The outside of `zone`'s fill on each layer where it touches the via,
+    as an obstacle to the via's centre inflated as the board edge is, by
+    `ViaZone.margin`, so that the next refill connects the via again.
+
+    The fill, not the outline: the refill leaves out of the outline the
+    clearance around other nets' copper, higher-priority zones of other nets
+    and rule areas keeping out pour. The current fill already leaves them
+    out, and the snapshot cuts from a fill older than those zones what they
+    will take. A same-net via adds no fill where it stands, so the fill does
+    not depend on where the via is, except that it keeps an island it
+    connects, and the via moves only within that island. Where the copper
+    that moves with the via clears new room, the next refill may fill more
+    than the fill holds now, which only makes the containment cautious.
+    """
+    return [Obstacles((), fill, zone.margin) for fill in zone.fills.values()]
 
 
 def moving_via_obstacles(

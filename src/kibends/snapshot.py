@@ -128,6 +128,44 @@ class ViaContact(NamedTuple):
     track_id: str | None = None
 
 
+KICAD_MAX_ERROR = 0.005
+"""How far, in mm, KiCad lets a polygon stray from the arc it approximates:
+the board's "maximum allowed deviation", at its default. The API does not
+expose the board's setting."""
+
+
+@dataclass(frozen=True)
+class ViaZone:
+    """A copper zone of a via's net whose fill touches the via."""
+
+    name: str
+    fills: Mapping[str, BaseGeometry]
+    """By layer, for the layers on which its fill touches the via: the
+    pieces of its current fill that touch it."""
+    min_width: float
+    """The zone's minimum fill width, mm."""
+
+    @property
+    def layers(self) -> tuple[str, ...]:
+        return tuple(self.fills)
+
+    @property
+    def description(self) -> str:
+        return f"zone {self.name} on {' and '.join(self.layers)}"
+
+    @property
+    def margin(self) -> float:
+        """How far inside the fill a via's centre stays for the next refill
+        to connect it: half the zone's minimum width, so that the fill there
+        is as wide as the refill keeps, plus KiCad's arc error, which the
+        refill's rounded edges may take back.
+
+        Not its whole ring: where the zone's clearance to another net's
+        copper reaches the ring, the fill cuts through it, and KiCad
+        connects a via whose ring the fill only partly covers."""
+        return self.min_width / 2 + KICAD_MAX_ERROR
+
+
 @dataclass(frozen=True)
 class Selection:
     segments: list[Segment]

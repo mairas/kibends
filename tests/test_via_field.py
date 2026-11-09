@@ -1,4 +1,4 @@
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from itertools import pairwise
 from typing import cast
@@ -18,6 +18,8 @@ from conftest import (
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType
+from shapely.geometry import box
+from shapely.geometry.base import BaseGeometry
 
 from kibends.energy import FloatArray, ObstacleField
 from kibends.obstacles import (
@@ -31,7 +33,7 @@ from kibends.obstacles import (
     moving_via_obstacles,
     via_obstacles_for_via,
 )
-from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via
+from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
 
 NET = "SIG"
 VIA_ID = "moving"
@@ -213,6 +215,84 @@ class TestViaField:
         clear = field_of(fake).segments_clear(
             points((1, 0), (1, 0)), points((1, 2), (1, 2.5))
         )
+
+        assert list(clear) == [True, False]
+
+
+FILL = box(-2, -1, 2, 1)
+"""A zone fill 4 mm by 2 mm around the via at (0, 0)."""
+
+
+def zone(
+    fills: Mapping[str, BaseGeometry] | None = None, min_width: float = 0.0
+) -> ViaZone:
+    """A zone of the via's net filled with `FILL` on In1.Cu, or with
+    `fills` by layer."""
+    return ViaZone("plane", fills or {"In1.Cu": FILL}, min_width)
+
+
+MARGIN = zone().margin
+"""How far inside the fill of a zone without a minimum width a via's centre
+stays."""
+
+
+class TestZoneContainment:
+    def test_keeps_the_centre_inside_the_fill_by_the_margin(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])
+        distance, gradient = field.signed_distance(points((0, 0.5), (0, 1.2)))
+
+        assert distance == pytest.approx([0.5 - MARGIN, -0.2 - MARGIN])
+        assert gradient == pytest.approx(np.array([(0, -1), (0, -1)]))
+
+    def test_a_wider_minimum_width_keeps_it_deeper(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone(min_width=1.0)])
+        distance, _ = field.signed_distance(points((0, 0.5)))
+
+        assert distance[0] == pytest.approx(0.5 - zone(min_width=1.0).margin)
+
+    def test_keeps_the_centre_out_of_a_hole_in_the_fill(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        holed = FILL.difference(box(1, -0.5, 1.5, 0.5))
+
+        field = build_via_obstacles(
+            snaps, via_of(snaps), zones=[zone({"In1.Cu": holed})]
+        )
+        distance, gradient = field.signed_distance(points((0.5, 0), (1.25, 0)))
+
+        assert distance == pytest.approx([0.5 - MARGIN, -0.25 - MARGIN])
+        assert gradient == pytest.approx(np.array([(-1, 0), (-1, 0)]))
+
+    def test_keeps_the_centre_inside_the_fill_on_each_layer(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        narrower = box(-2, -1, 2, 0.6)
+
+        field = build_via_obstacles(
+            snaps,
+            via_of(snaps),
+            zones=[zone({"In1.Cu": FILL, "In2.Cu": narrower})],
+        )
+        distance, _ = field.signed_distance(points((0, 0.5), (1.5, 0)))
+
+        assert distance == pytest.approx([0.1 - MARGIN, 0.5 - MARGIN])
+
+    def test_keeps_the_centre_inside_the_fill_of_each_zone(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+        across = ViaZone("strip", {"B.Cu": box(-0.5, -3, 0.5, 3)}, 0.0)
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone(), across])
+        distance, _ = field.signed_distance(points((0, 0.5), (0.4, 0)))
+
+        assert distance == pytest.approx([0.5 - MARGIN, 0.1 - MARGIN])
+
+    def test_a_move_out_of_the_fill_is_not_clear(self) -> None:
+        snaps = slices(FakeBoard(vias=[moving_via()]))
+
+        field = build_via_obstacles(snaps, via_of(snaps), zones=[zone()])
+        clear = field.segments_clear(points((0, 0), (0, 0)), points((0, 0.9), (0, 1.2)))
 
         assert list(clear) == [True, False]
 
