@@ -20,8 +20,6 @@ from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.snapshot import Disc, Via, ViaContact, ViaKind
 
-MIN_JOINED_ENDS = 2
-
 
 class ChainEnd(NamedTuple):
     chain: int
@@ -124,15 +122,10 @@ def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
     if via.kind is not ViaKind.THROUGH:
         return f"it is a {via.kind.value} via; only through vias move"
     if strangers:
-        return (
-            "copper that does not move with it touches it or a chain end "
-            f"it carries: {', '.join(strangers)}"
-        )
+        verb = "connects" if len(strangers) == 1 else "connect"
+        return f"{', '.join(strangers)} {verb} to it"
     if ends == 0:
-        return "no selected chain ends at it"
-    if ends < MIN_JOINED_ENDS:
-        return (
-            f"only {ends} selected chain end meets it, "
-            f"and moving it needs {MIN_JOINED_ENDS}"
-        )
+        return "no selected track ends at it"
+    if ends == 1:
+        return "only one selected track ends at it"
     return None

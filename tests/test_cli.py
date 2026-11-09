@@ -2612,7 +2612,7 @@ class TestPairs:
         (warning,) = [w for w in log if "Via v" in w]
         x, y = PAIR_FAN[0] - GRID_ORIGIN[0], PAIR_FAN[1] - GRID_ORIGIN[1]
         assert f"Via v at ({x:.3f}, {y:.3f}) stays fixed" in warning
-        assert "differential pair USB_D+ and USB_D-" in warning
+        assert "differential pair USB_D+ and USB_D- on F.Cu ends at it" in warning
         assert all(by_net(board).values())
 
     @pytest.mark.parametrize("unpaired", ["far", "wide"])

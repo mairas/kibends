@@ -73,7 +73,7 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    reason: it is locked, it is not a through via, other copper touches it
    or a chain end it would carry (an unselected track, a pad, a copper
    shape, another via or a zone of its net, on any layer), or fewer than
-   two selected chain ends meet it. Teardrops are ignored, here and in the
+   two selected tracks end at it. Teardrops are ignored, here and in the
    DRC check: KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them

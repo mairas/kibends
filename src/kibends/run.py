@@ -610,17 +610,20 @@ def _off_pairs(
 ) -> list[MovableVia]:
     """`movable` but the vias that join a chain of one of `pairs`, which stay
     fixed, with a warning each."""
-    nets = {k: (chains[p.a].net, chains[p.b].net) for p in pairs for k in (p.a, p.b)}
+    described = {
+        k: f"{chains[p.a].net} and {chains[p.b].net} on {chains[k].layer}"
+        for p in pairs
+        for k in (p.a, p.b)
+    }
     kept: list[MovableVia] = []
     for m in movable:
-        joined = next((nets[e.chain] for e in m.ends if e.chain in nets), None)
-        if joined is None:
+        pair = next((described[e.chain] for e in m.ends if e.chain in described), None)
+        if pair is None:
             kept.append(m)
             continue
         logger.warning(
-            f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: it joins a "
-            f"track of the differential pair {joined[0]} and {joined[1]}, and "
-            "pairs do not move vias"
+            f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: "
+            f"differential pair {pair} ends at it"
         )
     return kept
 
