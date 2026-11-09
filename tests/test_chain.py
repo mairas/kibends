@@ -471,9 +471,10 @@ class TestSeveralChains:
             segments, lambda _layer, _net: [tee], frame=BOARD_FRAME
         ) == [extract_chain(segments, [tee], frame=BOARD_FRAME)]
 
-    def test_selected_chains_of_one_net_pin_each_other_where_they_cross(
+    def test_selected_chains_of_one_net_crossing_away_from_their_ends_do_not_pin(
         self,
     ) -> None:
+        # Copper of one net does not interact, so a crossing ties nothing.
         segments = [
             seg("a1", (0, 0), (4, 2)),
             seg("a2", (4, 2), (6, 2)),
@@ -483,10 +484,37 @@ class TestSeveralChains:
 
         a, b = extract_chains(segments, frame=BOARD_FRAME)
 
-        assert_points(a, [(0, 0), (4, 2), (5, 2), (6, 2), (10, 0)])
-        assert a.pinned == (True, False, True, False, True)
-        assert_points(b, [(5, 1), (5, 2), (5, 6)])
-        assert b.pinned == (True, True, True)
+        assert_points(a, [(0, 0), (4, 2), (6, 2), (10, 0)])
+        assert a.pinned == (True, False, False, True)
+        assert_points(b, [(5, 1), (5, 6)])
+        assert b.pinned == (True, True)
+
+    def test_selected_chains_of_one_net_overlapping_along_a_stretch_do_not_pin(
+        self,
+    ) -> None:
+        segments = [
+            seg("a1", (0, 0), (4, 1)),
+            seg("a2", (4, 1), (6, 1)),
+            seg("a3", (6, 1), (10, 0)),
+            seg("b1", (0, 2), (4, 1.1)),
+            seg("b2", (4, 1.1), (6, 1.1)),
+            seg("b3", (6, 1.1), (10, 2)),
+        ]
+
+        a, b = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert a.pinned == (True, False, False, True)
+        assert b.pinned == (True, False, False, True)
+
+    def test_an_end_in_another_selected_chain_s_copper_still_pins_it(self) -> None:
+        # The end crosses past the centreline too far to join, so it stays,
+        # and the chain it reaches is pinned where it does.
+        segments = [seg("a", (0, 0), (10, 0)), seg("s", (5, 5), (5, -0.15))]
+
+        a, s = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert (5, 0) in [tuple(round(c, 6) for c in p) for p in pinned_points(a)]
+        assert s.pinned[0] and s.pinned[-1]
 
     def test_disjoint_pieces_of_one_net_give_two_chains(self) -> None:
         segments = [seg("b", (20, 0), (30, 0)), seg("a", (10, 0), (0, 0))]
@@ -871,8 +899,9 @@ class TestBranches:
         )
 
         assert route.segment_ids == ("a", "b")
-        assert_points(stub, [(2, -3), (2, 0), (2, 0.2)])
-        assert stub.pinned == (True, True, True)
+        # The route has no end where the stub crosses it, so it pins nothing.
+        assert_points(stub, [(2, -3), (2, 0.2)])
+        assert stub.pinned == (True, True)
 
     @pytest.mark.parametrize(
         ("half_length", "width"), [(0.2, WIDTH_NM), (0.1, 500_000)]
@@ -888,8 +917,9 @@ class TestBranches:
         a, t = extract_chains(segments, frame=BOARD_FRAME)
 
         assert a.segment_ids == ("a",)
-        assert_points(t, [(5, -half_length), (5, 0), (5, half_length)])
-        assert t.pinned == (True, True, True)
+        assert_points(t, [(5, -half_length), (5, half_length)])
+        assert t.pinned == (True, True)
+        assert (5, 0) in pinned_points(a)
 
     def test_an_offset_neck_down_stays_pinned_by_overlap(self) -> None:
         segments = [
@@ -995,10 +1025,12 @@ class TestBranches:
 
         a, s = extract_chains(segments, frame=BOARD_FRAME)
 
+        # Each pins the other where its end reaches it.
         assert_points(a, [(0, 0), (9.9, 0), (10, 0)])
         assert a.pinned == (True, True, True)
-        assert_points(s, [(9.9, off), (20, 0.5)])
-        assert s.pinned == (True, True)
+        assert (s.points[0], s.points[-1]) == ((9.9, off), (20, 0.5))
+        assert len(s.points) == 3
+        assert all(s.pinned)
 
     @pytest.mark.parametrize(
         ("stub", "joins"),

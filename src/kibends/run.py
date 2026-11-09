@@ -41,7 +41,6 @@ from kibends.neighbours import (
     chain_field,
     neighbour_fields,
     same_layer_neighbours,
-    with_moved_ends,
 )
 from kibends.obstacles import (
     HOLE_TO_HOLE,
@@ -50,7 +49,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     build_via_obstacles,
-    own_net_vias,
+    own_net_stops,
 )
 from kibends.optimize import (
     ChainResult,
@@ -61,7 +60,6 @@ from kibends.optimize import (
     Termination,
     measure,
     optimize_chains,
-    pinned_at_junctions,
 )
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
@@ -492,10 +490,9 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
-    # The statistics see the moved vias where they end up, and the branches
-    # of a junction leave each other out there as at any touch.
-    final_inputs = pinned_at_junctions(
-        _with_vias(optimized.whole, optimized.via_inputs, via_reports, options)
+    # The statistics see the moved vias where they end up.
+    final_inputs = _with_vias(
+        optimized.whole, optimized.via_inputs, via_reports, options
     )
     reports = _chain_reports(
         read.chains,
@@ -737,16 +734,16 @@ def _via_inputs(
                 moving=moving,
                 edge_clearance=options.edge_clearance,
                 hole_clearance=options.hole_clearance,
-                allow_via_in_pad=options.allow_via_in_pad,
                 zones=m.zones,
             ),
             layers[0].clearance(m.via.net),
             m.zones,
-            own_net_vias(
+            own_net_stops(
                 layers,
                 m.via,
                 moving=moving,
                 hole_clearance=options.hole_clearance,
+                allow_via_in_pad=options.allow_via_in_pad,
             ),
         )
         for m in movable
@@ -799,13 +796,11 @@ def _simplify(
         *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
     ]
     simplified = simplify_chains(
-        pinned_at_junctions(
-            _with_vias(
-                inputs,
-                _laid_out_vias(layout, optimized.via_inputs),
-                via_reports,
-                options,
-            )
+        _with_vias(
+            inputs,
+            _laid_out_vias(layout, optimized.via_inputs),
+            via_reports,
+            options,
         ),
         replace(run, chains=tuple(results)),
         options.params,
@@ -883,7 +878,7 @@ def _whole_results(
         ]
         field = chain_field(
             inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals, reach, originals[k]),
+            neighbour_fields(inputs, k, neighbours[k], originals, reach),
         )
         results.append(
             _WholeResult(
@@ -962,10 +957,8 @@ def _chain_reports(
         zip(chains, inputs, results, changes, strict=True)
     ):
         given_points = given.centreline.points
-        own = with_moved_ends(given_points, result.polyline)
         field = chain_field(
-            given.field,
-            neighbour_fields(inputs, i, neighbours[i], simplified, reach, own),
+            given.field, neighbour_fields(inputs, i, neighbours[i], simplified, reach)
         )
         # An unchanged chain stays on the board as it is.
         after = simplified[i] if changed else given_points

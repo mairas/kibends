@@ -53,9 +53,8 @@ class MovingVias:
     they make and see with the vias at the positions the caller holds.
 
     A via and a chain are near when the chain is on a layer the via spans
-    and does not end at it: each is then in the other's field, a chain of
-    the via's net at touching distance, so that the via makes no new
-    connection.
+    and is of another net: each is then in the other's field. Copper of one
+    net does not interact, whether the chain ends at the via or not.
     """
 
     def __init__(
@@ -82,7 +81,6 @@ class MovingVias:
             )
             for k, via in enumerate(self.vias)
         ]
-        self.incident = [frozenset(end.chain for end in ends) for ends in self.ends]
         self._zones_by_id = {v.via.id: v.zones for v in self.vias}
         clearances = {c.centreline.net: c.centreline.clearance for c in chains}
         clearances |= {v.via.net: v.clearance for v in self.vias}
@@ -91,9 +89,9 @@ class MovingVias:
             [
                 i
                 for i, chain in enumerate(chains)
-                if i not in self.incident[v] and via.via.reaches(chain.layer)
+                if chain.centreline.net != via.via.net and via.via.reaches(chain.layer)
             ]
-            for v, via in enumerate(self.vias)
+            for via in self.vias
         ]
         self._vias_near = [
             [v for v, near in enumerate(self._chains_near) if i in near]
@@ -187,14 +185,17 @@ class MovingVias:
         return CompositeField(parts)
 
     def ring(self, v: int, i: int) -> float:
-        """The distance chain i's centreline keeps from via v's centre."""
-        return via_chain_inflation(
+        """The distance chain i's centreline keeps from via v's centre, a
+        chain near it (`chains_near`)."""
+        ring = via_chain_inflation(
             self.vias[v].via,
             self.chains[i].centreline,
             self.clearance_of,
             hole_clearance=self.hole_clearance,
             zones=zones_on(self.vias[v].zones, [self.chains[i].layer]),
         )
+        assert ring is not None
+        return ring
 
     def apart(self, v: int, u: int) -> float | None:
         """The distance via v's centre keeps from via u's, the same as u's

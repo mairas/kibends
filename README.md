@@ -15,7 +15,7 @@ The new path minimises a weighted sum of two goals:
 The original route is only the starting point. Bends remain where other
 copper or the board edge forces them, rounded by the track keeping away
 from the copper it turns around, and the track stays on the same side of
-every obstacle it started next to.
+every obstacle it started next to. Copper of its own net is no obstacle.
 
 Uses the KiCad IPC API through
 [kicad-python](https://pypi.org/project/kicad-python/).
@@ -57,10 +57,16 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    leaves its copper through its side, and no other copper of the net
    touches the end where it was drawn. A track that crosses the other, runs
    along it, already connects to it through the selection, or has other
-   copper on its end keeps its end, and the two stay connected where their
-   copper overlaps; a track that lies on another of its width merges into
+   copper on its end keeps its end, and the other is held where that end's
+   copper reaches it; a track that lies on another of its width merges into
    it. Tracks of two widths that overlap, as at a neck-down, stay separate
-   chains of their own widths, held where their copper overlaps. A
+   chains of their own widths, held where the end of one reaches the other.
+   Where selected tracks of one net overlap or cross away from their ends,
+   nothing holds them: copper of one net does not interact, and the run may
+   move them apart, even where that overlap was their only connection. So a
+   stub drawn past the track it crosses, its end beyond that track's copper,
+   may come off it: draw a T to end on the track, or check the ratsnest
+   after the run. A
    route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
@@ -72,9 +78,10 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    touches, moves too: it has no length to shorten, so it stays where it
    is unless copper within `--range` of its clearance crowds it (a selected
    track cutting a corner, a via of another net, a pad or other static
-   copper), and then backs off until the pushes balance or nothing is in
-   range. The edge of its zone and the vias of its own net only stop it;
-   they do not push it. One that no zone of its net reaches stays where it
+   copper of another net), and then backs off until the pushes balance or
+   nothing is in range. Copper of its own net does not push it, and the
+   edge of its zone, the holes of its net's vias and pads and its net's
+   pads only stop it. One that no zone of its net reaches stays where it
    is. A via in a plane stays inside the zones of its net on each layer
    where a zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
@@ -123,9 +130,10 @@ kibends smooth                              # then commit
 
 The chains are optimised together, so neighbouring chains make room for
 each other: chains of different nets keep their clearance to each other and
-repel each other like other copper, while chains of one net may touch but
-not overlap, except where they already connect. Only selected chains and
-vias move. A moving via keeps its clearances on every copper layer it spans,
+repel each other like other copper. Copper of one net does not interact at
+all: chains of one net neither repel nor hold each other back, and may come
+close, overlap or cross, as may a chain and a via of its net, and a chain
+and the static copper of its net. Only selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A selected
 via that starts inside its clearance or inside such a rule area stays where
@@ -133,9 +141,10 @@ it is. Vias of one net, moving or not, keep only the hole-to-hole distance
 from a moving via, their rings free to overlap, and do not repel it, so a
 grid of selected stitching vias keeps its spacing, as does a selected one
 beside an unselected one; a moving via does not repel from the edge of a
-zone it stays inside either, which only stops it, while the board edge and other
-copper still repel it. A track of the via's own net still repels it within
-`--range`. Each moving via adds to the run's time: leave stitching vias out
+zone it stays inside either, which only stops it, while the board edge and
+other nets' copper still repel it. Tracks and copper shapes of the via's own
+net do not affect it, and its net's pads only stop it from overlapping them
+(see `--allow-via-in-pad`). Each moving via adds to the run's time: leave stitching vias out
 of the selection, lock them, or pass `--fixed-vias` where they should
 stay.
 
@@ -180,8 +189,8 @@ against every rule of the board.
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
 they are, unless it ends at a moving via, as does every point where other
-copper of the same net (a pad, via, track, copper shape or another selected
-chain) touches the chain.
+copper of the same net (a pad, via, track or copper shape, or the end of
+another selected chain) touches the chain.
 
 A vertex that starts inside another item's clearance stays where it is,
 with a warning. When that item is another selected chain, the warning names
@@ -222,6 +231,13 @@ clearance and its routing kept them, where they run side by side or
 across a turn.
 Both nets' tracks go into the one commit.
 
+A chain of one of the pair's nets, such as a fan-out, keeps clear of the
+pair's track of the other net. The coupled section cannot tell which of its
+tracks faces the chain, so it keeps its whole width clear of the chain as of
+any other, except near where the two connect. In effect, beyond its fan-out
+such a chain keeps off the pair's track of its own net too: it neither comes
+close to it nor crosses it there.
+
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which
 KiCad's length tuner does. Same-net copper that touches a coupled section
@@ -261,7 +277,7 @@ into coupling.
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. KiCad's DRC catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. |
-| `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
+| `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--fixed-vias` | | Keep every selected stitching via (one no selected track ends at) where it is, as if it were not selected, and spend no time moving it. Vias that carry selected tracks still move. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |

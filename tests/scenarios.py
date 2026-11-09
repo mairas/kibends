@@ -165,8 +165,6 @@ PAIR_WIDTH = 0.2
 PAIR_CLEARANCE = 0.2
 PAIR_INFLATION = PAIR_WIDTH + PAIR_CLEARANCE
 """Distance two chains of different nets keep between their centrelines."""
-SAME_NET_INFLATION = PAIR_WIDTH
-"""Distance two chains of one net keep: they may touch but not overlap."""
 
 
 @dataclass(frozen=True)
@@ -513,7 +511,7 @@ def via_pair() -> ViasScenario:
     )
 
 
-SAME_NET_LEVEL = 1.5
+PINNED_LEVEL = 1.5
 
 
 PINNED_STEP = 0.05
@@ -521,21 +519,21 @@ PINNED_STEP = 0.05
 apart has no free vertex and stands still."""
 
 
-def via_over_same_net() -> ViasScenario:
-    """The detour route above a chain of its own net on an inner layer,
+def via_over_pinned(net: str) -> ViasScenario:
+    """The detour route, of net N, above a chain of `net` on an inner layer,
     pinned throughout, so that only the via can keep the two apart."""
     count = round(10.0 / PINNED_STEP) + 1
     points = np.column_stack(
-        [np.linspace(0.0, 10.0, count), np.full(count, SAME_NET_LEVEL)]
+        [np.linspace(0.0, 10.0, count), np.full(count, PINNED_LEVEL)]
     )
     inner = ChainInput(
-        ChainCentreline("inner", "N", PAIR_WIDTH, PAIR_CLEARANCE, points),
+        ChainCentreline("inner", net, PAIR_WIDTH, PAIR_CLEARANCE, points),
         "In1.Cu",
         np.ones(count, dtype=bool),
         FreeSpace(),
     )
     return ViasScenario(
-        "via-over-same-net",
+        f"via-over-pinned-{net}",
         (*route("N", DETOUR_VIA), inner),
         (joining(through_via("v", "N", DETOUR_VIA), 0),),
     )
@@ -563,12 +561,13 @@ ROUTE_LEVEL = 3.0
 BOWED_VIA = (5.0, ROUTE_LEVEL)
 
 
-def via_over_bowed_same_net() -> ViasScenario:
-    """A straight route along y = 3 with its via over a chain of its own net
-    on an inner layer, bowed down under the via and pulled up past it."""
+def via_over_bowed(net: str) -> ViasScenario:
+    """A straight route of net N along y = 3 with its via over a chain of
+    `net` on an inner layer, bowed down under the via and pulled up past
+    it."""
     inner = selected(
         "inner",
-        "N",
+        net,
         FreeSpace(),
         (3.0, ROUTE_LEVEL + 0.2),
         (5.0, 0.5),
@@ -576,7 +575,7 @@ def via_over_bowed_same_net() -> ViasScenario:
         layer="In1.Cu",
     )
     return ViasScenario(
-        "via-over-bowed-same-net",
+        f"via-over-bowed-{net}",
         (
             *route("N", BOWED_VIA, (0.0, ROUTE_LEVEL), (10.0, ROUTE_LEVEL)),
             inner,

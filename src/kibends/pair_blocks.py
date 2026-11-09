@@ -14,13 +14,15 @@ two beyond that end's direction pin. The centreline is a little wider than
 the pair, by as far as the outer track's mitred corners reach beyond half
 the pitch at the bend-radius limit, so that its clearance covers them.
 
-The other blocks see the two tracks at the centreline's current shape. The
-centreline sees every other chain, and every track of another pair, as a
-track of the pair's outer extent would, the pair's own nets included, since
-copper of one net must keep clear of the other track. Where a chain of
-either net touches it, at a fan-out, that chain is left out near the touch,
-as chains of one net leave each other out (`neighbours.neighbour_centrelines`),
-far enough that the rest keeps the clearance.
+The other blocks see the two tracks at the centreline's current shape, a
+chain of one of the pair's nets only the track of the other, as copper of
+one net does not interact. The centreline sees every other chain, and every
+track of another pair, as a track of the pair's outer extent would, the
+pair's own nets included, since a chain of one of them must keep clear of
+the other track and the centreline cannot tell its sides apart. Where a
+chain of either net touches it, at a fan-out, that chain is left out near
+the touch (`neighbours.kept_spans`), far enough that the rest keeps the
+clearance.
 """
 
 import math

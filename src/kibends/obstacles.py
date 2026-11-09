@@ -668,16 +668,16 @@ def chain_obstacles(
     made of other chains' centrelines.
 
     Another net's chain is kept at the larger of both clearances. A chain of
-    the same net may touch this one but not overlap it, since DRC does not
-    flag same-net overlap and both would otherwise be pulled onto each other.
+    the same net is no obstacle: copper of one net may come close, overlap
+    or cross.
     """
     half_width = width / 2
     return _chains_field(
         (
             o,
-            half_width
-            + o.width / 2
-            + (max(clearance, o.clearance) if o.net != net else 0.0),
+            None
+            if o.net == net
+            else half_width + o.width / 2 + max(clearance, o.clearance),
         )
         for o in others
     )
@@ -722,19 +722,14 @@ class _Keeper:
     hole_radius: float | None = None
     """A via's drill radius; None for a track."""
     hole_to_hole: float = HOLE_TO_HOLE
-    touches_own_net: bool = False
-    """Whether copper of its own net is kept at touching distance rather
-    than ignored."""
-    enters_own_pads: bool = False
-    """Whether pads of its own net are ignored even with `touches_own_net`."""
     zones: tuple[ViaZone, ...] = ()
     """For a via, the zones it stays inside on the layers at hand."""
 
     def copper(self, net: str, extent: float, clearance: float) -> float | None:
         """For copper of `net` reaching `extent` mm beyond its geometry, with
-        `clearance` its own clearance."""
+        `clearance` its own clearance; None for copper of its own net."""
         if net == self.net:
-            return extent + self.radius if self.touches_own_net else None
+            return None
         inflation = max(
             extent + max(self.clearance, clearance) + self.radius,
             _zone_inflation(self.zones, extent, self.clearance, clearance),
@@ -792,12 +787,9 @@ def _copper_items(
                 if pad.clearance_override is not None
                 else snapshot.clearance(pad.net)
             )
-            inflation = (
-                None
-                if keeper.enters_own_pads and pad.net == keeper.net
-                else keeper.copper(pad.net, 0.0, clearance)
+            candidates.append(
+                (f"pad {pad.name}", pad.shape, keeper.copper(pad.net, 0.0, clearance))
             )
-            candidates.append((f"pad {pad.name}", pad.shape, inflation))
     candidates += [
         (
             f"track {t.id}",
@@ -950,13 +942,12 @@ def build_via_obstacles(
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
-    allow_via_in_pad: bool = False,
     zones: Sequence[ViaZone] = (),
 ) -> ObstacleField:
     """Obstacles for `via` at any position, over every layer of `layers` it
-    spans. The outside of the regions of `zones` is not among them, nor are
-    the vias of its net: they only limit where the via may go and do not
-    repel it (`containment`, `own_net_vias`).
+    spans. The outside of the regions of `zones` is not among them, nor is
+    anything of its own net: those only limit where the via may go and do
+    not repel it (`containment`, `own_net_stops`).
 
     Rule areas keeping out vias on those layers keep its ring out, as track
     keepouts keep out a track's copper.
@@ -965,24 +956,19 @@ def build_via_obstacles(
     and its hole keeps the hole clearance, to other nets' copper on each of
     those layers. On a layer of one of `zones`, its centre also keeps the
     zone's clearance and margin from that copper (`_zone_inflation`), so
-    that the refill reaches it. Its ring may touch copper of its own net but not overlap
-    it, so that it neither sinks into a pad nor makes a new connection; with
-    `allow_via_in_pad`, pads of its own net are no obstacle to its ring,
-    which KiCad's DRC does not flag either. Its
-    hole keeps hole-to-hole from every other hole the layers hold, of any
-    net. One field over all the layers' items is their minimum. The via
-    itself and the vias in `moving`, which the caller adds at their current
-    positions, are left out; so is the copper of zones, which KiCad
-    refills.
+    that the refill reaches it. Its hole keeps hole-to-hole from every other
+    hole of another net the layers hold, and an unplated hole of its own net
+    keeps the hole clearance. One field over all the layers' items is their
+    minimum. The via itself and the vias in `moving`, which the caller adds
+    at their current positions, are left out; so is the copper of zones,
+    which KiCad refills.
     """
     spanned = [s for s in layers if via.reaches(s.layer)]
     if not spanned:
         raise ValueError(f"no layer that via {via.id} spans was given")
     left_out = {via.id, *moving}
-    keeper = replace(
-        _via_keeper(via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole),
-        touches_own_net=True,
-        enters_own_pads=allow_via_in_pad,
+    keeper = _via_keeper(
+        via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole
     )
     others = {
         v.id: v
@@ -990,6 +976,7 @@ def build_via_obstacles(
         for v in s.vias
         if v.id not in left_out and v.net != via.net
     }.values()
+    drilled = [p for p in spanned[0].pads if not _plated_of(p, via)]
 
     def on(layers: Iterable[str]) -> _Keeper:
         return replace(keeper, zones=zones_on(zones, layers))
@@ -1004,7 +991,7 @@ def build_via_obstacles(
         # well, since the chain ends it joins sit at its centre.
         *_copper_items(spanned[0], on([spanned[0].layer]), others, via_keeper),
         *(o for s in spanned[1:] for o in _copper_items(s, on([s.layer]), ())),
-        *_hole_items(spanned[0].pads, others, keeper),
+        *_hole_items(drilled, others, keeper),
         *(
             Obstacle("via keepout", k, keeper.radius)
             for s in spanned
@@ -1017,19 +1004,25 @@ def build_via_obstacles(
     return Obstacles(items, outline, edge_clearance + keeper.radius)
 
 
-def own_net_vias(
+def own_net_stops(
     layers: Sequence[LayerSnapshot],
     via: Via,
     *,
     moving: Collection[str] = frozenset(),
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
+    allow_via_in_pad: bool = False,
 ) -> ObstacleField | None:
-    """The vias of `via`'s net on the layers of `layers` it spans, but those
-    in `moving`, as obstacles to it, or None if there are none: their holes
-    kept at hole-to-hole and nothing else, as two moving vias of one net
-    keep (`via_via_inflation`). Copper of its own net only limits a via, so
-    these are apart from that field."""
+    """What of `via`'s net on the layers of `layers` it spans limits it, as
+    obstacles that stop it without repelling it, or None if nothing does.
+
+    Copper of one net does not interact, but two drilling rules hold: the
+    holes of its net's vias, but those in `moving`, and of its net's plated
+    pads keep hole-to-hole from its hole, as two moving vias of one net keep
+    (`via_via_inflation`); and its ring may touch its net's pads but not
+    overlap them, since a via in a pad needs the fabricator to fill and cap
+    it, unless `allow_via_in_pad`, which KiCad's DRC does not check either.
+    """
     spanned = [s for s in layers if via.reaches(s.layer)]
     if not spanned:
         raise ValueError(f"no layer that via {via.id} spans was given")
@@ -1042,7 +1035,28 @@ def own_net_vias(
     }.values()
     clearance = spanned[0].clearance(via.net)
     keeper = _via_keeper(via, clearance, hole_clearance, hole_to_hole)
-    return _vias_field(keeper, own, lambda _: clearance)
+    plated = [p for p in spanned[0].pads if _plated_of(p, via)]
+    items = _hole_items(plated, (), keeper)
+    if not allow_via_in_pad:
+        items += [
+            Obstacle(f"pad {pad.name}", pad.shape, keeper.radius)
+            for s in spanned
+            for pad in s.pads
+            if pad.net == via.net and pad.shape is not None
+        ]
+    parts: list[ObstacleField] = [Obstacles(items)] if items else []
+    vias = _vias_field(keeper, own, lambda _: clearance)
+    if vias is not None:
+        parts.append(vias)
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else CompositeField(parts)
+
+
+def _plated_of(pad: Pad, via: Via) -> bool:
+    """Whether `pad` has a plated hole of `via`'s net, which only stops the
+    via (`own_net_stops`) and is left out of its field."""
+    return pad.net == via.net and pad.kind is not PadKind.NPTH
 
 
 def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
@@ -1084,10 +1098,8 @@ def moving_via_obstacles(
 
     Each counts as `build_obstacles` counts a via on the board: its ring and
     hole, kept at the clearances of both nets, with `clearance_of` giving a
-    via's netclass clearance. A via of `net` may touch the track but not
-    overlap it, so that it makes no new connection; the vias the track ends
-    at are the caller's to leave out. Vias not spanning `layer` are no
-    obstacle. A via of another net in one of the zones `zones` gives by via
+    via's netclass clearance. A via of `net` is no obstacle, nor is one not
+    spanning `layer`. A via of another net in one of the zones `zones` gives by via
     id, on `layer`, keeps the zone's clearance and margin from the track, as
     `via_chain_inflation` keeps it.
     """
@@ -1096,7 +1108,6 @@ def moving_via_obstacles(
         keeper,
         (v for v in vias if v.reaches(layer)),
         clearance_of,
-        touching=True,
         zones_of=lambda v: zones_on(zones.get(v.id, ()), [layer]),
     )
 
@@ -1158,9 +1169,7 @@ def chain_obstacles_for_via(
     Another net's chain keeps the larger of the copper clearance from the
     via's ring and the hole clearance from its hole, and the clearance and
     margin of `zones`, the zones the via stays inside on the chains' layer.
-    A chain of the via's net may touch its ring but not overlap it, so that
-    the via makes no new connection; the chains that end at the via are the
-    caller's to leave out.
+    A chain of the via's net is no obstacle.
     """
     return _chains_field(
         (
@@ -1180,11 +1189,11 @@ def via_chain_inflation(
     *,
     hole_clearance: float = HOLE_CLEARANCE,
     zones: Sequence[ViaZone] = (),
-) -> float:
+) -> float | None:
     """The distance `via`'s centre keeps from `chain`'s centreline, as
-    `chain_obstacles_for_via` counts it, mm."""
+    `chain_obstacles_for_via` counts it, mm; None for a chain of its net."""
     if chain.net == via.net:
-        return chain.width / 2 + via.diameter / 2
+        return None
     # Chains have no holes, so the keeper's hole-to-hole is never asked.
     keeper = _Keeper(
         via.net,
@@ -1194,9 +1203,7 @@ def via_chain_inflation(
         via.drill / 2,
         zones=tuple(zones),
     )
-    inflation = keeper.copper(chain.net, chain.width / 2, chain.clearance)
-    assert inflation is not None
-    return inflation
+    return keeper.copper(chain.net, chain.width / 2, chain.clearance)
 
 
 def _via_keeper(
@@ -1222,19 +1229,15 @@ def _vias_field(
     vias: Iterable[Via],
     clearance_of: Callable[[str], float],
     *,
-    touching: bool = False,
     zones_of: Callable[[Via], Sequence[ViaZone]] = lambda _: (),
 ) -> ChainField | None:
     """The vias' rings and holes as obstacles to `keeper`, or None if none
-    is one; with `touching`, vias of its net keep their rings from touching
-    distance. `zones_of` gives the zones each via stays inside where the
+    is one. `zones_of` gives the zones each via stays inside where the
     keeper is."""
     centres: list[Point2] = []
     inflations: list[float] = []
     for v in vias:
-        inflation = _via_inflation(
-            keeper, v, clearance_of, touching=touching, zones=zones_of(v)
-        )
+        inflation = _via_inflation(keeper, v, clearance_of, zones=zones_of(v))
         if inflation is not None:
             centres.append(v.position)
             inflations.append(inflation)
@@ -1250,16 +1253,13 @@ def _via_inflation(
     via: Via,
     clearance_of: Callable[[str], float],
     *,
-    touching: bool = False,
     zones: Sequence[ViaZone] = (),
 ) -> float | None:
     """How far `keeper` keeps from `via`'s centre, by its ring and hole, and
     by the zones `via` stays inside where the keeper is, as the via keeps
     from it (`_Keeper.copper`)."""
     ring = keeper.copper(via.net, via.diameter / 2, clearance_of(via.net))
-    if touching and via.net == keeper.net:
-        ring = via.diameter / 2 + keeper.radius
-    elif ring is not None and via.net != keeper.net:
+    if ring is not None:
         ring = max(
             ring,
             _zone_inflation(

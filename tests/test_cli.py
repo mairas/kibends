@@ -485,6 +485,40 @@ class TestSmooth:
             assert c.frozen == ()
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_stub_crossing_the_route_past_its_copper_is_left_behind(
+        self,
+        connect: Connector,
+        reports: list[pipeline.RunReport],
+        log: list[str],
+    ) -> None:
+        # Copper of one net does not interact, and the stub ends beyond the
+        # route's copper, so nothing holds the two together: the route
+        # straightens off the stub, which stays as drawn, two pieces of SIG.
+        route = [
+            kipy_track("r1", "SIG", (0, 0), (4, -1), width=WIDTH),
+            kipy_track("r2", "SIG", (4, -1), (6, -1), width=WIDTH),
+            kipy_track("r3", "SIG", (6, -1), (10, 0), width=WIDTH),
+        ]
+        stub = kipy_track("stub", "SIG", (5, -3), (5, -0.6), width=WIDTH)
+        tracks = [*route, stub]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        (report,) = reports
+        assert report.committed
+        assert sorted(board.deleted) == ["r1", "r2", "r3"]
+        created = cast(list[kbt.Track], board.created)
+        points = [(p.x, p.y) for t in created for p in (t.start, t.end)]
+        assert all(abs(y) < nm(0.01) for _, y in points)
+        assert {(0, 0), (nm(10), 0)} <= set(points)
+        # The fake board has no outline, which is the only warning.
+        assert not any(
+            line.startswith(("WARNING", "ERROR")) and "Edge.Cuts" not in line
+            for line in log
+        )
+
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_dry_run_prints_the_outcome_and_commits_nothing(
         self, connect: Connector, capsys: pytest.CaptureFixture[str]
     ) -> None:

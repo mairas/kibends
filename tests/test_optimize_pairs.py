@@ -38,7 +38,7 @@ from kibends.energy import (
     total_energy,
 )
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import ChainCentreline
+from kibends.obstacles import ChainCentreline, ChainField
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     ChainResult,
@@ -274,6 +274,50 @@ class TestEnergy:
                     assert gradients[i][k, axis] == pytest.approx(
                         numeric, rel=1e-4, abs=1e-6
                     )
+
+    @pytest.mark.parametrize("net", ["P", "N"])
+    def test_a_chain_of_one_of_the_pair_s_nets_repels_the_whole_section(
+        self, net: str
+    ) -> None:
+        # The section cannot tell which track faces the bar, so it keeps its
+        # whole extent clear of it, its own net's track included; the bar
+        # keeps clear of the other net's track alone.
+        bar = selected("bar", net, FreeSpace(), (4.0, 2.2), (5.0, 2.4), (6.0, 2.2))
+        scenario = replace(scenarios.pair_tent(), chains=(bar,))
+        members, polylines, masks = self.state(scenario)
+        block = members[1]
+        assert isinstance(block, PairBlock)
+        params = self.params()
+        points, mask = polylines[1], masks[1]
+        bar_points = polylines[0]
+
+        value, gradients = layer_energy(members, polylines, masks, params, 0.01)
+
+        def edges(line: FloatArray, inflation: float) -> ChainField:
+            return ChainField(line[:-1], line[1:], np.full(len(line) - 1, inflation))
+
+        facing = block.facing.centreline
+        seeing_bar = chain_field(
+            block.chain.field,
+            [edges(bar_points, (facing.width + PAIR_WIDTH) / 2 + PAIR_CLEARANCE)],
+        )
+        section = total_energy(points, mask, seeing_bar, params, 0.01, block.limit)[0]
+        (other,) = [
+            line
+            for track, line in zip(block.tracks, block.offset(points), strict=True)
+            if track.centreline.net != net
+        ]
+        seeing_track = chain_field(
+            bar.field, [edges(other, PAIR_WIDTH + PAIR_CLEARANCE)]
+        )
+        own = total_energy(bar_points, bar.fixed, seeing_track, params, 0.01)[0]
+        alone = total_energy(
+            points, mask, block.chain.field, params, 0.01, block.limit
+        )[0]
+        assert section > alone
+        assert value == pytest.approx(section + own, rel=1e-12)
+        apart = layer_energy(members[1:], polylines[1:], masks[1:], params, 0.01)[1]
+        assert not np.allclose(apart[0], gradients[1])
 
 
 @pytest.fixture(scope="module")

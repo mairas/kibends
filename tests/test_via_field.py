@@ -35,7 +35,7 @@ from kibends.obstacles import (
     chain_obstacles_for_via,
     contained,
     moving_via_obstacles,
-    own_net_vias,
+    own_net_stops,
     via_chain_inflation,
     via_obstacles_for_via,
 )
@@ -83,21 +83,18 @@ def field_of(
     *,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
-    allow_via_in_pad: bool = False,
 ) -> ObstacleField:
     snaps = slices(fake, layers)
     return build_via_obstacles(
-        snaps,
-        via_of(snaps),
-        hole_clearance=hole_clearance,
-        hole_to_hole=hole_to_hole,
-        allow_via_in_pad=allow_via_in_pad,
+        snaps, via_of(snaps), hole_clearance=hole_clearance, hole_to_hole=hole_to_hole
     )
 
 
-def own_net_of(fake: FakeBoard, layers: Sequence[str] = BOTH) -> ObstacleField:
+def own_net_of(
+    fake: FakeBoard, layers: Sequence[str] = BOTH, *, allow_via_in_pad: bool = False
+) -> ObstacleField:
     snaps = slices(fake, layers)
-    field = own_net_vias(snaps, via_of(snaps))
+    field = own_net_stops(snaps, via_of(snaps), allow_via_in_pad=allow_via_in_pad)
     assert field is not None
     return field
 
@@ -153,18 +150,16 @@ class TestViaField:
         expected = (5 - PAD_HALF_SIZE) - 2 - (0.5 + RADIUS)
         assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
-    def test_with_via_in_pad_its_own_nets_pads_are_no_obstacle(self) -> None:
+    def test_with_via_in_pad_its_own_nets_pads_do_not_stop_it(self) -> None:
         fake = FakeBoard(
             pads=[kipy_pad("mine", NET, 1, 0, layers=(BL.BL_F_Cu,))],
-            tracks=[kipy_track("stub", NET, (0, 1), (5, 1), layer=BL.BL_B_Cu)],
             vias=[moving_via()],
         )
+        snaps = slices(fake)
 
-        field = field_of(fake, allow_via_in_pad=True)
-        distance, _ = field.signed_distance(points((1, 0), (3, 1)))
+        stops = own_net_stops(snaps, via_of(snaps), allow_via_in_pad=True)
 
-        assert distance[0] == pytest.approx(1 - 0.125 - RADIUS, abs=NM_TOLERANCE)
-        assert distance[1] == pytest.approx(-0.125 - RADIUS, abs=NM_TOLERANCE)
+        assert stops is None
 
     def test_with_via_in_pad_a_pads_hole_still_counts(self) -> None:
         pth = kipy_pad(
@@ -172,14 +167,14 @@ class TestViaField:
         )
         fake = FakeBoard(pads=[pth], vias=[moving_via(5, 0)])
 
-        distance, _ = field_of(fake, allow_via_in_pad=True).signed_distance(
+        distance, _ = own_net_of(fake, allow_via_in_pad=True).signed_distance(
             points((2, 0))
         )
 
         expected = 2 - (0.5 + HOLE_TO_HOLE + HOLE_RADIUS)
         assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
-    def test_same_net_copper_may_touch_the_ring(self) -> None:
+    def test_same_net_copper_is_left_out_of_its_field(self) -> None:
         fake = FakeBoard(
             pads=[kipy_pad("mine", NET, 1, 0, layers=(BL.BL_F_Cu,))],
             tracks=[kipy_track("stub", NET, (0, 1), (5, 1), layer=BL.BL_B_Cu)],
@@ -188,10 +183,23 @@ class TestViaField:
 
         distance, _ = field_of(fake).signed_distance(points((0, 0), (3, 1)))
 
+        assert np.isinf(distance).all()
+
+    def test_same_net_pads_stop_its_ring_at_touching_and_tracks_do_not(
+        self,
+    ) -> None:
+        fake = FakeBoard(
+            pads=[kipy_pad("mine", NET, 1, 0, layers=(BL.BL_F_Cu,))],
+            tracks=[kipy_track("stub", NET, (0, 3), (5, 3), layer=BL.BL_B_Cu)],
+            vias=[moving_via()],
+        )
+
+        distance, _ = own_net_of(fake).signed_distance(points((0, 0), (3, 3)))
+
         pad_edge = 1 - PAD_HALF_SIZE
         assert distance[0] == pytest.approx(pad_edge - RADIUS, abs=NM_TOLERANCE)
-        half_width = 0.125
-        assert distance[1] == pytest.approx(-half_width - RADIUS, abs=NM_TOLERANCE)
+        to_pad = math.hypot(3 - (1 + PAD_HALF_SIZE), 3 - PAD_HALF_SIZE) - RADIUS
+        assert distance[1] == pytest.approx(to_pad, abs=NM_TOLERANCE)
 
     def test_the_via_is_no_obstacle_to_itself(self) -> None:
         distance, _ = field_of(FakeBoard(vias=[moving_via()])).signed_distance(
@@ -485,14 +493,14 @@ class TestZoneClearance:
         expected = 2 - (TRACK_HALF + DEFAULT_CLEARANCE + RADIUS)
         assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
-    def test_copper_of_its_own_net_is_still_touched(self) -> None:
+    def test_copper_of_its_own_net_is_still_no_obstacle(self) -> None:
         fake = FakeBoard(tracks=[track_at_y2(NET, BL.BL_In1_Cu)], vias=[moving_via()])
         snaps = slices(fake, THREE_LAYERS)
 
         field = build_via_obstacles(snaps, via_of(snaps), zones=[PLANE])
         distance, _ = field.signed_distance(points((0, 0)))
 
-        assert distance[0] == pytest.approx(2 - (TRACK_HALF + RADIUS))
+        assert np.isinf(distance[0])
 
     def test_a_moving_chain_on_the_zone_s_layer_keeps_it(self) -> None:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
@@ -535,6 +543,7 @@ class TestZoneClearance:
         ring = via_chain_inflation(
             via, chain, lambda _: DEFAULT_CLEARANCE, zones=[PLANE]
         )
+        assert ring is not None
         assert ring == pytest.approx(0.15 + ZONE_CLEARANCE + PLANE.margin)
         assert distance[0] == pytest.approx(2 - ring)
 
@@ -643,9 +652,13 @@ class TestViaDrill:
         fake = FakeBoard(pads=[tht], vias=[moving_via(5, 0)])
 
         distance, _ = field_of(fake).signed_distance(points((2, 0)))
+        stop, _ = own_net_of(fake, allow_via_in_pad=True).signed_distance(
+            points((2, 0))
+        )
 
+        assert np.isinf(distance[0])
         expected = 2 - (0.5 + HOLE_TO_HOLE + HOLE_RADIUS)
-        assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
+        assert stop[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
     def test_a_same_net_via_hole_counts_only_hole_to_hole(self) -> None:
         # A ring this narrow touches the via's ring nearer than hole-to-hole.
@@ -687,7 +700,7 @@ class TestViaDrill:
         snaps = slices(fake, ("F.Cu",))
         both, _ = own_net_of(fake).signed_distance(points((2, 0)))
 
-        assert own_net_vias(snaps, via_of(snaps)) is None
+        assert own_net_stops(snaps, via_of(snaps)) is None
         assert np.isfinite(both[0])
 
     def test_vias_of_its_net_only_stop_it_and_are_left_out_of_its_field(
@@ -752,16 +765,14 @@ class TestViaAsObstacleToChains:
         expected = 2 - (0.4 + 0.2 + CHAIN_WIDTH / 2)
         assert distance[0] == pytest.approx(expected, abs=NM_TOLERANCE)
 
-    def test_a_same_net_via_may_touch_but_not_overlap(self) -> None:
+    def test_a_same_net_via_is_no_obstacle(self) -> None:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
 
         field = moving_via_obstacles(
             "F.Cu", NET, CHAIN_WIDTH, DEFAULT_CLEARANCE, [via], lambda _: 0.2
         )
 
-        assert field is not None
-        distance, _ = field.signed_distance(points((2, 0)))
-        assert distance[0] == pytest.approx(2 - (RADIUS + CHAIN_WIDTH / 2))
+        assert field is None
 
     def test_nothing_on_a_layer_the_via_does_not_span(self) -> None:
         blind = kipy_via(
@@ -827,14 +838,15 @@ class TestChainsAsObstaclesToAVia:
         assert distance == pytest.approx(expected, abs=NM_TOLERANCE)
         assert gradient == pytest.approx(expected_gradient, abs=NM_TOLERANCE)
 
-    def test_a_same_net_chain_may_touch_the_ring_but_not_overlap_it(self) -> None:
+    def test_a_same_net_chain_is_no_obstacle(self) -> None:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
         mine = ChainCentreline("chain SIG", NET, 0.25, 0.2, points((-5, 1), (5, 1)))
 
         field = chain_obstacles_for_via(via, [mine], lambda _: DEFAULT_CLEARANCE)
         distance, _ = field.signed_distance(points((0, 0)))
 
-        assert distance[0] == pytest.approx(1 - (0.25 / 2 + RADIUS))
+        assert np.isinf(distance[0])
+        assert via_chain_inflation(via, mine, lambda _: DEFAULT_CLEARANCE) is None
 
 
 class TestMovingViasAsObstaclesToAVia:

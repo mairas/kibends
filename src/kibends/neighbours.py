@@ -2,9 +2,12 @@
 
 Each chain has a static field of everything on the board but the selected
 chains. The other selected chains on its layer are added to it as obstacles,
-one field each, at whatever shape the caller holds them in. Where two
-chains of one net touch, each leaves the other out near the touch, so that
-neither keeps clear of the copper it connects to.
+one field each, at whatever shape the caller holds them in. Chains of one
+net are no obstacles to each other: copper of one net may come close,
+overlap or cross. A coupled section's centreline does keep clear of its own
+nets' chains, as its other track must, and leaves each out near where it
+touches it (`kept_spans`), so that it does not keep clear of the fan-outs
+it connects to.
 """
 
 import math
@@ -29,9 +32,9 @@ from kibends.obstacles import (
     chain_obstacles,
 )
 
-# Pins of two chains of one net up to this much farther apart than their half
-# widths still overlap: touch points are projected in floats. 1 nm, KiCad's
-# coordinate resolution.
+# Pins of a section and a chain of its net up to this much farther apart than
+# their half widths still overlap: touch points are projected in floats. 1 nm,
+# KiCad's coordinate resolution.
 TOUCH_TOLERANCE = 1e-6
 
 
@@ -75,29 +78,15 @@ def neighbour_fields(
     others: Iterable[int],
     polylines: Sequence[FloatArray],
     reach: float,
-    own_points: FloatArray | None = None,
 ) -> list[ObstacleField]:
-    """The chains `others`, at `polylines`, as obstacles to chain i at
-    `own_points`, by default its starting polyline; those left out entirely
-    are dropped."""
+    """The chains `others`, at `polylines`, as obstacles to chain i; those
+    left out entirely are dropped."""
     return [
         field
         for j in others
-        if (
-            field := neighbour_field(
-                chains[i], [(chains[j], polylines[j])], reach, own_points
-            )
-        )
+        if (field := neighbour_field(chains[i], [(chains[j], polylines[j])], reach))
         is not None
     ]
-
-
-def with_moved_ends(start: FloatArray, current: FloatArray) -> FloatArray:
-    """`start` with its ends where `current` has them, which differ only
-    where a moving via carried them."""
-    moved = start.copy()
-    moved[0], moved[-1] = current[0], current[-1]
-    return moved
 
 
 def neighbour_field(
@@ -112,24 +101,30 @@ def neighbour_field(
     `own_points`, by default its starting polyline, in one field; None if
     nothing is left.
 
-    A chain of a net in `as_net`, by default only `own`'s, is left out near
-    where it touches `own` as that net's chain (`neighbour_centrelines`).
-    Where that stands for `own` under another net, as a pair's centreline
-    stands for either track, the chain keeps the larger of the two
-    clearances from the rest of it.
+    A chain of `own`'s net is no obstacle. A coupled section's centreline,
+    `own` with `as_net` giving it under either of the pair's nets, keeps
+    clear of those nets' chains as of any other, but leaves each out near
+    where it touches it as that net's chain (`neighbour_centrelines`), and
+    keeps the larger of the two clearances from the rest of it.
     """
     me = own.centreline
-    nets = {me.net: own} if as_net is None else as_net
+    nets = as_net or {}
     parts: list[ChainCentreline] = []
     for other, points in shown:
         them = other.centreline
+        if them.net == me.net:
+            continue
         mine = nets.get(them.net)
         if mine is None:
             parts.append(replace(them, points=points))
             continue
-        margin = 0.0 if them.net == me.net else max(me.clearance, them.clearance)
         parts += neighbour_centrelines(
-            mine, other, points, reach, own_points, margin=margin
+            mine,
+            other,
+            points,
+            reach,
+            own_points,
+            margin=max(me.clearance, them.clearance),
         )
     if not parts:
         return None
@@ -142,12 +137,13 @@ def neighbour_centrelines(
     points: FloatArray,
     reach: float,
     own_points: FloatArray | None = None,
-    margin: float = 0.0,
+    *,
+    margin: float,
 ) -> list[ChainCentreline]:
     """The parts of `other` at `points` that are obstacles to `own`, as
     `kept_spans` gives them."""
     them = other.centreline
-    spans = kept_spans(own, other, points, reach, own_points, margin)
+    spans = kept_spans(own, other, points, reach, own_points, margin=margin)
     if spans is None:
         return [replace(them, points=points)]
     return [replace(them, points=_cut(points, start, end)) for start, end in spans]
@@ -159,22 +155,22 @@ def kept_spans(
     points: FloatArray,
     reach: float,
     own_points: FloatArray | None = None,
-    margin: float = 0.0,
+    *,
+    margin: float,
 ) -> list[tuple[float, float]] | None:
     """The stretches of `other` at `points` that are obstacles to `own`, as
     arc lengths along `points`; None for the whole of it.
 
-    Chains of one net connect where their copper overlaps, and both are
-    pinned there: at a neck-down both end at one point, at a T one ends in
-    the other's copper. Near such a touch both must leave it, so the other
-    is left out on each side of its pin as far as it lies within its
-    inflation plus `reach` of `own` at `own_points`, by default its starting
-    polyline. A caller that keeps a clearance from the rest of `other`
-    widens its inflation by that `margin`.
+    `own` is a coupled section's centreline as a chain of `other`'s net
+    (`PairBlock.as_net`). The two connect where their copper overlaps, and
+    both are pinned there: at a fan-out the chain ends at the section's end.
+    Near such a touch the section must leave it, so the other is left out
+    on each side of its pin as far as it lies within its inflation plus
+    `reach` of `own` at `own_points`, by default its starting polyline. The
+    section keeps a clearance from the rest of `other`, so its inflation is
+    widened by that `margin`.
     """
     me, them = own.centreline, other.centreline
-    if them.net != me.net:
-        return None
     own_touch, other_touch = _touches(own, other)
     if not own_touch.size:
         return None

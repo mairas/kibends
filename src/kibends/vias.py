@@ -84,8 +84,9 @@ class ViaInput:
     layers."""
 
     own_net: ObstacleField | None = None
-    """The vias of its net that stand still, as `own_net_vias` gives them,
-    which only stop it."""
+    """What of its net stands still and only stops it, as `own_net_stops`
+    gives it: the holes of its net's vias and plated pads, and its net's
+    pads."""
 
     @cached_property
     def stops(self) -> ObstacleField | None:

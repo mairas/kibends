@@ -14,7 +14,9 @@ from shapely.geometry import LineString, Point, Polygon
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, half_side
+from kibends.chain import NM_PER_MM, Segment, extract_chains
 from kibends.commit import snapped_points
+from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
@@ -34,7 +36,6 @@ from kibends.optimize import (
     measure,
     optimize,
     optimize_chains,
-    pinned_at_junctions,
     resample,
     seen_parts,
 )
@@ -185,6 +186,60 @@ class TestEnergy:
         ]
         for (_, gradient), together in zip(apart, gradients, strict=True):
             assert not np.allclose(gradient, together)
+
+    def mixed(self) -> tuple[ChainInput, ...]:
+        """`chains` with a chain of A's net crossing A twice and reaching
+        into B's clearance, so that it sees B and not A."""
+        crossing = selected(
+            "A2", "A", FreeSpace(), (0.5, -0.5), (1.5, 0.7), (2.5, -0.5)
+        )
+        return (*self.chains(), crossing)
+
+    def test_chains_of_one_net_add_nothing_to_each_other(self) -> None:
+        a, _, crossing = self.mixed()
+        chains = (a, crossing)
+        polylines = [c.centreline.points for c in chains]
+        masks = [c.fixed for c in chains]
+
+        value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
+
+        for chain, points, mask, gradient in zip(
+            chains, polylines, masks, gradients, strict=True
+        ):
+            alone, alone_gradient = layer_energy(
+                [chain], [points], [mask], self.params(), 0.01
+            )
+            value -= alone
+            np.testing.assert_allclose(gradient, alone_gradient[0], atol=1e-12)
+        assert value == pytest.approx(0.0, abs=1e-12)
+
+    def test_gradient_with_chains_of_one_net_and_another(self) -> None:
+        chains = self.mixed()
+        polylines = [c.centreline.points.copy() for c in chains]
+        masks = [c.fixed for c in chains]
+        params = self.params()
+        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        alone = sum(
+            layer_energy([c], [p], [m], params, 0.01)[0]
+            for c, p, m in zip(chains, polylines, masks, strict=True)
+        )
+        # B repels both chains of net A.
+        assert value > alone
+        step = 1e-7
+
+        for i in range(len(polylines)):
+            for j in np.flatnonzero(~masks[i]):
+                for axis in (0, 1):
+                    shifted = [p.copy() for p in polylines]
+                    shifted[i][j, axis] += step
+                    up = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    shifted[i][j, axis] -= 2 * step
+                    down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    numeric = (up - down) / (2 * step)
+                    assert gradients[i][j, axis] == pytest.approx(
+                        numeric, rel=1e-5, abs=1e-7
+                    )
 
 
 def test_two_bumped_chains_shorten_and_stay_apart() -> None:
@@ -477,13 +532,121 @@ def test_an_optimised_layout_converges_again_almost_unchanged() -> None:
         )
 
 
-def test_chains_of_one_net_are_pulled_together_without_overlapping() -> None:
-    result = run(scenarios.same_net_wrap())
+def test_chains_of_one_net_closer_than_their_range_do_not_push_apart() -> None:
+    # Both wrap the disc as each would alone, so they overlap over its top.
+    scenario = scenarios.same_net_wrap()
 
-    inner, outer = (c.polyline for c in result.chains)
+    result = run(scenario)
+
     assert result.termination is Termination.CONVERGED
-    assert gap(inner, outer) >= scenarios.SAME_NET_INFLATION - INSIDE_TOLERANCE
-    assert gap(inner, outer) < scenarios.SAME_NET_INFLATION + 0.05
+    for chain, given in zip(result.chains, scenario.chains, strict=True):
+        (alone,) = optimize_chains([given], scenario.params, COARSE).chains
+        assert (
+            LineString(chain.polyline).hausdorff_distance(LineString(alone.polyline))
+            < 10 * COARSE.settled_change
+        )
+    inner, outer = (c.polyline for c in result.chains)
+    assert gap(inner, outer) < scenarios.PAIR_WIDTH / 2
+
+
+def test_a_chain_passes_through_a_chain_of_its_net() -> None:
+    # Of another net, the arch would drape over the bar.
+    free = FreeSpace()
+    arch = selected("arch", "N", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
+    bar = selected("bar", "N", free, (3.0, 1.0), (7.0, 1.0))
+
+    result = optimize_chains([arch, bar], scenarios.PARAMS, COARSE)
+
+    assert result.termination is Termination.CONVERGED
+    straightened = result.chains[0].polyline
+    assert length(straightened) < 10.0 + 0.01
+    assert abs(y_at(straightened, 5.0)) < 0.01
+
+
+def re_extracted(scenario: ChainsScenario, result: RunResult) -> list[ChainInput]:
+    """The chains of `result`, simplified and committed as straight tracks
+    and extracted again, as a second run takes them, each with its
+    scenario's field."""
+    simplified = simplify_chains(scenario.chains, result, scenario.params)
+    segments = [
+        Segment(
+            f"{k}.{i}",
+            (round(a[0] * NM_PER_MM), round(a[1] * NM_PER_MM)),
+            (round(b[0] * NM_PER_MM), round(b[1] * NM_PER_MM)),
+            round(given.centreline.width * NM_PER_MM),
+            given.layer,
+            given.centreline.net,
+        )
+        for k, (given, polyline) in enumerate(
+            zip(scenario.chains, simplified, strict=True)
+        )
+        for i, (a, b) in enumerate(itertools.pairwise(snapped_points(polyline)))
+    ]
+    extracted = sorted(
+        extract_chains(segments, frame=BOARD_FRAME),
+        key=lambda c: int(c.segment_ids[0].split(".")[0]),
+    )
+    return [
+        ChainInput(
+            replace(given.centreline, points=np.array(c.points)),
+            given.layer,
+            np.array(c.pinned),
+            given.field,
+        )
+        for given, c in zip(scenario.chains, extracted, strict=True)
+    ]
+
+
+def test_chains_of_one_net_left_overlapping_are_extracted_without_pins() -> None:
+    scenario = scenarios.same_net_wrap()
+    result = run(scenario)
+
+    again = re_extracted(scenario, result)
+
+    inner, outer = (c.centreline.points for c in again)
+    assert gap(inner, outer) < scenarios.PAIR_WIDTH / 2
+    for chain in again:
+        assert chain.fixed[0] and chain.fixed[-1]
+        assert not chain.fixed[1:-1].any()
+
+
+def test_a_crossing_a_run_makes_neither_pins_nor_joins_on_extraction() -> None:
+    # The arch comes down through the bar's middle, far from its ends.
+    free = FreeSpace()
+    scenario = ChainsScenario(
+        "arch-through-bar",
+        (
+            selected("arch", "N", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+            selected("bar", "N", free, (5.0, -0.5), (5.0, 1.5)),
+        ),
+    )
+    result = run(scenario)
+    arch, bar = (c.polyline for c in result.chains)
+    assert LineString(arch).crosses(LineString(bar))
+
+    again = re_extracted(scenario, result)
+
+    assert len(again) == 2
+    for chain, given in zip(again, result.chains, strict=True):
+        np.testing.assert_allclose(
+            chain.centreline.points[[0, -1]], given.polyline[[0, -1]], atol=1e-6
+        )
+        assert chain.fixed[0] and chain.fixed[-1]
+        assert not chain.fixed[1:-1].any()
+
+
+def test_a_second_run_moves_chains_of_one_net_left_overlapping_apart() -> None:
+    # Without the disc each straightens to its own ends, 0.4 mm apart.
+    scenario = scenarios.same_net_wrap()
+    again = [
+        replace(c, field=FreeSpace()) for c in re_extracted(scenario, run(scenario))
+    ]
+
+    result = optimize_chains(again, scenario.params, COARSE)
+
+    for chain in result.chains:
+        ends = chain.polyline[[0, -1]]
+        assert length(chain.polyline) < length(ends) + 0.01
 
 
 def test_chains_of_one_net_on_different_layers_are_taken() -> None:
@@ -891,8 +1054,7 @@ def test_a_tee_moves_its_junction_to_where_the_branches_meet_at_120_degrees(
     np.testing.assert_allclose(junction_of(result), scenarios.FERMAT_POINT, atol=0.05)
     assert angles_at_junction(result) == pytest.approx([120.0] * 3, abs=2.0)
     assert all(
-        c >= -INSIDE_TOLERANCE
-        for c in min_clearances(pinned_at_junctions(chains), result, scenarios.PARAMS)
+        c >= -INSIDE_TOLERANCE for c in min_clearances(chains, result, scenarios.PARAMS)
     )
     for chain, given in zip(result.chains, chains, strict=True):
         np.testing.assert_array_equal(chain.polyline[-1], given.centreline.points[-1])
@@ -936,7 +1098,7 @@ def test_simplified_and_snapped_branches_still_share_the_junction() -> None:
     chains = fermat_tee((0.2, 0.4, 0.3))
     result = optimize_chains(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
 
-    simplified = simplify_chains(pinned_at_junctions(chains), result, scenarios.PARAMS)
+    simplified = simplify_chains(chains, result, scenarios.PARAMS)
 
     junction = junction_of(result)
     for polyline in simplified:
@@ -951,13 +1113,11 @@ class TestJunctionEnergy:
     def test_straight_branches_pull_the_junction_along_themselves(self) -> None:
         # Straight branches meeting at right angles: only their lengths
         # count, and each pulls the junction straight along itself.
-        chains = pinned_at_junctions(
-            [
-                branch("left", (0.0, 0.0), (-2.0, 0.0), (-4.0, 0.0)),
-                branch("right", (0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
-                branch("up", (0.0, 0.0), (0.0, 2.0), (0.0, 4.0)),
-            ]
-        )
+        chains = [
+            branch("left", (0.0, 0.0), (-2.0, 0.0), (-4.0, 0.0)),
+            branch("right", (0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
+            branch("up", (0.0, 0.0), (0.0, 2.0), (0.0, 4.0)),
+        ]
         polylines = [c.centreline.points for c in chains]
         masks = [np.array([False, False, True])] * 3
 
@@ -972,30 +1132,39 @@ class TestJunctionEnergy:
     def test_gradient_of_the_shared_junction_matches_finite_differences(
         self,
     ) -> None:
-        # The middle branch swings back toward the first beyond what each
-        # leaves out of the other near the junction, so they repel there.
-        chains = pinned_at_junctions(
-            [
-                branch("A", (0.0, 0.0), (3.0, 0.0), (6.0, 0.0)),
-                branch("B", (0.0, 0.0), (1.5, 1.5), (3.0, 0.55), (4.5, 1.5)),
-                branch("C", (0.0, 0.0), (0.0, -3.0), (0.0, -6.0)),
-            ]
-        )
+        # The middle branch swings back toward the first, which it does not
+        # see, and passes a chain of another net, which it does.
+        branches = [
+            branch("A", (0.0, 0.0), (3.0, 0.0), (6.0, 0.0)),
+            branch("B", (0.0, 0.0), (1.5, 1.5), (3.0, 0.55), (4.5, 1.5)),
+            branch("C", (0.0, 0.0), (0.0, -3.0), (0.0, -6.0)),
+        ]
+        other = selected("D", "M", FreeSpace(), (1.5, 2.2), (3.0, 1.2), (4.5, 2.2))
+        chains = [*branches, other]
         polylines = [c.centreline.points.copy() for c in chains]
-        masks = [np.arange(len(p)) == len(p) - 1 for p in polylines]
+        masks = [np.arange(len(p)) == len(p) - 1 for p in polylines[:3]]
+        masks.append(other.fixed)
         params = self.params()
         seen = seen_parts(chains, polylines, obstacle_reach(params))
         value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
-        apart = sum(
-            layer_energy([c], [p], [m], params, 0.01)[0]
-            for c, p, m in zip(chains, polylines, masks, strict=True)
-        )
-        assert value > apart
+
+        def apart(members: Sequence[ChainInput]) -> float:
+            """The members, the first of `chains`, each alone."""
+            n = len(members)
+            return sum(
+                layer_energy([c], [p], [m], params, 0.01)[0]
+                for c, p, m in zip(members, polylines[:n], masks[:n], strict=True)
+            )
+
+        assert layer_energy(branches, polylines[:3], masks[:3], params, 0.01)[
+            0
+        ] == pytest.approx(apart(branches), rel=1e-12)
+        assert value > apart(chains)
         step = 1e-7
 
         def moved(axis: int, by: float) -> float:
             shifted = [p.copy() for p in polylines]
-            for p in shifted:
+            for p in shifted[:3]:
                 p[0, axis] += by
             return layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
 
@@ -1053,9 +1222,8 @@ def test_a_junction_cannot_pass_what_lies_between_it_and_its_best_place(
 
     result = optimize_chains(chains, scenarios.PARAMS, BLOCKED)
 
-    views = pinned_at_junctions(chains)
     assert all(
-        c >= -INSIDE_TOLERANCE for c in min_clearances(views, result, scenarios.PARAMS)
+        c >= -INSIDE_TOLERANCE for c in min_clearances(chains, result, scenarios.PARAMS)
     )
     a, b, c = (r.polyline for r in result.chains[:3])
     junction = Point(junction_of(replace(result, chains=result.chains[:3])))

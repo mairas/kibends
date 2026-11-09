@@ -19,7 +19,7 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     build_via_obstacles,
-    own_net_vias,
+    own_net_stops,
 )
 from kibends.optimize import (
     INSIDE_TOLERANCE,
@@ -343,8 +343,8 @@ def first_revert(
     [
         # Its end edge on F.Cu cuts across the post, both ends clear of it.
         (scenarios.via_detour_over(Box(4.9, 2.0, 0.05, 0.05)), (5.0, 1.5)),
-        # Onto the pinned chain of its net on In1.Cu.
-        (scenarios.via_over_same_net(), (5.0, scenarios.SAME_NET_LEVEL)),
+        # Onto the pinned chain of another net on In1.Cu.
+        (scenarios.via_over_pinned("P"), (5.0, scenarios.PINNED_LEVEL)),
     ],
     ids=["end-edge-crossing", "newly-inside"],
 )
@@ -509,32 +509,32 @@ class TestZoneClearanceToMembers:
         assert vias.apart(1, 0) == pytest.approx(expected)
 
 
-TOUCHING = scenarios.VIA_DIAMETER / 2 + scenarios.PAIR_WIDTH / 2
+VIA_TO_CHAIN = scenarios.VIA_TO_CHAIN
 
 
-def test_a_via_keeps_off_a_chain_of_its_net_that_does_not_end_at_it() -> None:
-    result = run(scenarios.via_over_same_net())
+def test_a_via_passes_over_a_chain_of_its_net_that_does_not_end_at_it() -> None:
+    # Of another net, the pinned chain would hold it above.
+    result = run(scenarios.via_over_pinned("N"))
 
     (via,) = result.vias
-    inner = result.chains[2].polyline
-    x, y = via.position
-    assert to_polyline(via.position, inner) >= TOUCHING - INSIDE_TOLERANCE
-    assert y_at(inner, x) < y
+    assert result.termination is Termination.CONVERGED
+    assert via.position[1] == pytest.approx(0.0, abs=0.1)
+    assert route_length(result) == pytest.approx(10.0, abs=0.01)
 
 
 # Pulled onto the chain against a weak clearance hinge, the via ends within
-# this much of touching it, mm.
+# this much of its clearance, mm.
 TIGHT = 2e-3
 
 
-def over_short_same_net() -> ViasScenario:
-    """`scenarios.via_over_same_net` with the pinned chain only under the
-    via's way, pinned at fewer points."""
-    scenario = scenarios.via_over_same_net()
+def over_short_pinned() -> ViasScenario:
+    """`scenarios.via_over_pinned` of another net with the pinned chain only
+    under the via's way, pinned at fewer points."""
+    scenario = scenarios.via_over_pinned("P")
     inner = scenario.chains[2]
     count = 25
     points = np.column_stack(
-        [np.linspace(2.0, 8.0, count), np.full(count, scenarios.SAME_NET_LEVEL)]
+        [np.linspace(2.0, 8.0, count), np.full(count, scenarios.PINNED_LEVEL)]
     )
     short = replace(
         inner,
@@ -547,7 +547,7 @@ def over_short_same_net() -> ViasScenario:
 def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
     # The hinge is too weak to hold the via off the pinned chain: only moving
     # it back when it newly enters its clearance does.
-    scenario = over_short_same_net()
+    scenario = over_short_pinned()
     params = replace(scenario.params, clearance_weight=0.1)
     shorter = replace(COARSE, burst_maxiter=15)
 
@@ -555,8 +555,8 @@ def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
 
     (via,) = result.vias
     gap = to_polyline(via.position, result.chains[2].polyline)
-    assert gap >= TOUCHING - INSIDE_TOLERANCE
-    assert gap < TOUCHING + TIGHT
+    assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
+    assert gap < VIA_TO_CHAIN + TIGHT
     assert via.rejected_edges > 0
 
 
@@ -565,15 +565,30 @@ def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
 PRESSING_ITERATIONS = 40
 
 
-def test_a_chain_of_its_net_that_does_not_end_at_it_keeps_off_the_via() -> None:
-    result = run(scenarios.via_over_bowed_same_net())
+def test_a_chain_of_another_net_keeps_off_the_via() -> None:
+    result = run(scenarios.via_over_bowed("P"))
 
     (via,) = result.vias
     inner = result.chains[2].polyline
     assert result.termination is Termination.CONVERGED
     assert result.iterations <= PRESSING_ITERATIONS
-    assert to_polyline(via.position, inner) >= TOUCHING - INSIDE_TOLERANCE
-    assert length(inner) < 4.4
+    assert to_polyline(via.position, inner) >= VIA_TO_CHAIN - INSIDE_TOLERANCE
+
+
+TOUCHING = scenarios.VIA_DIAMETER / 2 + scenarios.PAIR_WIDTH / 2
+
+
+def test_a_chain_of_its_net_that_does_not_end_at_it_passes_through_the_via() -> None:
+    scenario = scenarios.via_over_bowed("N")
+
+    result = run(scenario)
+
+    (via,) = result.vias
+    inner = result.chains[2].polyline
+    straight = length(scenario.chains[2].centreline.points[[0, -1]])
+    assert result.termination is Termination.CONVERGED
+    assert length(inner) < straight + 0.01
+    assert to_polyline(via.position, inner) < TOUCHING
 
 
 @pytest.mark.parametrize(
@@ -842,6 +857,18 @@ class TestGradient:
         scenario = scenarios.via_detour()
         self.check(replace(scenario, chains=(*scenario.chains, neighbour)), seed)
 
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_with_chains_of_its_net_and_another_near_the_via(self, seed: int) -> None:
+        # Of the via's net, crossing the other chain, which sees it.
+        mine = selected(
+            "N", "N", FreeSpace(), (3.0, 2.5), (5.0, 1.5), (7.0, 2.5), layer="In1.Cu"
+        )
+        other = selected(
+            "C", "C", FreeSpace(), (3.0, 1.0), (5.0, 2.0), (7.0, 1.0), layer="In1.Cu"
+        )
+        scenario = scenarios.via_detour()
+        self.check(replace(scenario, chains=(*scenario.chains, mine, other)), seed)
+
     def test_with_a_section_near_the_via(self) -> None:
         scenario = scenarios.via_detour()
         section = bump_under(1.0)
@@ -913,7 +940,7 @@ class TestGradient:
         )
         vias = (
             frozen,
-            replace(moving, own_net=own_net_vias(layers, moving.via)),
+            replace(moving, own_net=own_net_stops(layers, moving.via)),
             other,
         )
         self.check(replace(scenario, vias=vias), seed)
@@ -1011,7 +1038,7 @@ def beside_still(at_y: float, still_y: float) -> ViasScenario:
     (given,) = scenario.vias
     still = scenarios.through_via("u", "G", (STITCH_X, still_y))
     layers = [replace(layer(name), vias=(still,)) for name in given.via.span]
-    own = own_net_vias(layers, given.via)
+    own = own_net_stops(layers, given.via)
     return replace(scenario, vias=(replace(given, own_net=own),))
 
 
@@ -1089,6 +1116,16 @@ class TestStitchingVia:
         assert apart >= HOLES_APART - INSIDE_TOLERANCE
         assert apart <= HOLES_APART + STITCH_PARAMS.standoff
         assert low[1] > 0.9 + 0.1
+
+    def test_one_beside_a_track_of_its_net_stays(self) -> None:
+        # Of another net, the track would push it away.
+        start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range / 2
+
+        result = run(stitched(start, top=start + 2.0, nets=("S",)))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
 
     def test_one_with_nothing_in_range_stays(self) -> None:
         start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
@@ -1182,7 +1219,7 @@ def stitched_grid() -> ViasScenario:
         net = "H" if k == 2 else "G"
         via = replace(given.via, net=net, position=(x, given.via.position[1]))
         layers = [replace(layer(name), vias=(still,)) for name in via.span]
-        vias.append(replace(given, via=via, own_net=own_net_vias(layers, via)))
+        vias.append(replace(given, via=via, own_net=own_net_stops(layers, via)))
     vertices = [(float(x), top + 0.5) for x in np.linspace(0.0, 10.0, 41)]
     above = selected("T", "T", FreeSpace(), *vertices)
     chains = (*scenario.chains, replace(above, fixed=np.ones(len(vertices), bool)))
@@ -1195,7 +1232,8 @@ VIA_ENERGY_SCENARIOS = {
     "hemmed": scenarios.via_hemmed,
     "beside-chain": scenarios.via_beside_chain,
     "pair": scenarios.via_pair,
-    "over-same-net": scenarios.via_over_same_net,
+    "over-same-net": lambda: scenarios.via_over_pinned("N"),
+    "over-other-net": lambda: scenarios.via_over_pinned("P"),
     "zoned-beside-chain": lambda: zoned(scenarios.via_beside_chain(), 0, "In1.Cu"),
     "in-zone": lambda: in_zone(0.0),
     "below-keepout": lambda: below_keepout(2.0),
