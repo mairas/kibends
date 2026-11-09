@@ -458,6 +458,32 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
 
 
+@pytest.mark.parametrize(("moved_back", "settles"), [(0, True), (1, False)])
+def test_a_via_moved_back_keeps_its_problem_from_settling(
+    monkeypatch: pytest.MonkeyPatch, moved_back: int, settles: bool
+) -> None:
+    def still(
+        self: optimize_module._Problem, starts: list[FloatArray]
+    ) -> optimize_module._ProblemBurst:
+        count = len(starts)
+        return optimize_module._ProblemBurst(
+            list(starts),
+            list(self.positions),
+            [0] * count,
+            [0] * count,
+            [moved_back] * len(self.vias),
+            False,
+        )
+
+    monkeypatch.setattr(optimize_module._Problem, "burst", still)
+    # Too few bursts for the best energy to stall.
+    settings = replace(COARSE, max_iterations=COARSE.stall_window - 1)
+
+    result = run(scenarios.via_detour(), settings)
+
+    assert (result.termination is not Termination.ITERATION_CAP) == settles
+
+
 SPARSE = replace(COARSE, spacing=3.0, settled_change=0.03)
 BAR_LEVEL = 0.7
 

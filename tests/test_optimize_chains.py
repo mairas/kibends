@@ -548,6 +548,61 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
         assert length(chain.polyline) < chain.before.length
 
 
+def test_a_normal_burst_ends_an_abnormal_streak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.bounded_burst
+    bursts: list[Burst] = []
+
+    def second_normal(
+        objective: Objective,
+        start: FloatArray,
+        half_sides: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        retry_bounds: FloatArray | None = None,
+    ) -> Burst:
+        burst = real(objective, start, half_sides, revert, settings, retry_bounds)
+        bursts.append(burst)
+        return replace(burst, abnormal=len(bursts) != 2)
+
+    monkeypatch.setattr(optimize_module, "bounded_burst", second_normal)
+
+    result = run(bumps())
+
+    # One abnormal burst, a normal one, then a full streak.
+    assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS + 2
+    assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+
+
+def test_an_abnormal_burst_s_last_check_is_not_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    found: list[int] = []
+
+    def through_the_disc(
+        objective: Objective,
+        start: FloatArray,
+        half_sides: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        retry_bounds: FloatArray | None = None,
+    ) -> Burst:
+        candidate = start.copy()
+        candidate[1::2] += 1.0
+        _, crossings = revert(candidate)
+        found.append(crossings)
+        return Burst(candidate, 0, abnormal=True)
+
+    monkeypatch.setattr(optimize_module, "bounded_burst", through_the_disc)
+    chain = selected("a", "A", Disc(5.0, 1.0, 0.5), (0.0, 0.0), (5.0, 0.0), (10.0, 0.0))
+
+    result = optimize_chains([chain], scenarios.PARAMS, COARSE)
+
+    assert found and all(crossings > 0 for crossings in found)
+    assert result.chains[0].rejected_edges == 0
+
+
 PROGRESS_LINE = re.compile(
     r"^(DEBUG|INFO) Iteration (\d+), (\d+\.\d) s: length \d+\.\d{3} mm, "
     r"energy -?\d+\.\d{3} \(best -?\d+\.\d{3}\), largest change \d\.\d{2}e[-+]\d+ mm$"
