@@ -56,6 +56,7 @@ BUSY_MESSAGE = (
 )
 
 DEFAULT_LOG_LEVEL = "INFO"
+VERBOSE_LOG_LEVEL = "DEBUG"
 LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
@@ -367,6 +368,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "ends at, where it is, as if it were not selected; vias that carry "
         "selected tracks still move. Saves the time moving vias cost",
     )
+    smooth_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help=f"Log at {VERBOSE_LOG_LEVEL}, overriding the level {LOG_LEVEL_VARIABLE} "
+        "sets",
+    )
     return parser.parse_args(argv)
 
 
@@ -407,18 +415,25 @@ def execute_smooth(args: argparse.Namespace) -> None:
         smooth(options)
 
 
-def configure_logging() -> None:
-    """Log to stderr at INFO, or at the level in LOGURU_LEVEL.
+def log_level(*, verbose: bool) -> str:
+    """DEBUG when verbose, else the level in LOGURU_LEVEL, else INFO."""
+    if verbose:
+        return VERBOSE_LOG_LEVEL
+    return os.environ.get(LOG_LEVEL_VARIABLE, DEFAULT_LOG_LEVEL)
+
+
+def configure_logging(*, verbose: bool) -> None:
+    """Log to stderr at `log_level`.
 
     Loguru's own default sink logs at DEBUG.
     """
     logger.remove()
-    logger.add(sys.stderr, level=os.environ.get(LOG_LEVEL_VARIABLE, DEFAULT_LOG_LEVEL))
+    logger.add(sys.stderr, level=log_level(verbose=verbose))
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    configure_logging()
     args = parse_args(argv)
+    configure_logging(verbose=args.verbose)
     match args.command:
         case "smooth":
             execute_smooth(args)

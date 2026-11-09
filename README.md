@@ -171,8 +171,8 @@ differential pair's section reports both again, saying so.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises, and how far the iteration moved any track or
-via. Set `LOGURU_LEVEL=DEBUG` to see that line
-after every iteration.
+via. Pass `--verbose` (`-v`) to see that line
+after every iteration, with the other debug lines.
 Every position kibends prints, in errors and warnings, is in millimetres relative to the board's grid origin, with y
 pointing down: as the PCB editor shows coordinates with the grid origin
 chosen under Preferences > PCB Editor > Origins & Axes and neither axis
@@ -285,6 +285,7 @@ into coupling.
 | `--fixed-vias` | | Keep every selected stitching via (one no selected track ends at) where it is, as if it were not selected, and spend no time moving it. Vias that carry selected tracks still move. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
+| `--verbose`, `-v` | | Log at DEBUG: progress after every iteration and the debug lines, such as why a selected via stays where it is. Overrides the level the `LOGURU_LEVEL` environment variable sets; without either, kibends logs at INFO. |
 
 Repulsion alone rounds the bends: with the defaults, a 90° corner wrapped
 around a pad in the test geometries gets a bend radius of about 1.3 mm.
