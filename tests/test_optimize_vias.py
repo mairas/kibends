@@ -6,7 +6,7 @@ The problem's energy and gradient with moving vias are checked against a
 reference built via by via (`reference_via_energy`)."""
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -37,9 +37,9 @@ from kibends.obstacles import (
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
-from kibends.snapshot import LayerSnapshot, ViaZone
+from kibends.snapshot import LayerSnapshot, ViaKind, ViaZone
 from kibends.via_moves import MovingVias
-from kibends.vias import ChainEnd, ViaInput
+from kibends.vias import ChainEnd, StaticVia, ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -641,6 +641,57 @@ def test_a_junction_at_a_via_that_stays_stays_on_it() -> None:
     assert result.vias[0].frozen
     a, b, c, _ = (chain.polyline for chain in result.chains)
     assert tuple(a[-1]) == tuple(b[0]) == tuple(c[0]) == at
+
+
+def static_vias() -> tuple[StaticVia, ...]:
+    """A GND via and a buried via of another net, standing still."""
+    buried_via = replace(
+        scenarios.through_via("b", "P", (2.0, 2.0)),
+        kind=ViaKind.BURIED,
+        span=("In1.Cu", "In2.Cu"),
+    )
+    return (
+        StaticVia(scenarios.through_via("g", "GND", (7.0, 3.0)), ground=True),
+        StaticVia(buried_via, ground=False),
+    )
+
+
+@pytest.mark.parametrize(
+    ("scenario", "kept"), [(scenarios.via_detour, {"g", "b"}), (buried, set[str]())]
+)
+def test_a_problem_keeps_the_static_vias_its_moving_vias_meet(
+    scenario: Callable[[], ViasScenario], kept: set[str]
+) -> None:
+    given = scenario()
+
+    placed = optimize_module._problems(
+        given.chains,
+        [],
+        moving_vias(given),
+        given.params,
+        COARSE,
+        None,
+        static_vias(),
+    )
+
+    # A via that stays is its problems' own, standing still, and meets none.
+    vias = [v for p in placed for v in p.problem.vias]
+    assert {v.given.via.id for v in vias} == {"v"}
+    assert all(v.frozen == (scenario is buried) for v in vias)
+    assert {s.via.id for p in placed for s in p.problem.static_vias} == kept
+
+
+def test_static_vias_leave_the_result_as_it_is() -> None:
+    given = scenarios.via_detour()
+
+    alone = run(given)
+    among = optimize_chains(
+        given.chains, given.params, COARSE, given.vias, static_vias=static_vias()
+    )
+
+    for chain, expected in zip(among.chains, alone.chains, strict=True):
+        np.testing.assert_array_equal(chain.polyline, expected.polyline)
+    assert among.vias == alone.vias
 
 
 def test_layers_without_a_moving_via_stay_independent() -> None:

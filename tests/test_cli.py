@@ -32,6 +32,7 @@ from conftest import (
     kipy_zone,
     netclass,
     nm,
+    via_ids,
 )
 from distance_fields import FreeSpace
 from kipy.errors import ApiError
@@ -61,6 +62,7 @@ from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
 from kibends.results import FrozenVertex, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
+from kibends.vias import StaticVia, ViaInput
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -2338,6 +2340,120 @@ class TestGroundNets:
         options = cli.smooth_options(cli.parse_args(["smooth", *args]))
 
         assert options.ground_nets == expected
+
+
+@dataclass
+class Optimized:
+    """What `run_smooth` gave `optimize_chains` on its last call."""
+
+    vias: Sequence[ViaInput] = ()
+    static_vias: Sequence[StaticVia] = ()
+
+
+@pytest.fixture
+def optimized(monkeypatch: pytest.MonkeyPatch) -> Optimized:
+    seen = Optimized()
+    real = at(COARSE)
+
+    def spy(*args: object, **kwargs: object) -> RunResult:
+        seen.vias = cast(Sequence[ViaInput], kwargs["vias"])
+        seen.static_vias = cast(Sequence[StaticVia], kwargs["static_vias"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "optimize_chains", spy)
+    return seen
+
+
+def classes(vias: Sequence[ViaInput | StaticVia]) -> dict[str, bool]:
+    return {v.via.id: v.ground for v in vias}
+
+
+def on_net(tracks: Sequence[kbt.Track], net: str) -> list[kbt.Track]:
+    for t in tracks:
+        t.net = kbt.Net(name=net)
+    return list(tracks)
+
+
+class TestViaClasses:
+    def test_board_vias_that_stand_still_are_static_with_their_class(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("w", "PWR", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert classes(optimized.vias) == {"v": False}
+        assert classes(optimized.static_vias) == {"g": True, "w": False}
+        (given,) = optimized.vias
+        assert "g" not in via_ids(given.field)
+        assert "w" in via_ids(given.field)
+        assert via_ids(given.static_vias) == {"g"}
+
+    def test_a_selected_via_that_starts_frozen_is_no_static_via(
+        self, connect: Connector, optimized: Optimized, log: list[str]
+    ) -> None:
+        # As in `test_a_frozen_via_stays_while_its_chains_change`, with the
+        # route and its via of GND.
+        route = on_net([*l_chain(), *detour_back()], "GND")
+        via = kipy_via("v", "GND", *VIA)
+        board = CommitBoard(
+            selection=[*route, via],
+            tracks=list(route),
+            vias=[via, kipy_via("u", "GND", 6, 6)],
+            pads=[kipy_pad("p", "P", 4.0, 4.65, layers=(BL.BL_F_Cu,))],
+        )
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert "DEBUG Left via v at (4.000, 4.000) in place" in "".join(log)
+        assert classes(optimized.vias) == {"v": True}
+        assert classes(optimized.static_vias) == {"u": True}
+
+    def test_a_via_held_by_fixed_vias_is_static(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        stitching = kipy_via("s", "GND", 12.0, 3.0)
+        board.vias.append(stitching)
+        board.selection.append(stitching)
+        plane = kipy_rect(-2, -3, 16, 10)
+        board.zones = [
+            kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+        ]
+        connect.to(board)
+
+        run("--dry-run", "--fixed-vias")
+
+        assert classes(optimized.vias) == {"v": False}
+        assert classes(optimized.static_vias) == {"s": True}
+
+    def test_given_ground_nets_set_the_classes(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("r", "RET", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run", "--ground-nets", "SIG", "RET")
+
+        assert classes(optimized.vias) == {"v": True}
+        assert classes(optimized.static_vias) == {"g": False, "r": True}
+
+    def test_without_ground_nets_nothing_is_static_or_split(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias.append(kipy_via("w", "PWR", 1, 6))
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert optimized.static_vias == ()
+        (given,) = optimized.vias
+        assert (given.ground, given.static_vias) == (False, None)
 
 
 def plane_board() -> CommitBoard:

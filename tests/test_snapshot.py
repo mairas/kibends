@@ -807,6 +807,26 @@ class TestBoardSnapshot:
         assert snap.vias[0].span == ("F.Cu", "B.Cu")
         assert all(snap.slice(layer, ()).vias for layer in layers)
 
+    @pytest.mark.parametrize(
+        ("span", "expected"),
+        [
+            (("F.Cu", "B.Cu"), True),
+            (("In1.Cu", "In2.Cu"), True),
+            (("In2.Cu", "In1.Cu"), True),
+            (("F.Cu", "In1.Cu"), True),
+            (("F.Cu", "F.Cu"), False),
+            (("In3.Cu", "B.Cu"), False),
+        ],
+    )
+    def test_vias_share_a_layer_where_their_spans_overlap(
+        self, span: tuple[str, str], expected: bool
+    ) -> None:
+        buried = Via("b", "N", (0, 0), 0.6, 0.3, ViaKind.BURIED, ("In2.Cu", "In1.Cu"))
+        other = Via("o", "N", (1, 0), 0.6, 0.3, ViaKind.BURIED, span)
+
+        assert buried.shares_layer(other) is expected
+        assert other.shares_layer(buried) is expected
+
     def test_slicing_a_layer_not_read_is_an_error(self) -> None:
         snap = BoardSnapshot.read(board(FakeBoard()), ["F.Cu"])
 

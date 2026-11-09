@@ -68,6 +68,11 @@ its clearance stands still, as copper the members see; its own terms then
 could only push them a second time, so they are left out, and it ties no
 layers together.
 
+The board's vias that are none of the run's, each a ground via or a
+regular one (`vias.StaticVia`), reach `optimize_chains` as `static_vias`;
+a problem keeps those its moving vias share a layer with
+(`_Problem.static_vias`), and its energy does not use them.
+
 How much of a chain of one of its nets a section leaves out near a fan-out
 depends on the angles both leave it at. A burst fixes it, as pieces of the
 chain's edges, from the shapes the burst starts with, which keeps the
@@ -202,7 +207,7 @@ from kibends.results import (
 )
 from kibends.seen import NeighbourList, Seen, ViaSight
 from kibends.via_moves import MovingVias, free_distances
-from kibends.vias import ViaInput
+from kibends.vias import StaticVia, ViaInput
 
 # After this many abnormal L-BFGS-B ends in a row a problem counts as
 # settled and keeps what its bursts reached.
@@ -318,6 +323,7 @@ def optimize_chains(
     clock: Callable[[], float] = time.monotonic,
     started: float | None = None,
     start: RunResult | None = None,
+    static_vias: Sequence[StaticVia] = (),
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -329,11 +335,12 @@ def optimize_chains(
     ends come back at one point, loose. A via keeps `hole_clearance` and
     `hole_to_hole` where holes are involved, and one that starts more than
     δ inside its clearance stays where it is, `frozen` in its result, with
-    the chain ends it carries pinned. Each
-    problem keeps its best state, replaced only after a burst that does not
-    raise its energy, leaves no chain or section with more violations than
-    it started with, and leaves no via deeper inside its clearance than it
-    started.
+    the chain ends it carries pinned. `static_vias` are the board's vias
+    that are none of `vias`; each problem keeps those its moving vias share
+    a layer with. Each problem keeps its best state, replaced only after a
+    burst that does not raise its energy, leaves no chain or section with
+    more violations than it started with, and leaves no via deeper inside
+    its clearance than it started.
 
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back but for a section's parts that
@@ -370,7 +377,9 @@ def optimize_chains(
     blocks = [pair_block(pair, settings.spacing) for pair in pairs]
     everything = [*chains, *(block.chain for block in blocks)]
     moving_vias = MovingVias(everything, vias, hole_clearance, hole_to_hole)
-    placed = _problems(chains, blocks, moving_vias, params, settings, start)
+    placed = _problems(
+        chains, blocks, moving_vias, params, settings, start, static_vias
+    )
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
 
@@ -476,10 +485,12 @@ def _problems(
     params: EnergyParams,
     settings: OptimizerSettings,
     start: RunResult | None,
+    static_vias: Sequence[StaticVia] = (),
 ) -> list[_Placed]:
     """The run's problems: the layers that the vias that move tie together,
-    with every via, and each other layer alone, with the vias that stand
-    still on it. `vias` holds the chains, then the sections' centrelines."""
+    with every via and the `static_vias` they share a layer with, and each
+    other layer alone, with the vias that stand still on it. `vias` holds
+    the chains, then the sections' centrelines."""
     originals = [chain.centreline.points for chain in vias.chains]
     positions = vias.starting_positions()
     frozen = [
@@ -534,6 +545,7 @@ def _problems(
             params,
             settings,
             resume,
+            static_vias,
         )
         placed.append(_Placed(problem, on, sections, joined))
     return placed
@@ -829,9 +841,15 @@ class _Problem:
         params: EnergyParams,
         settings: OptimizerSettings,
         resume: _Resume | None = None,
+        static_vias: Sequence[StaticVia] = (),
     ) -> None:
         self.vias = list(vias)
         self.free_vias = [k for k, via in enumerate(vias) if not via.frozen]
+        self.static_vias = [
+            s
+            for s in static_vias
+            if any(s.via.shares_layer(vias[k].given.via) for k in self.free_vias)
+        ]
         self.via_diameters = np.array(
             [vias[k].given.via.diameter for k in self.free_vias], dtype=float
         )

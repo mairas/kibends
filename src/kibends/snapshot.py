@@ -151,8 +151,19 @@ class Via:
 
     def reaches(self, layer: str) -> bool:
         """Whether `layer` lies within the via's span."""
+        low, high = self._range
+        return low <= layer_from_canonical_name(layer) <= high
+
+    def shares_layer(self, other: Via) -> bool:
+        """Whether the spans of the two vias overlap."""
+        low, high = self._range
+        other_low, other_high = other._range
+        return low <= other_high and other_low <= high
+
+    @property
+    def _range(self) -> tuple[int, int]:
         start, end = (layer_from_canonical_name(s) for s in self.span)
-        return min(start, end) <= layer_from_canonical_name(layer) <= max(start, end)
+        return min(start, end), max(start, end)
 
 
 class Disc(NamedTuple):

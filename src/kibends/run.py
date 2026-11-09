@@ -6,7 +6,9 @@ it hands over; it prints nothing.
 `run_smooth` reads the board once, extracts the chains, and, if any
 selected via could have moved but stays fixed, extracts them again with
 that via's copper pinning. With `fixed_vias`, a via that carries no chain
-end is dropped from the candidates before the board is read. It then
+end is dropped from the candidates before the board is read. When a
+selected via may move, it finds the ground nets, logs them and classes
+every via by them. It then
 builds the fields, optimizes, simplifies and commits. A coupled section
 the run leaves bent too tightly is held, and the optimizer runs again from
 the previous run's best state. A chain whose result equals its selected
@@ -69,6 +71,7 @@ from kibends.obstacles import (
     build_pair_obstacles,
     build_via_obstacles,
     own_net_stops,
+    static_via_obstacles,
 )
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairInput
@@ -101,7 +104,15 @@ from kibends.snapshot import (
     read_user_frame,
 )
 from kibends.via_moves import MovingVias
-from kibends.vias import MovableVia, ViaInput, carried_copper, may_move, movable_vias
+from kibends.vias import (
+    MovableVia,
+    StaticVia,
+    ViaInput,
+    carried_copper,
+    may_move,
+    movable_vias,
+    pairs_with,
+)
 
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
@@ -473,7 +484,8 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
 
     layout = lay_out(whole, pairs, section_field)
     logger.info(_optimizing(len(read.chains), len(pairs), len(read.movable)))
-    via_inputs = _via_inputs(read.movable, read.snapshots, options)
+    via_inputs = _via_inputs(read.movable, read.snapshots, options, read.ground_nets)
+    static_vias = _static_vias(read.snapshots, moving, read.ground_nets)
     started = monotonic()
     previous: RunResult | None = None
     iterations = 0
@@ -489,6 +501,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             clock=monotonic,
             started=started,
             start=previous,
+            static_vias=static_vias,
         )
         iterations += run.iterations
         for description, count in run.abnormal:
@@ -790,35 +803,67 @@ def _via_inputs(
     movable: Sequence[MovableVia],
     snapshots: Mapping[str, LayerSnapshot],
     options: SmoothOptions,
+    ground: Collection[str],
 ) -> list[ViaInput]:
     """One optimizer input per movable via, its field over every layer read,
-    without the other movable vias, which the optimizer adds where they are."""
+    without the other movable vias, which the optimizer adds where they are,
+    and without the vias it pairs with among the `ground` nets
+    (`vias.pairs_with`), which are its `static_vias`."""
     moving = {m.via.id for m in movable}
     layers = list(snapshots.values())
-    return [
-        ViaInput(
-            m.via,
-            m.ends,
-            build_via_obstacles(
-                layers,
+    inputs: list[ViaInput] = []
+    for m in movable:
+
+        def split(other: Via, net: str = m.via.net) -> bool:
+            return pairs_with(net, other.net, ground)
+
+        inputs.append(
+            ViaInput(
                 m.via,
-                moving=moving,
-                edge_clearance=options.edge_clearance,
-                hole_clearance=options.hole_clearance,
-                zones=m.zones,
-            ),
-            layers[0].clearance(m.via.net),
-            m.zones,
-            own_net_stops(
-                layers,
-                m.via,
-                moving=moving,
-                hole_clearance=options.hole_clearance,
-                allow_via_in_pad=options.allow_via_in_pad,
-            ),
+                m.ends,
+                build_via_obstacles(
+                    layers,
+                    m.via,
+                    moving=moving,
+                    edge_clearance=options.edge_clearance,
+                    hole_clearance=options.hole_clearance,
+                    zones=m.zones,
+                    split=split,
+                ),
+                layers[0].clearance(m.via.net),
+                m.zones,
+                own_net_stops(
+                    layers,
+                    m.via,
+                    moving=moving,
+                    hole_clearance=options.hole_clearance,
+                    allow_via_in_pad=options.allow_via_in_pad,
+                ),
+                ground=m.via.net in ground,
+                static_vias=static_via_obstacles(
+                    layers,
+                    m.via,
+                    split,
+                    moving=moving,
+                    hole_clearance=options.hole_clearance,
+                    zones=m.zones,
+                ),
+            )
         )
-        for m in movable
-    ]
+    return inputs
+
+
+def _static_vias(
+    snapshots: Mapping[str, LayerSnapshot],
+    moving: Collection[str],
+    ground: Collection[str],
+) -> tuple[StaticVia, ...]:
+    """The board's vias the snapshots hold but those `moving`, with their
+    classes; none without `ground` nets."""
+    if not ground:
+        return ()
+    vias = {v.id: v for s in snapshots.values() for v in s.vias if v.id not in moving}
+    return tuple(StaticVia(v, v.net in ground) for v in vias.values())
 
 
 def _laid_out_vias(layout: Layout, via_inputs: Sequence[ViaInput]) -> list[ViaInput]:
