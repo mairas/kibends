@@ -913,7 +913,7 @@ class TestDrc:
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_no_drc_commits_without_running_it_and_warns(
+    def test_no_drc_commits_without_running_it_or_warning(
         self, connect: Connector, kicad_cli: Path, log: list[str]
     ) -> None:
         board = connect.to(l_board(), saved=False)
@@ -923,7 +923,7 @@ class TestDrc:
 
         assert drc_runs(kicad_cli) == 0
         assert "push_commit" in board.calls
-        assert any(line.startswith("WARNING") and "--no-drc" in line for line in log)
+        assert not [w for w in log if w.startswith("WARNING") and "--no-drc" in w]
 
     def test_unsaved_board_is_refused_before_optimizing(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]

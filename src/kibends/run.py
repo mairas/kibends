@@ -302,11 +302,6 @@ def run_smooth(
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
     gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
-    if gate is None:
-        logger.warning(
-            "Skipping the DRC check (--no-drc): custom rules, board minimums "
-            "and edge and hole clearances are not checked"
-        )
     read = _read(board, options.chord_tolerance, read_user_frame(board))
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
