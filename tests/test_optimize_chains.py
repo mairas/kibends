@@ -605,7 +605,7 @@ def test_an_abnormal_burst_s_last_check_is_not_counted(
 
 PROGRESS_LINE = re.compile(
     r"^(DEBUG|INFO) Iteration (\d+), (\d+\.\d) s: length \d+\.\d{3} mm, "
-    r"energy -?\d+\.\d{3} \(best -?\d+\.\d{3}\), largest change \d\.\d{2}e[-+]\d+ mm$"
+    r"energy -?\d+\.\d{3}, largest change \d\.\d{2}e[-+]\d+ mm$"
 )
 
 

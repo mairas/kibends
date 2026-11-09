@@ -1026,8 +1026,7 @@ def _progress(
     return (
         f"Iteration {iteration}, {elapsed:.1f} s: "
         f"length {sum(p.length() for p in problems):.3f} mm, "
-        f"energy {sum(p.energy for p in problems):.3f} "
-        f"(best {sum(p.best_energy for p in problems):.3f}), "
+        f"energy {sum(p.energy for p in problems):.3f}, "
         f"largest change {change:.2e} mm"
     )
 
