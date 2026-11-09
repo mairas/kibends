@@ -205,7 +205,7 @@ into coupling.
 | `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. The DRC check catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. Do not combine this option with `--no-drc`. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--dry-run`, `-n` | | Optimize and run the DRC check, printing the outcome and the verdict, without changing the board. |
-| `--no-drc` | | Commit without the DRC check. |
+| `--no-drc` | | Commit without the DRC check. Nothing then checks the board's custom rules or board minimums, which the optimizer does not see, so the result may violate a custom rule stricter than the netclass clearances. |
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 
@@ -220,10 +220,13 @@ such as the end of a differential pair's coupled section, at a corner.
 ### Clearances
 
 Copper clearances come from the board's netclasses, including pad and
-footprint clearance overrides. KiCad's API does not expose the board's edge
-and hole clearances, custom rules or board minimums: the edge and hole
-clearances come from the options above, and custom rules and board
-minimums are not seen by the optimizer. Neither are copper zones, which
+footprint clearance overrides. Custom DRC rules (the project's
+`.kicad_dru`) and board minimums are not supported: KiCad's API does not
+expose them, and the optimizer keeps only the netclass clearances, so a
+custom rule stricter than those (a larger clearance for vias, say) can be
+violated by the smoothed tracks; only the DRC check below sees it. The
+API does not expose the edge and hole clearances either; they come from
+the options above. The optimizer does not see copper zones either, which
 reflow after an edit, nor rule areas that keep out vias.
 
 The DRC check covers what the optimizer cannot see. Before committing,
