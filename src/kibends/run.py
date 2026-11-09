@@ -601,10 +601,7 @@ def _optimizing(chains: int, pairs: int, vias: int) -> str:
         message += f", {pairs} differential pair{'' if pairs == 1 else 's'} among them"
     if not vias:
         return message
-    return (
-        f"{message} and {vias} moving via{'' if vias == 1 else 's'}; "
-        "moving vias may take a while"
-    )
+    return f"{message} and {vias} moving via{'' if vias == 1 else 's'}"
 
 
 def _off_pairs(

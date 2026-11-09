@@ -95,24 +95,22 @@ edge newly into another item's clearance. An outer iteration gives every
 problem that has not settled one burst. A problem settles when a burst
 barely changes it or its energy stops improving.
 
-The command prints, for each chain, the length, track count, tightest bend
-radius and clearance margins before and after, then for each differential
-pair its gap and skew (see below), then for each selected via that may move
-how far it moved and where to, then the optimizer's outcome: whether it
-converged or stopped at its iteration cap or the time limit, after how many
-iterations and how many seconds.
+The command prints the optimizer's outcome: whether it converged or stopped
+at its iteration cap or the time limit, after how many iterations and how
+many seconds, how many edge moves it rejected, and how many bursts L-BFGS-B
+ended abnormally, if any; then the DRC verdict. Per-chain figures are not
+printed: `--plot` titles each chain's subplot with its length before and
+after and its minimum clearance margin.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises and the lowest it has kept, and how far the
 iteration moved any track or via. Set `LOGURU_LEVEL=DEBUG` to see that line
 after every iteration.
-Every position kibends prints, in errors, warnings, statistics and DRC
-lines, is in millimetres relative to the board's grid origin, with y
+Every position kibends prints, in errors, warnings and DRC lines, is in millimetres relative to the board's grid origin, with y
 pointing down: as the PCB editor shows coordinates with the grid origin
 chosen under Preferences > PCB Editor > Origins & Axes and neither axis
 inverted.
-A chain the optimizer leaves as it was is marked unchanged and is neither
-checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
+A chain the optimizer leaves as it was is neither checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
 changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
 A track or via edited in KiCad since the run read it stops the commit.
@@ -165,13 +163,10 @@ clearance and its routing kept them, where they run side by side or
 across a turn.
 Both nets' tracks go into the one DRC check and the one commit.
 
-The report adds a block per pair: the measured gap and the range of the
-gap along the result's coupled sections, and the skew, the length
-difference of the two chains, before and after. Bending a pair makes its
-inner track shorter, so the skew changes; kibends reports it but does not
-correct it, which KiCad's length tuner does. A coupled section that
-same-net copper touches between its ends stays as it is, and the report
-counts it as held, as it does a section kept for bending too tightly.
+Bending a pair makes its inner track shorter, so the skew, the length
+difference of the two chains, changes; kibends does not correct it, which
+KiCad's length tuner does. A coupled section that same-net copper touches
+between its ends stays as it is.
 
 A run warns when two chains whose nets pair do not run coupled or have
 different widths, when a chain runs coupled with one of its pair net that
@@ -201,7 +196,7 @@ into coupling.
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. The DRC check catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. Do not combine this option with `--no-drc`. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
-| `--dry-run`, `-n` | | Print the statistics and the DRC verdict without changing the board. |
+| `--dry-run`, `-n` | | Optimize and run the DRC check, printing the outcome and the verdict, without changing the board. |
 | `--no-drc` | | Commit without the DRC check. |
 | `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
