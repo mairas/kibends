@@ -108,7 +108,10 @@ def straight_board() -> CommitBoard:
 
 @pytest.fixture(autouse=True)
 def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "configure_logging", lambda: None)
+    def configure_logging(*, verbose: bool) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "configure_logging", configure_logging)
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
