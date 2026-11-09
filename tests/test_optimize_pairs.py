@@ -1,3 +1,10 @@
+"""Coupled sections of differential pairs through
+`optimize.optimize_chains`.
+
+The problem's energy is checked against a reference built member by member
+(`reference_energy`), and the offset pullback against finite
+differences."""
+
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace

@@ -1,6 +1,15 @@
 """Differential pairs: pairing nets by name, finding where two chains run
 coupled, and the geometry of a pair's centreline and its two tracks.
 
+A coupled stretch is split into sections at each vertex where same-net
+copper pins either track and both tracks run straight for
+`STRAIGHT_PITCHES` pitches to either side, and square across from it on
+the other track, so that sections end at pins with the pair's gap and keep
+room to round their corners within the bend-radius limit. A pin that splits
+nothing holds the section it lies in (`pair_blocks.Hold.COPPER`), and a
+section left with no vertex to move is held as routed (`Hold.SHORT`),
+neither with a warning.
+
 Units are mm floats in KiCad's board frame, with y pointing down.
 """
 

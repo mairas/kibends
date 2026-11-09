@@ -115,6 +115,16 @@ inside the others' clearance where it is, as a free vertex
 state, taken only from a burst that does not raise its energy, add
 violations to any member or leave a via deeper inside its clearance than
 it started.
+
+When it stops
+-------------
+A problem settles when its burst moves nothing by `settled_change` and
+moves nothing back but a section's own parts, when its lowest energy
+stalls over `stall_window` bursts, or after MAX_ABNORMAL_BURSTS abnormal
+bursts in a row. The run converges when every problem has settled, and
+otherwise stops at the iteration cap or after the first burst that ends
+past the time limit, counted from the start of the whole stage, keeping
+each problem's best state either way (`optimize_chains`).
 """
 
 import math

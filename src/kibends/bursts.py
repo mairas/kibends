@@ -47,6 +47,10 @@ class OptimizerSettings:
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles."""
     max_iterations: int = 200
+    """Outer iterations after which the run stops unconverged and keeps each
+    problem's best state. This and the stall rule were measured in
+    https://github.com/mairas/kibends/issues/27 and
+    https://github.com/mairas/kibends/issues/28."""
     stall_tolerance: float = 1e-3
     """A problem settles when its best energy improved by less than this
     over `stall_window` of its bursts. The energy is in mm of track length,
@@ -56,10 +60,15 @@ class OptimizerSettings:
     burst_maxiter: int = 50
     """L-BFGS-B iterations per burst of a problem. Shorter bursts resample
     and check the shapes more often, which on a large problem reaches a
-    given length in fewer energy evaluations. At 25 a coupled
-    section settles visibly short of its shape, as measured in
-    https://github.com/mairas/kibends/issues/70: the stall rule counts
-    bursts, so its window shrinks with this."""
+    given length in fewer energy evaluations.
+
+    Smoothing is a visual task that does not need the exact optimum, and
+    almost every burst runs to this cap, so the cap sets the cost: at 50
+    with `lbfgs_ftol` 1e-9 the scenarios take 44% fewer energy evaluations
+    than at 100 with 1e-15 and end 30 µm longer in sum. At 25 a coupled
+    section settles visibly short of its shape: the stall rule counts
+    bursts, so its window shrinks with this. Measured in
+    https://github.com/mairas/kibends/issues/70."""
     lbfgs_ftol: float = LBFGSB_FTOL
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL

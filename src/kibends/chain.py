@@ -1,5 +1,27 @@
 """Order a selection of track segments into chains with pinned vertices.
 
+A chain is one connected piece of one layer, net and width
+(`extract_chains`). Same-net copper holds it where it touches: unselected
+tracks and copper shapes pin it, and a pad or a via that stays is a region
+it keeps a vertex inside (`Contact`), an end sliding within it where it may
+(`_slides`). Where three or more selected tracks of one net end, the
+selection splits into chains that end there, loose unless copper pins them;
+an end that reaches into another selected track may join it there
+(`_join_mid_track_ends`, `_may_join`). Pins never change a chain's order or
+its ends.
+
+Where selected chains of one net overlap or cross away from their ends,
+nothing pins either: copper of one net does not interact, so a run may move
+them apart even where that overlap was their only connection. A stub drawn
+past the track it crosses, its end beyond that track's copper, is not
+joined and may come off it without a warning; the README tells users to
+end stubs on the track or check the ratsnest.
+
+A route through a via is one chain per layer. The copper of a selected via
+that may move does not pin, so that it does not tether the chains it
+carries; `vias` then decides which do move, and `run` extracts the chains
+again with the fixed ones' copper pinning.
+
 Units: segment endpoints and widths are integer nanometres, as KiCad stores
 them, so that endpoint matching and deduplication are exact. Same-net copper
 is shapely geometry in millimetres. The resulting chain is in millimetre
@@ -74,9 +96,10 @@ class Contact:
     """A pad or a via that stays: a region a chain need only keep one vertex
     inside, anywhere, to stay connected to it.
 
-    KiCad connects a track to a pad or via when an end of the track lies
-    inside its shape, so a vertex, where two tracks end, connects both.
-    `margin`, mm, is how far inside its outline that vertex stays."""
+    KiCad connects two items of one net when their copper overlaps on a
+    layer they share (`CN_VISITOR` in its connectivity code), so a vertex
+    inside the pad or via connects both tracks that end there. `margin`,
+    mm, is how far inside its outline that vertex stays."""
 
     shape: BaseGeometry
     margin: float

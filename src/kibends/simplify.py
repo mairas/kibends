@@ -6,7 +6,9 @@ segment must also pass the exact edge check.
 
 Several chains are simplified in turn, each against its own field plus the
 other chains on its layer at their latest shapes, those of its net left
-out, as the optimizer leaves them out. A coupled section of a
+out, as the optimizer leaves them out. A vertex that keeps a pad or via
+(`chain.Contact`) is fixed, so merging keeps it where the optimizer left
+it, inside its region. A coupled section of a
 differential pair is simplified as its centreline, as the optimizer moved
 it, and its two tracks follow it as they do in the optimizer.
 """

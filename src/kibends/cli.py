@@ -1,5 +1,15 @@
 """The `kibends` command line.
 
+`smooth` prints the optimizer's outcome line, logs its warnings (frozen
+vertices, an iteration cap or time limit) and, at debug, the frozen vias
+and abnormal bursts, all from `run_smooth`'s `on_optimized` callback, and
+raises the returned report's refusal. The per-chain, per-pair and per-via
+figures stay in the reports and are not printed. Every IPC failure ends the
+run with one log line (`_exit_on_failure`), except a copper-text render
+KiCad refuses for another reason, which only warns, and the selection
+after the push (`commit._select`), logged at debug since the commit has
+landed.
+
 `_exit_on`-style error mapping and `configure_logging` follow kistitch's
 cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
