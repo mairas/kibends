@@ -57,6 +57,9 @@ AREA_DIMENSION = 2
 # Copper this much farther from a chain than both half widths still touches
 # it: 1 nm, KiCad's coordinate resolution.
 TOUCH_TOLERANCE = 1e-6
+# A segment that touches an inflated chain may measure this far inside it, from
+# round-off in splitting its edges and in the distance; it still touches.
+ROUND_OFF = 1e-9
 # Other chains' edges are split to at most this length, so that a point near an
 # edge is also near its midpoint, where the k-d tree finds it. Chains resampled
 # at the default 0.1 mm `OptimizerSettings.spacing` are never split.
@@ -422,7 +425,7 @@ class ChainField:
         gap = _segment_gaps(
             a[segment], b[segment] - a[segment], self._starts[edge], self._along[edge]
         )
-        clear[segment[gap < self._inflations[edge] - tolerance]] = False
+        clear[segment[gap < self._inflations[edge] - tolerance - ROUND_OFF]] = False
         return clear
 
     def _unit_gradient(

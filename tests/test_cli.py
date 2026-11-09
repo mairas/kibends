@@ -473,7 +473,7 @@ class TestSmooth:
 
     @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize(
-        ("args", "expected"), [((), 0.025), (("--chord-tolerance=0.01",), 0.01)]
+        ("args", "expected"), [((), 0.01), (("--chord-tolerance=0.025",), 0.025)]
     )
     def test_chord_tolerance_reaches_simplify(
         self,
@@ -2161,6 +2161,9 @@ PRINTED = 1e-3
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
+FAN_OUT_STRAIGHT_TOLERANCE = 0.025
+"""mm: above the up to 0.014 mm by which the optimizer bows `pair_board`'s
+straight fan-outs where they meet the coupled section."""
 OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
@@ -2508,10 +2511,11 @@ class TestPairs:
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         board = connect.to(pair_board())
 
-        run()
+        run(f"--chord-tolerance={FAN_OUT_STRAIGHT_TOLERANCE}")
 
         assert held == [[None], [hold]]
-        # Its fan-outs are straight already, so the pair stays as it was.
+        # Its fan-outs merge back into straight tracks, so the pair stays as
+        # it was.
         assert board.calls == []
         (warning,) = [w for w in log if "too tight" in w]
         assert warning.startswith("WARNING")
@@ -2614,9 +2618,9 @@ class TestPairs:
 ROUND_OFF = 1e-12
 
 
-PAIR_BOARD_TRACKS = 6
-"""Per net on `pair_board`, as measured at default and coarse settings: its
-fan-out and five through the S-bend."""
+PAIR_BOARD_TRACKS = 9
+"""Per net on `pair_board`, as measured at default and coarse settings: two
+in its fan-out and seven through the S-bend."""
 
 
 def pair_tracks_at(

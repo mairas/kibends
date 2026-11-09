@@ -28,12 +28,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.pair_blocks import pair_block
-from kibends.simplify import (
-    DEFAULT_CHORD_TOLERANCE,
-    cutting_chains,
-    simplify,
-    simplify_chains,
-)
+from kibends.simplify import cutting_chains, simplify, simplify_chains
 
 SPACING = 0.1
 DISC = Disc(0.0, 0.0, 1.0)
@@ -110,6 +105,8 @@ def test_optimized_straight_line_simplifies_to_one_segment() -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+# Above the 0.011 mm that COARSE leaves the neck-down's chains bowed by.
+COARSE_STRAIGHT_TOLERANCE = 0.025
 # At spacing 0.3 the drape's first burst piles vertices up; see
 # test_optimize_chains.
 DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002)
@@ -191,7 +188,7 @@ class TestSeveralChains:
         scenario = scenarios.neck_down()
         run = optimized(scenario, COARSE)
 
-        result = simplify_run(scenario, run, DEFAULT_CHORD_TOLERANCE)
+        result = simplify_run(scenario, run, COARSE_STRAIGHT_TOLERANCE)
 
         for simplified, c in zip(result, run.chains, strict=True):
             assert np.array_equal(simplified, c.polyline[[0, -1]])

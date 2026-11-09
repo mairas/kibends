@@ -718,6 +718,26 @@ class TestChainObstacles:
 
         assert clear.tolist() == [False, True, False]
 
+    def test_segments_touching_the_band_are_clear(self) -> None:
+        """A pair's fan-outs meeting its coupled tracks at a clearance equal
+        to its gap: each segment ends exactly at clearance from the other."""
+        width, gap = 0.2, 0.15
+        half_pitch = (width + gap) / 2
+        other = ChainCentreline(
+            "chain P",
+            "P",
+            width,
+            gap,
+            points((-1, 1 + half_pitch), (0, half_pitch), (5, half_pitch)),
+        )
+        steps = np.arange(1, 200, dtype=float) * 1e-3
+        starts: FloatArray = np.column_stack([-steps, -half_pitch - steps])
+        ends = np.tile((0.0, -half_pitch), (len(steps), 1))
+
+        clear = chain_obstacles("N", width, gap, [other]).segments_clear(starts, ends)
+
+        assert clear.all()
+
     def test_no_other_chains_is_free_everywhere(self) -> None:
         empty = neighbours()
 

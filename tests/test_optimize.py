@@ -24,15 +24,14 @@ from kibends.optimize import (
     resample,
     violations,
 )
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 
 SETTINGS = OptimizerSettings()
 # For long runs: about 20x faster than the defaults and, on the detour and
 # stall scenarios, still converging within 1 µm of the default result's length.
 COARSE = replace(SETTINGS, spacing=0.3, settled_change=0.003, burst_maxiter=30)
 # Positions of a straight result within this of the ideal line, mm: the
-# energy cannot resolve smaller bows, and simplify flattens them anyway.
-STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
+# optimizer leaves the L path bowed by 7 µm at L_PATH_SETTINGS.
+STRAIGHT_TOLERANCE = 0.01
 
 
 def run(scenario: Scenario, settings: OptimizerSettings = SETTINGS) -> OptimizeResult:
