@@ -37,9 +37,12 @@ LBFGSB_ABNORMAL = 2
 SHORT_EDGE_FRACTION = 0.1
 
 # The chain's length term is ill-conditioned (tension spreads one vertex per
-# iteration), so L-BFGS-B's default stopping tolerances end a burst long before
-# the shape settles; with these defaults, burst_maxiter bounds the burst instead.
-LBFGSB_FTOL = 1e-15
+# iteration), so L-BFGS-B's default gtol (1e-5) ends a burst long before the
+# shape settles; with this gtol, burst_maxiter or ftol ends it instead. ftol is
+# near scipy's default (2.2e-9): it ends a few bursts early and lets problems
+# settle in fewer bursts, while 1e-12 and below save nothing measurable, as
+# measured in https://github.com/mairas/kibends/issues/70.
+LBFGSB_FTOL = 1e-9
 LBFGSB_GTOL = 1e-10
 
 
@@ -60,8 +63,13 @@ class OptimizerSettings:
     so this is 1 µm of length: in flat stretches the shapes keep wandering
     by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
-    burst_maxiter: int = 100
-    """L-BFGS-B iterations per burst of a problem."""
+    burst_maxiter: int = 50
+    """L-BFGS-B iterations per burst of a problem. Shorter bursts re-bound
+    the variables to their bubbles more often, which on a large problem
+    reaches a given length in fewer energy evaluations. At 25 a coupled
+    section settles visibly short of its shape, as measured in
+    https://github.com/mairas/kibends/issues/70: the stall rule counts
+    bursts, so its window shrinks with this."""
     lbfgs_ftol: float = LBFGSB_FTOL
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
