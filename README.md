@@ -51,8 +51,18 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    meet at their ends, the selection branches: it is split there into chains
    that end at the junction, the junction moves with them unless other
    copper of the net holds it, and the branches meet at one point again in
-   the result. A track that ends in the middle of another is refused. Two
-   widths of one net otherwise meet only end to end, as at a neck-down. A
+   the result. A track that ends in the middle of another, anywhere its
+   copper reaches the other's, branches there too: the other is split at
+   the point of its centreline nearest the end, and the end moves onto it.
+   That holds when every track ending there meets the other from one side,
+   or ends past its centreline by no more than the other's half width, and
+   leaves its copper through its side, and no other copper of the net
+   touches the end where it was drawn. A track that crosses the other, runs
+   along it, already connects to it through the selection, or has other
+   copper on its end keeps its end, and the two stay connected where their
+   copper overlaps; a track that lies on another of its width merges into
+   it. Tracks of two widths that overlap, as at a neck-down, stay separate
+   chains of their own widths, held where their copper overlaps. A
    route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both

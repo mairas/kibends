@@ -26,6 +26,7 @@ from kibends.chain import (
     Point2,
     SameNetCopper,
     Segment,
+    shared_track_groups,
     split_chains,
     split_locked,
 )
@@ -131,7 +132,8 @@ class ChainReport:
     description: str
     """How warnings and other chains' frozen vertices name this chain."""
     tracks: int
-    """Selected tracks it replaces."""
+    """Selected tracks it replaces, counting a track split at a junction in
+    each chain that has a part of it."""
     before: PolylineStats
     after: PolylineStats
     """Of the simplified result, or of the selection when unchanged, with the
@@ -139,8 +141,9 @@ class ChainReport:
     frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
     changed: bool
-    """False when the result equals the selected tracks: then it is neither
-    checked nor committed."""
+    """False when the result equals the selected tracks and the chain shares
+    no track with a changed chain, since a track split at a junction is
+    replaced whole: then it is neither checked nor committed."""
 
 
 @dataclass(frozen=True)
@@ -910,8 +913,15 @@ def _chain_reports(
     neighbours = same_layer_neighbours(inputs)
     reach = obstacle_reach(params)
     reports: list[ChainReport] = []
-    for i, (chain, given, result) in enumerate(
-        zip(chains, inputs, results, strict=True)
+    changes = _changed_with_shared_tracks(
+        chains,
+        [
+            snapped_path(s) != snapped_path(given.centreline.points)
+            for s, given in zip(simplified, inputs, strict=True)
+        ],
+    )
+    for i, (chain, given, result, changed) in enumerate(
+        zip(chains, inputs, results, changes, strict=True)
     ):
         given_points = given.centreline.points
         own = with_moved_ends(given_points, result.polyline)
@@ -919,7 +929,6 @@ def _chain_reports(
             given.field,
             neighbour_fields(inputs, i, neighbours[i], simplified, reach, own),
         )
-        changed = snapped_path(simplified[i]) != snapped_path(given_points)
         # An unchanged chain stays on the board as it is.
         after = simplified[i] if changed else given_points
         reports.append(
@@ -937,6 +946,16 @@ def _chain_reports(
             )
         )
     return tuple(reports)
+
+
+def _changed_with_shared_tracks(
+    chains: Sequence[Chain], changed: Sequence[bool]
+) -> list[bool]:
+    """`changed`, spread to every chain that shares a track with a changed
+    one, since a track split at a junction is replaced whole."""
+    groups = shared_track_groups([c.segment_ids for c in chains])
+    replaced = {g for g, ch in zip(groups, changed, strict=True) if ch}
+    return [g in replaced for g in groups]
 
 
 def _require_plot() -> None:

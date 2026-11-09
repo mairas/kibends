@@ -354,6 +354,132 @@ class TestSmooth:
         assert nm(2.0) < junction[1] < nm(3.2)
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_track_ending_mid_track_joins_it_at_a_junction(
+        self, connect: Connector, kicad_cli: Path
+    ) -> None:
+        tee = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 5), (5, 0), width=WIDTH),
+        ]
+        board = connect.to(CommitBoard(selection=list(tee), tracks=list(tee)))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "c"]
+        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
+        assert '(uuid "a")' not in candidate
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        (junction,) = [p for p, n in degree.items() if n == 3]
+        ends = {p for p, n in degree.items() if n == 1}
+        assert ends == {(nm(0), nm(0)), (nm(10), nm(0)), (nm(5), nm(5))}
+        assert nm(2.0) < junction[1] < nm(3.2)
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_neck_down_overlapping_along_its_line_stays_on_it(
+        self, connect: Connector
+    ) -> None:
+        tracks = [
+            kipy_track("thin", "SIG", (0, 0), (10, 0), width=0.25),
+            kipy_track("w1", "SIG", (9.775, 0), (10, 0), width=0.5),
+            kipy_track("w2", "SIG", (10, 0), (20, 0), width=0.5),
+        ]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--no-drc")
+
+        created = cast(list[kbt.Track], board.created)
+        line = LineString([(0, 0), (20, 0)])
+        assert all(line.distance(segment(t)) <= NM_ROUNDING for t in created)
+        thin, wide = (
+            unary_union([segment(t) for t in created if t.width == nm(w)])
+            for w in (0.25, 0.5)
+        )
+        assert thin.covers(LineString([(0, 0), (9.775, 0)]))
+        assert wide.covers(LineString([(10, 0), (20, 0)]))
+        assert thin.union(wide).covers(line)
+
+    def test_an_untouched_tee_along_one_track_commits_nothing(
+        self, connect: Connector, kicad_cli: Path, log: list[str]
+    ) -> None:
+        tee = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 5), (5, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tee),
+                tracks=list(tee),
+                pads=[kipy_pad("pad", "SIG", 5, 0)],
+            )
+        )
+
+        run()
+
+        assert board.calls == []
+        assert drc_runs(kicad_cli) == 0
+        assert any("Nothing to do" in line for line in log)
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_split_track_is_replaced_whole_when_one_part_changes(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        tee = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (10, 4), width=WIDTH),
+            kipy_track("c", "SIG", (5, 5), (5, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tee),
+                tracks=list(tee),
+                pads=[kipy_pad("pad", "SIG", 5, 0)],
+            )
+        )
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == ["a", "b"]
+        (report,) = reports
+        assert sorted(c.changed for c in report.chains) == [False, True, True]
+        created = cast(list[kbt.Track], board.created)
+        assert unary_union([segment(t) for t in created]).covers(
+            LineString([(0, 0), (5, 0)])
+        )
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_change_spreads_through_two_split_tracks(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        tracks = [
+            kipy_track("a1", "SIG", (0, -3), (0, 0), width=WIDTH),
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (20, 0), width=WIDTH),
+            kipy_track("s", "SIG", (5, 5), (5, 0), width=WIDTH),
+            kipy_track("t", "SIG", (15, 5), (15, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                pads=[kipy_pad("p1", "SIG", 5, 0), kipy_pad("p2", "SIG", 15, 0)],
+            )
+        )
+
+        run("--no-drc")
+
+        assert sorted(board.deleted) == ["a", "a1", "b"]
+        (report,) = reports
+        assert sum(c.changed for c in report.chains) == 3
+        created = cast(list[kbt.Track], board.created)
+        assert unary_union([segment(t) for t in created]).covers(
+            LineString([(15, 0), (20, 0)])
+        )
+
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_locked_other_net_track_in_the_selection_stays_an_obstacle(
         self, connect: Connector
     ) -> None:
@@ -406,7 +532,7 @@ class TestSmooth:
 
     @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize("tip", [-0.25, -0.245, -0.24, -0.1])
-    def test_selected_stub_ending_in_the_chains_copper_stays_connected(
+    def test_selected_stub_ending_in_the_chains_copper_joins_it_at_a_junction(
         self, connect: Connector, tip: float
     ) -> None:
         chain = l_chain()
@@ -416,11 +542,18 @@ class TestSmooth:
 
         run("--no-drc")
 
-        assert "stub" not in board.deleted
-        end = Point(2, tip)
-        created = cast(list[kbt.Track], board.created)
-        gap = min(segment(t).distance(end) for t in created)
-        assert gap <= WIDTH + NM_ROUNDING
+        assert sorted(board.deleted) == ["a", "b", "stub"]
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        assert sorted(p for p, n in degree.items() if n == 1) == [
+            (0, 0),
+            (nm(2), nm(-3)),
+            (nm(4), nm(4)),
+        ]
+        assert list(degree.values()).count(3) == 1
 
     @pytest.mark.usefixtures("coarse_optimizer")
     @pytest.mark.parametrize("tip", [-0.25, -0.1])
@@ -433,7 +566,7 @@ class TestSmooth:
 
         report = pipeline.run_smooth(options)
 
-        assert len(report.chains) == 2
+        assert len(report.chains) == 3
         for c in report.chains:
             assert c.after.min_clearance >= -NM_ROUNDING
             assert c.frozen == ()
@@ -953,7 +1086,8 @@ class TestErrors:
     ) -> None:
         tracks = [
             kipy_track("a", "SIG", (0, 0), (9, 0)),
-            kipy_track("c", "SIG", (5, 0), (5, 3)),
+            kipy_track("b", "SIG", (9, 0), (9, 3)),
+            kipy_track("c", "SIG", (9, 3), (0, 0)),
         ]
         vias = [kipy_via("v", "SIG", 9, 0)] if with_via else []
         board = CommitBoard(
@@ -966,7 +1100,7 @@ class TestErrors:
 
         message = exit_message(log)
 
-        assert "selected tracks branch at (4.000, -2.000) mm: c ends in the middle" in (
+        assert "selected tracks form a closed loop through (-1.000, -2.000) mm" in (
             message
         )
         assert "ChainError" not in message
