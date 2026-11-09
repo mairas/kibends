@@ -657,7 +657,7 @@ class TestSmooth:
                     "--stall-tolerance=0.01",
                     "--stall-window=5",
                     "--max-iterations=50",
-                    "--burst-iterations=100",
+                    "--burst-iterations=50",
                     "--lbfgs-ftol=1e-9",
                     "--lbfgs-gtol=1e-6",
                     "--time-limit=60",
@@ -668,7 +668,7 @@ class TestSmooth:
         s = options.settings
         assert s.settled_change == 0.005
         assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
-        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 100, 60.0)
+        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 50, 60.0)
         assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
 
     def test_stop_rules_default_to_the_optimizers(self) -> None:

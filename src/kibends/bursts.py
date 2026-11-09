@@ -60,7 +60,7 @@ class OptimizerSettings:
     so this is 1 µm of length: in flat stretches the shapes keep wandering
     by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
-    burst_maxiter: int = 300
+    burst_maxiter: int = 100
     """L-BFGS-B iterations per burst of a problem."""
     lbfgs_ftol: float = LBFGSB_FTOL
     """L-BFGS-B's relative energy reduction below which a burst ends."""
