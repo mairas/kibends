@@ -1980,10 +1980,7 @@ class TestMovingVias:
 
         read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
         assert read == ["B.Cu", "F.Cu", "In1.Cu"]
-        assert (
-            "INFO Optimizing 2 chains and 1 moving via; moving vias may take a while\n"
-            in log
-        )
+        assert "INFO Optimizing 2 chains and 1 moving via\n" in log
 
     def test_reports_the_move(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
