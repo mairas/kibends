@@ -8,8 +8,9 @@ floats. Every coordinate is in KiCad's board frame, with y pointing down.
 
 import math
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from itertools import accumulate, pairwise
 from typing import NamedTuple
 
@@ -76,7 +77,9 @@ class Chain:
     `pinned[i]` tells whether `points[i]` must stay where it is: the two
     endpoints and every point where same-net copper touches the chain.
     `segment_ids` includes duplicate and zero-length segments, which the
-    chain also replaces.
+    chain also replaces. A track split where another ends inside it is in
+    the `segment_ids` of every chain that has a part of it
+    (`shared_track_groups`).
     """
 
     points: tuple[Point2, ...]
@@ -99,15 +102,19 @@ def extract_chains(
 
     Selected segments are grouped by layer, net and width, and each group is
     split into connected pieces. Two widths that meet end to end both end
-    there and so are pinned. A point where three or more selected tracks of
-    one net on one layer meet end is a junction: the pieces are split there
-    into chains that end at it, loose, unless other copper pins any of them
-    there, which pins them all; a track ending in the middle of another is
-    refused. `same_net_copper(layer, net)` returns the copper of `net` on
-    `layer` that pins its chains, as for `extract_chain`; a via joining
-    chains on two layers pins both, and a net's chains on one layer pin each
-    other where their copper overlaps. Locked segments stay out of every
-    chain, with a warning, and pin the chains they touch on their layer.
+    there and so are pinned; two that overlap along a span stay a chain
+    each, pinned where their copper overlaps. A point where three or more
+    selected tracks of one net on one layer meet end is a junction: the
+    pieces are split there into chains that end at it, loose, unless other
+    copper pins any of them there, which pins them all. A stub whose end
+    reaches the copper of another track inside it meets it at a junction:
+    the other is split at the point of its centreline nearest the end, and
+    the end moves there (`_join_mid_track_ends`). `same_net_copper(layer,
+    net)` returns the copper of `net` on `layer` that pins its chains, as
+    for `extract_chain`; a via joining chains on two layers pins both, and a
+    net's chains on one layer pin each other where their copper overlaps.
+    Locked segments stay out of every chain, with a warning, and pin the
+    chains they touch on their layer.
 
     Chains are ordered by net, then by layer, then by first point, then by
     width, then by their points; each starts at its end with the smaller
@@ -143,17 +150,17 @@ def split_chains(
         raise ChainError("selection has no tracks of non-zero length")
 
     chains: list[Chain] = []
-    for (layer, net), of_net in _group(kept, lambda s: (s.layer, s.net)).items():
-        fixed = [
-            *same_net_copper(layer, net),
-            *map(_same_net_track, _locked_on(locked, layer, net)),
-        ]
+    for (layer, net), given in _group(kept, lambda s: (s.layer, s.net)).items():
+        fixed = _fixed_copper(same_net_copper(layer, net), locked, layer, net)
+        of_net, moved = _join_mid_track_ends(given, fixed)
+        moved_from: dict[Point2, list[Point2]] = defaultdict(list)
+        for end, at in moved.items():
+            moved_from[_mm(at)].append(_mm(end))
         by_width = {
             width: (of_width, *_unique_edges(of_width))
             for width, of_width in _group(of_net, lambda s: s.width).items()
         }
         all_edges = [e for _, edges, _ in by_width.values() for e in edges]
-        _check_junctions(all_edges, frame)
         junctions = {
             p
             for p, segs in _adjacency(all_edges, ()).items()
@@ -180,7 +187,7 @@ def split_chains(
                 )
                 ids[k].append(s.id)
             pieces += [
-                (width, piece, piece_ids)
+                (width, piece, list(dict.fromkeys(piece_ids)))
                 for piece, piece_ids in zip(of_width_pieces, ids, strict=True)
             ]
         # A selected track whose copper overlaps another chain's connects to
@@ -205,6 +212,7 @@ def split_chains(
                 segment_ids=piece_ids,
                 frame=frame,
                 junctions=junctions,
+                moved_from=moved_from,
             )
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
         ]
@@ -212,6 +220,24 @@ def split_chains(
     return sorted(
         chains, key=lambda c: (c.net, c.layer, c.points[0], c.width, c.points)
     )
+
+
+def shared_track_groups(segment_ids: Sequence[Collection[str]]) -> list[int]:
+    """For each chain, given by its `segment_ids`, the smallest index of the
+    chains it shares a track with, directly or through others.
+
+    A track split at a junction belongs to every chain that meets there, so
+    those chains are replaced together and count as one.
+    """
+    group = list(range(len(segment_ids)))
+    first_with: dict[str, int] = {}
+    for k, ids in enumerate(segment_ids):
+        for i in ids:
+            other = group[first_with.setdefault(i, k)]
+            if other != group[k]:
+                low, high = sorted((other, group[k]))
+                group = [low if g == high else g for g in group]
+    return group
 
 
 def _pin_junctions_whole(
@@ -266,18 +292,28 @@ def extract_chain(
     The chain starts at the end with the smaller (x, y).
     """
     kept, locked = split_locked(segments)
+    copper = tuple(same_net_copper)
     if kept:
         _, layer, net = _uniform_attributes(kept)
-        edges, dots = _unique_edges(kept)
+        joined, _ = _join_mid_track_ends(
+            kept, _fixed_copper(copper, locked, layer, net)
+        )
+        edges, dots = _unique_edges(joined)
         if edges:
-            _check_junctions(edges, frame)
             _check_degrees(_adjacency(edges, ()), frame)
             _check_one_piece(
                 _adjacency(edges, dots), _locked_on(locked, layer, net), frame
             )
-    copper = tuple(same_net_copper)
     (chain,) = split_chains(kept, locked, lambda _layer, _net: copper, frame=frame)
     return chain
+
+
+def _fixed_copper(
+    copper: Iterable[SameNetCopper], locked: Iterable[Segment], layer: str, net: str
+) -> list[SameNetCopper]:
+    """The copper that pins `net`'s chains on `layer`: `copper` and the
+    locked tracks there."""
+    return [*copper, *map(_same_net_track, _locked_on(locked, layer, net))]
 
 
 def _locked_on(locked: Iterable[Segment], layer: str, net: str) -> list[Segment]:
@@ -304,7 +340,7 @@ class _CopperIndex:
         )
 
     def near(
-        self, line: LineString, half_width: float, piece: int
+        self, line: BaseGeometry, half_width: float, piece: int
     ) -> list[tuple[SameNetCopper, bool]]:
         """Every item but `piece`'s own that can touch `line`, in the order
         given, each with whether it is a selected track."""
@@ -327,7 +363,8 @@ def _chain(
     net: str,
     segment_ids: Sequence[str],
     frame: UserFrame,
-    junctions: Collection[NmPoint] = (),
+    junctions: Collection[NmPoint],
+    moved_from: Mapping[Point2, Sequence[Point2]],
 ) -> Chain:
     if not any(adjacency.values()):
         raise ChainError(
@@ -339,11 +376,13 @@ def _chain(
     half_width = width / NM_PER_MM / 2
     walk = _walk(adjacency)
     walked = [_mm(p) for p in walk]
+    loose_ends = [_mm(p) for p in (walk[0], walk[-1]) if p in junctions]
+    loose = {p: moved_from.get(p, ()) for p in loose_ends}
+    reached = shapely.union_all(
+        [LineString(walked), *(_reached_from(p, o) for p, o in loose.items())]
+    )
     points, pinned = _pin_touches(
-        walked,
-        copper.near(LineString(walked), half_width, piece),
-        half_width,
-        loose={_mm(p) for p in (walk[0], walk[-1]) if p in junctions},
+        walked, copper.near(reached, half_width, piece), half_width, loose
     )
     return Chain(
         points=tuple(points),
@@ -362,24 +401,6 @@ def _group[Key](
     for s in segments:
         groups[key(s)].append(s)
     return groups
-
-
-def _check_junctions(edges: Sequence[Segment], frame: UserFrame) -> None:
-    """Refuse branches among the selected edges of one net, of any widths,
-    other than three or more edges ending at one point.
-
-    `edges` must already be free of duplicates within each width, so a span
-    that appears twice is two tracks of different widths.
-    """
-    first_by_ends: dict[frozenset[NmPoint], Segment] = {}
-    for s in edges:
-        other = first_by_ends.setdefault(frozenset((s.start, s.end)), s)
-        if other is not s:
-            raise ChainError(
-                f"selected tracks {other.id} and {s.id} overlap from "
-                f"{_fmt(s.start, frame)} to {_fmt(s.end, frame)} with different widths"
-            )
-    _check_no_mid_segment_junctions(edges, frame)
 
 
 def _mm(p: NmPoint) -> Point2:
@@ -442,45 +463,156 @@ def _unique_edges(segments: Sequence[Segment]) -> tuple[list[Segment], set[NmPoi
     return edges, dots
 
 
-def _check_no_mid_segment_junctions(edges: Sequence[Segment], frame: UserFrame) -> None:
-    """Refuse an edge end inside another edge, the first in input order.
+class _Reach(NamedTuple):
+    """A track `track` whose copper an end reaches nearest `at` inside it."""
 
-    An STR tree narrows the candidates, so the check is O(n log n) for n
-    edges rather than comparing every pair; the exact test stays integer.
+    distance_sq: Fraction
+    at: NmPoint
+    track: Segment
+
+
+def _join_mid_track_ends(
+    segments: Sequence[Segment], fixed: Sequence[SameNetCopper]
+) -> tuple[list[Segment], dict[NmPoint, NmPoint]]:
+    """`segments` of one net and layer, split where a stub meets a track,
+    and where each moved end came from.
+
+    KiCad connects two tracks wherever their copper overlaps. An end `p`
+    joins a track `r` that its copper reaches nearest a point inside `r`
+    when every selected track ending at `p` may join `r` (`_may_join`). `r`
+    is split at the nearest such point, rounded to the nanometre, and `p`
+    moves there, so the point joins them, unless `p` is off that point and
+    `fixed` copper, which pins, reaches `p`'s copper, which the move would
+    take away from it.
+    Other ends stay where they are, and copper overlap pins them. An STR
+    tree narrows the candidates; the distances are exact.
     """
+    edges, _ = _unique_edges(segments)
     if not edges:
-        return
+        return list(segments), {}
+    adjacency = _adjacency(edges, ())
+    piece_of = {p: k for k, piece in enumerate(_pieces(adjacency)) for p in piece}
+    ends = sorted(adjacency)
     tree = shapely.STRtree([LineString([s.start, s.end]) for s in edges])
-    ends = [p for s in edges for p in (s.start, s.end)]
     end_index, edge_index = tree.query(
         shapely.points(ends),
         predicate="dwithin",
-        distance=JUNCTION_TOLERANCE_NM + CANDIDATE_MARGIN_NM,
+        distance=max(s.width for s in edges) + CANDIDATE_MARGIN_NM,
     )
-    candidates = zip(map(int, end_index), map(int, edge_index), strict=True)
-    hits = sorted(
-        (i, j) for i, j in candidates if i // 2 != j and _lies_inside(ends[i], edges[j])
-    )
-    if hits:
-        i, j = hits[0]
-        raise ChainError(
-            f"selected tracks branch at {_fmt(ends[i], frame)}: "
-            f"{edges[i // 2].id} ends in the middle of {edges[j].id}"
+    near: dict[NmPoint, list[Segment]] = defaultdict(list)
+    for i, j in zip(map(int, end_index), map(int, edge_index), strict=True):
+        near[ends[i]].append(edges[j])
+    moved: dict[NmPoint, NmPoint] = {}
+    cuts: dict[frozenset[NmPoint], set[NmPoint]] = defaultdict(set)
+    for p, candidates in near.items():
+        widest = max(s.width for s in adjacency[p])
+        reaching = [
+            _Reach(distance_sq, at, r)
+            for r in candidates
+            for distance_sq, at in [_nearest_on(r, p)]
+            if at is not None
+            and 4 * distance_sq <= (widest + r.width) ** 2
+            and all(
+                _may_join(s, p, r, connected=piece_of[r.start] == piece_of[p])
+                for s in adjacency[p]
+            )
+        ]
+        if not reaching:
+            continue
+        # Ties go to the smaller point, so the input order does not matter.
+        best = min(reaching, key=lambda r: (r.distance_sq, r.at))
+        if best.at == p or not _reaches(fixed, _mm(p), widest / NM_PER_MM / 2):
+            moved[p] = best.at
+            cuts[frozenset((best.track.start, best.track.end))].add(best.at)
+    if not moved:
+        return list(segments), {}
+    joined: list[Segment] = []
+    for s in segments:
+        inside = sorted(
+            cuts.get(frozenset((s.start, s.end)), ()),
+            key=lambda q: math.dist(s.start, q),
         )
+        path = [moved.get(s.start, s.start), *inside, moved.get(s.end, s.end)]
+        joined += [replace(s, start=a, end=b) for a, b in pairwise(path)]
+    return joined, moved
 
 
-def _lies_inside(p: NmPoint, s: Segment) -> bool:
-    """Whether `p` is on the interior of `s`, in exact integer arithmetic."""
-    if p in (s.start, s.end):
+def _reaches(copper: Iterable[SameNetCopper], p: Point2, half_width: float) -> bool:
+    """Whether any of `copper` reaches the disc of `half_width` around `p`."""
+    return any(
+        item.centreline.distance(Point(p)) <= half_width + item.width / 2
+        if isinstance(item, SameNetTrack)
+        else item.distance(Point(p)) <= half_width
+        for item in copper
+    )
+
+
+def _may_join(s: Segment, p: NmPoint, r: Segment, *, connected: bool) -> bool:
+    """Whether `s`'s end `p`, which reaches `r`, may join `r`.
+
+    `s` must not cross `r`'s centreline by more than `r`'s half width,
+    so that only copper inside `r` goes when `p` moves onto it. Then it
+    joins where `s` lies on `r` and has its width, so that the two merge,
+    or where it meets `r` as a stub: `connected`, whether the selection
+    already connects `s` and `r`, is false, and `s` leaves `r`'s reach, its
+    centreline widened by both half widths, through `r`'s side rather than
+    running along `r` past its end.
+    """
+    q = _other_end(s, p)
+    length_sq = _along(r, r.end)
+    across_p, across_q = _across(r, p), _across(r, q)
+    on_line = JUNCTION_TOLERANCE_NM**2 * length_sq
+    if (
+        across_p * across_q < 0
+        and across_q**2 > on_line
+        and 4 * across_p**2 > r.width**2 * length_sq
+    ):
         return False
+    on_r = (2 * JUNCTION_TOLERANCE_NM) ** 2
+    if s.width == r.width and all(4 * _nearest_on(r, x)[0] <= on_r for x in (p, q)):
+        return True
+    if connected:
+        return False
+    side = 1 if across_q > 0 else -1
+    from_p, from_q = side * across_p, side * across_q
+    reach = (s.width + r.width) / 2 * math.sqrt(length_sq)
+    if from_q <= reach:
+        return False
+    toward_q = (reach - from_p) / (from_q - from_p)
+    exit_at = _along(r, p) + toward_q * (_along(r, q) - _along(r, p))
+    return 0 < exit_at < length_sq
+
+
+def _across(r: Segment, x: NmPoint) -> int:
+    """`x`'s distance from `r`'s line, signed, times `r`'s length."""
+    (ax, ay), (bx, by) = r.start, r.end
+    return (bx - ax) * (x[1] - ay) - (by - ay) * (x[0] - ax)
+
+
+def _along(r: Segment, x: NmPoint) -> int:
+    """`x`'s position along `r` from its start, times `r`'s length."""
+    (ax, ay), (bx, by) = r.start, r.end
+    return (x[0] - ax) * (bx - ax) + (x[1] - ay) * (by - ay)
+
+
+def _nearest_on(s: Segment, p: NmPoint) -> tuple[Fraction, NmPoint | None]:
+    """The squared distance from `p` to `s`, and the nearest point if it is
+    inside `s` on the nanometre grid, in exact arithmetic."""
     (ax, ay), (bx, by), (px, py) = s.start, s.end, p
     dx, dy = bx - ax, by - ay
     length_sq = dx * dx + dy * dy
     along = (px - ax) * dx + (py - ay) * dy
-    if not 0 < along < length_sq:
-        return False
+    if along <= 0:
+        return Fraction((px - ax) ** 2 + (py - ay) ** 2), None
+    if along >= length_sq:
+        return Fraction((px - bx) ** 2 + (py - by) ** 2), None
     cross = dx * (py - ay) - dy * (px - ax)
-    return cross * cross <= JUNCTION_TOLERANCE_NM**2 * length_sq
+    at = (
+        ax + round(Fraction(along * dx, length_sq)),
+        ay + round(Fraction(along * dy, length_sq)),
+    )
+    inside = at not in (s.start, s.end)
+    return Fraction(cross * cross, length_sq), at if inside else None
 
 
 def _adjacency(edges: Sequence[Segment], dots: Iterable[NmPoint]) -> Adjacency:
@@ -498,7 +630,7 @@ def _other_end(s: Segment, p: NmPoint) -> NmPoint:
 def _check_degrees(adjacency: Adjacency, frame: UserFrame) -> None:
     for p, segs in sorted(adjacency.items()):
         if len(segs) > MAX_CHAIN_DEGREE:
-            ids = ", ".join(s.id for s in segs)
+            ids = ", ".join(dict.fromkeys(s.id for s in segs))
             raise ChainError(
                 f"selected tracks branch at {_fmt(p, frame)}: {ids} meet there"
             )
@@ -616,14 +748,15 @@ def _pin_touches(
     points: Sequence[Point2],
     copper: Iterable[tuple[SameNetCopper, bool]],
     half_width: float,
-    loose: Collection[Point2] = (),
+    loose: Mapping[Point2, Collection[Point2]],
 ) -> tuple[list[Point2], list[bool]]:
     """Insert and pin a vertex wherever `copper`, each item flagged with
     whether it is a selected track, touches the chain.
 
     An end at a `loose` point, a junction, is pinned only by copper that
-    reaches it and is not a selected track, as those are the junction's
-    branches.
+    is not a selected track, as those are the junction's branches, and
+    reaches it or the line to any point the end moved from, its copper
+    before the move.
     """
     items = [
         (
@@ -636,9 +769,9 @@ def _pin_touches(
     ]
     still_loose = {
         p
-        for p in loose
+        for p, origins in loose.items()
         if not any(
-            not selected and geometry.distance(Point(p)) <= reach
+            not selected and geometry.distance(_reached_from(p, origins)) <= reach
             for (geometry, reach), selected in items
         )
     }
@@ -677,6 +810,11 @@ def _pin_touches(
         keep = prev if prev.original else station
         merged[-1] = keep._replace(pinned=prev.pinned or station.pinned)
     return [st.point for st in merged], [st.pinned for st in merged]
+
+
+def _reached_from(p: Point2, origins: Collection[Point2]) -> BaseGeometry:
+    """`p` and the lines from it to each of `origins`."""
+    return shapely.union_all([Point(p), *(LineString([p, o]) for o in origins)])
 
 
 def _touch_points(line: LineString, copper: BaseGeometry, reach: float) -> list[Point2]:

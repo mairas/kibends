@@ -406,6 +406,23 @@ class TestIntroduced:
 
         assert [drc.violation_nets(v) for v in result.violations] == [{"B", "GND"}]
 
+    @pytest.mark.parametrize("new", ["newA", "newB"])
+    def test_chains_sharing_a_split_track_count_as_one(self, new: str) -> None:
+        def track(uuid: str, x: float) -> drc.ReportItem:
+            return item(f"Track [SIG] on F.Cu, length {x:.4f} mm", x, 1, uuid)
+
+        base = parsed(violation("clearance", track("split", 1), PAD))
+        candidate = parsed(violation("clearance", track(new, 3), PAD))
+
+        result = drc.introduced(
+            base,
+            candidate,
+            old_ids=[frozenset({"split"}), frozenset({"split", "stub"})],
+            new_ids=[frozenset({"newA"}), frozenset({"newB"})],
+        )
+
+        assert not result
+
     def test_identical_reports_introduce_nothing(self) -> None:
         report = parsed(
             violation("clearance", item("Via [GND]", 1, 1), item("Track [X]", 2, 1)),

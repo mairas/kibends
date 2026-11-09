@@ -99,7 +99,8 @@ def commit_chains(
     """
     if not chains:
         raise ValueError("No chains to commit")
-    track_ids = [i for chain, _ in chains for i in chain.segment_ids]
+    # A track split at a junction belongs to each chain that meets there.
+    track_ids = list(dict.fromkeys(i for chain, _ in chains for i in chain.segment_ids))
     current, current_vias = _unchanged_items(board, track_ids, selected, vias)
     new_items: list[Wrapper] = [
         track

@@ -30,7 +30,7 @@ from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from loguru import logger
 
-from kibends.chain import Point2
+from kibends.chain import Point2, shared_track_groups
 from kibends.coords import UserFrame
 
 KICAD_CLI = "kicad-cli"
@@ -468,8 +468,10 @@ class _NetWideKey:
 ViolationKey = _ItemsKey | _NetWideKey
 
 
-def _chain_of(groups: Sequence[Collection[str]]) -> dict[str, int]:
-    return {i: chain for chain, ids in enumerate(groups) for i in ids}
+def _chain_of(
+    groups: Sequence[Collection[str]], merged: Sequence[int]
+) -> dict[str, int]:
+    return {i: merged[chain] for chain, ids in enumerate(groups) for i in ids}
 
 
 def _key(v: Violation, chain_of: Mapping[str, int]) -> ViolationKey:
@@ -546,10 +548,12 @@ def introduced(
     chain k's old tracks in the baseline and one of its new tracks in the
     candidate both stand for chain k, so a violation the chain already had
     against some item is not new, while another chain's old violation does
-    not excuse it. Connectivity violations count per net.
+    not excuse it; chains that share an old track count as one. Connectivity
+    violations count per net.
     """
-    old_chain_of = _chain_of(old_ids)
-    new_chain_of = _chain_of(new_ids)
+    merged = shared_track_groups(old_ids)
+    old_chain_of = _chain_of(old_ids, merged)
+    new_chain_of = _chain_of(new_ids, merged)
     remaining = Counter(
         _key(v, old_chain_of) for v in baseline if v.type not in CONNECTIVITY_TYPES
     )
