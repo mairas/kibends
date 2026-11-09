@@ -10,6 +10,7 @@ neither keeps clear of the copper it connects to.
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
     FloatArray,
+    IntArray,
     ObstacleField,
     arc_lengths,
 )
@@ -173,23 +175,21 @@ def kept_spans(
     me, them = own.centreline, other.centreline
     if them.net != me.net:
         return None
-    touches = _touches(own, other)
-    if not touches:
+    own_touch, other_touch = _touches(own, other)
+    if not own_touch.size:
         return None
     mine = me.points if own_points is None else own_points
     clear = (me.width + them.width) / 2 + reach + margin
-    own_arc = arc_lengths(mine)
     arc = arc_lengths(points)
+    own_pins = _pins(me.points, own.fixed, mine, arc_lengths(mine), own_touch, clear)
+    other_pins = _pins(them.points, other.fixed, points, arc, other_touch, clear)
     left_out: list[tuple[float, float]] = []
-    for at_own, at_other in touches:
-        own_pin = _vertex_at(me.points, mine, at_own)
-        other_pin = _vertex_at(them.points, points, at_other)
-        own_headings = [
-            heading for _, heading in _departures(mine, own_arc, own_pin, clear)
-        ]
-        offset: FloatArray = points[other_pin] - mine[own_pin]
-        along = float(arc[other_pin])
-        for forward, heading in _departures(points, arc, other_pin, clear):
+    for a, b in zip(own_touch.tolist(), other_touch.tolist(), strict=True):
+        own_pin, other_pin = own_pins[a], other_pins[b]
+        own_headings = [heading for _, heading in own_pin.departures]
+        offset: FloatArray = points[other_pin.vertex] - mine[own_pin.vertex]
+        along = float(arc[other_pin.vertex])
+        for forward, heading in other_pin.departures:
             length = _leave_out(own_headings, offset, heading, clear)
             left_out.append(
                 (along, along + length) if forward else (along - length, along)
@@ -197,14 +197,43 @@ def kept_spans(
     return _complement(left_out, float(arc[-1]))
 
 
-def _touches(own: ChainInput, other: ChainInput) -> list[tuple[FloatArray, FloatArray]]:
-    """Pairs of pinned points, one of each chain, whose copper overlaps."""
+def _touches(own: ChainInput, other: ChainInput) -> tuple[IntArray, IntArray]:
+    """Pairs of pinned points, one of each chain, whose copper overlaps, by
+    their order among each chain's pinned points."""
     mine = own.centreline.points[own.fixed]
     theirs = other.centreline.points[other.fixed]
     overlap = (own.centreline.width + other.centreline.width) / 2 + TOUCH_TOLERANCE
     gaps = np.linalg.norm(mine[:, None] - theirs[None], axis=2)
     i, j = np.nonzero(gaps <= overlap)
-    return [(mine[a], theirs[b]) for a, b in zip(i, j, strict=True)]
+    return i, j
+
+
+class _Pin(NamedTuple):
+    """A pinned point of a chain where it touches another."""
+
+    vertex: int
+    """Its vertex of the chain's current polyline."""
+    departures: list[tuple[bool, FloatArray]]
+    """Each way the chain leaves it, as `_departures` gives them."""
+
+
+def _pins(
+    original: FloatArray,
+    fixed: BoolArray,
+    points: FloatArray,
+    arc: FloatArray,
+    touching: IntArray,
+    clear: float,
+) -> dict[int, _Pin]:
+    """Each pinned point in `touching`, by its order among the pinned points
+    of the polyline that started as `original`, found on `points`, whose
+    arc lengths are `arc`."""
+    pinned = original[fixed]
+    found: dict[int, _Pin] = {}
+    for a in np.unique(touching).tolist():
+        k = _vertex_at(original, points, pinned[a])
+        found[a] = _Pin(k, _departures(points, arc, k, clear))
+    return found
 
 
 def _vertex_at(original: FloatArray, points: FloatArray, pin: FloatArray) -> int:
