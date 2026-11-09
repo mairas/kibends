@@ -178,7 +178,7 @@ difference of the two chains, changes; kibends does not correct it, which
 KiCad's length tuner does. A coupled section that same-net copper touches
 between its ends stays as it is.
 
-A run warns when two chains whose nets pair do not run coupled or have
+A run warns when two chains whose nets pair run coupled but have
 different widths, when a chain runs coupled with one of its pair net that
 pairs with another chain, and when a pair's measured gap differs by more
 than a tenth from its netclass's differential pair gap. Each of these is

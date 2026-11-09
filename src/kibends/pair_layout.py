@@ -51,10 +51,10 @@ def find_pairs(
 ) -> list[ChainPair]:
     """The differential pairs among `chains`, each chain in at most one.
 
-    Warns about two chains whose nets pair but that cannot be smoothed as a
-    pair, and about a chain that runs coupled with a chain its net pairs
-    with but that pairs with another chain of its net, at its start in
-    `frame`; both are smoothed as chains.
+    Warns about two chains whose nets pair and run coupled but that cannot
+    be smoothed as a pair, and about a chain that runs coupled with a chain
+    its net pairs with but that pairs with another chain of its net, at its
+    start in `frame`; both are smoothed as chains.
     """
     found, taken, missed, skipped = _pair_up(chains, chord_tolerance)
     for k, m, message in missed:
@@ -96,13 +96,9 @@ def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
             missed.append((k, m, f"{e}; {UNPAIRED}"))
             continue
         if pair is None:
-            missed.append(
-                (
-                    k,
-                    m,
-                    f"{a.net} and {b.net} on {a.layer} form a differential pair "
-                    f"by name but do not run coupled; {UNPAIRED}",
-                )
+            logger.debug(
+                f"{a.net} and {b.net} on {a.layer} form a differential pair "
+                f"by name but do not run coupled; {UNPAIRED}"
             )
             continue
         found.append(ChainPair(k, m, pair))
