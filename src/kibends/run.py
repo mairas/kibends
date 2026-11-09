@@ -341,7 +341,7 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
     carried = (
         carried_copper(
             may,
-            split_chains(kept, locked, lambda _l, _n: (), frame=frame, branches=True),
+            split_chains(kept, locked, lambda _l, _n: (), frame=frame),
         )
         if may
         else {}
@@ -647,7 +647,7 @@ def _extract_chains(
             snapshot = replace(snapshot, vias=pinning)
         return snapshot.same_net_copper(net)
 
-    return split_chains(kept, locked, copper, frame=frame, branches=True)
+    return split_chains(kept, locked, copper, frame=frame)
 
 
 def _chain_inputs(

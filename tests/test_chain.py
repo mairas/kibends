@@ -475,22 +475,10 @@ class TestSeveralChains:
         assert_points(thin, [(0, 0), (10, 0)])
         assert_points(wide, [(10, 0), (20, 0)])
 
-    def test_same_net_tee_with_a_narrower_stub_names_the_branch_point(self) -> None:
-        segments = [*l_z_segments(), seg("stub", (10, 0), (15, -5), width=150_000)]
-
-        with pytest.raises(ChainError, match=r"branch.*\(10\.000, 0\.000\).*stub"):
-            extract_chains(segments, frame=BOARD_FRAME)
-
     def test_stub_of_another_width_ending_mid_segment_is_a_branch(self) -> None:
         segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0), width=500_000)]
 
         with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\).*tee"):
-            extract_chains(segments, frame=BOARD_FRAME)
-
-    def test_same_width_tee_is_a_branch(self) -> None:
-        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5))]
-
-        with pytest.raises(ChainError, match=r"branch.*\(10\.000, 0\.000\)"):
             extract_chains(segments, frame=BOARD_FRAME)
 
     def test_tracks_of_two_widths_on_the_same_span_are_refused(self) -> None:
@@ -589,7 +577,6 @@ GRID_FRAME = UserFrame((10.0, 20.0))
             ],
             r"closed loop through \(-10\.000, -20\.000\) mm",
         ),
-        ([*l_z_segments(), seg("d", (10, 0), (15, -5))], r"branch at \(0\.000, -20"),
         (
             [*l_z_segments(), seg("tee", (5, -3), (5, 0))],
             r"branch at \(-5\.000, -20\.000\) mm: tee",
@@ -634,7 +621,7 @@ def tee_segments() -> list[Segment]:
 
 class TestBranches:
     def test_a_tee_splits_into_chains_ending_loose_at_the_junction(self) -> None:
-        a, bc, d = extract_chains(tee_segments(), frame=BOARD_FRAME, branches=True)
+        a, bc, d = extract_chains(tee_segments(), frame=BOARD_FRAME)
 
         assert_points(a, [(0, 0), (10, 0)])
         assert_points(bc, [(10, 0), (10, 5), (20, 5)])
@@ -660,8 +647,8 @@ class TestBranches:
             for s in reversed(segments)
         ]
 
-        chains = extract_chains(segments, frame=BOARD_FRAME, branches=True)
-        again = extract_chains(reordered, frame=BOARD_FRAME, branches=True)
+        chains = extract_chains(segments, frame=BOARD_FRAME)
+        again = extract_chains(reordered, frame=BOARD_FRAME)
 
         assert [(c.points, c.pinned) for c in chains] == [
             (c.points, c.pinned) for c in again
@@ -671,9 +658,7 @@ class TestBranches:
     def test_a_pad_on_the_junction_pins_every_branch(self) -> None:
         pad = Point(10, 0).buffer(0.3)
 
-        chains = extract_chains(
-            tee_segments(), lambda _l, _n: [pad], frame=BOARD_FRAME, branches=True
-        )
+        chains = extract_chains(tee_segments(), lambda _l, _n: [pad], frame=BOARD_FRAME)
 
         for chain in chains:
             assert (10.0, 0.0) in pinned_points(chain)
@@ -681,7 +666,7 @@ class TestBranches:
     def test_a_locked_track_ending_at_the_junction_pins_it(self) -> None:
         segments = [*tee_segments(), seg("lock", (10, 0), (10, -5), locked=True)]
 
-        chains = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+        chains = extract_chains(segments, frame=BOARD_FRAME)
 
         assert len(chains) == 3
         for chain in chains:
@@ -690,7 +675,7 @@ class TestBranches:
     def test_branches_of_different_widths_meet_loose(self) -> None:
         segments = [*l_z_segments(), seg("d", (10, 0), (15, -5), width=500_000)]
 
-        a, bc, d = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+        a, bc, d = extract_chains(segments, frame=BOARD_FRAME)
 
         assert (a.width, bc.width, d.width) == (
             pytest.approx(0.25),
@@ -704,9 +689,7 @@ class TestBranches:
         # 0.2 mm from the junction: within the wide track's half width only.
         pad = Point(10, -0.5).buffer(0.3)
 
-        a, bc, d = extract_chains(
-            segments, lambda _l, _n: [pad], frame=BOARD_FRAME, branches=True
-        )
+        a, bc, d = extract_chains(segments, lambda _l, _n: [pad], frame=BOARD_FRAME)
 
         assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (True, True, True)
 
@@ -716,7 +699,7 @@ class TestBranches:
             seg("thin", (0, 0), (10, 0)),
         ]
 
-        thin, wide = extract_chains(segments, frame=BOARD_FRAME, branches=True)
+        thin, wide = extract_chains(segments, frame=BOARD_FRAME)
 
         assert thin.pinned == wide.pinned == (True, True)
 
@@ -724,8 +707,4 @@ class TestBranches:
         segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0))]
 
         with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\).*tee"):
-            extract_chains(segments, frame=BOARD_FRAME, branches=True)
-
-    def test_without_branches_a_tee_is_refused(self) -> None:
-        with pytest.raises(ChainError, match=r"branch at \(10\.000, 0\.000\) mm"):
-            extract_chains(tee_segments(), frame=BOARD_FRAME)
+            extract_chains(segments, frame=BOARD_FRAME)

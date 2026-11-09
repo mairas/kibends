@@ -94,31 +94,27 @@ def extract_chains(
     ),
     *,
     frame: UserFrame,
-    branches: bool = False,
 ) -> list[Chain]:
     """Split `segments` into open chains, one per connected piece, or raise.
 
     Selected segments are grouped by layer, net and width, and each group is
-    split into connected pieces. Within one net on one layer, selected tracks
-    of all widths must not branch, unless `branches`: two widths may meet
-    only end to end, where both chains end and so are pinned. With
-    `branches`, a point where three or more selected tracks of the net meet
-    end is a junction: the pieces are split there into chains that end at
-    it, loose, unless other copper pins any of them there, which pins them
-    all; a track ending in the middle of
-    another is still refused. `same_net_copper(layer, net)` returns
-    the copper of `net` on `layer` that pins its chains, as for
-    `extract_chain`; a via joining chains on two layers pins both, and a
-    net's chains on one layer pin each other where their copper overlaps.
-    Locked segments stay out of every chain, with a warning, and pin the
-    chains they touch on their layer.
+    split into connected pieces. Two widths that meet end to end both end
+    there and so are pinned. A point where three or more selected tracks of
+    one net on one layer meet end is a junction: the pieces are split there
+    into chains that end at it, loose, unless other copper pins any of them
+    there, which pins them all; a track ending in the middle of another is
+    refused. `same_net_copper(layer, net)` returns the copper of `net` on
+    `layer` that pins its chains, as for `extract_chain`; a via joining
+    chains on two layers pins both, and a net's chains on one layer pin each
+    other where their copper overlaps. Locked segments stay out of every
+    chain, with a warning, and pin the chains they touch on their layer.
 
     Chains are ordered by net, then by layer, then by first point, then by
     width, then by their points; each starts at its end with the smaller
     (x, y). Errors give positions in `frame`.
     """
     kept, locked = split_locked(segments)
-    return split_chains(kept, locked, same_net_copper, frame=frame, branches=branches)
+    return split_chains(kept, locked, same_net_copper, frame=frame)
 
 
 def split_locked(
@@ -139,7 +135,6 @@ def split_chains(
     same_net_copper: Callable[[str, str], Iterable[SameNetCopper]],
     *,
     frame: UserFrame,
-    branches: bool = False,
 ) -> list[Chain]:
     """`extract_chains` for segments `split_locked` has already split."""
     if not kept:
@@ -158,7 +153,7 @@ def split_chains(
             for width, of_width in _group(of_net, lambda s: s.width).items()
         }
         all_edges = [e for _, edges, _ in by_width.values() for e in edges]
-        _check_junctions(all_edges, frame, branches=branches)
+        _check_junctions(all_edges, frame)
         junctions = {
             p
             for p, segs in _adjacency(all_edges, ()).items()
@@ -276,6 +271,7 @@ def extract_chain(
         edges, dots = _unique_edges(kept)
         if edges:
             _check_junctions(edges, frame)
+            _check_degrees(_adjacency(edges, ()), frame)
             _check_one_piece(
                 _adjacency(edges, dots), _locked_on(locked, layer, net), frame
             )
@@ -368,11 +364,9 @@ def _group[Key](
     return groups
 
 
-def _check_junctions(
-    edges: Sequence[Segment], frame: UserFrame, *, branches: bool = False
-) -> None:
+def _check_junctions(edges: Sequence[Segment], frame: UserFrame) -> None:
     """Refuse branches among the selected edges of one net, of any widths,
-    except, with `branches`, three or more edges ending at one point.
+    other than three or more edges ending at one point.
 
     `edges` must already be free of duplicates within each width, so a span
     that appears twice is two tracks of different widths.
@@ -386,8 +380,6 @@ def _check_junctions(
                 f"{_fmt(s.start, frame)} to {_fmt(s.end, frame)} with different widths"
             )
     _check_no_mid_segment_junctions(edges, frame)
-    if not branches:
-        _check_degrees(_adjacency(edges, ()), frame)
 
 
 def _mm(p: NmPoint) -> Point2:
