@@ -11,9 +11,11 @@ from conftest import (
     PAD_HALF_SIZE,
     FakeBoard,
     kipy_pad,
+    kipy_rect,
     kipy_segment,
     kipy_track,
     kipy_via,
+    kipy_zone,
     netclass,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -295,6 +297,54 @@ class TestZoneContainment:
         clear = field.segments_clear(points((0, 0), (0, 0)), points((0, 0.9), (0, 1.2)))
 
         assert list(clear) == [True, False]
+
+
+def via_keepout(layer: BL.ValueType, keepout_tracks: bool = False) -> kbt.Zone:
+    """A rule area keeping out vias on `layer` from x = 2 to 4 about y = 0."""
+    return kipy_zone(
+        kipy_rect(2, -1, 4, 1),
+        [layer],
+        keepout_tracks=keepout_tracks,
+        keepout_vias=True,
+    )
+
+
+class TestViaKeepouts:
+    @pytest.mark.parametrize("layer", BOTH_LAYERS, ids=BOTH)
+    def test_keeps_the_ring_out_on_any_layer_it_spans(
+        self, layer: BL.ValueType
+    ) -> None:
+        fake = FakeBoard(zones=[via_keepout(layer)], vias=[moving_via()])
+
+        distance, gradient = field_of(fake).signed_distance(points((1, 0), (2.5, 0)))
+
+        assert distance == pytest.approx([1 - RADIUS, -0.5 - RADIUS])
+        assert gradient[0] == pytest.approx((-1, 0))
+
+    def test_a_keepout_on_a_layer_the_via_does_not_span_is_ignored(self) -> None:
+        blind = kipy_via(
+            VIA_ID,
+            NET,
+            0,
+            0,
+            via_type=ViaType.VT_BLIND,
+            span=(BL.BL_F_Cu, BL.BL_In1_Cu),
+        )
+        fake = FakeBoard(zones=[via_keepout(BL.BL_B_Cu)], vias=[blind])
+
+        distance, _ = field_of(fake).signed_distance(points((2.5, 0)))
+
+        assert np.isinf(distance[0])
+
+    def test_one_keeping_out_tracks_too_keeps_the_ring_out_at_its_radius(self) -> None:
+        fake = FakeBoard(
+            zones=[via_keepout(BL.BL_F_Cu, keepout_tracks=True)],
+            vias=[moving_via()],
+        )
+
+        distance, _ = field_of(fake).signed_distance(points((1, 0)))
+
+        assert distance[0] == pytest.approx(1 - RADIUS)
 
 
 class TestViaDrill:

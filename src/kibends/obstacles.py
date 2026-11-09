@@ -902,6 +902,9 @@ def build_via_obstacles(
     spans, and the outside of the fill of each of `zones`
     (`zone_containment`).
 
+    Rule areas keeping out vias on those layers keep its ring out, as track
+    keepouts keep out a track's copper.
+
     Its ring keeps the copper clearance, as a track of its diameter would,
     and its hole keeps the hole clearance, to other nets' copper on each of
     those layers. Its ring may touch copper of its own net but not overlap
@@ -923,16 +926,20 @@ def build_via_obstacles(
         touches_own_net=True,
         enters_own_pads=allow_via_in_pad,
     )
-    # Track keepouts hold the via back as well, since the chain ends it joins
-    # sit at its centre. Rule areas that keep out vias are not read; only
-    # the DRC check covers them.
     others = {v.id: v for s in spanned for v in s.vias if v.id not in left_out}.values()
     # The via spans every layer here, so another via's ring counts once, as
     # do pads' holes, which are the same on every layer.
     items = [
+        # The copper items include track keepouts, which hold the via back as
+        # well, since the chain ends it joins sit at its centre.
         *_copper_items(spanned[0], keeper, others),
         *(o for s in spanned[1:] for o in _copper_items(s, keeper, ())),
         *_hole_items(spanned[0].pads, others, keeper),
+        *(
+            Obstacle("via keepout", k, keeper.radius)
+            for s in spanned
+            for k in s.via_keepouts
+        ),
     ]
     outline = _board_outline(spanned[0].edge_paths)
     board = (
