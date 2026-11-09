@@ -7,13 +7,18 @@ import pytest
 import scenarios
 from distance_fields import Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, box
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
-from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.obstacles import (
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
+    CompositeField,
+    zone_containment,
+)
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
@@ -22,6 +27,7 @@ from kibends.optimize import (
     optimize_chains,
 )
 from kibends.pair_blocks import PairInput, pair_block
+from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, ViaInput
 
@@ -158,6 +164,54 @@ def test_a_track_on_a_layer_without_chains_hems_the_via_in(
     assert distance[0] >= -INSIDE_TOLERANCE
     assert via.position[1] > track.cy
     assert via.position[1] < scenarios.DETOUR_VIA[1] - 1.0
+
+
+def in_zone(bottom: float) -> ViasScenario:
+    """The detour route with its via in a zone of its net whose fill ends at
+    y = `bottom`, short of the straight route at y = 0."""
+    via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
+    return ViasScenario(
+        "via-in-zone",
+        scenarios.route("N", scenarios.DETOUR_VIA),
+        (scenarios.joining(via, 0, CompositeField(zone_containment(plane(bottom)))),),
+    )
+
+
+def plane(bottom: float) -> ViaZone:
+    """A zone with a minimum width of 0.2 mm whose fill ends at y = `bottom`."""
+    return ViaZone("plane", {"In1.Cu": box(3, bottom, 7, 5)}, 0.2)
+
+
+MARGIN = plane(0).margin
+
+
+class TestInsideAZone:
+    def test_the_via_moves_within_the_fill(self) -> None:
+        result = run(in_zone(-1.0))
+
+        (via,) = result.vias
+        assert not via.frozen
+        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+
+    def test_a_pull_toward_the_fill_s_edge_is_held_at_it(self) -> None:
+        bottom = 1.5
+
+        result = run(in_zone(bottom))
+
+        (via,) = result.vias
+        assert not via.frozen
+        # The clearance hinge, which starts `standoff` from the margin, holds
+        # it against the pull of the route.
+        edge = bottom + MARGIN
+        assert edge - INSIDE_TOLERANCE <= via.position[1]
+        assert via.position[1] <= edge + scenarios.PARAMS.standoff
+
+    def test_a_via_whose_centre_starts_shallower_than_the_margin_stays(self) -> None:
+        result = run(in_zone(scenarios.DETOUR_VIA[1] - MARGIN / 2))
+
+        (via,) = result.vias
+        assert via.frozen
+        assert via.position == scenarios.DETOUR_VIA
 
 
 def test_a_move_cutting_an_edge_across_a_corner_is_undone() -> None:

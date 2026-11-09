@@ -1,10 +1,16 @@
 """Decide which selected vias may move with the chains they join.
 
 A selected via moves only when it is an unlocked through via, every copper
-item touching it on any layer is the end of a selected chain, no other
-copper touches those ends, and at least two such ends meet it. Every other
-selected via stays fixed, with a debug line naming the reason, and pins the
-chains it touches like an unselected via.
+item touching it on any layer is the end of a selected chain or the fill
+of a zone of its net, no other copper touches those ends, and at least two
+such ends meet it. A via that moves stays inside the fill of every zone of
+its net that touches it, on each layer where it does, with its centre at
+least `ViaZone.margin` inside, so that the next refill reconnects it; one
+whose centre does not start that deep inside that fill, less what the
+refill will leave out (`snapshot._unfillable`), stays fixed, with a debug
+line naming the zone and layer. Every other selected via stays
+fixed, with a debug line naming the reason, and pins the chains it touches
+like an unselected via.
 """
 
 import math
@@ -14,11 +20,14 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from loguru import logger
+from shapely.geometry import Point
+from shapely.geometry.base import BaseGeometry
 
+from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
-from kibends.snapshot import Disc, Via, ViaContact, ViaKind
+from kibends.snapshot import Disc, Via, ViaContact, ViaKind, ViaZone
 
 
 class ChainEnd(NamedTuple):
@@ -33,6 +42,8 @@ class MovableVia:
     via: Via
     ends: tuple[ChainEnd, ...]
     """The chain ends whose copper overlaps the via, in chain order."""
+    zones: tuple[ViaZone, ...]
+    """The zones of its net whose fill touches it, which it stays inside."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -86,12 +97,16 @@ def movable_vias(
     chains: Sequence[Chain],
     *,
     frame: UserFrame,
+    zones: Mapping[str, Sequence[ViaZone]],
 ) -> list[MovableVia]:
-    """The vias among `vias` that may move, warning once about each other one,
-    at its position in `frame`.
+    """The vias among `vias` that may move, logging once at debug level why
+    each other one stays, at its position in `frame`.
 
     `contacts` gives the same-net copper touching each via or the chain ends
-    it carries, as `BoardSnapshot.read` finds it from `carried_copper`.
+    it carries, as `BoardSnapshot.read` finds it from `carried_copper`, and
+    `zones` the zones of its net whose fill touches each, which keep it
+    from moving only when its centre does not start `ViaZone.margin` inside
+    their fill.
     """
     chains_of: dict[str, set[int]] = defaultdict(set)
     for k, c in enumerate(chains):
@@ -106,9 +121,12 @@ def movable_vias(
             for c in contacts.get(via.id, ())
             if c.track_id is None or chains_of[c.track_id].isdisjoint(ended)
         ]
-        reason = _fixed_reason(via, strangers, len(ends))
+        inside = tuple(zones.get(via.id, ()))
+        reason = _fixed_reason(via, strangers, len(ends)) or _edge_reason(via, inside)
         if reason is None:
-            movable.append(MovableVia(via, ends))
+            for zone in inside:
+                logger.debug(f"Via {via.id} stays inside {zone.description}")
+            movable.append(MovableVia(via, ends, inside))
         else:
             logger.debug(
                 f"Via {via.id} at {frame.point(via.position)} stays fixed: {reason}"
@@ -129,3 +147,26 @@ def _fixed_reason(via: Via, strangers: Sequence[str], ends: int) -> str | None:
     if ends == 1:
         return "only one selected track ends at it"
     return None
+
+
+def _edge_reason(via: Via, zones: Sequence[ViaZone]) -> str | None:
+    """Why `via` cannot stay inside the fill of `zones`: on some layer, it
+    does not start inside the fill by the zone's margin."""
+    centre = Point(via.position)
+    edges = [
+        f"zone {zone.name} on {layer}"
+        for zone in zones
+        for layer, fill in zone.fills.items()
+        if _depth(fill, centre) < zone.margin - INSIDE_TOLERANCE
+    ]
+    if not edges:
+        return None
+    return f"it sits at the edge of {' and '.join(edges)}"
+
+
+def _depth(area: BaseGeometry, point: Point) -> float:
+    """How far `point` lies inside `area`, negative outside it."""
+    if area.is_empty:
+        return -math.inf
+    to_edge = area.boundary.distance(point)
+    return to_edge if area.covers(point) else -to_edge

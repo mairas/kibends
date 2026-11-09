@@ -131,8 +131,14 @@ distance to static copper and the larger of CROSS_SHARE of that to the
 members near it and the other vias and the floor, which it takes only when
 it starts clear of its clearance, and the boxes of the ends it carries,
 which move with it: so each carried end moves inside its own box too, and
-the chain ends it carries keep their topology as any vertex does. The
-chains a via carries are siblings, as a junction's branches are.
+the chain ends it carries keep their topology as any vertex does. A zone
+the via stays inside is part of its static field as the board edge is,
+the outside of the zone's fill on each layer it touches, inflated by the
+margin the refill needs (`obstacles.zone_containment`): its box lies
+within its free distance to that boundary, so it does not leave the fill
+within a burst, and the check below moves it back if it ends outside the
+margin. The chains a via carries are siblings, as a junction's branches
+are.
 
 What the boxes allow is coming too close: ending inside another chain's
 clearance, or an edge ending across one. The check after each run catches

@@ -7,6 +7,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import cast
 
 import kipy.board
@@ -35,12 +36,24 @@ from kipy.wrapper import Wrapper
 from loguru import logger
 
 import kibends.optimize as optimize_module
+from kibends import drc
 from kibends.chain import NM_PER_MM
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
+
+
+def installed_kicad_cli() -> Path | None:
+    try:
+        return drc.locate_kicad_cli(None, None)
+    except drc.KiCadCliNotFound:
+        return None
+
+
+KICAD_CLI = installed_kicad_cli()
+"""The real kicad-cli, which tests marked `kicad_cli` run."""
 
 
 class Ticking:
@@ -90,12 +103,16 @@ def vec(x: float, y: float) -> Vector2:
     return Vector2.from_xy(nm(x), nm(y))
 
 
-def kipy_rect(x0: float, y0: float, x1: float, y1: float) -> PolygonWithHoles:
+def kipy_polygon(points: Sequence[tuple[float, float]]) -> PolygonWithHoles:
     pwh = PolygonWithHoles()
-    for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+    for x, y in points:
         pwh.outline.append(PolyLineNode.from_xy(nm(x), nm(y)))
     pwh.outline.closed = True
     return pwh
+
+
+def kipy_rect(x0: float, y0: float, x1: float, y1: float) -> PolygonWithHoles:
+    return kipy_polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
 
 
 def kipy_track(
@@ -333,18 +350,28 @@ def kipy_zone(
 def kipy_filled_zone(
     zone_id: str,
     net: str,
-    fills: Mapping[BL.ValueType, PolygonWithHoles],
+    fills: Mapping[BL.ValueType, PolygonWithHoles | Sequence[PolygonWithHoles]],
     zone_type: ZoneType.ValueType = ZoneType.ZT_COPPER,
+    *,
+    outline: PolygonWithHoles | None = None,
+    min_width: float = 0.0,
 ) -> kbt.Zone:
-    """A copper zone of `net` filled with one polygon on each of its layers."""
-    outline = next(iter(fills.values()))
+    """A copper zone of `net` filled with a polygon, or several, on each of
+    its layers, within `outline`, the first fill unless given."""
+    pieces = {
+        layer: [fill] if isinstance(fill, PolygonWithHoles) else list(fill)
+        for layer, fill in fills.items()
+    }
+    outline = outline or next(iter(pieces.values()))[0]
     z = kipy_zone(outline, list(fills), rule_area=False, zone_id=zone_id, net=net)
     z.proto.type = zone_type
+    z.proto.copper_settings.min_thickness.value_nm = round(min_width * NM_PER_MM)
     z.proto.filled = True
-    for layer, polygon in fills.items():
+    for layer, polygons in pieces.items():
         filled = z.proto.filled_polygons.add()
         filled.layer = layer
-        filled.shapes.polygons.add().CopyFrom(polygon.proto)
+        for polygon in polygons:
+            filled.shapes.polygons.add().CopyFrom(polygon.proto)
     return z
 
 

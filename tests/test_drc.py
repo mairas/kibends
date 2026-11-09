@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from conftest import KICAD_CLI
 from kipy.errors import ApiError
 
 from kibends import drc
@@ -1040,14 +1041,6 @@ def test_kicad_cli_version(tmp_path: Path) -> None:
 # ---- the gate against the real kicad-cli -----------------------------------------
 
 
-def installed_kicad_cli() -> Path | None:
-    try:
-        return drc.locate_kicad_cli(None, None)
-    except drc.KiCadCliNotFound:
-        return None
-
-
-KICAD_CLI = installed_kicad_cli()
 STRAIGHT = tracks((5, 10), (15, 10), (25, 10))
 # The GND pad at (15, 6) is 1 mm square; its lower edge is at y = 6.5. The
 # netclass asks for 0.127 mm, the project's pad_clearance rule for 0.17 mm.
@@ -1174,3 +1167,45 @@ class TestKiCadCliVias:
         self, tmp_path: Path
     ) -> None:
         assert not self.gate(tmp_path, (10, 10.02))
+
+
+ZONE_BOARD = Path(__file__).parent / "fixtures" / "zone" / "zone.kicad_pcb"
+
+
+@pytest.mark.slow
+@pytest.mark.kicad_cli
+@pytest.mark.skipif(KICAD_CLI is None, reason="kicad-cli is not installed")
+class TestKiCadCliZone:
+    """A SIG route through a via at (10, 10), on a board whose In2.Cu holds a
+    SIG zone outlined over (6, 6)-(14, 14). A higher-priority OTHER zone
+    fills (6, 6)-(14, 8), so the SIG fill starts at y = 8.2, and an OTHER
+    track runs east from 0.2 mm beyond the via's ring. A second SIG via at
+    (12, 13), with a stub on F.Cu, reaches the route only through the SIG
+    fill. The candidates replace the route with the vias fixture's, through
+    the via where it moves."""
+
+    def gate(self, tmp_path: Path, at: tuple[float, float]) -> drc.Introduced:
+        assert KICAD_CLI is not None
+        directory = tmp_path / "project"
+        directory.mkdir()
+        pro = directory / "zone.kicad_pro"
+        shutil.copyfile(ZONE_BOARD.with_suffix(".kicad_pro"), pro)
+        return drc.check(
+            KICAD_CLI,
+            drc.ProjectFiles(pro, None),
+            ZONE_BOARD.read_text(encoding="utf-8"),
+            VIA_ROUTE,
+            via_route_to(at),
+            tmp_path,
+            [drc.MovedVia(SIG_VIA, at)],
+        )
+
+    def test_a_via_moved_within_the_fill_stays_connected(self, tmp_path: Path) -> None:
+        assert not self.gate(tmp_path, (10, 11))
+
+    def test_a_via_moved_out_of_the_fill_within_the_outline_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        result = self.gate(tmp_path, (10, 7))
+
+        assert result.split_nets == {"SIG"}
