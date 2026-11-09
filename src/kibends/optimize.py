@@ -337,6 +337,14 @@ class PairResult:
     widest gap: its routing's for a section held because that bends too
     tightly, its result's for one the run moved; else None."""
 
+    def kept(self) -> tuple[FloatArray, FloatArray]:
+        """The tracks the run leaves: the section's own where it is held or
+        the run did nothing, else `a` and `b`."""
+        if self.block.held or self.bend is None:
+            given = self.block.given
+            return given.a.points, given.b.points
+        return self.a, self.b
+
 
 @dataclass(frozen=True)
 class RunResult:

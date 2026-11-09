@@ -716,10 +716,7 @@ def _section_tracks(
                 f"Kept {given.a.description} and {given.b.description} as they "
                 f"are: {Hold.ROUTING.value} (a radius of {bend.radius:.3f} mm)"
             )
-        if result.block.held or bend is None:
-            tracks.append(_Tracks(given.a.points, given.b.points))
-        else:
-            tracks.append(_Tracks(result.a, result.b))
+        tracks.append(_Tracks(*result.kept()))
     return tracks
 
 
