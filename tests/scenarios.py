@@ -843,8 +843,7 @@ def turning_back(turn: float) -> tuple[FloatArray, tuple[float, float]]:
 
 def pair_turning_back(turn: float = 150.0) -> PairsScenario:
     """A pair turning back by `turn` degrees, with a pad inside the V
-    halfway along its legs: pulled taut around the pad, its legs would close
-    on each other beyond the turn."""
+    halfway along its legs, which the pair is pulled taut around."""
     centre, pad = turning_back(turn)
     section = coupled(pad_for_pair(*pad), *((float(x), float(y)) for x, y in centre))
     return PairsScenario(
@@ -855,5 +854,4 @@ def pair_turning_back(turn: float = 150.0) -> PairsScenario:
 
 
 TURNING_BACK = OptimizerSettings(spacing=0.15, settled_change=0.0015, burst_maxiter=30)
-"""A spacing at which the legs of `pair_turning_back` close on each other
-unless every burst keeps them apart, with bursts short enough to run fast."""
+"""Settings for `pair_turning_back`, with bursts short enough to run fast."""

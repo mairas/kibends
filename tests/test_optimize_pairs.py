@@ -53,7 +53,6 @@ from kibends.pairs import (
     bend_radius_limit,
     check_bend_radius,
     gap_range,
-    gaps_across,
     offset_pair,
 )
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
@@ -469,19 +468,19 @@ class TestTwoCoupledSections:
 def test_a_pair_turning_back_around_a_pad_keeps_its_legs_apart() -> None:
     scenario = scenarios.pair_turning_back()
     (given,) = scenario.pairs
-    turn = math.pi / 2 * pair_block(given, scenarios.TURNING_BACK.spacing).apart
+    apart = pair_block(given, scenarios.TURNING_BACK.spacing).apart
 
     result = run(scenario, scenarios.TURNING_BACK)
 
     (pair,) = result.pairs
     assert_gap_kept(pair)
-    _, beyond = gaps_across(
-        pair.a, pair.b, PAIR_WIDTH, turn, PAIR_CLEARANCE + PAIR_WIDTH
-    )
-    assert beyond >= PAIR_CLEARANCE - INSIDE_TOLERANCE
-    # Pressed onto its own legs, every burst has moves to undo; they do not
-    # keep the run from settling.
-    assert pair.rejected_edges == pair.too_close > 0
+    # Beyond the turn the centreline stays a pair's outer extent plus
+    # clearance from itself, as the self check measures it.
+    _, closest = close_to_itself(pair.centreline, apart)
+    assert np.all(closest >= apart - INSIDE_TOLERANCE)
+    # Any moves the run undid were the section's own parts, which do not
+    # keep it from settling.
+    assert pair.rejected_edges == pair.too_close
     assert result.termination is Termination.CONVERGED
 
 

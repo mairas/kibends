@@ -3286,7 +3286,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
 ) -> None:
     # Simplification and the gap check on a pair whose legs face each other,
     # end to end, at coarse settings; test_optimize_pairs covers the
-    # optimizer at a spacing where the legs close on each other.
+    # optimizer on the same scenario.
     monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
     board = connect.to(v_board(150.0))
 
