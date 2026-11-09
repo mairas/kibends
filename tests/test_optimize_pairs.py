@@ -19,7 +19,14 @@ from scenarios import (
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
-from kibends.bursts import OptimizerSettings, revert_until_clear
+from kibends.bursts import (
+    Burst,
+    Objective,
+    OptimizerSettings,
+    Revert,
+    bounded_burst,
+    revert_until_clear,
+)
 from kibends.chain import Chain
 from kibends.coords import BOARD_FRAME
 from kibends.energy import (
@@ -366,6 +373,20 @@ class TestPairBesideAChain:
         assert_within_extent(pair, given)
 
 
+FOLD_STEP = 0.2
+"""mm from a vertex to the next where `folded` turns back."""
+
+
+def folded(points: FloatArray, start: int) -> FloatArray:
+    """`points` with the two vertices after `start` moved onto the line
+    through it parallel to x, the first ahead of it and the second back
+    halfway: an exact 180° fold at the first."""
+    out = points.copy()
+    out[start + 1] = out[start] + (FOLD_STEP, 0.0)
+    out[start + 2] = out[start] + (FOLD_STEP / 2, 0.0)
+    return out
+
+
 @pytest.fixture(scope="module")
 def corner() -> RunResult:
     return run(scenarios.pair_corner(), CORNER)
@@ -405,6 +426,54 @@ class TestTightCorner:
         assert length(pair.centreline) <= pair.before.length
         assert pair.bend is not None and not pair.bend.too_tight
         assert pair.rejected_edges > pair.too_close == 0
+
+    def test_energy_at_a_fold_is_finite(self) -> None:
+        (given,) = scenarios.pair_corner().pairs
+        block = pair_block(given, COARSE.spacing)
+        points, fixed = resample(
+            block.chain.centreline.points, block.chain.fixed, COARSE.spacing
+        )
+        first = int(np.flatnonzero(~fixed)[0])
+
+        value, (gradient,) = layer_energy(
+            [block],
+            [folded(points, first)],
+            [fixed],
+            scenarios.PARAMS,
+            COARSE.short_edge,
+        )
+
+        assert math.isfinite(value)
+        assert np.isfinite(gradient).all()
+
+    def test_a_trial_step_that_folds_the_centreline_ends_no_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # L-BFGS-B's first trial of the first burst folds the centreline
+        # at its second free vertex, as one that leaves three vertices on
+        # one bound of their boxes does.
+        trials: list[FloatArray] = []
+
+        def folding_first(
+            objective: Objective,
+            start: FloatArray,
+            half_sides: FloatArray,
+            revert: Revert,
+            settings: OptimizerSettings,
+            retry_bounds: FloatArray | None = None,
+        ) -> Burst:
+            if not trials:
+                trials.append(folded(start.reshape(-1, 2), 0).ravel())
+                objective(trials[0])
+            return bounded_burst(
+                objective, start, half_sides, revert, settings, retry_bounds
+            )
+
+        monkeypatch.setattr(optimize_module, "bounded_burst", folding_first)
+        (pair,) = run(scenarios.pair_corner(), CORNER).pairs
+
+        assert trials
+        assert pair.bend is not None and not pair.bend.too_tight
 
     def test_inner_track_runs_the_centreline_s_way(self, corner: RunResult) -> None:
         (pair,) = corner.pairs

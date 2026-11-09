@@ -21,6 +21,7 @@ from kibends.pairs import (
     gaps_across,
     nets_pair,
     offset_pair,
+    offset_pair_pullback,
 )
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify
 
@@ -623,6 +624,65 @@ def test_straight_centreline_has_no_bend() -> None:
 
     assert check.radius == math.inf
     assert not check.too_tight
+
+
+def turned(turn: float) -> FloatArray:
+    """A centreline of four unit edges turning by `turn` at its middle vertex."""
+    after = np.array([math.cos(turn), math.sin(turn)])
+    middle = np.array([2.0, 0.0])
+    return np.array(
+        [(0.0, 0.0), (1.0, 0.0), middle, middle + after, middle + 2 * after]
+    )
+
+
+FOLDED = array((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (1.5, 0.0), (1.0, 0.0))
+"""A centreline folded straight back on itself at its middle vertex, as
+L-BFGS-B leaves three vertices on one bound of their boxes."""
+
+
+def test_a_fold_offsets_to_finite_tracks() -> None:
+    right, left = offset_pair(FOLDED, GAP, WIDTH)
+
+    assert np.isfinite(right).all()
+    assert np.isfinite(left).all()
+
+
+def test_the_offset_pullback_at_a_fold_is_finite() -> None:
+    rng = np.random.default_rng(0)
+    gaps = np.full(len(FOLDED), GAP)
+    at_right, at_left = rng.normal(size=FOLDED.shape), rng.normal(size=FOLDED.shape)
+
+    gradient, at_gaps = offset_pair_pullback(FOLDED, gaps, WIDTH, at_right, at_left)
+
+    assert np.isfinite(gradient).all()
+    assert np.isfinite(at_gaps).all()
+
+
+PULLBACK_STEP = 1e-7
+
+
+@pytest.mark.parametrize("turn", [0.5 * math.pi, 0.99 * math.pi])
+def test_the_offset_pullback_matches_finite_differences(turn: float) -> None:
+    # 0.99π lies past the turn beyond which the miter stops growing.
+    points = turned(turn)
+    rng = np.random.default_rng(1)
+    gaps = np.full(len(points), GAP)
+    at_right, at_left = rng.normal(size=points.shape), rng.normal(size=points.shape)
+
+    def value(centreline: FloatArray) -> float:
+        right, left = offset_pair(centreline, gaps, WIDTH)
+        return float(np.sum(at_right * right) + np.sum(at_left * left))
+
+    analytic, _ = offset_pair_pullback(points, gaps, WIDTH, at_right, at_left)
+
+    numeric = np.zeros_like(points)
+    for k in range(len(points)):
+        for axis in (0, 1):
+            up, down = points.copy(), points.copy()
+            up[k, axis] += PULLBACK_STEP
+            down[k, axis] -= PULLBACK_STEP
+            numeric[k, axis] = (value(up) - value(down)) / (2 * PULLBACK_STEP)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-6)
 
 
 def test_gap_range_reports_narrowing() -> None:
