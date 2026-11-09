@@ -332,6 +332,7 @@ def kipy_zone(
     layers: Sequence[int],
     keepout_tracks: bool = True,
     rule_area: bool = True,
+    keepout_vias: bool = False,
     zone_id: str = "zone",
     net: str = "GND",
 ) -> kbt.Zone:
@@ -342,6 +343,7 @@ def kipy_zone(
     z.proto.outline.polygons.add().CopyFrom(outline.proto)
     if rule_area:
         z.proto.rule_area_settings.keepout_tracks = keepout_tracks
+        z.proto.rule_area_settings.keepout_vias = keepout_vias
     else:
         z.proto.copper_settings.net.name = net
     return z

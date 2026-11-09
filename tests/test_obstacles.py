@@ -236,6 +236,13 @@ class TestObstacleSet:
             "track keepout": pytest.approx(HALF)
         }
 
+    def test_a_via_keepout_is_no_obstacle_to_a_track(self) -> None:
+        keepout = kipy_zone(
+            kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu], keepout_tracks=False, keepout_vias=True
+        )
+
+        assert obstacles_of(FakeBoard(zones=[keepout])).items == ()
+
     def test_copper_zones_are_never_obstacles(self) -> None:
         zone = kipy_zone(kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu], rule_area=False)
 
