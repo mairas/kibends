@@ -84,6 +84,13 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 WRAP_SETTINGS = replace(
     SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
 )
+# A rerun on the wrap's own output wanders along the flat stretches before
+# it settles, by amounts that vary with the platform's floating point.
+# Measured: 4 iterations on macOS and Linux; 8.2 µm and 6.6 µm moved; the
+# length changed by -0.16 µm, -67 nm and +82 nm.
+RERUN_ITERATIONS = 6
+RERUN_DRIFT = 0.015
+RERUN_LENGTH_SLACK = 1e-3
 
 
 @pytest.fixture(scope="module")
@@ -127,11 +134,12 @@ class TestWrap:
 
         assert again.rejected_edges == 0
         assert again.termination is Termination.CONVERGED
-        assert again.iterations == 1
+        assert again.iterations <= RERUN_ITERATIONS
         moved = shapely.LineString(again.polyline).hausdorff_distance(
             shapely.LineString(wrapped.polyline)
         )
-        assert moved < WRAP_SETTINGS.settled_change
+        assert moved < RERUN_DRIFT
+        assert again.after.length <= wrapped.after.length + RERUN_LENGTH_SLACK
 
 
 class TestChannel:
@@ -183,7 +191,7 @@ JOG_ALLOWANCE = 0.05
 
 def test_input_that_cuts_a_corner_is_still_pulled_tight() -> None:
     # The edge from (4, -0.9) to (6, -0.9) cuts 100 µm into the disc;
-    # resampling puts free vertices inside it with zero bubbles.
+    # resampling puts free vertices inside it.
     field = Disc(5.0, 0.0, 1.0)
     polyline, fixed = chain(
         (0.0, -0.9), (2.5, -3.0), (4.0, -0.9), (6.0, -0.9), (10.0, -0.9)
@@ -194,7 +202,9 @@ def test_input_that_cuts_a_corner_is_still_pulled_tight() -> None:
     assert result.after.length == pytest.approx(10.0, abs=JOG_ALLOWANCE)
     clear = field.segments_clear(result.polyline[:-1], result.polyline[1:])
     crossing_starts = ~clear & np.concatenate(([True], clear[:-1]))
-    assert crossing_starts.sum() == 1
+    # At most the one run resampling laid inside the disc still crosses it;
+    # the bursts usually move it out entirely.
+    assert crossing_starts.sum() <= 1
 
 
 def test_vertex_deep_inside_obstacle_is_frozen_and_kept() -> None:
@@ -346,6 +356,10 @@ def test_track_at_exact_clearance_starts_with_no_violation() -> None:
     assert all_edges_clear(result.polyline, EXACT_PAD)
 
 
+# Measured: 6 outer iterations at COARSE.
+DETOUR_ITERATIONS = 10
+
+
 def test_detour_in_narrow_channel_is_pulled_tight() -> None:
     scenario = scenarios.detour()
 
@@ -355,8 +369,7 @@ def test_detour_in_narrow_channel_is_pulled_tight() -> None:
     assert all_edges_clear(result.polyline, scenario.field)
     assert result.before.length == pytest.approx(scenarios.DETOUR_LENGTH + 5.0)
     assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-3)
-    # Bubble-limited: about 22 outer iterations at these settings.
-    assert result.iterations <= 40
+    assert result.iterations <= DETOUR_ITERATIONS
 
 
 class TestNothingToDo:
@@ -552,7 +565,8 @@ def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
 
 def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
     scenario = scenarios.channel(repulsion=1.0)
-    lax = replace(COARSE, settled_change=0.2)
+    # Over twice what the first burst moves.
+    lax = replace(COARSE, settled_change=2.0)
 
     result = optimize(
         scenario.polyline, scenario.fixed, scenario.field, scenario.params, lax

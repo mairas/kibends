@@ -45,7 +45,8 @@ from kibends.snapshot import SelectionError
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
 # Not user-facing: the clearance hinge only shapes the approach to the
-# clearance boundary, which the bubble bounds already keep vertices outside.
+# clearance boundary, which the burst's edge check keeps edges from newly
+# crossing.
 CLEARANCE_WEIGHT = 50.0
 # Above the worst-case sag between quadrature points at the default spacing.
 STANDOFF = 0.02
@@ -327,13 +328,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
     )
     smooth_parser.add_argument(
-        "--no-move-bounds",
-        action="store_true",
-        help="Let every vertex and via move without bounds in a burst. Tracks "
-        "and vias may then pass through each other, which the optimizer does "
-        "not always catch, so inspect the result and run KiCad's DRC",
-    )
-    smooth_parser.add_argument(
         "--time-limit",
         type=_positive,
         metavar="SECONDS",
@@ -403,7 +397,6 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
             burst_maxiter=args.burst_iterations,
             lbfgs_ftol=args.lbfgs_ftol,
             lbfgs_gtol=args.lbfgs_gtol,
-            move_bounds=not args.no_move_bounds,
             time_limit=args.time_limit,
         ),
     )

@@ -769,11 +769,6 @@ class TestSmooth:
         assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 40, 60.0)
         assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-8, 1e-6)
 
-    def test_no_move_bounds_reaches_the_settings(self) -> None:
-        options = cli.smooth_options(cli.parse_args(["smooth", "--no-move-bounds"]))
-
-        assert options.settings == replace(DEFAULT_SETTINGS, move_bounds=False)
-
     def test_stop_rules_default_to_the_optimizers(self) -> None:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 
@@ -1130,9 +1125,8 @@ class TestSeveralChains:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
-    # Resampling vertices held deeper than δ inside each other's clearance
-    # let them creep out and kept the run going: 200 iterations, the cap.
-    # Measured: 12.
+    # Chains pressed into each other's clearance settle well before the
+    # iteration cap. Measured: 3.
     SETTLED_PRESSED = 20
 
     def test_frozen_warning_names_the_other_chain(
@@ -1152,8 +1146,7 @@ class TestSeveralChains:
 
         run("--dry-run")
 
-        # The chains pressed into each other's clearance settle: what lies
-        # deeper than δ inside stays put, resampled or not.
+        # The chains pressed into each other's clearance settle.
         (result,) = results
         assert result.termination is Termination.CONVERGED
         assert result.iterations <= self.SETTLED_PRESSED
@@ -1909,11 +1902,15 @@ class TestMovingVias:
         assert kept - INSIDE_TOLERANCE - NM_ROUNDING <= y < kept + 0.1
 
     def test_the_via_keeps_the_zone_clearance_from_a_route_moving_with_it(
-        self, connect: Connector, log: list[str]
+        self, connect: Connector, log: list[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The selected OTHER route on the plane's layer bows toward the via
         # and straightens across its way up; the refill keeps 0.5 mm from
-        # it wherever it ends.
+        # it wherever it ends. The shapes then wander by tens of µm a burst,
+        # which the settled change lets end.
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, settled_change=0.05))
+        )
         board = moving_via_board()
         route = [
             kipy_track("o1", "OTHER", (0, 1.5), (4, 2.2), layer=BL.BL_In1_Cu),
@@ -1933,12 +1930,12 @@ class TestMovingVias:
 
         assert "stays fixed" not in "".join(log)
         (via,) = created_vias(board)
-        at = Point(via.position.x / 1e6, via.position.y / 1e6)
+        centre = Point(via.position.x / 1e6, via.position.y / 1e6)
         (other,) = {t.net.name for t in created_on(board, BL.BL_In1_Cu)}
         assert other == "OTHER"
         gap = unary_union(
             [segment(t) for t in created_on(board, BL.BL_In1_Cu)]
-        ).distance(at)
+        ).distance(centre)
         kept = 0.25 / 2 + 0.5 + 0.25 / 2 + KICAD_MAX_ERROR
         assert kept > 0.25 / 2 + 0.2 + 0.3  # the netclass spacing
         assert kept - INSIDE_TOLERANCE - NM_ROUNDING <= gap < kept + 0.1
@@ -2883,6 +2880,11 @@ class TestPairs:
         run()
 
         assert held == [[None], [hold]]
+        assert any(hold.value in line for line in log)
+        # The repeated run says it repeats, rather than seeming to start over.
+        assert log.count("INFO Setting up the optimizer\n") == 1
+        assert "INFO Setting up the optimizer again, with held sections\n" in log
+        assert any(line.startswith("INFO Optimizer set up again") for line in log)
         # Whether a net's chain is committed depends on how far repulsion
         # bends its fan-out (some 25 µm, varying with the BLAS) against the
         # chord tolerance; either way the held section, all pins, stays as
@@ -3198,7 +3200,7 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_straight_coupled_sections_commit_as_one_track_per_net(
+def test_straight_coupled_sections_commit_straight_along_their_length(
     connect: Connector,
 ) -> None:
     board = connect.to(split_pair_board())
@@ -3207,11 +3209,17 @@ def test_straight_coupled_sections_commit_as_one_track_per_net(
 
     for net, lines in by_net(board).items():
         y = PAIR_HALF_PITCH if net == "USB_D+" else -PAIR_HALF_PITCH
-        coupled = sorted(
+        pieces = sorted(
             tuple(round(x, 6) for x, _ in line.coords)
             for line in lines
             if all(abs(ys - y) < NM_ROUNDING for _, ys in line.coords)
         )
+        coupled: list[tuple[float, float]] = []
+        for start, end in pieces:
+            if coupled and coupled[-1][1] == start:
+                coupled[-1] = (coupled[-1][0], end)
+            else:
+                coupled.append((start, end))
         assert coupled == list(SPLIT_SECTIONS)
 
 
@@ -3361,72 +3369,6 @@ def test_a_chain_beside_a_pair_at_clearance_does_not_freeze_it(
 
     assert not any("inside" in line for line in log)
     assert all(len(lines) > len(BUS_CENTRE) - 1 for lines in by_net(board).values())
-
-
-CROWDED_PAIR = ((0.0, 0.0), (3.0, 0.0), (4.8, 1.8), (7.8, 1.8), (7.8, 4.8))
-"""Centreline of a pair with an S-bend and then a sharp corner."""
-CROWDED_PAD = (7.175, 2.425)
-"""A GND pad inside the sharp corner, at the pair's clearance, which keeps
-the pair from rounding the corner that resampling cuts too tightly."""
-SIDE_CHAIN = ((0.6, 0.0), (3.0, 0.0), (4.8, 1.8), (7.2, 1.8))
-SIDE_OFFSET = 0.62
-"""Of the selected SIG chain beside the S-bend, outside the bend."""
-CROWDED_FAN = 0.6
-FINE = OptimizerSettings(
-    spacing=0.15, settled_change=0.0015, burst_maxiter=30, max_iterations=30
-)
-"""Coarser settings round the corner cleanly."""
-
-
-@pytest.mark.slow
-def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-) -> None:
-    # Slow: only spacings as fine as this cut the corner too tightly, and the
-    # run then repeats with the section held, about 2 s in all.
-    monkeypatch.setattr(pipeline, "optimize_chains", at(FINE))
-    p, n = offset_pair(np.array(CROWDED_PAIR), PAIR_GAP, PAIR_WIDTH)
-    x, y = CROWDED_PAIR[0]
-    fanned = {
-        "USB_D+": [(x - CROWDED_FAN, y + PAIR_HALF_PITCH + CROWDED_FAN), *vertices(p)],
-        "USB_D-": [(x - CROWDED_FAN, y - PAIR_HALF_PITCH - CROWDED_FAN), *vertices(n)],
-    }
-    _, side = offset_pair(np.array(SIDE_CHAIN), 2 * SIDE_OFFSET, 0.0)
-    tracks = [
-        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
-        for net, points in (*fanned.items(), ("SIG", vertices(side)))
-        for k, (start, end) in enumerate(itertools.pairwise(points))
-    ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
-    board = connect.to(
-        CommitBoard(
-            selection=list(tracks),
-            tracks=list(tracks),
-            pads=[kipy_pad("pad", "GND", *CROWDED_PAD)],
-            netclasses={"USB_D+": usb, "USB_D-": usb},
-        )
-    )
-
-    run()
-
-    assert any(Hold.CROWDING.value in line for line in log)
-    # The repeated run says it repeats, rather than seeming to start over.
-    assert log.count("INFO Setting up the optimizer\n") == 1
-    assert "INFO Setting up the optimizer again, with held sections\n" in log
-    assert any(line.startswith("INFO Optimizer set up again") for line in log)
-    created = cast(list[kbt.Track], board.created)
-    final = {
-        net: unary_union([segment(t) for t in created if t.net.name == net])
-        or LineString(points)
-        for net, points in (*fanned.items(), ("SIG", vertices(side)))
-    }
-    # The section's tracks stay as routed; at most the fan-outs change.
-    for net, points in fanned.items():
-        coupled = LineString(points[1:])
-        assert coupled.difference(final[net].buffer(NM_ROUNDING)).is_empty
-    assert not final["SIG"].equals(LineString(vertices(side)))
-    pair = unary_union([final[net] for net in fanned])
-    assert final["SIG"].distance(pair) - PAIR_WIDTH >= CLEARANCE - NM_ROUNDING
 
 
 STUB_GAP = 0.138

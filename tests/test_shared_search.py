@@ -505,7 +505,7 @@ def test_the_neighbour_field_is_what_seen_parts_sees(
     make: Callable[[], Scenario],
 ) -> None:
     """What frozen detection and the best-state guard judge against
-    (`_Problem.neighbour`) is what the energy, the boxes and the edge check
+    (`_Problem.neighbour`) is what the energy and the edge check
     see of the other members (`seen_parts`): the same distances, at each
     member's own points and around them, at the start and moved, a
     section's leave-out near its own nets' chains included."""
