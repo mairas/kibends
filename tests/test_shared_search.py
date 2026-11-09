@@ -70,15 +70,21 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     scenarios.via_fermat,
     scenarios.via_hemmed,
     scenarios.via_on_one_layer,
-    scenarios.via_over_bowed_same_net,
-    scenarios.via_over_same_net,
     scenarios.via_pair,
+    lambda: scenarios.via_over_bowed("N"),
+    lambda: scenarios.via_over_bowed("P"),
+    lambda: scenarios.via_over_pinned("N"),
+    lambda: scenarios.via_over_pinned("P"),
     lambda: scenarios.via_detour_over(FreeSpace()),
     lambda: scenarios.via_slack(FreeSpace()),
     lambda: scenarios.via_grid(3, 3),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-3]),
+    *(make.__name__ for make in SCENARIOS[:-7]),
+    "via_over_bowed_same_net",
+    "via_over_bowed_other_net",
+    "via_over_pinned_same_net",
+    "via_over_pinned_other_net",
     "via_detour_over",
     "via_slack",
     "via_grid",
@@ -203,6 +209,9 @@ def _reference_view(
     inflations = [np.empty(0)]
     owner: list[tuple[int, int]] = []
     for j, ring in via.rings.items():
+        if problem.bodies[j].centreline.net == via.given.via.net:
+            # Copper of one net does not interact.
+            continue
         points = polylines[j]
         starts.append(points[:-1])
         ends.append(points[1:])

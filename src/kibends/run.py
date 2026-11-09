@@ -50,7 +50,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     build_via_obstacles,
-    own_net_vias,
+    own_net_stops,
 )
 from kibends.optimize import (
     ChainResult,
@@ -737,16 +737,16 @@ def _via_inputs(
                 moving=moving,
                 edge_clearance=options.edge_clearance,
                 hole_clearance=options.hole_clearance,
-                allow_via_in_pad=options.allow_via_in_pad,
                 zones=m.zones,
             ),
             layers[0].clearance(m.via.net),
             m.zones,
-            own_net_vias(
+            own_net_stops(
                 layers,
                 m.via,
                 moving=moving,
                 hole_clearance=options.hole_clearance,
+                allow_via_in_pad=options.allow_via_in_pad,
             ),
         )
         for m in movable

@@ -184,8 +184,12 @@ def reference_kept_spans(
 
 
 def _scenario_chains() -> list[tuple[str, tuple[ChainInput, ...]]]:
-    """The chains of every scenario that takes no arguments."""
-    found: list[tuple[str, tuple[ChainInput, ...]]] = []
+    """The chains of every scenario that takes no arguments, and of those
+    over a chain of the route's own net."""
+    found: list[tuple[str, tuple[ChainInput, ...]]] = [
+        ("via_over_pinned", scenarios.via_over_pinned("N").chains),
+        ("via_over_bowed", scenarios.via_over_bowed("N").chains),
+    ]
     for name, make in inspect.getmembers(scenarios, inspect.isfunction):
         if make.__module__ != scenarios.__name__ or any(
             p.default is inspect.Parameter.empty
