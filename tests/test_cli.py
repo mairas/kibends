@@ -2595,7 +2595,7 @@ class TestPairs:
         board.tracks = [*board.tracks, *bend]
         connect.to(board)
 
-        run("--dry-run", "--no-drc", "--time-limit=3.5")
+        run("--dry-run", "--no-drc", "--time-limit=1.5")
 
         first, second = runs
         assert first.termination is Termination.TIME_LIMIT
