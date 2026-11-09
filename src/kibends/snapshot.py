@@ -12,7 +12,6 @@ canonical layer naming are copied and trimmed from kistitch's snapshot.py
 
 import enum
 import math
-from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import NamedTuple
@@ -325,7 +324,7 @@ class BoardSnapshot:
             default_clearance=self.default_clearance,
             diff_pair_gaps=self.diff_pair_gaps,
         )
-        logger.info(
+        logger.debug(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
             f"{len(snap.vias)} vias, {len(snap.graphics)} copper graphics, "
             f"{len(snap.keepouts)} track keepouts"
@@ -345,14 +344,6 @@ def read_selection(board: kipy.board.Board) -> Selection:
         )
     tracks = [i for i in items if isinstance(i, kbt.Track)]
     vias = [i for i in items if isinstance(i, kbt.Via)]
-    others = Counter(
-        type(i).__name__ for i in items if not isinstance(i, kbt.Track | kbt.Via)
-    )
-    if others:
-        listing = ", ".join(f"{n} {name}" for name, n in sorted(others.items()))
-        logger.warning(
-            f"Ignoring selected items that are not tracks or vias: {listing}"
-        )
     if not tracks:
         raise SelectionError("selection has no tracks")
     return Selection(

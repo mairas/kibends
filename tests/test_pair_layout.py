@@ -72,13 +72,11 @@ def test_chains_of_a_pair_on_two_layers_do_not_pair(log: list[str]) -> None:
     assert not any(line.startswith("WARNING") for line in log)
 
 
-def test_nets_that_pair_but_do_not_run_coupled_warn(log: list[str]) -> None:
+def test_nets_that_pair_but_do_not_run_coupled_stay_quiet(log: list[str]) -> None:
     chains = [fanned("USB_D+", -1), far("USB_D-")]
 
     assert find_pairs(chains, CHORD, frame=BOARD_FRAME) == []
-    (warning,) = [line for line in log if line.startswith("WARNING")]
-    assert "USB_D+" in warning and "USB_D-" in warning
-    assert "do not run coupled" in warning
+    assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_pair_of_two_widths_warns_and_stays_two_chains(log: list[str]) -> None:

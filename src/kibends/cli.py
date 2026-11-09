@@ -121,6 +121,11 @@ def smooth(options: SmoothOptions) -> None:
         print(format_outcome(optimized))
         for warning in report_warnings(optimized):
             logger.warning(warning)
+        for description, n in optimized.abnormal:
+            logger.debug(
+                f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of "
+                f"{description} abnormally; the run judged each like any other"
+            )
 
     report = run_smooth(options, show)
     if report.drc is not None:
@@ -137,31 +142,20 @@ def smooth(options: SmoothOptions) -> None:
 
 def format_outcome(report: OptimizerReport) -> str:
     """How the optimizer ended, after how many iterations and seconds, with
-    the rejected edge moves and abnormal bursts it counted."""
+    the rejected edge moves it counted."""
     rejected = (
         sum(c.rejected_edges for c in report.chains)
         + sum(v.rejected_edges for v in report.vias)
         + sum(p.rejected_edges for p in report.pairs)
     )
-    several = len(report.chains) > 1
-    # A run can converge while a problem gave up after abnormal bursts.
-    abnormal = [
-        f"{n} abnormal burst{'' if n == 1 else 's'}"
-        + (f" in {description}" if several else "")
-        for description, n in report.abnormal
-    ]
-    return ", ".join(
-        [
-            f"Optimizer: {report.termination.value} after {report.iterations} "
-            f"iterations in {report.elapsed:.1f} s",
-            f"{rejected} rejected edge moves",
-            *abnormal,
-        ]
+    return (
+        f"Optimizer: {report.termination.value} after {report.iterations} "
+        f"iterations in {report.elapsed:.1f} s, {rejected} rejected edge moves"
     )
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """Frozen vertices and vias, abnormal bursts and an iteration cap, one
+    """Frozen vertices and vias and an iteration cap or time limit, one
     line each, positions in the report's frame."""
     frame = report.frame
     warnings = [_frozen_warning(v, frame) for c in report.chains for v in c.frozen]
@@ -172,11 +166,6 @@ def report_warnings(report: OptimizerReport) -> list[str]:
         if v.frozen
     ]
     warnings += [_frozen_warning(v, frame) for p in report.pairs for v in p.frozen]
-    warnings += [
-        f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of {description} "
-        "abnormally; the run judged each like any other burst"
-        for description, n in report.abnormal
-    ]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
             f"The optimizer stopped at its cap of {report.iterations} "

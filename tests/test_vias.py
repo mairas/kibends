@@ -76,7 +76,8 @@ def judge(
 
 
 def warnings(log: list[str]) -> list[str]:
-    return [line for line in log if line.startswith("WARNING")]
+    """The log lines saying why a via stays fixed, which are debug lines."""
+    return [line for line in log if "stays fixed" in line]
 
 
 def fixed(log: list[str], v: kbt.Via) -> str:
@@ -184,7 +185,7 @@ class TestMovableVias:
 
         assert movable == []
         (warning,) = [w for w in warnings(log) if "stays fixed" in w]
-        assert "chain end it carries: track e on B.Cu" in (warning)
+        assert "stays fixed: track e on B.Cu connects to it" in warning
 
     def test_same_net_pad_under_it_pins_it(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -245,7 +246,17 @@ class TestMovableVias:
 
         assert movable == []
         (warning,) = warnings(log)
-        assert "track b on F.Cu" in warning and "track e on B.Cu" in warning
+        assert "stays fixed: track b on F.Cu, track e on B.Cu connect to it" in warning
+
+    def test_via_no_selected_track_ends_at_stays_fixed(self, log: list[str]) -> None:
+        v = kipy_via("v", "SIG", *VIA)
+        elsewhere = kipy_track("x", "NET2", (0, 20), (5, 20))
+
+        movable, _ = judge([elsewhere, v], [elsewhere], [v])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert "stays fixed: no selected track ends at it" in warning
 
     def test_via_ending_one_selected_chain_stays_fixed(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -254,7 +265,7 @@ class TestMovableVias:
 
         assert movable == []
         (warning,) = warnings(log)
-        assert "only 1 selected chain end" in warning
+        assert "only one selected track ends at it" in warning
 
     def test_via_a_selected_chain_passes_stays_fixed(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", 2, 0)

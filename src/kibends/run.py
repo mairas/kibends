@@ -302,11 +302,6 @@ def run_smooth(
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
     gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
-    if gate is None:
-        logger.warning(
-            "Skipping the DRC check (--no-drc): custom rules, board minimums "
-            "and edge and hole clearances are not checked"
-        )
     read = _read(board, options.chord_tolerance, read_user_frame(board))
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
@@ -419,7 +414,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
             # Only the last run's: a first one was repeated.
-            _warn_gave_up(run)
+            _log_gave_up(run)
             run = replace(run, iterations=iterations, abnormal=tuple(abnormal.items()))
             elapsed = monotonic() - started
             return _Optimized(whole, pairs, layout, via_inputs, run, elapsed)
@@ -433,9 +428,9 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         layout = replace(layout, sections=sections)
 
 
-def _warn_gave_up(run: RunResult) -> None:
+def _log_gave_up(run: RunResult) -> None:
     for description, streak in run.gave_up:
-        logger.warning(
+        logger.debug(
             f"Gave up on {description} after {streak} abnormal optimizer bursts "
             "in a row; they keep their best shapes"
         )
@@ -447,15 +442,15 @@ def _bent_too_tightly(
     """The sections the run moved but could not keep within the bend-radius
     limit, by index, and why: its own parts beyond the turn, if they came
     too close to each other, else the copper around it, kept it from
-    rounding a corner that resampling cut too tightly. Each with a
-    warning."""
+    rounding a corner that resampling cut too tightly. Each logged at
+    debug."""
     held: dict[int, Hold] = {}
     for k, (given, result) in enumerate(zip(sections, results, strict=True)):
         bend = result.bend
         if result.block.held or bend is None or not bend.too_tight:
             continue
         hold = Hold.FOLDING if result.too_close else Hold.CROWDING
-        logger.warning(
+        logger.debug(
             f"Kept {given.a.description} and {given.b.description} as they are: "
             f"{hold.value} (a radius of {bend.radius:.3f} mm); "
             "optimizing again with them held"
@@ -615,17 +610,20 @@ def _off_pairs(
 ) -> list[MovableVia]:
     """`movable` but the vias that join a chain of one of `pairs`, which stay
     fixed, with a warning each."""
-    nets = {k: (chains[p.a].net, chains[p.b].net) for p in pairs for k in (p.a, p.b)}
+    described = {
+        k: f"{chains[p.a].net} and {chains[p.b].net} on {chains[k].layer}"
+        for p in pairs
+        for k in (p.a, p.b)
+    }
     kept: list[MovableVia] = []
     for m in movable:
-        joined = next((nets[e.chain] for e in m.ends if e.chain in nets), None)
-        if joined is None:
+        pair = next((described[e.chain] for e in m.ends if e.chain in described), None)
+        if pair is None:
             kept.append(m)
             continue
-        logger.warning(
-            f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: it joins a "
-            f"track of the differential pair {joined[0]} and {joined[1]}, and "
-            "pairs do not move vias"
+        logger.debug(
+            f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: "
+            f"differential pair {pair} ends at it"
         )
     return kept
 
@@ -728,7 +726,7 @@ def _section_tracks(
     for given, result in zip(sections, results, strict=True):
         bend = result.bend
         if result.block.hold is Hold.ROUTING and bend is not None:
-            logger.warning(
+            logger.debug(
                 f"Kept {given.a.description} and {given.b.description} as they "
                 f"are: {Hold.ROUTING.value} (a radius of {bend.radius:.3f} mm)"
             )

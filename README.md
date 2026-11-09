@@ -69,11 +69,11 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    sides. Select a via with its tracks to let it move with them: it moves
    when it is an unlocked through via, at least two selected chain ends meet
    it, and no other copper touches it or those chain ends on any layer. Any
-   other selected via stays where it is, with a warning naming it and the
+   other selected via stays where it is; a debug log line names it and the
    reason: it is locked, it is not a through via, other copper touches it
    or a chain end it would carry (an unselected track, a pad, a copper
    shape, another via or a zone of its net, on any layer), or fewer than
-   two selected chain ends meet it. Teardrops are ignored, here and in the
+   two selected tracks end at it. Teardrops are ignored, here and in the
    DRC check: KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
@@ -107,10 +107,9 @@ barely changes it or its energy stops improving.
 
 The command prints the optimizer's outcome: whether it converged or stopped
 at its iteration cap or the time limit, after how many iterations and how
-many seconds, how many edge moves it rejected, and how many bursts L-BFGS-B
-ended abnormally, if any; then the DRC verdict. Per-chain figures are not
-printed: `--plot` titles each chain's subplot with its length before and
-after and its minimum clearance margin.
+many seconds and how many edge moves it rejected; then the DRC verdict.
+Per-chain figures are not printed: `--plot` titles each chain's subplot
+with its length before and after and its minimum clearance margin.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises and the lowest it has kept, and how far the
@@ -151,11 +150,10 @@ rest of each chain, such as its fan-outs to pads or vias, is smoothed as an
 ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
-already bends tighter keeps its own tracks, with a warning that says so.
-So does one whose corner the copper around it keeps from rounding, such as
-a pad inside a sharp corner, or its own parts beyond the corner: the
-warning says which, and the run is repeated with that section held, so
-that the other chains keep clear of its tracks. The repeat goes on from
+already bends tighter keeps its own tracks. So does one whose corner the
+copper around it keeps from rounding, such as a pad inside a sharp corner,
+or its own parts beyond the corner: the run is repeated with that section
+held, so that the other chains keep clear of its tracks. The repeat goes on from
 where the first run left every other chain and via, and `--time-limit`
 covers both runs.
 
@@ -178,13 +176,13 @@ difference of the two chains, changes; kibends does not correct it, which
 KiCad's length tuner does. A coupled section that same-net copper touches
 between its ends stays as it is.
 
-A run warns when two chains whose nets pair do not run coupled or have
+A run warns when two chains whose nets pair run coupled but have
 different widths, when a chain runs coupled with one of its pair net that
 pairs with another chain, and when a pair's measured gap differs by more
 than a tenth from its netclass's differential pair gap. Each of these is
 smoothed as separate chains, or, for the last, at its measured gap. A pair
 is paired on each layer separately, and a via that joins a pair's track
-stays fixed, with a warning. kibends does not route uncoupled fan-outs
+stays fixed. kibends does not route uncoupled fan-outs
 into coupling.
 
 ### Options
