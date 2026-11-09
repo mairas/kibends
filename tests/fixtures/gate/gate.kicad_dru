@@ -1,4 +1,0 @@
-(version 1)
-(rule "pad_clearance"
-	(condition "(A.Type == 'Pad')")
-	(constraint clearance (min 0.17mm)))

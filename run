@@ -35,7 +35,7 @@ function test {
 }
 
 function test-all {
-  #@ Run every test, including slow and kicad-cli ones
+  #@ Run every test, including slow ones
   #@ Category: Development
   OPENBLAS_NUM_THREADS=1 .venv/bin/python -m pytest "$@"
 }

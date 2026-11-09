@@ -44,8 +44,8 @@ ComplexArray = NDArray[np.complex128]
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.
 # 0.3 mm to the edge meets common fabs' minimum for routed outlines, and
 # 0.25 mm to holes and between holes are the hole clearance and hole-to-hole
-# minimum KiCad's own project templates set. The kicad-cli DRC check enforces
-# the board's real rules either way.
+# minimum KiCad's own project templates set. KiCad's DRC, which the user runs,
+# enforces the board's real rules.
 EDGE_CLEARANCE = 0.3
 HOLE_CLEARANCE = 0.25
 HOLE_TO_HOLE = 0.25
@@ -881,7 +881,7 @@ def _layer_obstacles(
     if outline is None:
         logger.warning(
             "Edge.Cuts has no closed outline; the board edge is not kept clear "
-            "while smoothing, only the DRC check covers it"
+            "while smoothing, only KiCad's DRC covers it"
         )
         return Obstacles(items)
     return Obstacles(items, outline, edge_clearance + keeper.radius)
@@ -914,7 +914,7 @@ def build_via_obstacles(
     hole keeps hole-to-hole from every other hole the layers hold, of any
     net. One field over all the layers' items is their minimum. The via
     itself and the vias in `moving`, which the caller adds at their current
-    positions, are left out; so is the copper of zones, which the DRC check
+    positions, are left out; so is the copper of zones, which KiCad
     refills.
     """
     spanned = [s for s in layers if via.reaches(s.layer)]

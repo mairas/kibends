@@ -27,7 +27,6 @@ Status: early development.
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
 - Python 3.14 or later.
-- `kicad-cli`, which comes with KiCad, for the DRC check.
 
 ## Installation
 
@@ -43,8 +42,7 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 
 ## Usage
 
-1. Open the board in KiCad's PCB editor and save it: the DRC check reads
-   the project and rule files from disk.
+1. Open the board in KiCad's PCB editor.
 2. Select the track segments to smooth, on any copper layers. Each
    connected piece of one net and one width on one layer is a chain: its
    segments join end to end. Where three or more selected tracks of one net
@@ -81,8 +79,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    through via, other copper touches it or a chain end it would carry (an
    unselected track, a pad, a copper shape or another via of its net, on
    any layer), it sits at the edge of a zone's fill, or fewer than two
-   selected tracks end at it. Teardrops are ignored, here and in the
-   DRC check: KiCad reapplies them on the next refill. Selected pads and
+   selected tracks end at it. Teardrops are ignored: KiCad reapplies
+   them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
@@ -117,7 +115,7 @@ barely changes it or its energy stops improving.
 
 The command prints the optimizer's outcome: whether it converged or stopped
 at its iteration cap or the time limit, after how many iterations and how
-many seconds and how many edge moves it rejected; then the DRC verdict.
+many seconds and how many edge moves it rejected.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after and its minimum clearance margin.
 While a run lasts longer than a few seconds, it reports its progress every
@@ -125,16 +123,17 @@ few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises and the lowest it has kept, and how far the
 iteration moved any track or via. Set `LOGURU_LEVEL=DEBUG` to see that line
 after every iteration.
-Every position kibends prints, in errors, warnings and DRC lines, is in millimetres relative to the board's grid origin, with y
+Every position kibends prints, in errors and warnings, is in millimetres relative to the board's grid origin, with y
 pointing down: as the PCB editor shows coordinates with the grid origin
 chosen under Preferences > PCB Editor > Origins & Axes and neither axis
 inverted.
-A chain the optimizer leaves as it was is neither checked nor replaced. Without `--dry-run`, and if the DRC check passes, the
+A chain the optimizer leaves as it was is not replaced. Without `--dry-run`, the
 changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
 A track or via edited in KiCad since the run read it stops the commit.
-kibends does not refill zones: refill them yourself (B) or let KiCad's DRC
-refill them.
+kibends does not refill zones and does not run KiCad's DRC: refill the
+zones yourself (B), or run the DRC, which refills them and checks the result
+against every rule of the board.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
@@ -179,7 +178,7 @@ lie closer do not move closer still. The run refuses, naming the pair, to commit
 a section whose tracks come closer to each other than both its nets'
 clearance and its routing kept them, where they run side by side or
 across a turn.
-Both nets' tracks go into the one DRC check and the one commit.
+Both nets' tracks go into the one commit.
 
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which
@@ -204,7 +203,7 @@ into coupling.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification, the DRC check and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
 | `--settled-change MM` | 0.001 | A problem settles when a burst moves none of its tracks or vias by this much. Raising it alone saves little time and can leave visibly different tracks. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
@@ -212,11 +211,9 @@ into coupling.
 | `--burst-iterations N` | 100 | L-BFGS-B iterations per burst. Fewer are the strongest way to shorten a run, but some layouts then settle into a noticeably different shape. More get a little closer to the exact optimum: 300 take about twice as long and, in the test scenarios, leave tracks well under a micrometre shorter on average. |
 | `--lbfgs-ftol TOL` | 1e-15 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this; the default effectively never does, so bursts run to `--burst-iterations`. A larger value, such as 1e-9, shortens runs, most of all on boards with differential pairs, at the cost of small changes in the result; much larger values change it a lot. |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
-| `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. The DRC check catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. Do not combine this option with `--no-drc`. |
+| `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. KiCad's DRC catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
-| `--dry-run`, `-n` | | Optimize and run the DRC check, printing the outcome and the verdict, without changing the board. |
-| `--no-drc` | | Commit without the DRC check. Nothing then checks the board's custom rules or board minimums, which the optimizer does not see, so the result may violate a custom rule stricter than the netclass clearances. |
-| `--kicad-cli PATH` | | The kicad-cli to run the DRC check with. By default kibends uses the one the running KiCad reports, then `kicad-cli` on `PATH`, then the usual install locations. |
+| `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 
 Repulsion alone rounds the bends: with the defaults, a 90° corner wrapped
@@ -229,35 +226,19 @@ such as the end of a differential pair's coupled section, at a corner.
 
 ### Clearances
 
-Copper clearances come from the board's netclasses, including pad and
-footprint clearance overrides. Custom DRC rules (the project's
-`.kicad_dru`) and board minimums are not supported: KiCad's API does not
-expose them, and the optimizer keeps only the netclass clearances, so a
-custom rule stricter than those (a larger clearance for vias, say) can be
-violated by the smoothed tracks; only the DRC check below sees it. The
-API does not expose the edge and hole clearances either; they come from
-the options above. The optimizer does not see copper zones either, which
-reflow after an edit, except the fills that keep a moving via inside the
-zones it connects to. Rule areas that keep out tracks or vias are seen;
-their other keepouts, of pads, copper pours and footprints, are not.
-
-The DRC check covers what the optimizer cannot see. Before committing,
-kibends runs `kicad-cli pcb drc` twice on copies of the board in a scratch
-directory, with the project's `.kicad_pro` and `.kicad_dru`: once on the
-board as it is, and once with every changed chain replaced and every moved
-via in its new place. If the result
-adds a violation, nothing is committed: the message names the nets involved,
-and each new violation is listed with its type, description and position.
-Violations the board already had do not count, including ones a chain's old
-tracks or a moved via had against the same item; another chain's or via's
-old violation does not excuse a new one. A path that
-splits another net's pour shows up as more unconnected items on that net and
-is refused, naming the net.
-
-Save the board before running: kicad-cli reads the board's project and rule
-files from disk, so rule or netclass edits not yet saved in KiCad are not
-seen. The check takes two full-board DRC runs with zone refill; the log shows
-how long each took.
+kibends keeps only the clearances its optimizer models: the board's
+netclass clearances, including pad and footprint clearance overrides; the
+edge and hole clearances of `--edge-clearance` and `--hole-clearance`,
+since KiCad's API does not expose the board's own; rule areas that keep
+out tracks or vias, which moving vias stay out of as well; and, for a
+moving via, the fill of the zones it connects to. Rule areas' other
+keepouts, of pads, copper pours and footprints, are not seen. Nor are
+custom DRC rules (the project's `.kicad_dru`), board minimums, thermal
+reliefs or island removal, or copper zones, which reflow after an edit,
+beyond the fills that hold a moving via. A custom rule stricter than the
+netclass clearances (a larger clearance for vias, say) can therefore be
+violated by the smoothed tracks. Those are left to KiCad's DRC: run it
+after smoothing.
 
 ### Editing a smoothed track
 
@@ -270,5 +251,5 @@ only slightly, but still replaces its tracks.
 ```sh
 ./run sync
 ./run test       # fast tests, in parallel
-./run test-all   # also the slow and kicad-cli tests; run before committing
+./run test-all   # also the slow tests; run before committing
 ```

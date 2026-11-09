@@ -48,7 +48,6 @@ testpaths = ["tests"]
 addopts = "-n auto"
 markers = [
     "slow: takes several seconds; deselect with -m 'not slow'",
-    "kicad_cli: runs the real kicad-cli; skipped when it is not installed",
 ]
 
 [tool.ruff]

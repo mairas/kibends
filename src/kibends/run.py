@@ -6,7 +6,6 @@ it hands over; it prints nothing.
 
 import importlib
 import math
-import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -19,7 +18,6 @@ from kipy.errors import ApiError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends import drc
 from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE, OptimizerSettings
 from kibends.chain import (
     Chain,
@@ -114,8 +112,6 @@ class SmoothOptions:
     chord_tolerance: float
     dry_run: bool
     plot: Path | None
-    drc: bool
-    kicad_cli: str | None
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
@@ -213,17 +209,9 @@ class OptimizerReport:
 
 @dataclass(frozen=True)
 class RunReport(OptimizerReport):
-    drc: drc.Introduced | None
-    """None when the DRC check did not run."""
     committed: bool
     refusal: str | None
     """Why nothing was committed, when that is a failure of the run."""
-
-
-@dataclass(frozen=True)
-class _DrcSetup:
-    kicad_cli: Path
-    project: drc.ProjectFiles
 
 
 @dataclass(frozen=True)
@@ -292,17 +280,15 @@ def run_smooth(
 ) -> RunReport:
     """Smooth the chains selected in KiCad and, unless dry-running, commit them.
 
-    `on_optimized` gets the optimizer's report before the DRC check and the
-    commit, which may raise. Raises on failures that leave nothing to report
-    (no board, a bad selection, a refused commit); an abnormal optimizer stop
-    or new DRC violations come back as the report's `refusal`, with nothing
-    committed.
+    `on_optimized` gets the optimizer's report before the commit, which may
+    raise. Raises on failures that leave nothing to report (no board, a bad
+    selection, a refused commit); an abnormal optimizer stop or a pinched
+    pair comes back as the report's `refusal`, with nothing committed.
     """
     if options.plot is not None:
         _require_plot()
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
-    gate = _prepare_drc(kicad, board, options.kicad_cli) if options.drc else None
     read = _read(board, options.chord_tolerance, read_user_frame(board))
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
@@ -321,7 +307,7 @@ def run_smooth(
             read.frame,
         )
     )
-    return _check_and_commit(board, gate, read, optimized, outcome, options)
+    return _commit(board, read, optimized, outcome, options)
 
 
 def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> _Read:
@@ -539,20 +525,18 @@ def _pinched(
     return None
 
 
-def _check_and_commit(
+def _commit(
     board: kipy.board.Board,
-    gate: _DrcSetup | None,
     read: _Read,
     optimized: _Optimized,
     outcome: _Outcome,
     options: SmoothOptions,
 ) -> RunReport:
-    """Check the changed chains and moved vias against the DRC and, unless
-    dry-running or refused, commit them."""
+    """Commit the changed chains and moved vias unless dry-running or
+    refused."""
     run = optimized.run
 
     def report(
-        found: drc.Introduced | None = None,
         *,
         committed: bool = False,
         refusal: str | None = None,
@@ -566,7 +550,6 @@ def _check_and_commit(
             optimized.elapsed,
             run.abnormal,
             read.frame,
-            found,
             committed,
             refusal,
         )
@@ -589,15 +572,10 @@ def _check_and_commit(
         for m, r in zip(read.movable, outcome.via_reports, strict=True)
         if r.moved
     ]
-    found = None
-    if gate is not None:
-        found = _check_drc(gate, board, changed, moves)
-        if found and not options.dry_run:
-            return report(found, refusal=_drc_refusal(found))
     if options.dry_run:
-        return report(found)
+        return report()
     commit_chains(board, changed, read.selected, moves)
-    return report(found, committed=True)
+    return report(committed=True)
 
 
 def _optimizing(chains: int, pairs: int, vias: int) -> str:
@@ -1023,61 +1001,3 @@ def _open_board(kicad: kipy.KiCad) -> kipy.board.Board:
         if e.code == ApiStatusCode.AS_BUSY:
             raise
         raise NoBoardError(f"No board is open in KiCad's PCB editor ({e})") from None
-
-
-def _prepare_drc(
-    kicad: kipy.KiCad, board: kipy.board.Board, explicit_cli: str | None
-) -> _DrcSetup:
-    kicad_cli = drc.locate_kicad_cli(explicit_cli, kicad)
-    logger.info(f"Using {kicad_cli} ({drc.kicad_cli_version(kicad_cli)})")
-    project = drc.project_files(board)
-    logger.info(
-        f"DRC uses the project files on disk: {project.pro}"
-        + (f", {project.dru}" if project.dru else " (no .kicad_dru)")
-        + "; unsaved rule or netclass edits in KiCad are not seen"
-    )
-    return _DrcSetup(kicad_cli, project)
-
-
-def _check_drc(
-    gate: _DrcSetup,
-    board: kipy.board.Board,
-    changed: Sequence[tuple[Chain, FloatArray]],
-    moves: Sequence[ViaMove],
-) -> drc.Introduced:
-    """The violations replacing the changed chains and moving the vias would
-    add, in one check."""
-    tracks = [
-        drc.NewTracks(
-            points=tuple(snapped_points(polyline)),
-            width=chain.width,
-            layer=chain.layer,
-            net=chain.net,
-        )
-        for chain, polyline in changed
-    ]
-    with tempfile.TemporaryDirectory(prefix="kibends-drc-") as tmp:
-        return drc.check(
-            gate.kicad_cli,
-            gate.project,
-            board.get_as_string(),
-            [chain.segment_ids for chain, _ in changed],
-            tracks,
-            Path(tmp),
-            [drc.MovedVia(m.via.id, m.position) for m in moves],
-        )
-
-
-def new_violations(n: int) -> str:
-    return f"{n} new violation{'' if n == 1 else 's'}"
-
-
-def _drc_refusal(found: drc.Introduced) -> str:
-    nets = sorted(
-        {n for v in found.violations for n in drc.violation_nets(v)} - {drc.UNNAMED_NET}
-    )
-    on = f" on {', '.join(nets)}" if nets else ""
-    return (
-        f"DRC: the result adds {new_violations(len(found.violations))}{on}; "
-        "nothing committed"
-    )
