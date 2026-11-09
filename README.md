@@ -201,7 +201,11 @@ pad, is free. A chain that runs over one partway along keeps one vertex
 inside it, where two of its new tracks meet, free to slide there in the
 same way, however many times it entered the pad. KiCad connects a track
 to a pad or via wherever their copper overlaps, so that vertex keeps both
-its tracks connected. A pad or via pins the chain where it touches it, as other
+its tracks connected. A vertex of the chain that lies exactly on a pad's
+anchor or a via's centre stays there, and needs no other vertex in that pad
+or via: KiCad drags only the track ends there along with a footprint or a
+via, so moving them would leave the tracks behind when you drag it later.
+A pad or via pins the chain where it touches it, as other
 copper does, where the chain only grazes it without its centreline
 entering, where it also touches an end that other copper holds, and at the
 junction of branching tracks. An end whose copper reaches another selected

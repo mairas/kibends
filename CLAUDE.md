@@ -38,7 +38,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 - A moved via stays where the zones of its net that reached its ring connect it, taken together, on each layer where one did, and keeps the zone's clearance and margin from other-net copper there, so that the refill reconnects it.
 - Locked tracks, other nets' copper, unselected or fixed vias and pads are never modified.
 - Pinned points stay where they are, except chain ends at a moving via, which keep their offset from its centre.
-- A vertex that keeps a pad or a staying via may move but stays inside it, shrunk by `CONTACT_MARGIN`; the chain keeps touching every pad and via it touched.
+- A vertex that keeps a pad or a staying via may move but stays inside it, shrunk by `CONTACT_MARGIN`; the chain keeps touching every pad and via it touched. A vertex on a pad's anchor or a staying via's centre stays there, since KiCad's drag carries only the track ends there.
 - The loose ends of a junction's branches move together and stay one point.
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
 - Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
