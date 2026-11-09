@@ -40,7 +40,7 @@ from kibends.commit import (
 from kibends.coords import UserFrame
 from kibends.energy import EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
-from kibends.optimize import FrozenVertex, Termination
+from kibends.results import FrozenVertex, Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
     NoBoardError,

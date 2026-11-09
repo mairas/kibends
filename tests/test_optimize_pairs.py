@@ -47,12 +47,8 @@ from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline, ChainField
 from kibends.optimize import (
     INSIDE_TOLERANCE,
-    ChainResult,
     Member,
-    PairResult,
-    RunResult,
     SelfCheck,
-    Termination,
     close_to_itself,
     layer_energy,
     no_contacts,
@@ -69,6 +65,7 @@ from kibends.pairs import (
     gap_range,
     offset_pair,
 )
+from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)

@@ -17,12 +17,11 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
-    ChainResult,
-    Termination,
     contact_stops,
     contacts_left,
     optimize_chains,
 )
+from kibends.results import ChainResult, Termination
 
 SETTINGS = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 PAD = box(-1.0, -1.0, 1.0, 1.0)

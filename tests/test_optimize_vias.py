@@ -27,14 +27,9 @@ from kibends.obstacles import (
     build_via_obstacles,
     own_net_stops,
 )
-from kibends.optimize import (
-    INSIDE_TOLERANCE,
-    MAX_ABNORMAL_BURSTS,
-    RunResult,
-    Termination,
-    optimize_chains,
-)
+from kibends.optimize import INSIDE_TOLERANCE, MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
+from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, ViaInput

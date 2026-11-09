@@ -36,9 +36,6 @@ from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
-    PolylineStats,
-    RunResult,
-    Termination,
     layer_energy,
     measure,
     optimize,
@@ -46,6 +43,7 @@ from kibends.optimize import (
     resample,
     seen_parts,
 )
+from kibends.results import PolylineStats, RunResult, Termination
 from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)

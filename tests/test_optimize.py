@@ -20,13 +20,12 @@ from kibends.obstacles import Obstacle, Obstacles
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
-    OptimizeResult,
-    Termination,
     measure,
     optimize,
     resample,
     violations,
 )
+from kibends.results import OptimizeResult, Termination
 
 SETTINGS = OptimizerSettings()
 # For long runs: about 20x faster than the defaults and, on the detour and

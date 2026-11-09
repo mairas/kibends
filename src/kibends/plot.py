@@ -14,7 +14,7 @@ from matplotlib.figure import Figure
 
 from kibends.chain import Point2
 from kibends.energy import DistanceField, FloatArray
-from kibends.optimize import FrozenVertex
+from kibends.results import FrozenVertex
 
 MARGIN = 2.0
 """mm of board drawn around the chain."""

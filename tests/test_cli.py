@@ -55,16 +55,10 @@ from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import EnergyParams, FloatArray
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
-from kibends.optimize import (
-    MAX_ABNORMAL_BURSTS,
-    FrozenVertex,
-    PolylineStats,
-    RunResult,
-    Termination,
-    optimize_chains,
-)
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
+from kibends.results import FrozenVertex, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 
 WIDTH = 0.25
