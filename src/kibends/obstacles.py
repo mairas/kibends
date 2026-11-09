@@ -14,6 +14,8 @@ import itertools
 import math
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
+from functools import cached_property
+from typing import NamedTuple
 
 import numpy as np
 import shapely
@@ -64,6 +66,10 @@ ROUND_OFF = 1e-9
 # edge is also near its midpoint, where the k-d tree finds it. Chains resampled
 # at the default 0.1 mm `OptimizerSettings.spacing` are never split.
 MAX_EDGE_LENGTH = 0.5
+# Points this much deeper than the reach inside the inflated board edge skip
+# its exact distance; far more than a buffer's chord error at 16 segments per
+# quarter circle on any realistic reach.
+DEEP_MARGIN = 0.01
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,7 @@ class Obstacles:
         )
         self._tree = STRtree(self._geometries)
         self._max_inflation = float(self._inflations.max(initial=0.0))
+        self._deep: dict[float, BaseGeometry] = {}
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -132,9 +139,15 @@ class Obstacles:
         if self.board_outline is not None:
             near = np.ones(len(coords), dtype=bool)
             if math.isfinite(reach):
-                outside = ~shapely.covered_by(query, self.board_outline)
-                to_edge = self.board_outline.boundary.distance(query)
-                near = outside | (to_edge - self.edge_inflation <= reach)
+                near = ~shapely.contains_xy(
+                    self._deep_inside(reach), coords[:, 0], coords[:, 1]
+                )
+                if near.any():
+                    outside = ~shapely.covered_by(query[near], self.board_outline)
+                    to_edge = self.board_outline.boundary.distance(query[near])
+                    near[near] = outside | (to_edge - self.edge_inflation <= reach)
+            if not near.any():
+                return distance, gradient
             inside_board, toward_inside = _signed_to(
                 coords[near],
                 query[near],
@@ -150,6 +163,17 @@ class Obstacles:
             distance = np.where(nearer, edge, distance)
             gradient = np.where(nearer[:, None], edge_gradient, gradient)
         return distance, gradient
+
+    def _deep_inside(self, reach: float) -> BaseGeometry:
+        """The part of the board farther than `reach` from the inflated
+        edge, prepared, with a margin for the buffer's arc approximation."""
+        deep = self._deep.get(reach)
+        if deep is None:
+            assert self.board_outline is not None
+            margin = self.edge_inflation + reach + DEEP_MARGIN
+            deep = self._deep[reach] = self.board_outline.buffer(-margin)
+            shapely.prepare(deep)
+        return deep
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -325,6 +349,13 @@ class ChainCentreline:
     """Its polyline, (n, 2) in mm."""
 
 
+class NearestEdge(NamedTuple):
+    distance: FloatArray
+    gradient: FloatArray
+    edge: IntArray
+    """The edge nearest each point once inflated, -1 where none is in reach."""
+
+
 class ChainField:
     """Signed distance to other chains' inflated centrelines, and edge checks.
 
@@ -348,7 +379,24 @@ class ChainField:
         self._inflations = inflations
         self._max_inflation = float(inflations.max(initial=0.0))
         self._max_half_length = float(np.abs(self._along).max(initial=0.0)) / 2
-        self._tree = cKDTree((starts + ends) / 2) if len(starts) else None
+        self._middles = (starts + ends) / 2
+
+    @cached_property
+    def _tree(self) -> cKDTree | None:
+        # Built on first use: an evaluation given its pairs (`nearest_among`)
+        # needs none.
+        return cKDTree(self._middles) if len(self._middles) else None
+
+    @staticmethod
+    def merged(fields: Sequence[ChainField]) -> ChainField:
+        """One field answering as the union of `fields` does, with one tree."""
+        starts = np.concatenate([f._starts for f in fields])
+        along = np.concatenate([f._along for f in fields])
+        return ChainField(
+            np.column_stack([starts.real, starts.imag]),
+            np.column_stack([(starts + along).real, (starts + along).imag]),
+            np.concatenate([f._inflations for f in fields]),
+        )
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -359,11 +407,18 @@ class ChainField:
         Points farther than `reach` from every inflated edge get +inf and a
         zero gradient.
         """
+        nearest = self.nearest(points, reach)
+        return nearest.distance, nearest.gradient
+
+    def nearest(self, points: FloatArray, reach: float = math.inf) -> NearestEdge:
+        """`signed_distance`, and the index of the edge that answers each
+        point, -1 where none does."""
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
         distance = np.full(len(coords), np.inf)
         gradient = np.zeros((len(coords), 2))
+        edges = np.full(len(coords), -1, dtype=np.intp)
         if self._tree is None or not len(coords):
-            return distance, gradient
+            return NearestEdge(distance, gradient, edges)
         query = _complex(coords)
         if math.isfinite(reach):
             # An edge is within reach once inflated only if it is within reach
@@ -385,8 +440,63 @@ class ChainField:
                 self._tree, coords, limits + self._max_half_length + DEGENERATE_DISTANCE
             )
             point_limit = limits[point]
+        return self._nearest_of(query, point, edge, point_limit)
+
+    def nearest_among(
+        self, points: FloatArray, reach: float, pairs: tuple[IntArray, IntArray]
+    ) -> NearestEdge:
+        """`nearest` with a finite `reach`, looking at the (point, edge)
+        `pairs` alone: the same answer when they hold every pair within
+        reach plus the largest inflation of each other, as `candidates`
+        finds them."""
+        coords = np.asarray(points, dtype=float).reshape(-1, 2)
+        point, edge = pairs
+        return self._nearest_of(
+            _complex(coords), point, edge, reach + self._max_inflation
+        )
+
+    def candidates(
+        self, points: FloatArray, reach: float, slack: float
+    ) -> tuple[IntArray, IntArray]:
+        """The (point, edge) pairs that `nearest` with a finite `reach` can
+        answer a point with once the distance from each point to each edge
+        has changed by at most `slack`, mm."""
+        coords = np.asarray(points, dtype=float).reshape(-1, 2)
+        empty = np.empty(0, dtype=np.intp)
+        if self._tree is None or not len(coords):
+            return empty, empty
+        within = reach + self._max_inflation
+        limit = within + slack + 2 * DEGENERATE_DISTANCE
+        point, edge = _pairs_within(self._tree, coords, limit + self._max_half_length)
+        raw = np.abs(
+            _offsets(_complex(coords)[point], self._starts[edge], self._along[edge])
+        )
+        keep = raw <= limit
+        point, edge, raw = point[keep], edge[keep], raw[keep]
+        # Only the nearest edge answers a point. An edge that stays within
+        # reach however its distance changes bounds how far away that is,
+        # and an edge that cannot come nearer than the bound never answers.
+        distance = raw - self._inflations[edge]
+        bound = np.full(len(coords), np.inf)
+        sure = raw + slack <= within
+        np.minimum.at(bound, point[sure], distance[sure] + slack)
+        keep = distance - slack <= bound[point] + 2 * DEGENERATE_DISTANCE
+        return point[keep], edge[keep]
+
+    def _nearest_of(
+        self,
+        query: ComplexArray,
+        point: IntArray,
+        edge: IntArray,
+        point_limit: FloatArray | float,
+    ) -> NearestEdge:
+        """`nearest` at `query` over the (point, edge) pairs given, each
+        looked at within `point_limit` of its point."""
+        distance = np.full(len(query), np.inf)
+        gradient = np.zeros((len(query), 2))
+        edges = np.full(len(query), -1, dtype=np.intp)
         if not len(point):
-            return distance, gradient
+            return NearestEdge(distance, gradient, edges)
         offset = _offsets(query[point], self._starts[edge], self._along[edge])
         raw = np.abs(offset)
         candidate = np.where(
@@ -397,7 +507,8 @@ class ChainField:
         np.minimum.at(distance, point, candidate)
         best = np.flatnonzero((candidate == distance[point]) & (candidate < np.inf))
         gradient[point[best]] = self._unit_gradient(offset[best], raw[best], edge[best])
-        return distance, gradient
+        edges[point[best]] = edge[best]
+        return NearestEdge(distance, gradient, edges)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -875,6 +986,20 @@ def via_obstacles_for_via(
     return _vias_field(keeper, (v for v in others if v.id != via.id), clearance_of)
 
 
+def via_via_inflation(
+    via: Via,
+    other: Via,
+    clearance_of: Callable[[str], float],
+    *,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+) -> float | None:
+    """The distance `via`'s centre keeps from `other`'s, as
+    `via_obstacles_for_via` counts it, mm; None if no rule applies."""
+    keeper = _via_keeper(via, clearance_of(via.net), hole_clearance, hole_to_hole)
+    return _via_inflation(keeper, other, clearance_of)
+
+
 def chain_obstacles_for_via(
     via: Via,
     others: Sequence[ChainCentreline],
@@ -942,16 +1067,27 @@ def _vias_field(
     centres: list[Point2] = []
     inflations: list[float] = []
     for v in vias:
-        ring = keeper.copper(v.net, v.diameter / 2, clearance_of(v.net))
-        if touching and v.net == keeper.net:
-            ring = v.diameter / 2 + keeper.radius
-        hole = keeper.hole(v.net, v.drill / 2, plated=True)
-        reach = [i for i in (ring, hole) if i is not None]
-        if reach:
+        inflation = _via_inflation(keeper, v, clearance_of, touching=touching)
+        if inflation is not None:
             centres.append(v.position)
-            inflations.append(max(reach))
+            inflations.append(inflation)
     if not centres:
         return None
     # Zero-length edges: ChainField measures to a point exactly as to an edge.
     at = np.array(centres, dtype=float)
     return ChainField(at, at, np.array(inflations, dtype=float))
+
+
+def _via_inflation(
+    keeper: _Keeper,
+    via: Via,
+    clearance_of: Callable[[str], float],
+    *,
+    touching: bool = False,
+) -> float | None:
+    """How far `keeper` keeps from `via`'s centre, by its ring and hole."""
+    ring = keeper.copper(via.net, via.diameter / 2, clearance_of(via.net))
+    if touching and via.net == keeper.net:
+        ring = via.diameter / 2 + keeper.radius
+    hole = keeper.hole(via.net, via.drill / 2, plated=True)
+    return max((i for i in (ring, hole) if i is not None), default=None)

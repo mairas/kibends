@@ -1,5 +1,6 @@
-"""One bounded L-BFGS-B burst, shared by chains and moving vias, and the
-optimizer's settings, which every module importing them takes from here.
+"""One bounded L-BFGS-B burst, which the optimizer runs over every free
+coordinate of a problem at once, and the optimizer's settings, which every
+module importing them takes from here.
 
 Every coordinate moves only inside its bubble's box, so nothing jumps over
 an obstacle; a check after the run moves back whatever newly crosses one,
@@ -20,9 +21,14 @@ from kibends.energy import BoolArray, DistanceField, FloatArray
 # 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
 INSIDE_TOLERANCE = 1e-7
 
-# Halving the bounds of rejected vertices this many times within one outer
-# iteration shrinks their step to 1/16; beyond that they wait for the next one.
-MAX_BOUND_HALVINGS = 4
+# The bounds of rejected vertices are halved, within one outer iteration,
+# until each is at most its `bounded_burst` retry bound, at most this many
+# times: enough to bring any step the optimizer's floor allows below a µm.
+# Beyond that they wait for the next one.
+MAX_BOUND_HALVINGS = 8
+
+# A retry's bounds need shrink no further than this share of a bubble.
+RETRY_SHARE = 16
 
 LBFGSB_ABNORMAL = 2
 
@@ -45,21 +51,25 @@ class OptimizerSettings:
     """δ, mm: bubbles are measured to obstacles inflated by δ less than the
     clearance, and vertices deeper than δ inside an obstacle are frozen."""
     settled_change: float = 1e-3
-    """A chain or via whose burst changes its shape by less than this, mm,
-    settles."""
+    """A problem whose burst moves no shape and no via's centre by this much,
+    mm, settles."""
     max_iterations: int = 200
     stall_tolerance: float = 1e-3
-    """Converged when the best energy improved by less than this over
-    `stall_window` iterations. The energy is in mm of track length, so this
-    is 1 µm of length: in flat stretches the shape keeps wandering by tens
-    of µm while the energy creeps down by far less."""
+    """A problem settles when its best energy improved by less than this
+    over `stall_window` of its bursts. The energy is in mm of track length,
+    so this is 1 µm of length: in flat stretches the shapes keep wandering
+    by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
-    burst_maxiter: int = 300
-    """L-BFGS-B iterations per burst."""
+    burst_maxiter: int = 100
+    """L-BFGS-B iterations per burst of a problem."""
     lbfgs_ftol: float = LBFGSB_FTOL
     """L-BFGS-B's relative energy reduction below which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
     """L-BFGS-B's projected gradient below which a burst ends."""
+    move_bounds: bool = True
+    """Bound each variable to its bubble or the step floor in a burst. Without
+    the bounds only the edge check stops a track or via passing through
+    another within a burst, and it does not catch every such pass."""
     time_limit: float | None = None
     """Seconds after which the run stops at the next burst's end and keeps
     its best state, as at the iteration cap; None for no limit."""
@@ -95,8 +105,7 @@ Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 @dataclass(frozen=True)
 class Burst:
     points: FloatArray
-    """Where the burst left what it moved: `bounded_burst`'s flat
-    coordinates, or a chain's whole polyline."""
+    """Where the burst left its flat coordinates."""
     rejected_edges: int
     abnormal: bool
 
@@ -137,16 +146,21 @@ def bounded_burst(
     half_sides: FloatArray,
     revert: Revert,
     settings: OptimizerSettings,
+    retry_bounds: FloatArray | None = None,
 ) -> Burst:
     """Minimise `objective` from `start` with each coordinate within its
     `half_sides` of it, retried with halved bounds where edges crossed.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns which it moved and how many edges crossed. A
-    run L-BFGS-B ends abnormally is taken as its check leaves it. Where every
-    coordinate's bounds coincide in floating point, nothing can move, and
-    the burst ends where it is.
+    run L-BFGS-B ends abnormally is taken as its check leaves it, and so is
+    one whose moved-back coordinates all have bounds at most their
+    `retry_bounds` once halved, by default a sixteenth of their
+    `half_sides`. Where every coordinate's bounds coincide in floating
+    point, nothing can move, and the burst ends where it is.
     """
+    if retry_bounds is None:
+        retry_bounds = half_sides / RETRY_SHARE
     scale = np.ones(len(start))
     current = start.copy()
     rejected_edges = 0
@@ -176,4 +190,6 @@ def bounded_burst(
             break
         rejected_edges += crossings
         scale[reverted] /= 2
+        if np.all(half_sides[reverted] * scale[reverted] <= retry_bounds[reverted]):
+            break
     return Burst(current, rejected_edges, abnormal)

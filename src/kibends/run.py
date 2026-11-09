@@ -61,6 +61,7 @@ from kibends.optimize import (
     Termination,
     measure,
     optimize_chains,
+    pinned_at_junctions,
 )
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
@@ -92,7 +93,7 @@ PLOT_EXTRA_MESSAGE = (
 ABNORMAL_MESSAGE = (
     "The optimizer terminated abnormally without improving the track; "
     "nothing committed. "
-    "Try other --stiffness, --repulsion or --range values"
+    "Try other --repulsion or --range values"
 )
 
 
@@ -137,7 +138,6 @@ class ChainReport:
     other chains at their simplified results."""
     frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
-    abnormal_bursts: int
     changed: bool
     """False when the result equals the selected tracks: then it is neither
     checked nor committed."""
@@ -181,7 +181,6 @@ class PairReport:
     frozen: tuple[FrozenVertex, ...]
     """Of the coupled sections' centrelines."""
     rejected_edges: int
-    abnormal_bursts: int
 
 
 @dataclass(frozen=True)
@@ -194,10 +193,14 @@ class OptimizerReport:
     """The differential pairs among the chains."""
     termination: Termination
     iterations: int
-    """Outer iterations, each giving every chain one burst, summed over
-    the runs."""
+    """Outer iterations, each giving every problem that has not settled
+    one burst, summed over the runs."""
     elapsed: float
     """Wall time of the optimize stage, re-runs included, s."""
+    abnormal: tuple[tuple[str, int], ...]
+    """The problems, each the chains of a layer or of the layers moving
+    vias tie together, whose bursts L-BFGS-B ended abnormally, by
+    description, and how many there were, summed over the runs."""
     frame: UserFrame
     """The frame to print positions in. The report's positions stay in the
     board frame; its descriptions are text already formatted in this
@@ -261,7 +264,6 @@ class _WholeResult:
     before: PolylineStats
     frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
-    abnormal_bursts: int
 
 
 @dataclass(frozen=True)
@@ -316,6 +318,7 @@ def run_smooth(
             run.termination,
             run.iterations,
             optimized.elapsed,
+            run.abnormal,
             read.frame,
         )
     )
@@ -336,7 +339,10 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
     carried = (
-        carried_copper(may, split_chains(kept, locked, lambda _l, _n: (), frame=frame))
+        carried_copper(
+            may,
+            split_chains(kept, locked, lambda _l, _n: (), frame=frame),
+        )
         if may
         else {}
     )
@@ -391,6 +397,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     started = monotonic()
     previous: RunResult | None = None
     iterations = 0
+    abnormal: dict[str, int] = {}
     while True:
         run = optimize_chains(
             layout.inputs,
@@ -404,11 +411,13 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             start=previous,
         )
         iterations += run.iterations
+        for description, count in run.abnormal:
+            abnormal[description] = abnormal.get(description, 0) + count
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
             # Only the last run's: a first one was repeated.
             _warn_gave_up(run)
-            run = replace(run, iterations=iterations)
+            run = replace(run, iterations=iterations, abnormal=tuple(abnormal.items()))
             elapsed = monotonic() - started
             return _Optimized(whole, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
@@ -425,7 +434,7 @@ def _warn_gave_up(run: RunResult) -> None:
     for description, streak in run.gave_up:
         logger.warning(
             f"Gave up on {description} after {streak} abnormal optimizer bursts "
-            "in a row; it keeps its best shape"
+            "in a row; they keep their best shapes"
         )
 
 
@@ -465,9 +474,10 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
-    # The statistics see the moved vias where they end up.
-    final_inputs = _with_vias(
-        optimized.whole, optimized.via_inputs, via_reports, options
+    # The statistics see the moved vias where they end up, and the branches
+    # of a junction leave each other out there as at any touch.
+    final_inputs = pinned_at_junctions(
+        _with_vias(optimized.whole, optimized.via_inputs, via_reports, options)
     )
     reports = _chain_reports(
         read.chains,
@@ -549,6 +559,7 @@ def _check_and_commit(
             run.termination,
             run.iterations,
             optimized.elapsed,
+            run.abnormal,
             read.frame,
             found,
             committed,
@@ -749,14 +760,16 @@ def _simplify(
     ]
     results = [
         *run.chains,
-        *(ChainResult(r.centreline, r.fixed, 0, 0, (), r.before) for r in run.pairs),
+        *(ChainResult(r.centreline, r.fixed, 0, (), r.before) for r in run.pairs),
     ]
     simplified = simplify_chains(
-        _with_vias(
-            inputs,
-            _laid_out_vias(layout, optimized.via_inputs),
-            via_reports,
-            options,
+        pinned_at_junctions(
+            _with_vias(
+                inputs,
+                _laid_out_vias(layout, optimized.via_inputs),
+                via_reports,
+                options,
+            )
         ),
         replace(run, chains=tuple(results)),
         options.params,
@@ -793,9 +806,7 @@ def _with_vias(
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(
-        inputs, via_inputs, options.params, options.hole_clearance, HOLE_TO_HOLE
-    )
+    moving = MovingVias(inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE)
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
@@ -826,9 +837,7 @@ def _whole_results(
         if slot is not None:
             r = run.chains[slot]
             results.append(
-                _WholeResult(
-                    r.polyline, r.before, r.frozen, r.rejected_edges, r.abnormal_bursts
-                )
+                _WholeResult(r.polyline, r.before, r.frozen, r.rejected_edges)
             )
             continue
         pieces = [
@@ -844,7 +853,6 @@ def _whole_results(
                 measure(originals[k], field, DEFAULT_SETTINGS.spacing),
                 tuple(v for p in pieces for v in p.frozen),
                 sum(p.rejected_edges for p in pieces),
-                sum(p.abnormal_bursts for p in pieces),
             )
         )
     return results
@@ -879,7 +887,6 @@ def _pair_reports(
                 held=sum(r.block.held for r in ours),
                 frozen=tuple(v for r in ours for v in r.frozen),
                 rejected_edges=sum(r.rejected_edges for r in ours),
-                abnormal_bursts=sum(r.abnormal_bursts for r in ours),
             )
         )
     return tuple(pair_reports)
@@ -929,7 +936,6 @@ def _chain_reports(
                 after=measure(after, field, DEFAULT_SETTINGS.spacing),
                 frozen=result.frozen,
                 rejected_edges=result.rejected_edges,
-                abnormal_bursts=result.abnormal_bursts,
                 changed=changed,
             )
         )

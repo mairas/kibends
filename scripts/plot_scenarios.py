@@ -15,8 +15,7 @@ from kibends.plot import Panel, render
 from kibends.simplify import simplify
 
 SCENARIOS = [
-    scenarios.wrap(stiffness=0.1),
-    scenarios.wrap(stiffness=1.5),
+    scenarios.wrap(),
     scenarios.channel(repulsion=0.0),
     scenarios.channel(repulsion=1.0),
     scenarios.topology(),

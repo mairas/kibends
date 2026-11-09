@@ -10,9 +10,7 @@ from kibends.energy import (
     EnergyParams,
     TermValue,
     bend_radius_energy,
-    bending_energy,
     clearance_energy,
-    free_vertex_objective,
     length_energy,
     repulsion_energy,
     total_energy,
@@ -29,7 +27,6 @@ STANDOFF = 0.2
 DISC = Disc(0.0, 0.0, 1.0)
 BOX = Box(0.0, 0.0, 1.0, 0.6)
 PARAMS = EnergyParams(
-    stiffness=2.0,
     repulsion=0.7,
     falloff_range=FALLOFF_RANGE,
     clearance_weight=50.0,
@@ -125,55 +122,6 @@ class TestLength:
         assert_gradient_matches(length_energy, points)
 
 
-class TestBending:
-    def test_straight_polyline_is_zero(self) -> None:
-        points = np.stack([np.linspace(0, 5, 6), np.linspace(1, 3, 6)], axis=1)
-        value, gradient = bending_energy(points, free(6))
-        assert value == pytest.approx(0.0, abs=1e-12)
-        np.testing.assert_allclose(gradient, 0.0, atol=1e-12)
-
-    @pytest.mark.parametrize("vertices", [33, 65])
-    def test_circle_arc_approximates_integral_of_curvature_squared(
-        self, vertices: int
-    ) -> None:
-        radius, angle = 5.0, np.pi / 2
-        value, _ = bending_energy(arc(radius, angle, vertices), free(vertices))
-        # The two end vertices carry no turning, an O(1/n) shortfall.
-        assert value == pytest.approx(angle / radius, rel=0.05)
-
-    def test_resolution_independent(self) -> None:
-        radius, angle = 5.0, np.pi / 2
-        coarse, _ = bending_energy(arc(radius, angle, 33), free(33))
-        fine, _ = bending_energy(arc(radius, angle, 65), free(65))
-        assert fine == pytest.approx(coarse, rel=0.03)
-
-    @pytest.mark.parametrize("points", NEAR_DISC + NEAR_BOX)
-    def test_gradient(self, points: FloatArray) -> None:
-        assert_gradient_matches(bending_energy, points)
-
-    def test_gradient_beyond_smooth_turn_limit(self) -> None:
-        hairpin = np.array([[0.0, 0.0], [2.0, 0.0], [0.1, 0.05], [0.0, 1.0]])
-        assert_gradient_matches(bending_energy, hairpin)
-
-    def test_full_reversal_is_finite_and_costly(self) -> None:
-        reversal = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]])
-        right_angle = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
-        value, gradient = bending_energy(reversal, free(3))
-        assert np.isfinite(value)
-        assert np.all(np.isfinite(gradient))
-        assert value > bending_energy(right_angle, free(3))[0]
-
-    def test_turn_cost_grows_monotonically_up_to_reversal(self) -> None:
-        angles = np.linspace(0.1, np.pi, 50)
-        values = [
-            bending_energy(
-                np.array([[-1.0, 0.0], [0.0, 0.0], [np.cos(a), np.sin(a)]]), free(3)
-            )[0]
-            for a in angles
-        ]
-        assert np.all(np.diff(values) > 0)
-
-
 class TestRepulsion:
     @pytest.mark.parametrize("points", NEAR_DISC)
     def test_gradient_near_disc(self, points: FloatArray) -> None:
@@ -263,7 +211,6 @@ class TestTotal:
         fixed = free(len(points))
         terms = [
             (1.0, length_energy(points, fixed)),
-            (PARAMS.stiffness**2, bending_energy(points, fixed)),
             (
                 PARAMS.repulsion,
                 repulsion_energy(points, fixed, DISC, FALLOFF_RANGE, POINTS_PER_EDGE),
@@ -362,7 +309,6 @@ class TestBendRadius:
 
 ALL_TERMS: dict[str, Term] = {
     "length": length_energy,
-    "bending": bending_energy,
     "repulsion": repulsion(DISC),
     "clearance": clearance(DISC),
     "total": total(DISC),
@@ -386,29 +332,6 @@ def test_fixed_vertices_get_zero_gradient(name: str) -> None:
     _, gradient = ALL_TERMS[name](points, fixed)
     np.testing.assert_array_equal(gradient[fixed], 0.0)
     assert np.abs(gradient[~fixed]).max() > 0.0
-
-
-class TestFreeVertexObjective:
-    def test_matches_total_on_free_vertices(self) -> None:
-        points = NEAR_BOX[0]
-        fixed = free(len(points))
-        fixed[[0, -1]] = True
-        objective = free_vertex_objective(points, fixed, BOX, PARAMS)
-        value, flat_gradient = objective(points[~fixed].ravel())
-        expected_value, expected_gradient = total_energy(points, fixed, BOX, PARAMS)
-        assert value == pytest.approx(expected_value)
-        np.testing.assert_allclose(flat_gradient, expected_gradient[~fixed].ravel())
-
-    def test_moves_only_free_vertices(self) -> None:
-        points = NEAR_BOX[1]
-        fixed = free(len(points))
-        fixed[[0, -1]] = True
-        objective = free_vertex_objective(points, fixed, BOX, PARAMS)
-        moved = points.copy()
-        moved[~fixed] += 0.01
-        value, _ = objective(moved[~fixed].ravel())
-        assert value == pytest.approx(total_energy(moved, fixed, BOX, PARAMS)[0])
-        np.testing.assert_array_equal(points, NEAR_BOX[1])
 
 
 SHORT_EDGE = 0.1
@@ -448,12 +371,10 @@ class TestShortEdgeBarrier:
         assert values[-1] > 1e2
 
     def test_pulling_two_vertices_together_costs_energy(self) -> None:
-        # Without the barrier, bending pays the arc to pile its vertices up.
-        def energy(gap: float, short_edge: float) -> float:
-            return total_energy(pinched(gap), free(9), DISC, PARAMS, short_edge)[0]
+        def energy(gap: float) -> float:
+            return total_energy(pinched(gap), free(9), DISC, PARAMS, SHORT_EDGE)[0]
 
-        assert energy(1e-6, 0.0) < energy(0.03, 0.0)
-        assert energy(1e-6, SHORT_EDGE) > energy(0.03, SHORT_EDGE)
+        assert energy(1e-6) > energy(0.03)
 
     def test_leaves_an_edge_between_fixed_vertices_alone(self) -> None:
         points = pinched(1e-3)

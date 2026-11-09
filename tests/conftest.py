@@ -57,18 +57,18 @@ class Ticking:
 
 
 class BurstClock:
-    """A clock that reads how many chain bursts have run since it was made,
-    however often it is read."""
+    """A clock that reads how many bursts have run since it was made, however
+    often it is read: one per problem and outer iteration."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.bursts = 0
-        real = cast(Callable[..., object], optimize_module._burst)  # pyright: ignore[reportPrivateUsage]
+        real = cast(Callable[..., object], optimize_module.bounded_burst)
 
         def counted(*args: object, **kwargs: object) -> object:
             self.bursts += 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(optimize_module, "_burst", counted)
+        monkeypatch.setattr(optimize_module, "bounded_burst", counted)
 
     def __call__(self) -> float:
         return float(self.bursts)

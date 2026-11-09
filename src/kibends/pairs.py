@@ -584,6 +584,48 @@ def offset_pair(
     return centreline + shift, centreline - shift
 
 
+def offset_pair_pullback(
+    centreline: FloatArray,
+    gap: FloatArray,
+    width: float,
+    right: FloatArray,
+    left: FloatArray,
+) -> tuple[FloatArray, FloatArray]:
+    """The gradient of a function of `offset_pair`'s two tracks, `right` and
+    `left` at each of their vertices, taken back to the centreline's
+    vertices and to each vertex's gap."""
+    half_pitch = (gap + width) / 2
+    delta = np.diff(centreline, axis=0)
+    lengths = np.hypot(delta[:, 0], delta[:, 1])
+    along = delta / lengths[:, None]
+    normal = np.stack([-along[:, 1], along[:, 0]], axis=1)
+    before = np.concatenate([normal[:1], normal])
+    after = np.concatenate([normal, normal[-1:]])
+    total = before + after
+    scale = 1.0 + np.sum(before * after, axis=1)
+    apart = right - left
+    miter = total / scale[:, None]
+    at_miter = half_pitch[:, None] * apart
+    # The miter (b + a) / (1 + b·a) of the normals b before and a after a
+    # vertex, differentiated in each.
+    weight = np.sum(total * at_miter, axis=1) / scale**2
+    at_before = at_miter / scale[:, None] - after * weight[:, None]
+    at_after = at_miter / scale[:, None] - before * weight[:, None]
+    at_normal = np.zeros_like(normal)
+    at_normal[0] += at_before[0]
+    at_normal += at_before[1:]
+    at_normal += at_after[:-1]
+    at_normal[-1] += at_after[-1]
+    # normal = R·along with R a quarter turn; along = delta / |delta|.
+    turned = np.stack([at_normal[:, 1], -at_normal[:, 0]], axis=1)
+    across = np.sum(normal * at_normal, axis=1)[:, None]
+    at_delta = (turned - along * across) / lengths[:, None]
+    gradient = right + left
+    gradient[1:] += at_delta
+    gradient[:-1] -= at_delta
+    return gradient, np.sum(apart * miter, axis=1) / 2
+
+
 def _miters(polyline: FloatArray) -> FloatArray:
     """Per vertex, the shift that moves both adjacent segments one unit to
     the right of travel (y down): the bisector, scaled by 1/cos(turn/2)."""

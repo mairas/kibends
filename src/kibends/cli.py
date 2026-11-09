@@ -48,7 +48,6 @@ from kibends.run import (
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.snapshot import SelectionError
 
-DEFAULT_STIFFNESS = 0.3
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
 # Not user-facing: the clearance hinge only shapes the approach to the
@@ -154,11 +153,11 @@ def format_statistics(report: OptimizerReport) -> str:
         + sum(v.rejected_edges for v in report.vias)
         + sum(p.rejected_edges for p in report.pairs)
     )
-    # A run can converge while a chain gave up after abnormal bursts.
+    # A run can converge while a problem gave up after abnormal bursts.
     abnormal = [
         f"{n} abnormal burst{'' if n == 1 else 's'}"
         + (f" in {description}" if several else "")
-        for description, n in _abnormal(report)
+        for description, n in report.abnormal
     ]
     outcome = ", ".join(
         [
@@ -196,7 +195,7 @@ def report_warnings(report: OptimizerReport) -> list[str]:
     warnings += [
         f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of {description} "
         "abnormally; the run judged each like any other burst"
-        for description, n in _abnormal(report)
+        for description, n in report.abnormal
     ]
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
@@ -209,21 +208,6 @@ def report_warnings(report: OptimizerReport) -> list[str]:
             "using the best result found"
         )
     return warnings
-
-
-def _abnormal(report: OptimizerReport) -> list[tuple[str, int]]:
-    """What had abnormal bursts, and how many."""
-    return [
-        (description, n)
-        for description, n in (
-            *((c.description, c.abnormal_bursts) for c in report.chains),
-            *(
-                (f"the pair {' and '.join(p.nets)}", p.abnormal_bursts)
-                for p in report.pairs
-            ),
-        )
-        if n > 0
-    ]
 
 
 def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
@@ -360,16 +344,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Smooth the track chains selected in the PCB editor",
         description="Replace each selected chain of tracks with a short, smooth "
         "path of straight tracks that keeps clearance to other copper and to "
-        "the other selected chains. The result minimises length + bending "
-        "weighted by stiffness squared + repulsion from nearby copper.",
-    )
-    smooth_parser.add_argument(
-        "--stiffness",
-        type=_non_negative,
-        default=DEFAULT_STIFFNESS,
-        metavar="MM",
-        help="Weight of bending, as a length: larger values give wider, rounder "
-        f"bends (default: {DEFAULT_STIFFNESS:g})",
+        "the other selected chains. The result minimises length + "
+        "repulsion from nearby copper.",
     )
     smooth_parser.add_argument(
         "--repulsion",
@@ -417,16 +393,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_SETTINGS.settled_change,
         metavar="MM",
-        help="A chain settles when a burst moves its shape by less than this "
-        f"(default: {DEFAULT_SETTINGS.settled_change:g})",
+        help="A problem, the chains of one layer or of the layers moving vias "
+        "tie together, settles when its burst moves no chain and no via by "
+        f"this much (default: {DEFAULT_SETTINGS.settled_change:g})",
     )
     smooth_parser.add_argument(
         "--stall-tolerance",
         type=_positive,
         default=DEFAULT_SETTINGS.stall_tolerance,
         metavar="MM",
-        help="A chain also settles when its energy, in mm of track length, "
-        "improves by less than this over --stall-window iterations "
+        help="A problem also settles when its energy, in mm of track length, "
+        "improves by less than this over --stall-window of its bursts "
         f"(default: {DEFAULT_SETTINGS.stall_tolerance:g})",
     )
     smooth_parser.add_argument(
@@ -434,7 +411,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.stall_window,
         metavar="N",
-        help=f"Iterations the stall check looks back over "
+        help=f"Bursts of a problem the stall check looks back over "
         f"(default: {DEFAULT_SETTINGS.stall_window})",
     )
     smooth_parser.add_argument(
@@ -442,16 +419,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.max_iterations,
         metavar="N",
-        help="Outer iterations after which the optimizer stops with the best "
-        f"result found (default: {DEFAULT_SETTINGS.max_iterations})",
+        help="Outer iterations, each one burst of every problem not yet "
+        "settled, after which the optimizer stops with the best result found "
+        f"(default: {DEFAULT_SETTINGS.max_iterations})",
     )
     smooth_parser.add_argument(
         "--burst-iterations",
         type=_positive_int,
         default=DEFAULT_SETTINGS.burst_maxiter,
         metavar="N",
-        help="L-BFGS-B iterations per burst; fewer are faster but may leave "
-        f"a different result (default: {DEFAULT_SETTINGS.burst_maxiter})",
+        help="L-BFGS-B iterations per burst, which moves every chain and via "
+        "of a problem at once; fewer are faster but may leave a different "
+        f"result (default: {DEFAULT_SETTINGS.burst_maxiter})",
     )
     smooth_parser.add_argument(
         "--lbfgs-ftol",
@@ -468,6 +447,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="TOL",
         help="L-BFGS-B ends a burst early when the projected gradient falls "
         f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
+    )
+    smooth_parser.add_argument(
+        "--no-move-bounds",
+        action="store_true",
+        help="Let every vertex and via move without bounds in a burst. Tracks "
+        "and vias may then pass through each other, which the optimizer does "
+        "not always catch; the DRC check catches only clearance and broken "
+        "connections, so inspect the result",
     )
     smooth_parser.add_argument(
         "--time-limit",
@@ -514,7 +501,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def smooth_options(args: argparse.Namespace) -> SmoothOptions:
     return SmoothOptions(
         params=EnergyParams(
-            stiffness=args.stiffness,
             repulsion=args.repulsion,
             falloff_range=args.range,
             clearance_weight=CLEARANCE_WEIGHT,
@@ -538,6 +524,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
             burst_maxiter=args.burst_iterations,
             lbfgs_ftol=args.lbfgs_ftol,
             lbfgs_gtol=args.lbfgs_gtol,
+            move_bounds=not args.no_move_bounds,
             time_limit=args.time_limit,
         ),
     )

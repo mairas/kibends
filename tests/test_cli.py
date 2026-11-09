@@ -308,6 +308,34 @@ class TestSmooth:
             assert segment.distance(pad) >= required - NM_ROUNDING
         assert len(created) > 2
 
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_tee_moves_its_junction_and_commits_branches_that_meet_there(
+        self, connect: Connector
+    ) -> None:
+        tee = [
+            kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+            kipy_track("b", "SIG", (5, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 0), (5, 5), width=WIDTH),
+        ]
+        board = connect.to(CommitBoard(selection=list(tee), tracks=list(tee)))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c"]
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        (junction,) = [p for p, n in degree.items() if n == 3]
+        ends = {p for p, n in degree.items() if n == 1}
+        assert ends == {(nm(0), nm(0)), (nm(10), nm(0)), (nm(5), nm(5))}
+        assert set(degree.values()) <= {1, 2, 3}
+        # Pulled toward the branches' Fermat point, 5 tan 30 deg below the bar.
+        assert junction[0] == pytest.approx(nm(5), abs=nm(0.01))
+        assert nm(2.0) < junction[1] < nm(3.2)
+
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_locked_other_net_track_in_the_selection_stays_an_obstacle(
         self, connect: Connector
     ) -> None:
@@ -454,7 +482,6 @@ class TestSmooth:
 
         with pytest.raises(SystemExit):
             run(
-                "--stiffness=0.7",
                 "--repulsion=2",
                 "--range=0.4",
                 "--edge-clearance=0.5",
@@ -463,11 +490,7 @@ class TestSmooth:
             )
 
         params = cast(EnergyParams, seen["params"])
-        assert (params.stiffness, params.repulsion, params.falloff_range) == (
-            0.7,
-            2.0,
-            0.4,
-        )
+        assert (params.repulsion, params.falloff_range) == (2.0, 0.4)
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
         assert cast(OptimizerSettings, seen["settings"]).time_limit == 30.0
 
@@ -498,7 +521,7 @@ class TestSmooth:
 
     def test_negative_weight_is_rejected(self) -> None:
         with pytest.raises(SystemExit) as raised:
-            run("--stiffness=-1")
+            run("--repulsion=-1")
 
         assert raised.value.code == 2
 
@@ -634,7 +657,7 @@ class TestSmooth:
                     "--stall-tolerance=0.01",
                     "--stall-window=5",
                     "--max-iterations=50",
-                    "--burst-iterations=100",
+                    "--burst-iterations=50",
                     "--lbfgs-ftol=1e-9",
                     "--lbfgs-gtol=1e-6",
                     "--time-limit=60",
@@ -645,8 +668,13 @@ class TestSmooth:
         s = options.settings
         assert s.settled_change == 0.005
         assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
-        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 100, 60.0)
+        assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 50, 60.0)
         assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-9, 1e-6)
+
+    def test_no_move_bounds_reaches_the_settings(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", "--no-move-bounds"]))
+
+        assert options.settings == replace(DEFAULT_SETTINGS, move_bounds=False)
 
     def test_stop_rules_default_to_the_optimizers(self) -> None:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
@@ -926,8 +954,7 @@ class TestErrors:
         self, connect: Connector, log: list[str], with_via: bool
     ) -> None:
         tracks = [
-            kipy_track("a", "SIG", (0, 0), (5, 0)),
-            kipy_track("b", "SIG", (5, 0), (9, 0)),
+            kipy_track("a", "SIG", (0, 0), (9, 0)),
             kipy_track("c", "SIG", (5, 0), (5, 3)),
         ]
         vias = [kipy_via("v", "SIG", 9, 0)] if with_via else []
@@ -941,7 +968,9 @@ class TestErrors:
 
         message = exit_message(log)
 
-        assert "selected tracks branch at (4.000, -2.000) mm" in message
+        assert "selected tracks branch at (4.000, -2.000) mm: c ends in the middle" in (
+            message
+        )
         assert "ChainError" not in message
 
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -1046,7 +1075,7 @@ class TestFailureAfterOptimizing:
     ) -> None:
         board = connect.to(l_board())
         kicad_cli.write_text(f"#!{sys.executable}\n{FAILING_DRC}")
-        with_abnormal_bursts(monkeypatch, [2])
+        with_abnormal_bursts(monkeypatch, [(FRONT, 2)])
 
         error = exit_message(log)
 
@@ -1062,7 +1091,7 @@ class TestFailureAfterOptimizing:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         connect.to(l_board(push_error=KiCadConnectionError("timed out")))
-        with_abnormal_bursts(monkeypatch, [2])
+        with_abnormal_bursts(monkeypatch, [(FRONT, 2)])
 
         error = exit_message(log, "--no-drc")
 
@@ -1233,15 +1262,33 @@ class TestSeveralChains:
         assert "1 new violation on SIG2; nothing committed" in message
         assert board.calls == []
 
+    # Resampling vertices held deeper than δ inside each other's clearance
+    # let them creep out and kept the run going: 200 iterations, the cap.
+    # Measured: 12.
+    SETTLED_PRESSED = 20
+
     def test_frozen_warning_names_the_other_chain(
-        self, connect: Connector, log: list[str]
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
         connect.to(off_grid(two_l_board(inner=across)))
+        results: list[RunResult] = []
+        optimize = at(COARSE)
+
+        def kept(*args: object, **kwargs: object) -> RunResult:
+            results.append(optimize(*args, **kwargs))
+            return results[-1]
+
+        monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
         run("--dry-run", "--no-drc")
 
+        # The chains pressed into each other's clearance settle: what lies
+        # deeper than δ inside stays put, resampled or not.
+        (result,) = results
+        assert result.termination is Termination.CONVERGED
+        assert result.iterations <= self.SETTLED_PRESSED
         # (4, 0) and (4.3, -1) relative to the grid origin.
         frozen = [line for line in log if "Left the vertex at (3.000, -2.000)" in line]
         assert len(frozen) == 1
@@ -1272,7 +1319,8 @@ class TestSeveralChains:
             assert c.changed
             assert c.after.length < c.before.length
             assert c.after.min_clearance >= -NM_ROUNDING
-            assert (c.frozen, c.abnormal_bursts) == ((), 0)
+            assert c.frozen == ()
+        assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
         assert (report.drc, report.committed, report.refusal) == (None, False, None)
@@ -1334,20 +1382,19 @@ class TestSeveralChains:
 
 
 def with_abnormal_bursts(
-    monkeypatch: pytest.MonkeyPatch, counts: Sequence[int]
+    monkeypatch: pytest.MonkeyPatch, abnormal: Sequence[tuple[str, int]]
 ) -> None:
-    """Make the optimizer report `counts` abnormal bursts per chain."""
+    """Make the optimizer report `abnormal` bursts per problem."""
     real: Callable[..., RunResult] = pipeline.optimize_chains
 
-    def abnormal(*args: object, **kwargs: object) -> RunResult:
-        result = real(*args, **kwargs)
-        chains = tuple(
-            replace(c, abnormal_bursts=n)
-            for c, n in zip(result.chains, counts, strict=True)
-        )
-        return replace(result, chains=chains)
+    def with_them(*args: object, **kwargs: object) -> RunResult:
+        return replace(real(*args, **kwargs), abnormal=tuple(abnormal))
 
-    monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+    monkeypatch.setattr(pipeline, "optimize_chains", with_them)
+
+
+FRONT = "the chains on F.Cu"
+"""How the optimizer names the problem of F.Cu's chains."""
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
@@ -1359,7 +1406,7 @@ class TestAbnormalBursts:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         connect.to(l_board())
-        with_abnormal_bursts(monkeypatch, [3])
+        with_abnormal_bursts(monkeypatch, [(FRONT, 3)])
 
         run("--dry-run", "--no-drc")
 
@@ -1370,7 +1417,7 @@ class TestAbnormalBursts:
             re.MULTILINE,
         )
 
-    def test_several_chains_name_the_chain_on_the_optimizer_line(
+    def test_several_chains_name_the_problem_on_the_optimizer_line(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
@@ -1378,20 +1425,17 @@ class TestAbnormalBursts:
         log: list[str],
     ) -> None:
         connect.to(two_l_board())
-        with_abnormal_bursts(monkeypatch, [0, 1])
+        with_abnormal_bursts(monkeypatch, [(FRONT, 1)])
 
         run("--dry-run", "--no-drc")
 
         (line,) = [
             ln for ln in capsys.readouterr().out.splitlines() if "Optimizer:" in ln
         ]
-        assert line.endswith(
-            "rejected edge moves, 1 abnormal burst in SIG2 on F.Cu from (0.000, 0.600)"
-        )
-        assert "SIG on" not in line
+        assert line.endswith(f"rejected edge moves, 1 abnormal burst in {FRONT}")
         (warning,) = [ln for ln in log if "abnormally" in ln]
         assert warning.startswith("WARNING")
-        assert "1 burst of SIG2 on F.Cu from (0.000, 0.600)" in warning
+        assert f"1 burst of {FRONT}" in warning
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
@@ -1856,8 +1900,12 @@ class TestMovingVias:
     def test_same_net_pad_on_its_path_stops_the_via_unless_allowed(
         self, connect: Connector, in_pad: bool
     ) -> None:
+        # The pad sits where the via ends up without it.
+        free = connect.to(moving_via_board())
+        run("--no-drc")
+        (landed,) = created_vias(free)
+        x, y = landed.position.x / 1e6, landed.position.y / 1e6
         board = moving_via_board()
-        x, y = 4.88, 0.0
         board.pads = [kipy_pad("p", "SIG", x, y, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
@@ -2087,11 +2135,11 @@ class TestMovingVias:
 def test_statistics_count_the_vias_rejected_edge_moves() -> None:
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
-        "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, 0, True
+        "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, True
     )
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
     report = pipeline.OptimizerReport(
-        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, BOARD_FRAME
+        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, (), BOARD_FRAME
     )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
@@ -2101,10 +2149,11 @@ def test_statistics_count_the_vias_rejected_edge_moves() -> None:
     )
 
 
-def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() -> None:
+def test_statistics_count_rejected_moves_abnormal_bursts_and_frozen_vertices() -> None:
+    problem = "the chains and vias on F.Cu and B.Cu"
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
-        "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, (), 1, 0, True
+        "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, (), 1, True
     )
     frozen = FrozenVertex((1.0, 2.0), -0.05)
     pair = pipeline.PairReport(
@@ -2118,10 +2167,16 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
         held=0,
         frozen=(frozen,),
         rejected_edges=3,
-        abnormal_bursts=2,
     )
     report = pipeline.OptimizerReport(
-        (chain,), (), (pair,), Termination.CONVERGED, 7, 0.04, UserFrame((0.5, 3.0))
+        (chain,),
+        (),
+        (pair,),
+        Termination.CONVERGED,
+        7,
+        0.04,
+        ((problem, 2),),
+        UserFrame((0.5, 3.0)),
     )
 
     outcome = cli.format_statistics(report).splitlines()[-1]
@@ -2133,7 +2188,7 @@ def test_statistics_count_a_pairs_rejected_moves_abnormal_and_frozen_vertices() 
     )
     # The frozen vertex at (1, 2) relative to the frame's origin.
     assert any("(0.500, -1.000)" in w and "0.050 mm inside" in w for w in warnings)
-    assert any("2 bursts of the pair USB_D+ and USB_D-" in w for w in warnings)
+    assert any(f"2 bursts of {problem}" in w for w in warnings)
 
 
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
@@ -2161,9 +2216,6 @@ PRINTED = 1e-3
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
-FAN_OUT_STRAIGHT_TOLERANCE = 0.025
-"""mm: above the up to 0.014 mm by which the optimizer bows `pair_board`'s
-straight fan-outs where they meet the coupled section."""
 OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
@@ -2511,12 +2563,23 @@ class TestPairs:
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         board = connect.to(pair_board())
 
-        run(f"--chord-tolerance={FAN_OUT_STRAIGHT_TOLERANCE}")
+        run()
 
         assert held == [[None], [hold]]
-        # Its fan-outs merge back into straight tracks, so the pair stays as
-        # it was.
-        assert board.calls == []
+        # Whether a net's chain is committed depends on how far repulsion
+        # bends its fan-out (some 25 µm, varying with the BLAS) against the
+        # chord tolerance; either way the held section, all pins, stays
+        # exactly as routed.
+        created = {
+            (t.start.x, t.start.y, t.end.x, t.end.y)
+            for t in cast(list[kbt.Track], board.created)
+        }
+        for t in pair_tracks():
+            if not t.id.value.endswith("1"):
+                assert (
+                    t.id.value not in board.deleted
+                    or (t.start.x, t.start.y, t.end.x, t.end.y) in created
+                )
         (warning,) = [w for w in log if "too tight" in w]
         assert warning.startswith("WARNING")
         assert hold.value in warning and "again" in warning
@@ -2638,7 +2701,13 @@ def pair_tracks_at(
 
 
 @pytest.mark.parametrize(
-    "settings", [DEFAULT_SETTINGS, COARSE], ids=["default", "coarse"]
+    "settings",
+    [
+        # Slow: about 2 s at the default spacing, which neither shorter
+        # bursts nor a spacing up to 0.2 mm bring under 1 s.
+        pytest.param(DEFAULT_SETTINGS, id="default", marks=pytest.mark.slow),
+        pytest.param(COARSE, id="coarse"),
+    ],
 )
 def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, settings: OptimizerSettings
@@ -2667,9 +2736,8 @@ def test_a_clearance_equal_to_the_gap_costs_a_pair_no_tracks(
     below, _ = pair_tracks_at(connect, monkeypatch, PAIR_CLEARANCE)
     equal, _ = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
 
-    assert [len(lines) for lines in equal.values()] == [
-        len(lines) for lines in below.values()
-    ]
+    for at_gap, below_gap in zip(equal.values(), below.values(), strict=True):
+        assert len(at_gap) <= len(below_gap)
 
 
 @dataclass
@@ -3086,9 +3154,12 @@ PAIRED_BOARDS: dict[str, Callable[[], CommitBoard]] = {
     [
         *(pytest.param(name, COARSE, id=f"{name}-coarse") for name in PAIRED_BOARDS),
         # The bus at the default spacing takes about 9 s; the coarse bus
-        # and the other layouts at the default spacing cover it.
+        # and the other layouts at the default spacing cover it. Those take
+        # 1 to 2 s each, slow too.
         *(
-            pytest.param(name, DEFAULT_SETTINGS, id=f"{name}-default")
+            pytest.param(
+                name, DEFAULT_SETTINGS, id=f"{name}-default", marks=pytest.mark.slow
+            )
             for name in PAIRED_BOARDS
             if name != "bus"
         ),
@@ -3136,6 +3207,14 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
             assert len(on_track) == len(track) - 1
 
 
+FOLD_KEEPERS = (
+    kipy_track("g1", "GND", (3.5, 0.8), (4.5, 0.8)),
+    kipy_track("g2", "GND", (8.5, 2.2), (9.5, 2.2)),
+)
+"""GND tracks between the pair's route and its straight shortcut, which keep
+it bent: along a straight centreline no order of its vertices crosses."""
+
+
 @pytest.mark.usefixtures("coarse_optimizer")
 def test_a_pair_whose_tracks_cross_is_not_committed(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
@@ -3169,7 +3248,7 @@ def test_a_pair_whose_tracks_cross_is_not_committed(
         return result
 
     monkeypatch.setattr(pipeline, "simplify_chains", folded)
-    board = connect.to(pair_board())
+    board = connect.to(pair_board(extra=FOLD_KEEPERS))
 
     message = exit_message(log, "--no-drc")
 
@@ -3206,8 +3285,9 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Simplification and the gap check on a pair whose legs face each other,
-    # end to end; test_optimize_pairs covers the optimizer.
-    monkeypatch.setattr(pipeline, "optimize_chains", at(scenarios.TURNING_BACK))
+    # end to end, at coarse settings; test_optimize_pairs covers the
+    # optimizer on the same scenario.
+    monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
     board = connect.to(v_board(150.0))
 
     run("--no-drc", f"--repulsion={V_REPULSION}")
