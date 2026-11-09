@@ -767,7 +767,7 @@ def _copper_items(
         )
         for g in snapshot.graphics
     ]
-    candidates += [("track keepout", k, keeper.radius) for k in snapshot.keepouts]
+    candidates += [("track keepout", k, keeper.radius) for k in snapshot.track_keepouts]
     return [Obstacle(d, g, i) for d, g, i in candidates if i is not None]
 
 

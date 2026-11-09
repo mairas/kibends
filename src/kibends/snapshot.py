@@ -203,7 +203,7 @@ class LayerSnapshot:
     tracks: tuple[Track, ...]
     vias: tuple[Via, ...]
     graphics: tuple[Graphic, ...]
-    keepouts: tuple[BaseGeometry, ...]
+    track_keepouts: tuple[BaseGeometry, ...]
     """Rule areas on the layer that keep out tracks."""
     via_keepouts: tuple[BaseGeometry, ...]
     """Rule areas on the layer that keep out vias."""
@@ -254,7 +254,7 @@ class BoardSnapshot:
     tracks: Mapping[str, tuple[Track, ...]]
     vias: tuple[Via, ...]
     graphics: Mapping[str, tuple[Graphic, ...]]
-    keepouts: Mapping[str, tuple[BaseGeometry, ...]]
+    track_keepouts: Mapping[str, tuple[BaseGeometry, ...]]
     via_keepouts: Mapping[str, tuple[BaseGeometry, ...]]
     edge_paths: tuple[tuple[Point2, ...], ...]
     clearances: Mapping[str, float]
@@ -338,7 +338,7 @@ class BoardSnapshot:
             },
             vias=vias,
             graphics=graphics,
-            keepouts={
+            track_keepouts={
                 layer: _read_keepouts(zones, layer, lambda r: r.keepout_tracks)
                 for layer in wanted
             },
@@ -377,7 +377,7 @@ class BoardSnapshot:
             tracks=tuple(t for t in self.tracks[layer] if t.id not in replaced_ids),
             vias=tuple(v for v in self.vias if v.reaches(layer)),
             graphics=self.graphics[layer],
-            keepouts=self.keepouts[layer],
+            track_keepouts=self.track_keepouts[layer],
             via_keepouts=self.via_keepouts[layer],
             edge_paths=self.edge_paths,
             clearances=self.clearances,
@@ -387,7 +387,7 @@ class BoardSnapshot:
         logger.debug(
             f"Snapshot of {layer}: {len(snap.pads)} pads, {len(snap.tracks)} tracks, "
             f"{len(snap.vias)} vias, {len(snap.graphics)} copper graphics, "
-            f"{len(snap.keepouts)} track keepouts, "
+            f"{len(snap.track_keepouts)} track keepouts, "
             f"{len(snap.via_keepouts)} via keepouts"
         )
         return snap

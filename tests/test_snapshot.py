@@ -527,7 +527,7 @@ class TestKeepoutsAndEdge:
             kipy_zone(kipy_rect(0, 0, 5, 5), [BL.BL_F_Cu], rule_area=False),
         ]
 
-        (keepout,) = snapshot(FakeBoard(zones=zones)).keepouts
+        (keepout,) = snapshot(FakeBoard(zones=zones)).track_keepouts
 
         assert keepout.area == pytest.approx(4)
 
@@ -731,7 +731,7 @@ class TestBoardSnapshot:
             "In1.Cu", frozenset()
         )
 
-        assert (inner.tracks, inner.graphics, inner.keepouts) == ((), (), ())
+        assert (inner.tracks, inner.graphics, inner.track_keepouts) == ((), (), ())
         assert [(p.id, p.shape) for p in inner.pads] == [("p", None)]
         assert inner.clearance("SIG") == pytest.approx(0.2)
 
