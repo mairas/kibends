@@ -360,6 +360,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "does not check via-in-pad; without this option a moving via never "
         "overlaps a pad",
     )
+    smooth_parser.add_argument(
+        "--fixed-vias",
+        action="store_true",
+        help="Keep every selected stitching via, one that no selected track "
+        "ends at, where it is, as if it were not selected; vias that carry "
+        "selected tracks still move. Saves the time moving vias cost",
+    )
     return parser.parse_args(argv)
 
 
@@ -378,6 +385,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         dry_run=args.dry_run,
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
+        fixed_vias=args.fixed_vias,
         settings=replace(
             DEFAULT_SETTINGS,
             settled_change=args.settled_change,

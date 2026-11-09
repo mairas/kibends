@@ -1612,6 +1612,25 @@ def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
     )
 
 
+PUSHED_STITCHING = (2.0, 3.0)
+
+
+def pushed_stitching_board() -> CommitBoard:
+    """A selected straight SIG track along y = 0, far from the selected GND
+    stitching via `s` at `PUSHED_STITCHING` in a GND plane, and an
+    unselected PWR track within range above the via that pushes it down."""
+    straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
+    pwr = kipy_track("p", "PWR", (0, 3.8), (4, 3.8), width=WIDTH)
+    stitching = kipy_via("s", "GND", *PUSHED_STITCHING)
+    plane = kipy_rect(-2, -3, 10, 10)
+    return CommitBoard(
+        selection=[*straight, stitching],
+        tracks=[*straight, pwr],
+        vias=[stitching],
+        zones=[kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])],
+    )
+
+
 def created_vias(board: CommitBoard) -> list[kbt.Via]:
     return [i for i in board.created if isinstance(i, kbt.Via)]
 
@@ -1664,23 +1683,7 @@ class TestMovingVias:
     def test_a_stitching_via_moves_though_no_chain_changes(
         self, connect: Connector, log: list[str]
     ) -> None:
-        # The straight chain is far from it; an unselected PWR track within
-        # range above it pushes it down.
-        start = (2.0, 3.0)
-        straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
-        pwr = kipy_track("p", "PWR", (0, 3.8), (4, 3.8), width=WIDTH)
-        stitching = kipy_via("s", "GND", *start)
-        plane = kipy_rect(-2, -3, 10, 10)
-        board = connect.to(
-            CommitBoard(
-                selection=[*straight, stitching],
-                tracks=[*straight, pwr],
-                vias=[stitching],
-                zones=[
-                    kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
-                ],
-            )
-        )
+        board = connect.to(pushed_stitching_board())
 
         run()
 
@@ -1690,13 +1693,67 @@ class TestMovingVias:
         assert board.deleted == ["s"]
         (via,) = board.created
         assert isinstance(via, kbt.Via)
-        assert via.position.y / 1e6 < start[1] - 0.05
+        assert via.position.y / 1e6 < PUSHED_STITCHING[1] - 0.05
+
+    def test_a_dry_run_moving_only_a_stitching_via_commits_nothing(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(pushed_stitching_board())
+
+        run("--dry-run")
+
+        assert board.calls == []
+        assert "Dry run: nothing committed" in "".join(log)
+        assert "Nothing to do" not in "".join(log)
+
+    def test_with_fixed_vias_a_stitching_via_stays(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(pushed_stitching_board())
+
+        run("--fixed-vias")
+
+        assert board.calls == []
+        (line,) = [line for line in log if "stays fixed" in line]
+        assert line.startswith("DEBUG Via s ")
+        assert line.rstrip().endswith(
+            "stays fixed: no selected track ends at it and --fixed-vias is given"
+        )
+
+    @pytest.mark.parametrize("fixed", [False, True])
+    def test_with_fixed_vias_a_routing_via_still_moves(
+        self, connect: Connector, log: list[str], fixed: bool
+    ) -> None:
+        # Beside the route, an unselected PWR track within range above the
+        # stitching via pushes it down.
+        board = moving_via_board()
+        stitching = kipy_via("s", "GND", 12.0, 3.0)
+        board.vias.append(stitching)
+        board.selection.append(stitching)
+        board.tracks.append(kipy_track("p", "PWR", (10, 3.8), (14, 3.8), width=WIDTH))
+        plane = kipy_rect(-2, -3, 16, 10)
+        board.zones = [
+            kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+        ]
+        connect.to(board)
+
+        run(*(["--fixed-vias"] if fixed else []))
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        moved = {"a", "b", "e", "f", "v", *([] if fixed else ["s"])}
+        assert sorted(board.deleted) == sorted(moved)
+        created = {v.net.name: v for v in created_vias(board)}
+        assert sorted(created) == (["SIG"] if fixed else ["GND", "SIG"])
+        assert created["SIG"].position.y < nm(1)
+        assert ("stays fixed" in "".join(log)) == fixed
 
     @pytest.mark.parametrize("unfilled", ["pwr pour", "pour keepout"])
     def test_a_via_in_a_zone_of_its_net_moves_within_its_region_and_commits(
         self, connect: Connector, log: list[str], unfilled: str
     ) -> None:
         # Without the zone, the via ends below y = 1, in the part of the
+        # It is no candidate, so the run reads only the selection's layers.
+        assert board.reads["get_enabled_layers"] == 0
         # outline that the higher-priority PWR zone or the keepout leaves
         # unfilled.
         board = moving_via_board()

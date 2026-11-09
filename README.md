@@ -125,7 +125,8 @@ via that starts inside its clearance or inside such a rule area stays where
 it is. Vias of one net keep only the hole-to-hole distance from each other
 and repel each other within `--range` of it, so a dense grid of selected
 stitching vias spreads, and each moving via adds to the run's time: leave
-stitching vias out of the selection, or lock them, where they should stay.
+stitching vias out of the selection, lock them, or pass `--fixed-vias`
+where they should stay.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on
@@ -245,6 +246,7 @@ into coupling.
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--no-move-bounds` | | Experimental: let every vertex and via move as far as it likes in each burst, instead of a box no larger than the free space around it. Without these bounds a track or via may pass through another one within a burst, which the optimizer's check of each new edge does not always catch, so the result can route a track on the other side of a pad, via or other track than before. KiCad's DRC catches only a result inside another item's clearance or with a broken connection; a track that lands cleanly on the other side of a pad passes it, so inspect the result. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
+| `--fixed-vias` | | Keep every selected stitching via (one no selected track ends at) where it is, as if it were not selected, and spend no time moving it. Vias that carry selected tracks still move. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 

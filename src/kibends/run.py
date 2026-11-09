@@ -75,7 +75,9 @@ from kibends.simplify import simplify_chains
 from kibends.snapshot import (
     BoardSnapshot,
     LayerSnapshot,
+    Disc,
     read_selection,
+    Via,
     read_user_frame,
 )
 from kibends.via_moves import MovingVias
@@ -115,6 +117,9 @@ class SmoothOptions:
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
+    fixed_vias: bool = False
+    """Keep every selected stitching via, one that carries no chain end,
+    where it is, as an unselected via."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
     """Its time limit covers the whole optimize stage, re-runs included."""
 
@@ -295,7 +300,12 @@ def run_smooth(
         _require_plot()
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
-    read = _read(board, options.chord_tolerance, read_user_frame(board))
+    read = _read(
+        board,
+        options.chord_tolerance,
+        read_user_frame(board),
+        fixed_vias=options.fixed_vias,
+    )
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
@@ -316,16 +326,22 @@ def run_smooth(
     return _commit(board, read, optimized, outcome, options)
 
 
-def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> _Read:
+def _read(
+    board: kipy.board.Board,
+    chord_tolerance: float,
+    frame: UserFrame,
+    *,
+    fixed_vias: bool,
+) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
-    judge which selected vias move, giving positions in `frame`."""
+    judge which selected vias move, no stitching via with `fixed_vias`,
+    giving positions in `frame`."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}
     may = [v for v in selection.vias if may_move(v)]
-    candidates = {v.id for v in may}
     kept, locked = split_locked(selected)
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
@@ -338,6 +354,10 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
         else {}
     )
     # A moving via meets the copper of every layer it spans, so a selection
+    judged = list(selection.vias)
+    if fixed_vias:
+        judged, may = _carrying(judged, may, carried, frame)
+    candidates = {v.id for v in may}
     # holding one reads them all.
     whole = BoardSnapshot.read(
         board,
@@ -351,7 +371,7 @@ def _read(board: kipy.board.Board, chord_tolerance: float, frame: UserFrame) -> 
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates, frame)
     movable = movable_vias(
-        selection.vias,
+        judged,
         whole.via_contacts,
         chains,
         frame=frame,
@@ -589,6 +609,28 @@ def _optimizing(chains: int, pairs: int, vias: int) -> str:
     if not vias:
         return message
     return f"{message} and {vias} moving via{'' if vias == 1 else 's'}"
+
+
+def _carrying(
+    vias: Sequence[Via],
+    may: Sequence[Via],
+    carried: Mapping[str, Sequence[Disc]],
+    frame: UserFrame,
+) -> tuple[list[Via], list[Via]]:
+    """`vias` and `may` without the vias of `may` that carry no chain end,
+    which stay fixed, each with a debug line; so a selection whose only
+    candidates are those reads no more layers than one without them."""
+    stitching = {v.id for v in may if not carried[v.id]}
+    for v in may:
+        if v.id in stitching:
+            logger.debug(
+                f"Via {v.id} at {frame.point(v.position)} stays fixed: "
+                "no selected track ends at it and --fixed-vias is given"
+            )
+    return (
+        [v for v in vias if v.id not in stitching],
+        [v for v in may if v.id not in stitching],
+    )
 
 
 def _off_pairs(
