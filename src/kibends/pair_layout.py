@@ -6,8 +6,7 @@ where they run coupled (`pairs.find_pair`). The optimizer sees a pair as its
 coupled sections, each a block of its own (`pair_blocks`), and its uncoupled
 pieces, each an ordinary chain; the other selected chains stay as they are.
 After the run, the pieces and the sections' tracks join back into one
-polyline per selected chain, which the DRC check and the commit take like
-any other chain.
+polyline per selected chain, which the commit takes like any other chain.
 """
 
 from collections.abc import Callable, Collection, Sequence

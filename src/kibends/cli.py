@@ -19,7 +19,6 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends import drc
 from kibends.bursts import DEFAULT_SETTINGS
 from kibends.chain import ChainError
 from kibends.commit import (
@@ -38,7 +37,6 @@ from kibends.run import (
     OptimizerReport,
     PlotUnavailableError,
     SmoothOptions,
-    new_violations,
     run_smooth,
 )
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
@@ -62,7 +60,7 @@ LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
 class RunRefusedError(RuntimeError):
-    """The optimizer or the DRC check refused the result; nothing committed."""
+    """The run refused the result; nothing committed."""
 
 
 # Failures that need no traceback; all but CommitUncertainError leave the
@@ -77,10 +75,6 @@ EXPECTED_ERRORS = (
     NoBoardError,
     PlotUnavailableError,
     RunRefusedError,
-    drc.KiCadCliNotFound,
-    drc.ProjectFilesError,
-    drc.BoardTextError,
-    drc.DrcError,
 )
 
 
@@ -114,8 +108,8 @@ def _exit_on_failure() -> Generator[None]:
 
 
 def smooth(options: SmoothOptions) -> None:
-    """Smooth the chains selected in KiCad, print the optimizer's outcome and
-    the DRC verdict and, unless dry-running, commit them."""
+    """Smooth the chains selected in KiCad, print the optimizer's outcome
+    and, unless dry-running, commit them."""
 
     def show(optimized: OptimizerReport) -> None:
         print(format_outcome(optimized))
@@ -135,10 +129,6 @@ def smooth(options: SmoothOptions) -> None:
             )
 
     report = run_smooth(options, show)
-    if report.drc is not None:
-        print(_verdict(report.drc, report.frame))
-    if report.drc and options.dry_run:
-        logger.warning("A real run would refuse to commit this result")
     if report.refusal is not None:
         raise RunRefusedError(report.refusal)
     if not any(c.changed for c in report.chains):
@@ -191,22 +181,6 @@ def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
             "a re-run may free it"
         )
     return message
-
-
-def _verdict(found: drc.Introduced, frame: UserFrame) -> str:
-    if not found:
-        return "DRC: no new violations"
-    return "\n".join(
-        [
-            f"DRC: {new_violations(len(found.violations))}",
-            *(f"  {v.describe(frame)}" for v in found.violations),
-            *(
-                f"  More connectivity violations on {net}: the new path may "
-                f"split a pour of {net}"
-                for net in sorted(found.split_nets)
-            ),
-        ]
-    )
 
 
 def _finite(text: str) -> float:
@@ -356,8 +330,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Let every vertex and via move without bounds in a burst. Tracks "
         "and vias may then pass through each other, which the optimizer does "
-        "not always catch; the DRC check catches only clearance and broken "
-        "connections, so inspect the result",
+        "not always catch, so inspect the result and run KiCad's DRC",
     )
     smooth_parser.add_argument(
         "--time-limit",
@@ -370,7 +343,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         "-n",
         action="store_true",
-        help="Optimize and run the DRC check without changing the board",
+        help="Optimize without changing the board",
     )
     smooth_parser.add_argument(
         "--plot",
@@ -386,17 +359,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Let a moving via settle inside a pad of its own net. KiCad's DRC "
         "does not check via-in-pad; without this option a moving via never "
         "overlaps a pad",
-    )
-    smooth_parser.add_argument(
-        "--no-drc",
-        action="store_true",
-        help="Commit without the kicad-cli DRC check against the board's rules",
-    )
-    smooth_parser.add_argument(
-        "--kicad-cli",
-        metavar="PATH",
-        help="kicad-cli to run the DRC check with (default: the one the running "
-        "KiCad reports, then PATH, then the usual install locations)",
     )
     return parser.parse_args(argv)
 
@@ -415,8 +377,6 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         chord_tolerance=args.chord_tolerance,
         dry_run=args.dry_run,
         plot=args.plot,
-        drc=not args.no_drc,
-        kicad_cli=args.kicad_cli,
         allow_via_in_pad=args.allow_via_in_pad,
         settings=replace(
             DEFAULT_SETTINGS,

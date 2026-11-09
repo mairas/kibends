@@ -1,11 +1,7 @@
 import contextlib
 import itertools
-import json
 import math
 import re
-import shutil
-import stat
-import subprocess
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -20,7 +16,6 @@ import pytest
 import scenarios
 import shapely
 from conftest import (
-    KICAD_CLI,
     PAD_HALF_SIZE,
     BurstClock,
     CommitBoard,
@@ -48,7 +43,7 @@ from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, box
 from shapely.ops import linemerge, unary_union
 
-from kibends import cli, drc, plot
+from kibends import cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
@@ -69,7 +64,7 @@ from kibends.optimize import (
 )
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import BendCheck, gap_range, offset_pair
-from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot
+from kibends.snapshot import KICAD_MAX_ERROR, LayerSnapshot, ViaZone
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -151,81 +146,6 @@ def coarse_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
 
 
-# Answers DRC runs with the reports in reports.json next to it, keyed by the
-# board's stem ("baseline" or "candidate"); no file means no violations.
-# Keeps a copy of each board it checks next to it.
-FAKE_KICAD_CLI = """
-import json, pathlib, sys
-here = pathlib.Path(sys.argv[0])
-args = sys.argv[1:]
-if args == ["version"]:
-    print("10.0.8")
-    sys.exit(0)
-with here.with_suffix(".log").open("a") as f:
-    f.write(json.dumps(args) + "\\n")
-pcb = pathlib.Path(args[-1])
-(here.parent / pcb.name).write_text(pcb.read_text())
-reports = here.parent / "reports.json"
-report = json.loads(reports.read_text()).get(pcb.stem, {}) if reports.exists() else {}
-pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps(report))
-"""
-
-
-def write_kicad_cli(directory: Path) -> Path:
-    directory.mkdir(exist_ok=True)
-    path = directory / "kicad-cli"
-    path.write_text(f"#!{sys.executable}\n{FAKE_KICAD_CLI}")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return path
-
-
-@pytest.fixture(autouse=True)
-def kicad_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = write_kicad_cli(tmp_path / "bin")
-
-    def which(name: str) -> str:
-        return str(path)
-
-    monkeypatch.setattr(drc.shutil, "which", which)
-    monkeypatch.setattr(drc, "KNOWN_KICAD_CLI_PATHS", ())
-    return path
-
-
-def drc_runs(kicad_cli: Path) -> int:
-    log = kicad_cli.with_suffix(".log")
-    return len(log.read_text().splitlines()) if log.exists() else 0
-
-
-SEGMENT_ENDS = re.compile(r"\(start (\S+) (\S+)\)\s*\(end (\S+) (\S+)\)")
-
-
-def checked_segments(kicad_cli: Path, stem: str) -> list[tuple[int, int, int, int]]:
-    """Segment endpoints (nm) in the board the fake kicad-cli checked last."""
-    text = (kicad_cli.parent / f"{stem}.kicad_pcb").read_text()
-    return [
-        (nm(float(a)), nm(float(b)), nm(float(c)), nm(float(d)))
-        for a, b, c, d in SEGMENT_ENDS.findall(text)
-    ]
-
-
-def report_on(kicad_cli: Path, **reports: list[drc.ReportViolation]) -> None:
-    """Make the fake kicad-cli report `reports[stem]` as violations."""
-    (kicad_cli.parent / "reports.json").write_text(
-        json.dumps({stem: {"violations": vs} for stem, vs in reports.items()})
-    )
-
-
-PAD_CLEARANCE: drc.ReportViolation = {
-    "type": "clearance",
-    "description": "Clearance violation (rule 'pad_clearance' clearance 0.1700 mm; "
-    "actual 0.1670 mm)",
-    "severity": "error",
-    "items": [
-        {"description": "Pad 3 [GND] of J1 on F.Cu", "pos": {"x": 3.2, "y": 0.8}}
-    ],
-}
-
-
 GRID_ORIGIN = (1.0, 2.0)
 """A grid origin away from the page origin, in mm, which every printed
 position is relative to."""
@@ -238,29 +158,18 @@ def off_grid(board: CommitBoard) -> CommitBoard:
 
 
 @pytest.fixture
-def connect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Connector:
-    return Connector(monkeypatch, tmp_path / "project")
+def connect(monkeypatch: pytest.MonkeyPatch) -> Connector:
+    return Connector(monkeypatch)
 
 
 class Connector:
-    """Points kipy.KiCad() at a fake board, or makes it fail.
+    """Points kipy.KiCad() at a fake board, or makes it fail."""
 
-    The board is saved to a project directory unless `saved` is false.
-    """
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.monkeypatch = monkeypatch
-        self.directory = directory
         self.client_options: dict[str, object] = {}
 
-    def to(self, board: CommitBoard, saved: bool = True) -> CommitBoard:
-        if saved:
-            self.directory.mkdir(exist_ok=True)
-            pcb = self.directory / board.name
-            pcb.write_text(board.get_as_string())
-            pcb.with_suffix(".kicad_pro").write_text("{}")
-            board.project_dir = str(self.directory)
-
+    def to(self, board: CommitBoard) -> CommitBoard:
         def kicad(**options: object) -> FakeKiCad:
             self.client_options = options
             return FakeKiCad(board)
@@ -363,7 +272,7 @@ class TestSmooth:
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_track_ending_mid_track_joins_it_at_a_junction(
-        self, connect: Connector, kicad_cli: Path
+        self, connect: Connector
     ) -> None:
         tee = [
             kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
@@ -374,8 +283,6 @@ class TestSmooth:
         run()
 
         assert sorted(board.deleted) == ["a", "c"]
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        assert '(uuid "a")' not in candidate
         degree = Counter(
             (p.x, p.y)
             for t in cast(list[kbt.Track], board.created)
@@ -397,7 +304,7 @@ class TestSmooth:
         ]
         board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
 
-        run("--no-drc")
+        run()
 
         created = cast(list[kbt.Track], board.created)
         line = LineString([(0, 0), (20, 0)])
@@ -411,7 +318,7 @@ class TestSmooth:
         assert thin.union(wide).covers(line)
 
     def test_an_untouched_tee_along_one_track_commits_nothing(
-        self, connect: Connector, kicad_cli: Path, log: list[str]
+        self, connect: Connector, log: list[str]
     ) -> None:
         tee = [
             kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
@@ -428,7 +335,6 @@ class TestSmooth:
         run()
 
         assert board.calls == []
-        assert drc_runs(kicad_cli) == 0
         assert any("Nothing to do" in line for line in log)
 
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -448,7 +354,7 @@ class TestSmooth:
             )
         )
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == ["a", "b"]
         (report,) = reports
@@ -477,7 +383,7 @@ class TestSmooth:
             )
         )
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == ["a", "a1", "b"]
         (report,) = reports
@@ -523,7 +429,7 @@ class TestSmooth:
             )
         )
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == ["a", "b"]
         ends = Counter(
@@ -548,7 +454,7 @@ class TestSmooth:
         tracks = [*chain, stub]
         board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == ["a", "b", "stub"]
         degree = Counter(
@@ -570,7 +476,7 @@ class TestSmooth:
     ) -> None:
         tracks = [*l_chain(), kipy_track("stub", "SIG", (2, -3), (2, tip), width=WIDTH)]
         connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
 
         report = pipeline.run_smooth(options)
 
@@ -683,10 +589,9 @@ class TestSmooth:
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_iteration_cap_warns_and_still_checks_and_commits(
+    def test_iteration_cap_warns_and_still_commits(
         self,
         connect: Connector,
-        kicad_cli: Path,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
     ) -> None:
@@ -703,14 +608,12 @@ class TestSmooth:
         assert any(
             line.startswith("WARNING") and "without converging" in line for line in log
         )
-        assert drc_runs(kicad_cli) == 2
         assert "push_commit" in board.calls
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_time_limit_commits_the_best_state_after_the_burst_past_it(
         self,
         connect: Connector,
-        kicad_cli: Path,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
         capsys: pytest.CaptureFixture[str],
@@ -719,7 +622,7 @@ class TestSmooth:
         monkeypatch.setattr(
             pipeline, "optimize_chains", at(replace(COARSE, max_iterations=1))
         )
-        run("--no-drc")
+        run()
         monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
         monkeypatch.setattr(pipeline, "monotonic", Ticking())
         capsys.readouterr()
@@ -734,7 +637,6 @@ class TestSmooth:
             re.MULTILINE,
         )
         assert any(line.startswith("WARNING") and "time limit" in line for line in log)
-        assert drc_runs(kicad_cli) == 2
         assert "push_commit" in board.calls
         # The one burst of a single chain is the first outer iteration.
         assert [segment(t) for t in cast(list[kbt.Track], board.created)] == [
@@ -745,7 +647,7 @@ class TestSmooth:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         connect.to(l_board())
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
         clock = Ticking(step=0.0)
         monkeypatch.setattr(pipeline, "monotonic", clock)
 
@@ -819,189 +721,6 @@ class TestSmooth:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 
         assert options.settings == DEFAULT_SETTINGS
-
-
-class TestDrc:
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_clean_result_is_committed_after_both_runs(
-        self, connect: Connector, kicad_cli: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        board = connect.to(l_board())
-
-        run()
-
-        assert drc_runs(kicad_cli) == 2
-        assert "push_commit" in board.calls
-        assert "DRC: no new violations" in capsys.readouterr().out
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_checks_the_tracks_it_commits(
-        self, connect: Connector, kicad_cli: Path
-    ) -> None:
-        board = connect.to(l_board())
-
-        run()
-
-        created = cast(list[kbt.Track], board.created)
-        assert sorted(checked_segments(kicad_cli, "candidate")) == sorted(
-            (t.start.x, t.start.y, t.end.x, t.end.y) for t in created
-        )
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        assert '(uuid "a")' not in candidate and '(uuid "b")' not in candidate
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_introduced_violation_refuses_to_commit_and_lists_it(
-        self,
-        connect: Connector,
-        kicad_cli: Path,
-        log: list[str],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        board = connect.to(off_grid(l_board()))
-        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
-
-        message = exit_message(log)
-
-        assert "1 new violation" in message and "nothing committed" in message
-        out = capsys.readouterr().out
-        assert "clearance: Clearance violation (rule 'pad_clearance'" in out
-        # kicad-cli's (3.2, 0.8) relative to the grid origin.
-        assert "Pad 3 [GND] of J1 on F.Cu @ (2.200, -1.200)" in out
-        assert board.calls == []
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_violation_already_in_the_baseline_does_not_block(
-        self, connect: Connector, kicad_cli: Path
-    ) -> None:
-        board = connect.to(l_board())
-        report_on(kicad_cli, baseline=[PAD_CLEARANCE], candidate=[PAD_CLEARANCE])
-
-        run()
-
-        assert "push_commit" in board.calls
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_split_pour_names_the_net(
-        self,
-        connect: Connector,
-        kicad_cli: Path,
-        log: list[str],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        connect.to(l_board())
-        unconnected: drc.ReportViolation = {
-            "type": "unconnected_items",
-            "description": "Missing connection between items",
-            "severity": "error",
-            "items": [{"description": "Zone [GND] on F.Cu", "pos": {"x": 1, "y": 1}}],
-        }
-        report_on(kicad_cli, candidate=[unconnected])
-
-        exit_message(log)
-
-        assert "split a pour of GND" in capsys.readouterr().out
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_dry_run_prints_the_verdict_and_commits_nothing(
-        self,
-        connect: Connector,
-        kicad_cli: Path,
-        log: list[str],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        board = connect.to(l_board())
-        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
-
-        run("--dry-run")
-
-        out = capsys.readouterr().out
-        assert "DRC: 1 new violation" in out
-        assert "Pad 3 [GND]" in out
-        assert any("would refuse" in line for line in log)
-        assert board.calls == []
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_no_drc_commits_without_running_it_or_warning(
-        self, connect: Connector, kicad_cli: Path, log: list[str]
-    ) -> None:
-        board = connect.to(l_board(), saved=False)
-        report_on(kicad_cli, candidate=[PAD_CLEARANCE])
-
-        run("--no-drc")
-
-        assert drc_runs(kicad_cli) == 0
-        assert "push_commit" in board.calls
-        assert not [w for w in log if w.startswith("WARNING") and "--no-drc" in w]
-
-    def test_unsaved_board_is_refused_before_optimizing(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = connect.to(l_board(), saved=False)
-
-        def never(*args: object, **kwargs: object) -> NoReturn:
-            pytest.fail("optimized")
-
-        monkeypatch.setattr(pipeline, "optimize_chains", never)
-
-        message = exit_message(log)
-
-        assert "save" in message
-        assert board.calls == []
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_says_unsaved_rule_edits_are_not_seen(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        connect.to(l_board())
-
-        run("--dry-run")
-
-        assert any("unsaved" in line and "not seen" in line for line in log)
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_kicad_cli_option_picks_the_binary(
-        self, connect: Connector, kicad_cli: Path, tmp_path: Path
-    ) -> None:
-        connect.to(l_board())
-        other = write_kicad_cli(tmp_path / "other")
-
-        run("--dry-run", f"--kicad-cli={other}")
-
-        assert drc_runs(other) == 2
-        assert drc_runs(kicad_cli) == 0
-
-    def test_missing_kicad_cli_suggests_no_drc(
-        self, connect: Connector, tmp_path: Path, log: list[str]
-    ) -> None:
-        connect.to(l_board())
-
-        message = exit_message(log, f"--kicad-cli={tmp_path / 'nope'}")
-
-        assert "not an executable" in message
-
-    def test_nothing_to_do_runs_no_drc(
-        self, connect: Connector, kicad_cli: Path
-    ) -> None:
-        connect.to(straight_board())
-
-        run()
-
-        assert drc_runs(kicad_cli) == 0
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_track_missing_from_the_board_text_fails_before_drc(
-        self,
-        connect: Connector,
-        kicad_cli: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-    ) -> None:
-        board = connect.to(l_board())
-        monkeypatch.setattr(board, "get_as_string", lambda: "(kicad_pcb\n)\n")
-
-        assert "not found in the board text" in exit_message(log)
-        assert drc_runs(kicad_cli) == 0
-        assert board.calls == []
 
 
 class TestPlot:
@@ -1128,7 +847,7 @@ class TestErrors:
     ) -> None:
         board = connect.to(l_board(push_error=ApiError("nope")))
 
-        message = exit_message(log, "--no-drc")
+        message = exit_message(log)
 
         assert "KiCad refused the request" in message and "nope" in message
         assert board.calls[-1] == "drop_commit"
@@ -1182,16 +901,6 @@ class TestErrors:
         assert board.calls == []
 
 
-FAILING_DRC = """
-import sys
-if sys.argv[1:] == ["version"]:
-    print("10.0.8")
-    sys.exit(0)
-print("DRC crashed", file=sys.stderr)
-sys.exit(3)
-"""
-
-
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestFailureAfterOptimizing:
     """The optimizer's outcome and warnings still reach the user before the
@@ -1205,24 +914,6 @@ class TestFailureAfterOptimizing:
         (warning,) = [i for i, line in enumerate(log) if "without converging" in line]
         assert warning < log.index(error)
 
-    def test_drc_failure(
-        self,
-        connect: Connector,
-        kicad_cli: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        board = connect.to(l_board())
-        kicad_cli.write_text(f"#!{sys.executable}\n{FAILING_DRC}")
-        stopped_at_cap(monkeypatch)
-
-        error = exit_message(log)
-
-        assert "DRC crashed" in error
-        self.assert_reported_before(error, log, capsys)
-        assert board.calls == []
-
     def test_lost_connection_on_push(
         self,
         connect: Connector,
@@ -1233,7 +924,7 @@ class TestFailureAfterOptimizing:
         connect.to(l_board(push_error=KiCadConnectionError("timed out")))
         stopped_at_cap(monkeypatch)
 
-        error = exit_message(log, "--no-drc")
+        error = exit_message(log)
 
         assert "may have landed" in error
         self.assert_reported_before(error, log, capsys)
@@ -1269,23 +960,11 @@ def segment(t: kbt.Track) -> LineString:
     )
 
 
-SIG2_TRACK_CLEARANCE: drc.ReportViolation = {
-    "type": "clearance",
-    "description": "Clearance violation (netclass 'Default' clearance 0.2000 mm; "
-    "actual 0.1500 mm)",
-    "severity": "error",
-    "items": [
-        {"description": "Track [SIG2] on F.Cu, length 1.0 mm", "pos": {"x": 1, "y": 1}}
-    ],
-}
-
-
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestSeveralChains:
     def test_commits_both_in_one_commit_and_reports_each(
         self,
         connect: Connector,
-        kicad_cli: Path,
         capsys: pytest.CaptureFixture[str],
         reports: list[pipeline.RunReport],
     ) -> None:
@@ -1307,7 +986,6 @@ class TestSeveralChains:
             for a in by_net["SIG"]
             for b in by_net["SIG2"]
         )
-        assert drc_runs(kicad_cli) == 2
         (report,) = reports
         assert [(c.net, c.layer, c.width, c.tracks) for c in report.chains] == [
             ("SIG", "F.Cu", WIDTH, 2),
@@ -1327,10 +1005,9 @@ class TestSeveralChains:
         assert [c.net for c in report.chains] == ["SIG", "SIG2"]
         assert board.calls == []
 
-    def test_unchanged_chain_is_neither_checked_nor_committed(
+    def test_unchanged_chain_is_not_committed(
         self,
         connect: Connector,
-        kicad_cli: Path,
         reports: list[pipeline.RunReport],
     ) -> None:
         board = connect.to(two_l_board(inner=far_straight()))
@@ -1339,8 +1016,6 @@ class TestSeveralChains:
 
         assert sorted(board.deleted) == list(OUTER)
         assert {t.net.name for t in cast(list[kbt.Track], board.created)} == {"SIG"}
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        assert '(uuid "s")' in candidate
         (report,) = reports
         assert [c.changed for c in report.chains] == [True, False]
 
@@ -1361,7 +1036,7 @@ class TestSeveralChains:
 
         monkeypatch.setattr(pipeline, "simplify_chains", with_midpoints)
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == list(OUTER)
         (report,) = reports
@@ -1370,7 +1045,7 @@ class TestSeveralChains:
         assert (straight.before.segment_count, straight.after.segment_count) == (1, 1)
 
     def test_all_unchanged_commits_nothing(
-        self, connect: Connector, kicad_cli: Path, log: list[str]
+        self, connect: Connector, log: list[str]
     ) -> None:
         tracks = [
             kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
@@ -1381,7 +1056,6 @@ class TestSeveralChains:
         run()
 
         assert board.calls == []
-        assert drc_runs(kicad_cli) == 0
         assert any("Nothing to do" in line for line in log)
 
     def test_abnormal_run_commits_nothing(
@@ -1396,17 +1070,6 @@ class TestSeveralChains:
         monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
 
         assert "abnormally" in exit_message(log)
-        assert board.calls == []
-
-    def test_drc_refusal_names_the_violating_chains_net(
-        self, connect: Connector, kicad_cli: Path, log: list[str]
-    ) -> None:
-        board = connect.to(two_l_board())
-        report_on(kicad_cli, candidate=[SIG2_TRACK_CLEARANCE])
-
-        message = exit_message(log)
-
-        assert "1 new violation on SIG2; nothing committed" in message
         assert board.calls == []
 
     # Resampling vertices held deeper than δ inside each other's clearance
@@ -1429,7 +1092,7 @@ class TestSeveralChains:
 
         monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         # The chains pressed into each other's clearance settle: what lies
         # deeper than δ inside stays put, resampled or not.
@@ -1446,7 +1109,7 @@ class TestSeveralChains:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         board = connect.to(two_l_board())
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
         simplified: list[FloatArray] = []
         real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
 
@@ -1470,7 +1133,7 @@ class TestSeveralChains:
         assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
-        assert (report.drc, report.committed, report.refusal) == (None, False, None)
+        assert (report.committed, report.refusal) == (False, None)
         assert board.calls == []
         # Nothing else is near: only the other chain sets the clearance margin.
         gap = LineString(simplified[0]).distance(LineString(simplified[1]))
@@ -1496,7 +1159,7 @@ class TestSeveralChains:
             )
         )
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == list(INNER)
         x, y = ON_CHORD
@@ -1522,7 +1185,7 @@ class TestSeveralChains:
         monkeypatch.setattr(plot, "render", spy)
         figure = tmp_path / "chains.png"
 
-        run("--dry-run", "--no-drc", f"--plot={figure}")
+        run("--dry-run", f"--plot={figure}")
 
         assert drawn == [2]
         assert figure.stat().st_size > 0
@@ -1564,7 +1227,7 @@ def test_abnormal_bursts_are_logged_only_at_debug(
     connect.to(l_board())
     with_abnormal_bursts(monkeypatch, [(FRONT, 3)])
 
-    run("--dry-run", "--no-drc")
+    run("--dry-run")
 
     assert "abnormal" not in capsys.readouterr().out
     (line,) = [ln for ln in log if "abnormally" in ln]
@@ -1572,20 +1235,19 @@ def test_abnormal_bursts_are_logged_only_at_debug(
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_prints_only_the_outcome_and_the_drc_verdict(
+def test_prints_only_the_outcome(
     connect: Connector, capsys: pytest.CaptureFixture[str]
 ) -> None:
     connect.to(l_board())
 
     run("--dry-run")
 
-    outcome, *rest = capsys.readouterr().out.splitlines()
+    (outcome,) = capsys.readouterr().out.splitlines()
     assert re.fullmatch(
         r"Optimizer: converged after \d+ iterations in \d+\.\d s, "
         r"\d+ rejected edge moves",
         outcome,
     )
-    assert rest == ["DRC: no new violations"]
 
 
 VIA = (4.0, 4.0)
@@ -1630,11 +1292,6 @@ def via_route_board(
     )
 
 
-CANDIDATE_SEGMENT = re.compile(
-    r'\(layer "([^"]+)"\)\s*\(net "[^"]*"\)\s*\(uuid "([^"]+)"\)'
-)
-
-
 def created_on(board: CommitBoard, layer: BL.ValueType) -> list[kbt.Track]:
     return [t for t in board.created if isinstance(t, kbt.Track) and t.layer == layer]
 
@@ -1653,7 +1310,7 @@ def layout(board: CommitBoard) -> set[tuple[int, int, int, int, int]]:
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestSeveralLayers:
     def test_route_through_a_via_smooths_both_sides_in_one_commit(
-        self, connect: Connector, kicad_cli: Path
+        self, connect: Connector
     ) -> None:
         board = connect.to(via_route_board())
 
@@ -1666,16 +1323,8 @@ class TestSeveralLayers:
         via = (nm(VIA[0]), nm(VIA[1]))
         assert {(0, 0), via} <= ends(front)
         assert {via, (nm(8), nm(8))} <= ends(back)
-        assert drc_runs(kicad_cli) == 2
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        segments = CANDIDATE_SEGMENT.findall(candidate)
-        assert {layer for layer, _ in segments} == {"F.Cu", "B.Cu"}
-        assert not {"a", "b", "e", "f"} & {uuid for _, uuid in segments}
-        assert ("B.Cu", "g") in segments
 
-    def test_inner_layer_route_is_checked_and_committed_on_it(
-        self, connect: Connector, kicad_cli: Path
-    ) -> None:
+    def test_inner_layer_route_is_committed_on_it(self, connect: Connector) -> None:
         board = connect.to(via_route_board(back_layer=BL.BL_In1_Cu))
 
         run()
@@ -1685,12 +1334,6 @@ class TestSeveralLayers:
         assert len(front) + len(inner) == len(board.created)
         via = (nm(VIA[0]), nm(VIA[1]))
         assert {via, (nm(8), nm(8))} <= ends(inner)
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        segments = CANDIDATE_SEGMENT.findall(candidate)
-        assert {layer for layer, _ in segments if layer != "B.Cu"} == {
-            "F.Cu",
-            "In1.Cu",
-        }
 
     def test_each_chain_keeps_touches_of_its_own_layers_copper(
         self, connect: Connector
@@ -1703,7 +1346,7 @@ class TestSeveralLayers:
         ]
         board = connect.to(via_route_board(unselected=stubs))
 
-        run("--no-drc")
+        run()
 
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
         assert (nm(front_touch[0]), nm(front_touch[1])) in ends(
@@ -1718,7 +1361,7 @@ class TestSeveralLayers:
         on_chord = (2.0, 2.0)
         board = connect.to(via_route_board(on_chord, pad_layers=(BL.BL_F_Cu,)))
 
-        run("--no-drc")
+        run()
 
         x, y = on_chord
         h = PAD_HALF_SIZE
@@ -1749,7 +1392,7 @@ class TestSeveralLayers:
             CommitBoard(selection=list(back), tracks=list(back), vias=[blind])
         )
 
-        run("--no-drc")
+        run()
 
         assert layout(board) == {(BL.BL_B_Cu, 0, 0, nm(4), nm(4))}
 
@@ -1762,12 +1405,12 @@ class TestSeveralLayers:
             return board
 
         without = connect.to(locked_via_board())
-        run("--no-drc")
+        run()
         board = locked_via_board()
         board.selection.append(board.vias[0])
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert layout(board) == layout(without)
         assert board.reads == without.reads
@@ -1793,7 +1436,7 @@ class TestSeveralLayers:
         board.selection.append(board.vias[0])
         connect.to(board)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         assert board.reads["get_enabled_layers"] == 0
         assert board.reads["get_pad_shapes_as_polygons"] == 2
@@ -1806,7 +1449,7 @@ class TestSeveralLayers:
         board.selection.append(board.vias[0])
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert "push_commit" in board.calls
         (warning,) = [line for line in log if "stays fixed" in line]
@@ -1822,7 +1465,7 @@ class TestSeveralLayers:
         board.selection.append(board.vias[0])
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         (warning,) = [line for line in log if "stays fixed" in line]
         assert warning.startswith("DEBUG Via v ") and "track g2 on In1.Cu" in warning
@@ -1843,13 +1486,13 @@ class TestSeveralLayers:
             return board
 
         without = connect.to(held_via_board())
-        run("--no-drc")
+        run()
         board = held_via_board()
         board.selection.append(board.vias[0])
         connect.to(board)
         log.clear()
 
-        run("--no-drc")
+        run()
 
         assert layout(board) == layout(without)
         assert board.deleted == without.deleted
@@ -1863,7 +1506,7 @@ class TestSeveralLayers:
         board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
         connect.to(board)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
         assert read == ["B.Cu", "F.Cu"]
@@ -1899,7 +1542,7 @@ class TestSeveralLayers:
                 vias=[kipy_via("v", "SIG", *VIA), kipy_via("w", "SIG", *inner_via)],
             )
         )
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
 
         report = pipeline.run_smooth(options)
 
@@ -1923,7 +1566,7 @@ class TestSeveralLayers:
 
         def smoothed(tracks: list[kbt.Track]) -> set[tuple[int, int, int, int, int]]:
             board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-            run("--no-drc")
+            run()
             return layout(board)
 
         together = smoothed([*front, *back])
@@ -1943,7 +1586,7 @@ class TestSeveralLayers:
 
         monkeypatch.setattr(plot, "render", spy)
 
-        run("--dry-run", "--no-drc", f"--plot={tmp_path / 'chains.png'}")
+        run("--dry-run", f"--plot={tmp_path / 'chains.png'}")
 
         assert [t.split(":")[0] for t in titles] == ["SIG on B.Cu", "SIG on F.Cu"]
 
@@ -1977,7 +1620,7 @@ def created_vias(board: CommitBoard) -> list[kbt.Via]:
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestMovingVias:
     def test_moves_the_via_with_its_chains_in_one_commit(
-        self, connect: Connector, kicad_cli: Path
+        self, connect: Connector
     ) -> None:
         board = connect.to(moving_via_board())
 
@@ -1990,15 +1633,10 @@ class TestMovingVias:
         assert moved[1] < nm(1)
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
-        assert drc_runs(kicad_cli) == 2
-        candidate = (kicad_cli.parent / "candidate.kicad_pcb").read_text()
-        assert '(uuid "v")' not in candidate
-        at = re.findall(r"\(at (\S+) (\S+)\)", candidate)
-        assert [(nm(float(x)), nm(float(y))) for x, y in at] == [moved]
 
     @pytest.mark.parametrize("unfilled", ["pwr pour", "pour keepout"])
     def test_a_via_in_a_zone_of_its_net_moves_within_its_fill_and_commits(
-        self, connect: Connector, kicad_cli: Path, log: list[str], unfilled: str
+        self, connect: Connector, log: list[str], unfilled: str
     ) -> None:
         # Without the zone, the via ends below y = 1, in the part of the
         # outline that the PWR pour or the keepout leaves unfilled.
@@ -2028,7 +1666,6 @@ class TestMovingVias:
         (via,) = created_vias(board)
         y = via.position.y / 1e6
         assert fill_top + KICAD_MAX_ERROR - NM_ROUNDING <= y < VIA[1]
-        assert drc_runs(kicad_cli) == 2
 
     @pytest.mark.parametrize("unfillable", ["pwr pour", "pour keepout"])
     def test_a_stale_fill_does_not_lead_the_via_into_what_the_refill_leaves_out(
@@ -2054,7 +1691,7 @@ class TestMovingVias:
         board.zones = [plane, other]
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert "stays fixed" not in "".join(log)
         (via,) = created_vias(board)
@@ -2079,7 +1716,7 @@ class TestMovingVias:
         ]
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert "push_commit" in board.calls
         assert created_vias(board) == [] and "v" not in board.deleted
@@ -2105,7 +1742,7 @@ class TestMovingVias:
         board.pads = [kipy_pad("p", "SIG", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert "push_commit" in board.calls
         assert created_vias(board) == [] and "v" not in board.deleted
@@ -2119,14 +1756,14 @@ class TestMovingVias:
     ) -> None:
         # The pad sits where the via ends up without it.
         free = connect.to(moving_via_board())
-        run("--no-drc")
+        run()
         (landed,) = created_vias(free)
         x, y = landed.position.x / 1e6, landed.position.y / 1e6
         board = moving_via_board()
         board.pads = [kipy_pad("p", "SIG", x, y, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
-        run("--no-drc", *(["--allow-via-in-pad"] if in_pad else []))
+        run(*(["--allow-via-in-pad"] if in_pad else []))
 
         (via,) = created_vias(board)
         h = PAD_HALF_SIZE
@@ -2149,7 +1786,7 @@ class TestMovingVias:
         ]
         via = kipy_via("v", "SIG", *VIA)
         connect.to(CommitBoard(selection=[*route, via], tracks=list(route), vias=[via]))
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
 
         report = pipeline.run_smooth(options)
 
@@ -2170,7 +1807,7 @@ class TestMovingVias:
         board.pads = [kipy_pad("p", "GND", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         assert "push_commit" in board.calls
         assert sorted(board.deleted) == ["a", "b", "e", "f"]
@@ -2198,7 +1835,7 @@ class TestMovingVias:
         board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu, BL.BL_F_SilkS]
         connect.to(board)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         read = [line.split()[3].rstrip(":") for line in log if "Snapshot of" in line]
         assert read == ["B.Cu", "F.Cu", "In1.Cu"]
@@ -2206,7 +1843,7 @@ class TestMovingVias:
 
     def test_reports_the_move(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n", "--no-drc"]))
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
 
         report = pipeline.run_smooth(options)
 
@@ -2220,7 +1857,7 @@ class TestMovingVias:
     ) -> None:
         board = connect.to(moving_via_board(refuse_create_vias=True))
 
-        error = exit_message(log, "--no-drc")
+        error = exit_message(log)
 
         assert re.search(r"KiCad created 2 of 3 items", error)
         assert board.calls == ["begin_commit", "delete", "create", "drop_commit"]
@@ -2237,7 +1874,7 @@ class TestMovingVias:
 
         monkeypatch.setattr(pipeline, "optimize_chains", edited_meanwhile)
 
-        error = exit_message(log, "--no-drc")
+        error = exit_message(log)
 
         assert "changed in KiCad" in error and "v" in error
         assert board.calls == []
@@ -2256,7 +1893,7 @@ class TestMovingVias:
         board.selection.append(inner)
         connect.to(board)
 
-        run("--no-drc", "--chord-tolerance=2")
+        run("--chord-tolerance=2")
 
         (via,) = created_vias(board)
         centre = Point(via.position.x / 1e6, via.position.y / 1e6)
@@ -2279,7 +1916,7 @@ class TestMovingVias:
         board.selection += inner
         connect.to(board)
 
-        run("--no-drc")
+        run()
 
         (via,) = created_vias(board)
         assert via.position.y < nm(1)
@@ -2304,7 +1941,7 @@ class TestMovingVias:
         monkeypatch.setattr(plot, "render", spy)
         figure = tmp_path / "vias.png"
 
-        run("--dry-run", "--no-drc", f"--plot={figure}")
+        run("--dry-run", f"--plot={figure}")
 
         assert len(drawn) == 2
         for panel in drawn:
@@ -2332,7 +1969,7 @@ class TestMovingVias:
 
         monkeypatch.setattr(plot, "render", spy)
 
-        run("--dry-run", "--no-drc", f"--plot={tmp_path / 'vias.png'}")
+        run("--dry-run", f"--plot={tmp_path / 'vias.png'}")
 
         assert marks == {"SIG on B.Cu": 1, "SIG on F.Cu": 1, "SIG2 on In1.Cu": 0}
 
@@ -2348,33 +1985,24 @@ def fixture_id(tail: str) -> str:
     return f"00000000-0000-0000-0000-{tail:0>12}"
 
 
-def refilled_sig_fill(workdir: Path) -> list[PolygonWithHoles]:
-    """The SIG zone's fill on In2.Cu once the real kicad-cli refills the zone
-    fixture: the first zone the board text lists."""
-    assert KICAD_CLI is not None
-    workdir.mkdir()
-    pcb = workdir / ZONE_BOARD.name
-    shutil.copyfile(ZONE_BOARD, pcb)
-    shutil.copyfile(ZONE_BOARD.with_suffix(".kicad_pro"), pcb.with_suffix(".kicad_pro"))
-    report = workdir / "report.json"
-    subprocess.run(
-        [
-            *(KICAD_CLI, "pcb", "drc", "--refill-zones", "--save-board"),
-            *("--format", "json", "-o", str(report), str(pcb)),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    sig_zone = pcb.read_text(encoding="utf-8").split('(net "OTHER")\n\t\t(layer')[0]
+def refilled_sig_fill() -> list[PolygonWithHoles]:
+    """The SIG zone's fill on In2.Cu as KiCad refilled the zone fixture: the
+    first zone the board text lists. KiCad saved it with a Default clearance
+    of 0.127 mm, which `zone_fixture_board` mirrors, so after any edit to the
+    fixture refill it with that clearance."""
+    text = ZONE_BOARD.read_text(encoding="utf-8")
+    sig_zone = text.split('(net "OTHER")\n\t\t(layer')[0]
     return [
         kipy_polygon([(float(x), float(y)) for x, y in XY.findall(pts)])
         for pts in ZONE_FILL.findall(sig_zone)
     ]
 
 
-def zone_fixture_board(
-    sig_fill: Sequence[PolygonWithHoles], monkeypatch: pytest.MonkeyPatch
-) -> CommitBoard:
+ZONE_MIN_WIDTH = 0.2
+"""The SIG zone's minimum fill width in the zone fixture, mm."""
+
+
+def zone_fixture_board(sig_fill: Sequence[PolygonWithHoles]) -> CommitBoard:
     """The zone fixture as KiCad would give it, with the SIG zone filled with
     `sig_fill` and the route and the via at (10, 10) selected."""
     route = [
@@ -2387,7 +2015,7 @@ def zone_fixture_board(
         "SIG",
         {BL.BL_In2_Cu: sig_fill},
         outline=kipy_rect(6, 6, 14, 14),
-        min_width=0.2,
+        min_width=ZONE_MIN_WIDTH,
     )
     plane.clearance = nm(0.2)
     other = kipy_zone(
@@ -2399,7 +2027,7 @@ def zone_fixture_board(
     )
     other.priority = 1
     other.clearance = nm(0.2)
-    board = CommitBoard(
+    return CommitBoard(
         selection=[*route, via],
         tracks=[
             *route,
@@ -2412,19 +2040,12 @@ def zone_fixture_board(
         zones=[plane, other],
         enabled_layers=[BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu],
         default_clearance=0.127,
-        name=ZONE_BOARD.name,
     )
-    text = ZONE_BOARD.read_text(encoding="utf-8")
-    monkeypatch.setattr(board, "get_as_string", lambda: text)
-    return board
 
 
-@pytest.mark.slow
-@pytest.mark.kicad_cli
-@pytest.mark.skipif(KICAD_CLI is None, reason="kicad-cli is not installed")
 @pytest.mark.usefixtures("coarse_optimizer")
-class TestKiCadCliZone:
-    """The zone fixture run through the real kicad-cli: the SIG route bends
+class TestZoneFixture:
+    """The zone fixture as KiCad fills it: the SIG route bends
     at the via at (10, 10) in the SIG plane on In2.Cu, and pulls it toward
     (6, 6), into the higher-priority OTHER zone over y < 8. An OTHER track
     on In2.Cu ends at the zone's clearance from the via's ring, so the fill
@@ -2432,45 +2053,46 @@ class TestKiCadCliZone:
     route only through the plane."""
 
     def smooth(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        sig_fill: Sequence[PolygonWithHoles],
+        self, connect: Connector, sig_fill: Sequence[PolygonWithHoles]
     ) -> CommitBoard:
-        board = connect.to(zone_fixture_board(sig_fill, monkeypatch))
-        shutil.copyfile(
-            ZONE_BOARD.with_suffix(".kicad_pro"),
-            connect.directory / ZONE_BOARD.with_suffix(".kicad_pro").name,
-        )
-
-        def which(name: str) -> str:
-            return str(KICAD_CLI)
-
-        monkeypatch.setattr(drc.shutil, "which", which)
+        board = connect.to(zone_fixture_board(sig_fill))
         run()
         return board
 
     def test_a_via_the_fill_reaches_short_of_its_ring_moves_and_commits(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        log: list[str],
+        self, connect: Connector, log: list[str]
     ) -> None:
-        board = self.smooth(
-            connect, monkeypatch, refilled_sig_fill(tmp_path / "refill")
-        )
+        fill = refilled_sig_fill()
+        assert fill
+        board = self.smooth(connect, fill)
 
         assert "stays fixed" not in "".join(log)
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
         (via,) = created_vias(board)
-        assert via.position.y / 1e6 < 9.5
+        x, y = via.position.x / 1e6, via.position.y / 1e6
+        assert y < 9.5
+        filled = unary_union(
+            [
+                shapely.Polygon([(n.point.x / 1e6, n.point.y / 1e6) for n in p.outline])
+                for p in fill
+            ]
+        )
+        (column,) = [
+            piece
+            for piece in shapely.get_parts(
+                LineString([(x, 0), (x, 20)]).intersection(filled)
+            )
+            if piece.distance(Point(x, y)) < NM_ROUNDING
+        ]
+        _, edge, _, _ = column.bounds
+        margin = ViaZone("SIG", {}, ZONE_MIN_WIDTH).margin
+        assert y >= edge + margin - NM_ROUNDING
 
     def test_a_stale_fill_keeps_the_via_out_of_a_newer_zone(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+        self, connect: Connector, log: list[str]
     ) -> None:
         # The fill predates the OTHER zone and covers the whole outline.
-        board = self.smooth(connect, monkeypatch, [kipy_rect(6, 6, 14, 14)])
+        board = self.smooth(connect, [kipy_rect(6, 6, 14, 14)])
 
         assert "stays fixed" not in "".join(log)
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
@@ -2539,7 +2161,7 @@ def test_outcome_and_warnings_count_rejected_moves_and_frozen() -> None:
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
     connect.to(straight_board())
 
-    run("--dry-run", "--no-drc")
+    run("--dry-run")
 
     assert "INFO Optimizing 1 chain\n" in log
 
@@ -2647,7 +2269,7 @@ def coupled_gaps(p: list[LineString], n: list[LineString]) -> tuple[float, float
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestPairs:
     def test_commits_both_tracks_in_one_commit_at_their_gap(
-        self, connect: Connector, kicad_cli: Path
+        self, connect: Connector
     ) -> None:
         board = connect.to(pair_board())
 
@@ -2657,7 +2279,6 @@ class TestPairs:
         assert sorted(board.deleted) == list(PAIR_IDS)
         gaps = coupled_gaps(*by_net(board).values())
         assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
-        assert drc_runs(kicad_cli) == 2
 
     def test_two_pairs_commit_each_joined_and_at_its_gap(
         self, connect: Connector, log: list[str]
@@ -2676,7 +2297,7 @@ class TestPairs:
             )
         )
 
-        run("--no-drc")
+        run()
 
         assert "INFO Optimizing 4 chains, 2 differential pairs among them\n" in log
         assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
@@ -2725,7 +2346,7 @@ class TestPairs:
             )
         )
 
-        run("--no-drc")
+        run()
 
         ((pair,),) = (r.pairs for r in reports)
         given = (LineString(points).length for points in lines.values())
@@ -2739,7 +2360,7 @@ class TestPairs:
     ) -> None:
         connect.to(pair_board())
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         assert not any("netclass" in line for line in log)
 
@@ -2753,7 +2374,7 @@ class TestPairs:
         }
         connect.to(board)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
         assert f"{OTHER_PAIR_GAP:.3f}" in warning
@@ -2800,7 +2421,7 @@ class TestPairs:
         board.vias = [moving, still]
         connect.to(board)
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         assert any("1 moving via" in line for line in log)
         assert seen == [{"w"}]
@@ -2865,7 +2486,7 @@ class TestPairs:
         board.selection = list(board.tracks)
         connect.to(with_via_at_the_fan_out(board))
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         assert not any("Via v" in w for w in log)
         assert any("1 moving via" in line for line in log)
@@ -2957,7 +2578,7 @@ class TestPairs:
         board.tracks = [*board.tracks, *bend]
         connect.to(board)
 
-        run("--dry-run", "--no-drc", "--time-limit=1.5")
+        run("--dry-run", "--time-limit=1.5")
 
         first, second = runs
         assert first.termination is Termination.TIME_LIMIT
@@ -2995,7 +2616,7 @@ class TestPairs:
         monkeypatch.setattr(pipeline, "optimize_chains", gives_up)
         connect.to(pair_board())
 
-        run("--dry-run", "--no-drc")
+        run("--dry-run")
 
         (line,) = [w for w in log if "Gave up" in w]
         assert line.startswith("DEBUG") and ABANDONED in line
@@ -3036,7 +2657,7 @@ def pair_tracks_at(
     usb = netclass("USB", clearance, PAIR_GAP)
     board.netclasses = {"USB_D+": usb, "USB_D-": usb}
     connect.to(board)
-    run("--no-drc")
+    run()
     return by_net(board), calls
 
 
@@ -3125,7 +2746,7 @@ def test_simplified_sections_meet_their_fan_outs_where_and_about_as_they_did(
     calls = spy_simplify(monkeypatch)
     connect.to(pair_board())
 
-    run("--dry-run", "--no-drc")
+    run("--dry-run")
 
     (call,) = calls
     ((i, block),) = call.sections.items()
@@ -3182,7 +2803,7 @@ def test_straight_coupled_sections_commit_as_one_track_per_net(
 ) -> None:
     board = connect.to(split_pair_board())
 
-    run("--no-drc")
+    run()
 
     for net, lines in by_net(board).items():
         y = PAIR_HALF_PITCH if net == "USB_D+" else -PAIR_HALF_PITCH
@@ -3237,7 +2858,7 @@ def test_two_pairs_at_clearance_both_smooth_and_simplify(
 ) -> None:
     board = connect.to(bus_board(margin))
 
-    run("--no-drc")
+    run()
 
     lines = {net: by_net(board, nets)[net] for nets in BUS_NETS for net in nets}
     straight = len(BUS_CENTRE) - 1
@@ -3260,7 +2881,7 @@ def test_reports_the_gap_range_over_every_section(
 ) -> None:
     connect.to(split_pair_board(NARROWER_GAP))
 
-    run("--dry-run", "--no-drc")
+    run("--dry-run")
 
     ((pair,),) = (r.pairs for r in reports)
     assert pair.gap_after == pytest.approx((NARROWER_GAP, PAIR_GAP), abs=REPORTED)
@@ -3304,7 +2925,7 @@ def test_a_section_routed_too_tightly_is_held(
 ) -> None:
     connect.to(routed_too_tightly_board())
 
-    run("--dry-run", "--no-drc")
+    run("--dry-run")
 
     ((pair,),) = (r.pairs for r in reports)
     assert pair.held == 1
@@ -3336,7 +2957,7 @@ def test_a_chain_beside_a_pair_at_clearance_does_not_freeze_it(
         )
     )
 
-    run("--no-drc")
+    run()
 
     assert not any("inside" in line for line in log)
     assert all(len(lines) > len(BUS_CENTRE) - 1 for lines in by_net(board).values())
@@ -3386,7 +3007,7 @@ def test_a_crowded_section_is_held_and_its_neighbours_keep_clear_of_it(
         )
     )
 
-    run("--no-drc")
+    run()
 
     assert any(Hold.CROWDING.value in line for line in log)
     created = cast(list[kbt.Track], board.created)
@@ -3448,7 +3069,7 @@ def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
 ) -> None:
     board = connect.to(stubbed_pair_board())
 
-    run("--no-drc")
+    run()
 
     p, n = (unary_union(lines) for lines in by_net(board).values())
     middle = box(TAPER_REACH, -FAR, STUBBED_LENGTH - TAPER_REACH, FAR)
@@ -3518,7 +3139,7 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
     calls = spy_simplify(monkeypatch)
     board = connect.to(PAIRED_BOARDS[layout]())
 
-    run("--no-drc")
+    run()
 
     (call,) = calls
     created = cast(list[kbt.Track], board.created)
@@ -3591,7 +3212,7 @@ def test_a_pair_whose_tracks_cross_is_not_committed(
     monkeypatch.setattr(pipeline, "simplify_chains", folded)
     board = connect.to(pair_board(extra=FOLD_KEEPERS))
 
-    message = exit_message(log, "--no-drc")
+    message = exit_message(log)
 
     assert "USB_D+ and USB_D-" in message and "come within" in message
     assert board.calls == []
@@ -3631,7 +3252,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
     board = connect.to(v_board(150.0))
 
-    run("--no-drc", f"--repulsion={V_REPULSION}")
+    run(f"--repulsion={V_REPULSION}")
 
     ((pair,),) = (r.pairs for r in reports)
     assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
@@ -3701,7 +3322,7 @@ def test_a_spiral_pair_keeps_its_clearance_across_laps(
     board = connect.to(spiral_board())
 
     with contextlib.suppress(SystemExit):
-        run("--no-drc", f"--chord-tolerance={chord}")
+        run(f"--chord-tolerance={chord}")
 
     # Refused, or held as routed, it commits nothing; which one depends on
     # the platform's floating point.
@@ -3815,7 +3436,7 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
         )
     )
 
-    run("--no-drc")
+    run()
 
     assert not any(line.startswith("ERROR") for line in log)
     assert board.calls == []

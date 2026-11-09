@@ -7,7 +7,6 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import cast
 
 import kipy.board
@@ -31,29 +30,16 @@ from kipy.proto.common.commands.editor_commands_pb2 import (
 )
 from kipy.proto.common.types import base_types_pb2, project_settings_pb2
 from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
-from kipy.util.board_layer import canonical_name
 from kipy.wrapper import Wrapper
 from loguru import logger
 
 import kibends.optimize as optimize_module
-from kibends import drc
 from kibends.chain import NM_PER_MM
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
-
-
-def installed_kicad_cli() -> Path | None:
-    try:
-        return drc.locate_kicad_cli(None, None)
-    except drc.KiCadCliNotFound:
-        return None
-
-
-KICAD_CLI = installed_kicad_cli()
-"""The real kicad-cli, which tests marked `kicad_cli` run."""
 
 
 class Ticking:
@@ -428,7 +414,6 @@ class FakeClient:
 @dataclass
 class FakeProject:
     netclasses: list[NetClass]
-    path: str = ""
 
     def get_net_classes(self) -> list[NetClass]:
         return self.netclasses
@@ -454,8 +439,6 @@ class FakeBoard:
     zones: list[kbt.Zone] = field(default_factory=list[kbt.Zone])
     netclasses: dict[str, NetClass] = field(default_factory=dict[str, NetClass])
     default_clearance: float | None = 0.2
-    name: str = "board.kicad_pcb"
-    project_dir: str = ""
     drops_pads: bool = False
     enabled_layers: list[BL.ValueType] = field(
         default_factory=lambda: [BL.BL_F_Cu, BL.BL_B_Cu]
@@ -536,34 +519,7 @@ class FakeBoard:
 
     def get_project(self) -> FakeProject:
         self.reads["get_project"] += 1
-        return FakeProject(
-            [self.default_netclass(), *self.netclasses.values()], self.project_dir
-        )
-
-    def get_as_string(self) -> str:
-        """The board file text, holding only the straight tracks and the vias."""
-        segments = "".join(
-            f"\t(segment\n\t\t(start {t.start.x / NM_PER_MM} {t.start.y / NM_PER_MM})\n"
-            f"\t\t(end {t.end.x / NM_PER_MM} {t.end.y / NM_PER_MM})\n"
-            f"\t\t(width {t.width / NM_PER_MM})\n"
-            f'\t\t(layer "{canonical_name(t.layer)}")\n\t\t(net "{t.net.name}")\n'
-            f'\t\t(uuid "{t.id.value}")\n\t)\n'
-            for t in self.tracks
-            if type(t) is kbt.Track
-        )
-        vias = "".join(
-            f"\t(via\n\t\t(at {v.position.x / NM_PER_MM} {v.position.y / NM_PER_MM})\n"
-            f"\t\t(size {v.diameter / NM_PER_MM})\n"
-            f"\t\t(drill {v.drill_diameter / NM_PER_MM})\n"
-            f'\t\t(layers "{canonical_name(v.padstack.drill.start_layer)}" '
-            f'"{canonical_name(v.padstack.drill.end_layer)}")\n'
-            f'\t\t(net "{v.net.name}")\n\t\t(uuid "{v.id.value}")\n\t)\n'
-            for v in self.vias
-        )
-        return (
-            f"(kicad_pcb\n\t(version 20260206)\n{segments}{vias}"
-            "\t(embedded_fonts no)\n)\n"
-        )
+        return FakeProject([self.default_netclass(), *self.netclasses.values()])
 
 
 def layer_snapshot(
@@ -686,6 +642,3 @@ class FakeKiCad:
 
     def get_board(self) -> FakeBoard:
         return self.board
-
-    def get_kicad_binary_path(self, binary_name: str) -> str:
-        return ""

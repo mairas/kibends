@@ -708,7 +708,7 @@ def _read_copper_shapes(shapes: Iterable[kbt.BoardShape], layer: str) -> list[Gr
         if geometry is None:
             logger.warning(
                 f"Ignoring copper {type(s).__name__} {s.id.value} on {layer}; "
-                "only the DRC check covers it"
+                "only KiCad's DRC covers it"
             )
             continue
         graphics.append(Graphic(f"copper shape {s.id.value}", s.net.name, geometry))
@@ -754,7 +754,7 @@ def _read_copper_text(
             raise
         logger.warning(
             f"KiCad could not render the copper text on {layer} ({e}); "
-            "only the DRC check covers it"
+            "only KiCad's DRC covers it"
         )
         return []
     graphics: list[Graphic] = []
