@@ -257,10 +257,10 @@ class TestCommitChains:
 
         assert board.calls == ["begin_commit", "delete", "create", "drop_commit"]
 
-    def test_no_chains_is_an_error(self) -> None:
+    def test_no_chains_and_no_vias_is_an_error(self) -> None:
         board, _, selected = two_chains()
 
-        with pytest.raises(ValueError, match="No chains"):
+        with pytest.raises(ValueError, match="Nothing to commit"):
             run_commit_chains(board, [], selected)
 
         assert board.calls == []
@@ -362,6 +362,31 @@ class TestMovedVias:
         assert [(t.layer, (t.start.x, t.start.y)) for t in tracks[1:]] == [
             (BL.BL_B_Cu, moved)
         ]
+
+    def test_moves_a_via_without_chains(self) -> None:
+        board, _, selected, vias = via_route()
+
+        run_commit_vias(board, [], selected, vias)
+
+        assert board.calls == ["begin_commit", "delete", "create", "push_commit"]
+        assert board.deleted == ["v"]
+        (via,) = board.created
+        assert isinstance(via, kbt.Via)
+        assert (via.position.x, via.position.y) == (nm(4.0), nm(4.5))
+
+    @pytest.mark.parametrize(
+        ("with_chains", "summary"),
+        [(True, "replaced 2 tracks with 2 and moved 1 via"), (False, "moved 1 via")],
+    )
+    def test_logs_only_what_it_committed(
+        self, log: list[str], with_chains: bool, summary: str
+    ) -> None:
+        board, chains, selected, vias = via_route()
+
+        run_commit_vias(board, chains if with_chains else [], selected, vias)
+
+        (line,) = [line for line in log if "Committed" in line]
+        assert line.rstrip().endswith(f"': {summary}")
 
     def test_refused_via_create_drops_the_whole_commit(self) -> None:
         board, chains, selected, vias = via_route(refuse_create_vias=True)
