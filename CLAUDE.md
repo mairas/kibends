@@ -11,6 +11,7 @@ The repository is public. Never write host names, addresses or other details of 
 - `./run lint` runs `ruff check` and `ruff format --check`; `./run format` formats and applies ruff's fixes.
 - `./run typecheck` runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
 - `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing.
+- `./run bench` measures the optimizer's time, iterations and energy evaluations on stitched planes, the scenarios and return vias; `--tree DIR` measures another checkout.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
 
 Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests`.
