@@ -1,19 +1,27 @@
-"""Measure the optimizer: wall and CPU time, outer iterations, bursts,
-energy evaluations and the farthest move in one burst on stitched ground
-planes and on the synthetic scenarios, and where return vias settle.
+"""Measure the optimizer: wall and CPU time, the seconds of setup and those
+after it outside L-BFGS-B, outer iterations, bursts, energy evaluations and
+the farthest move in one burst on stitched ground planes, on the synthetic
+scenarios and on buses of parallel tracks, and where return vias settle.
 
-Usage: ./run bench [--tree DIR] [--only grid|crossed|scenarios|return]
+Usage: ./run bench [--tree DIR] [--only grid|crossed|scenarios|bus|return]
                    [--case TEXT]
                    [-- SMOOTH_ARGS]
 
 `--tree` measures another checkout's source and tests, such as an older
 commit unpacked with `git archive`, so that two versions can be compared
-on one machine. `--case` runs only the planes and grids whose names
+on one machine. `--case` runs only the planes, grids and buses whose names
 contain TEXT.
-Arguments after `--` go to `kibends smooth` for the plane runs and give
-the crossed grids' energy parameters and optimizer settings, a
-`--time-limit` among them overriding TIME_LIMIT, so a run can be measured
-at other settings. Each table row is one run.
+Arguments after `--` go to `kibends smooth` for the runs through a fake
+KiCad and give the crossed grids' energy parameters and optimizer settings
+and the buses' optimizer settings, a `--time-limit` among them overriding
+TIME_LIMIT, so a run can be measured at other settings. Each table row is
+one run.
+
+Setup ends when the optimizer logs that its problems are built; in a run
+through a fake KiCad it holds reading the board and building the obstacle
+fields too. The seconds outside L-BFGS-B are the rest of the run but
+L-BFGS-B and the energy evaluations it makes: resampling, the checks
+around each burst, the guard and, through a fake KiCad, simplifying.
 
 - grid: two-layer GND planes whose stitching vias are all selected, among
   them a 30 mm plane with 194 vias at 1.72 mm pitch, with and without three
@@ -25,12 +33,23 @@ at other settings. Each table row is one run.
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
   at default settings.
+- bus: tracks of different nets side by side, each case stopped after
+  TIME_LIMIT seconds unless it ends first. Three go through the optimizer
+  in free space with the scenarios' energy parameters and a repulsion of
+  0.5: ten Z-shaped tracks at 0.6 mm pitch, each as far from one neighbour
+  as from the other; the same with each track up to 0.03 mm off its pitch;
+  and 262 chains of 5 mm for one outer iteration, to time setup and the
+  work around a burst among many chains. The fourth runs end to end
+  through a fake KiCad as the planes do: ten tracks 2 mm apart between
+  rows of pads at 1 mm pitch, whose distance field every energy evaluation
+  queries.
 - return: a signal via and a ground via settling together, at default
   settings and without repulsion; skipped for a tree without return-via
   attraction or without the test helpers it builds its boards with.
 """
 
 import argparse
+import itertools
 import math
 import sys
 import time
@@ -45,7 +64,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the optimizer.")
     parser.add_argument("--tree", type=Path, default=ROOT)
-    parser.add_argument("--only", choices=("grid", "crossed", "scenarios", "return"))
+    parser.add_argument(
+        "--only", choices=("grid", "crossed", "scenarios", "bus", "return")
+    )
     parser.add_argument("--case", default="", help="run only the cases naming this")
     parser.add_argument("smooth", nargs="*", help="arguments for kibends smooth")
     return parser.parse_args()
@@ -63,6 +84,7 @@ from conftest import (  # noqa: E402
     CommitBoard,
     FakeKiCad,
     kipy_copper_zone,
+    kipy_pad,
     kipy_rect,
     kipy_track,
     kipy_via,
@@ -94,20 +116,33 @@ from kibends.vias import ViaInput  # noqa: E402
 assert Path(kibends.__file__).is_relative_to(TREE), kibends.__file__
 
 
+SET_UP = "Optimizer set up"
+"""How the line starts that the optimizer logs once its problems are built."""
+
+
 @dataclass
 class Count:
     bursts: int = 0
     evaluations: int = 0
     step: float = 0.0
     """The farthest any vertex or via centre moved in one burst, mm."""
+    ready: float | None = None
+    """When the optimizer first had its problems built, as
+    `time.perf_counter` reads; None while it has not."""
+    minimising: float = 0.0
+    """Seconds L-BFGS-B ran, its energy evaluations included."""
 
 
 @contextmanager
 def counted() -> Generator[Count]:
     """Count the bursts the optimizer runs and the energy evaluations in
-    them."""
+    them, and time its setup and L-BFGS-B."""
     count = Count()
     real = optimize_module.run_burst
+
+    def heard(message: str) -> None:
+        if count.ready is None and message.startswith(SET_UP):
+            count.ready = time.perf_counter()
 
     def burst(
         objective: Objective,
@@ -116,21 +151,33 @@ def counted() -> Generator[Count]:
         settings: OptimizerSettings,
     ) -> Burst:
         count.bursts += 1
+        checking = 0.0
 
         def evaluated(x: FloatArray) -> tuple[float, FloatArray]:
             count.evaluations += 1
             return objective(x)
 
-        result = real(evaluated, start, revert, settings)
+        def checked(x: FloatArray) -> int:
+            nonlocal checking
+            began = time.perf_counter()
+            crossed = revert(x)
+            checking += time.perf_counter() - began
+            return crossed
+
+        began = time.perf_counter()
+        result = real(evaluated, start, checked, settings)
+        count.minimising += time.perf_counter() - began - checking
         if len(start):
             moved = (result.points - start).reshape(-1, 2)
             count.step = max(count.step, float(np.linalg.norm(moved, axis=1).max()))
         return result
 
     setattr(optimize_module, "run_burst", burst)  # noqa: B010
+    sink = logger.add(heard, level="INFO", format="{message}")
     try:
         yield count
     finally:
+        logger.remove(sink)
         setattr(optimize_module, "run_burst", real)  # noqa: B010
 
 
@@ -138,6 +185,11 @@ def counted() -> Generator[Count]:
 class Measured:
     wall: float
     cpu: float
+    setup: float
+    """Seconds until the optimizer had its problems built: the whole run if
+    it never had."""
+    outside: float
+    """Seconds after setup outside L-BFGS-B."""
     iterations: int
     count: Count
     note: str
@@ -145,22 +197,26 @@ class Measured:
 
 def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
     with counted() as count:
-        wall, cpu = time.perf_counter(), time.process_time()
+        began, cpu = time.perf_counter(), time.process_time()
         iterations, note = work()
-        wall, cpu = time.perf_counter() - wall, time.process_time() - cpu
-    measured = Measured(wall, cpu, iterations, count, note)
+        ended, cpu = time.perf_counter(), time.process_time() - cpu
+    wall = ended - began
+    setup = (ended if count.ready is None else count.ready) - began
+    outside = wall - setup - count.minimising
+    measured = Measured(wall, cpu, setup, outside, iterations, count, note)
     print(
-        f"| {name} | {wall:.2f} | {cpu:.2f} | {iterations} | {count.bursts} "
-        f"| {count.evaluations} | {count.step:.2f} | {note} |",
+        f"| {name} | {wall:.2f} | {cpu:.2f} | {setup:.2f} | {outside:.2f} "
+        f"| {iterations} | {count.bursts} | {count.evaluations} "
+        f"| {count.step:.2f} | {note} |",
         flush=True,
     )
     return measured
 
 
 HEADER = (
-    "| case | wall s | CPU s | iterations | bursts | evaluations | largest step mm "
-    "| result |\n"
-    "|---|---|---|---|---|---|---|---|"
+    "| case | wall s | CPU s | setup s | outside L-BFGS-B s | iterations | bursts "
+    "| evaluations | largest step mm | result |\n"
+    "|---|---|---|---|---|---|---|---|---|---|"
 )
 
 ROUTE_KEEPOUT = 0.7
@@ -272,15 +328,24 @@ def connect(board: CommitBoard) -> None:
     setattr(pipeline.kipy, "KiCad", kicad)  # noqa: B010
 
 
+def smooth_board(
+    board: CommitBoard, options: pipeline.SmoothOptions
+) -> pipeline.OptimizerReport:
+    """Run `kibends smooth` with `options` on `board` through a fake KiCad;
+    returns the optimizer's report."""
+    connect(board)
+    reports: list[pipeline.OptimizerReport] = []
+    pipeline.run_smooth(options, reports.append)
+    (report,) = reports
+    return report
+
+
 def plane_run(plane: Plane) -> Callable[[], tuple[int, str]]:
     board = plane.board()
     options = replace(smooth_options(), dry_run=True)
 
     def go() -> tuple[int, str]:
-        connect(board)
-        reports: list[pipeline.OptimizerReport] = []
-        pipeline.run_smooth(options, reports.append)
-        (report,) = reports
+        report = smooth_board(board, options)
         moves = {v.id: math.dist(v.start, v.end) for v in report.vias}
         rows = {
             "outer row": [m for k, m in moves.items() if plane.on_edge(k)],
@@ -396,17 +461,19 @@ def length(points: FloatArray) -> float:
 def scenarios_table() -> None:
     print(HEADER)
     total = Count()
-    wall = cpu = 0.0
+    wall = cpu = setup = outside = 0.0
     iterations = 0
     for name, case in scenario_cases().items():
         m = measure(name, case)
         wall, cpu, iterations = wall + m.wall, cpu + m.cpu, iterations + m.iterations
+        setup, outside = setup + m.setup, outside + m.outside
         total.bursts += m.count.bursts
         total.evaluations += m.count.evaluations
         total.step = max(total.step, m.count.step)
     print(
-        f"| **all {len(scenario_cases())}** | {wall:.2f} | {cpu:.2f} | {iterations} "
-        f"| {total.bursts} | {total.evaluations} | {total.step:.2f} | |"
+        f"| **all {len(scenario_cases())}** | {wall:.2f} | {cpu:.2f} | {setup:.2f} "
+        f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
+        f"| {total.step:.2f} | |"
     )
 
 
@@ -494,6 +561,159 @@ def crossed() -> None:
             measure(name, crossed_run(crossed_grid(count, pitch, routes)))
 
 
+BUS_TRACKS = 10
+BUS_PITCH = 0.6
+"""How far apart a bus's tracks lie, mm."""
+BUS_JITTER = 0.03
+"""How far off its pitch an unevenly placed track lies at most, mm."""
+BUS_SEED = 1
+"""Seeds the uneven tracks' offsets, so that every run places them alike."""
+BUS_REPULSION = 0.5
+SHORT_CHAINS = 262
+PAD_TRACK_LENGTH = 30.0
+"""How far the tracks between the pad rows run, mm."""
+PAD_TRACK_PITCH = 2.0
+"""How far apart they lie, mm."""
+PAD_TRACK_JOG = 0.3
+"""How far each of them steps aside over its middle third, mm."""
+PAD_PITCH = 1.0
+PAD_ROW_OFFSET = 1.15
+"""How far a row of pads lies from the track before it, mm."""
+
+
+def bus_rows(count: int, jitter: float) -> list[float]:
+    """Where `count` tracks BUS_PITCH apart lie, each up to `jitter` mm off
+    its place, the same in every run."""
+    off = np.random.default_rng(BUS_SEED).uniform(-jitter, jitter, count)
+    return [i * BUS_PITCH + float(o) for i, o in enumerate(off)]
+
+
+def z_bus(jitter: float) -> list[ChainInput]:
+    """BUS_TRACKS tracks of as many nets, each 30 mm across with a diagonal
+    6 mm down in between, nested, in free space."""
+    return [
+        scenarios.selected(
+            f"S{i}",
+            f"S{i}",
+            FreeSpace(),
+            (0.0, y),
+            (10.0 - y, y),
+            (16.0 - y, y + 6.0),
+            (30.0, y + 6.0),
+        )
+        for i, y in enumerate(bus_rows(BUS_TRACKS, jitter))
+    ]
+
+
+def short_chains() -> list[ChainInput]:
+    """SHORT_CHAINS chains of as many nets, each 5 mm across with a 0.15 mm
+    bump, unevenly placed, in free space."""
+    return [
+        scenarios.selected(
+            f"S{i}", f"S{i}", FreeSpace(), (0.0, y), (2.5, y + 0.15), (5.0, y)
+        )
+        for i, y in enumerate(bus_rows(SHORT_CHAINS, BUS_JITTER))
+    ]
+
+
+def pad_rows_board() -> CommitBoard:
+    """BUS_TRACKS selected tracks of as many nets, each with a jog over its
+    middle third, and rows of pads, each pad of its own net: one row between
+    every two tracks and one beyond each outer track."""
+    tracks: list[Track] = []
+    for i in range(BUS_TRACKS):
+        net = f"S{i}"
+        y = i * PAD_TRACK_PITCH
+        jogged = y + PAD_TRACK_JOG
+        corners = [
+            (0.0, y),
+            (10.0, y),
+            (10.6, jogged),
+            (20.0, jogged),
+            (20.6, y),
+            (PAD_TRACK_LENGTH, y),
+        ]
+        tracks += [
+            kipy_track(f"{net}_{k}", net, start, end)
+            for k, (start, end) in enumerate(itertools.pairwise(corners))
+        ]
+    pads = [
+        kipy_pad(
+            f"p{row}_{k}",
+            f"P{row}_{k}",
+            k * PAD_PITCH,
+            row * PAD_TRACK_PITCH + PAD_ROW_OFFSET,
+        )
+        for row in range(-1, BUS_TRACKS)
+        for k in range(round(PAD_TRACK_LENGTH / PAD_PITCH) + 1)
+    ]
+    return CommitBoard(selection=list(tracks), tracks=list(tracks), pads=pads)
+
+
+def bus_note(
+    termination: str, before: float, after: float, abnormal: Sequence[tuple[str, int]]
+) -> str:
+    """A bus run's outcome, its chains' summed length after and before, mm,
+    and how many of its bursts L-BFGS-B ended abnormally."""
+    bursts = sum(n for _, n in abnormal)
+    return (
+        f"{termination}; chains {after:.3f} mm, from {before:.3f} mm; "
+        f"{bursts} abnormal burst{'' if bursts == 1 else 's'}"
+    )
+
+
+def bus_run(chains: Sequence[ChainInput], settings: OptimizerSettings) -> Case:
+    params = replace(scenarios.PARAMS, repulsion=BUS_REPULSION)
+
+    def go() -> tuple[int, str]:
+        result = optimize_chains(chains, params, settings)
+        return result.iterations, bus_note(
+            result.termination.value,
+            sum(length(c.centreline.points) for c in chains),
+            sum(length(c.polyline) for c in result.chains),
+            result.abnormal,
+        )
+
+    return go
+
+
+def pad_rows_run() -> Case:
+    board = pad_rows_board()
+    options = replace(smooth_options(), dry_run=True)
+
+    def go() -> tuple[int, str]:
+        report = smooth_board(board, options)
+        return report.iterations, bus_note(
+            report.termination.value,
+            sum(c.before.length for c in report.chains),
+            sum(c.after.length for c in report.chains),
+            report.abnormal,
+        )
+
+    return go
+
+
+def bus_cases() -> dict[str, Case]:
+    settings = smooth_options().settings
+    return {
+        "10 Z tracks at 0.6 mm, equal pitch": bus_run(z_bus(0.0), settings),
+        "10 Z tracks at 0.6 mm, pitch varied by 0.03 mm": bus_run(
+            z_bus(BUS_JITTER), settings
+        ),
+        "262 chains of 5 mm, 1 iteration": bus_run(
+            short_chains(), replace(settings, max_iterations=1)
+        ),
+        "10 tracks between pad rows at 1 mm": pad_rows_run(),
+    }
+
+
+def bus() -> None:
+    print(HEADER)
+    for name, case in bus_cases().items():
+        if ARGS.case in name:
+            measure(name, case)
+
+
 RETURN_CASES = {
     "unselected GND via 1.5 mm across the route": ((5.0, 1.5), False),
     "unselected GND via 1.5 mm diagonally": ((6.06, 1.06), False),
@@ -557,6 +777,9 @@ def main() -> None:
         print()
     if ARGS.only in (None, "scenarios"):
         scenarios_table()
+        print()
+    if ARGS.only in (None, "bus"):
+        bus()
         print()
     if ARGS.only in (None, "return"):
         fields = EnergyParams.__dataclass_fields__
