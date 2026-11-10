@@ -1,5 +1,6 @@
 """Measure the optimizer: wall and CPU time, the seconds of setup and those
-after it outside L-BFGS-B, outer iterations, bursts, energy evaluations and
+after it outside L-BFGS-B, outer iterations, bursts, energy evaluations, the
+times a layer's neighbour list found its pairs (`seen.NeighbourList`) and
 the farthest move in one burst on stitched ground planes, on the synthetic
 scenarios and on buses of parallel tracks, and where return vias settle.
 
@@ -111,9 +112,10 @@ from kibends.bursts import (  # noqa: E402
     Revert,
 )
 from kibends.chain import NM_PER_MM  # noqa: E402
-from kibends.energy import EnergyParams, FloatArray  # noqa: E402
+from kibends.energy import EnergyParams, FloatArray, IntArray  # noqa: E402
 from kibends.neighbours import ChainInput  # noqa: E402
 from kibends.optimize import optimize, optimize_chains  # noqa: E402
+from kibends.seen import Pairs, Seen  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
 
@@ -128,6 +130,8 @@ SET_UP = "Optimizer set up"
 class Count:
     bursts: int = 0
     evaluations: int = 0
+    searches: int = 0
+    """How many times a layer's neighbour list found its pairs."""
     step: float = 0.0
     """The farthest any vertex or via centre moved in one burst, mm."""
     ready: float | None = None
@@ -143,6 +147,19 @@ def counted() -> Generator[Count]:
     them, and time its setup and L-BFGS-B."""
     count = Count()
     real = optimize_module.run_burst
+    candidates = Seen.candidates
+
+    def searched(
+        seen: Seen,
+        n: int,
+        points: FloatArray,
+        owner: IntArray,
+        flat: FloatArray,
+        reach: float,
+        slack: float,
+    ) -> Pairs:
+        count.searches += 1
+        return candidates(seen, n, points, owner, flat, reach, slack)
 
     def heard(message: str) -> None:
         if count.ready is None and message.startswith(SET_UP):
@@ -177,11 +194,13 @@ def counted() -> Generator[Count]:
         return result
 
     setattr(optimize_module, "run_burst", burst)  # noqa: B010
+    setattr(Seen, "candidates", searched)  # noqa: B010
     sink = logger.add(heard, level="INFO", format="{message}")
     try:
         yield count
     finally:
         logger.remove(sink)
+        setattr(Seen, "candidates", candidates)  # noqa: B010
         setattr(optimize_module, "run_burst", real)  # noqa: B010
 
 
@@ -211,7 +230,7 @@ def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
     print(
         f"| {name} | {wall:.2f} | {cpu:.2f} | {setup:.2f} | {outside:.2f} "
         f"| {iterations} | {count.bursts} | {count.evaluations} "
-        f"| {count.step:.2f} | {note} |",
+        f"| {count.searches} | {count.step:.2f} | {note} |",
         flush=True,
     )
     return measured
@@ -219,8 +238,8 @@ def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
 
 HEADER = (
     "| case | wall s | CPU s | setup s | outside L-BFGS-B s | iterations | bursts "
-    "| evaluations | largest step mm | result |\n"
-    "|---|---|---|---|---|---|---|---|---|---|"
+    "| evaluations | list searches | largest step mm | result |\n"
+    "|---|---|---|---|---|---|---|---|---|---|---|"
 )
 
 ROUTE_KEEPOUT = 0.7
@@ -484,11 +503,12 @@ def scenarios_table() -> None:
         setup, outside = setup + m.setup, outside + m.outside
         total.bursts += m.count.bursts
         total.evaluations += m.count.evaluations
+        total.searches += m.count.searches
         total.step = max(total.step, m.count.step)
     print(
         f"| **all {len(scenario_cases())}** | {wall:.2f} | {cpu:.2f} | {setup:.2f} "
         f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
-        f"| {total.step:.2f} | |"
+        f"| {total.searches} | {total.step:.2f} | |"
     )
     if not hasattr(scenarios, "starts_inside"):
         print("starts-inside: skipped, the tree has no scenarios.starts_inside")

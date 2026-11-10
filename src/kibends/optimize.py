@@ -279,11 +279,6 @@ def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
     return earlier - lowest_energies[-1] <= settings.stall_tolerance
 
 
-# How far, mm, the points of a member and the pieces it sees may move before
-# it finds its neighbours again (`NeighbourList`): a wider skin lists more
-# pairs at every evaluation, a narrower one searches more often.
-LIST_SKIN = 0.05
-
 # How deep inside the other members' and vias' clearance, mm, a vertex lies
 # when resampling keeps it where it is (`_Problem.pressed`), so that one that
 # only grazes a neighbour's clearance resamples as any other.
@@ -1420,7 +1415,7 @@ class _Problem:
         if seen is None:
             seen = self.seeing(layout.starts)
         masks = self.masks
-        neighbours = NeighbourList(seen, self.reach, LIST_SKIN) if listed else None
+        neighbours = NeighbourList(seen, self.reach) if listed else None
 
         def objective(x: FloatArray) -> tuple[float, FloatArray]:
             polylines, positions = layout.unflatten(x)

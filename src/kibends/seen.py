@@ -607,26 +607,54 @@ def _complete[T](answers: Sequence[T | None]) -> list[T]:
 _ROUND_OFF = 1e-9
 
 
+SKIN_LEAST = 0.05
+"""The skin each layer of a `NeighbourList` starts with, mm."""
+SKIN_MOST = 0.15
+"""The widest skin a layer of a `NeighbourList` takes, mm."""
+
+
 @dataclass
 class _Found:
     points: FloatArray
     ends: FloatArray
     pairs: Pairs
+    skin: float
 
 
 class NeighbourList:
     """A Verlet list: per layer, the pairs of its members' quadrature points
     and the pieces they see of the others (`Seen`) that can answer
     each other while every one of those points and every vertex of the
-    edges they see stays within `skin` of where it was when the pairs were
-    found. Once any has moved farther, the layer finds its pairs again where
-    they are. Either way the energy is the one a search over every piece
-    gives; the list only spares the search."""
+    edges they see stays within the layer's skin of where it was when the
+    pairs were found. Once any has moved farther, the layer finds its pairs
+    again where they are. Either way the energy is the one a search over
+    every piece gives, whatever the skin: a point's distance to a piece
+    changes by at most its own move plus the larger move of the piece's
+    ends, so the pairs are found with twice the skin to spare. The list
+    only spares the search.
 
-    def __init__(self, seen: Seen, reach: float, skin: float) -> None:
+    A layer's skin starts at SKIN_LEAST and, each time the layer finds its
+    pairs again, becomes how far its points and pieces had moved since it
+    last found them, at most SKIN_MOST. Pieces that moved that far are
+    likely to move as far again, so a list lasts about as many evaluations
+    whether they move far or barely, and one made for a burst that hardly
+    moves stays small. A wider skin costs at every evaluation: a pair is
+    listed while its edge may come within SMOOTH_REACH of the point's
+    nearest, so the band listed behind the nearest is SMOOTH_REACH plus four
+    skins wide. A search costs about six evaluations' answers.
+
+    Measured with `./run bench --only bus`, a fixed skin of 0.2 mm listed
+    more than twice the pairs of SKIN_LEAST and ran no faster than one of
+    0.1 mm. SKIN_MOST ran fastest on the Z-shaped buses (`z_bus`), whose
+    tracks move far. It ran a tenth slower than a fixed 0.1 mm on 262
+    short chains at 0.6 mm pitch (`short_chains`), where the band reaches
+    a second track behind the nearest. On a real board of 100 chains and
+    96 moving vias, a 60 s run took 81 searches in 166 evaluations instead
+    of 170, and its objective 58.3 s instead of 70.8 s."""
+
+    def __init__(self, seen: Seen, reach: float) -> None:
         self.seen = seen
         self.reach = reach
-        self.skin = skin
         self._found: list[_Found | None] = [None] * len(seen.layers)
 
     def pairs(
@@ -638,19 +666,17 @@ class NeighbourList:
         edges = self.seen.layers[n].edges
         ends = flat[np.concatenate([edges, edges + 1])]
         found = self._found[n]
-        if (
-            found is None
-            or found.points.shape != points.shape
-            or _moved(points, found.points) > self.skin
-            or _moved(ends, found.ends) > self.skin
-        ):
-            # A point's distance to a piece changes by at most its own move
-            # plus the larger move of the piece's ends.
-            pairs = self.seen.candidates(
-                n, points, owner, flat, self.reach, 2 * self.skin
-            )
-            found = self._found[n] = _Found(points, ends, pairs)
-        return found.pairs
+        skin = SKIN_LEAST
+        if found is not None and found.points.shape == points.shape:
+            moved = max(_moved(points, found.points), _moved(ends, found.ends))
+            if moved <= found.skin:
+                return found.pairs
+            skin = min(moved, SKIN_MOST)
+        # A point's distance to a piece changes by at most its own move plus
+        # the larger move of the piece's ends.
+        pairs = self.seen.candidates(n, points, owner, flat, self.reach, 2 * skin)
+        self._found[n] = _Found(points, ends, pairs, skin)
+        return pairs
 
 
 def _moved(points: FloatArray, start: FloatArray) -> float:
