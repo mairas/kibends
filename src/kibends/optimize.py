@@ -61,9 +61,11 @@ net's pads (`obstacles.own_net_stops`). The members of other nets see it as
 a disc on each of its layers, so that where the obstacle term pulls on it,
 the gradient reaches its centre too. A section and a via see each other as the section's
 centreline as wide as `PairBlock.chain`. A stitching via carries no chain
-ends, so with no length term only repulsion moves it. A moving via ties the
-layers it spans into one problem, every member on them included, since moving vias are
-through vias and share every layer.
+ends, so with no length term only repulsion moves it. The layers that any
+moving via spans make one problem, every member on them included, whether
+or not the vias' spans overlap; a via sees only what lies on its layers,
+and two vias keep their distance only where their spans overlap
+(`obstacles.via_via_inflation`).
 
 The board's vias that are none of the run's, each a ground via or a
 regular one (`vias.StaticVia`), reach `optimize_chains` as `static_vias`;

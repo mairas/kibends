@@ -35,7 +35,7 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -51,7 +51,6 @@ from kipy.proto.board.board_types_pb2 import (
     BoardLayer,
     PadType,
     RuleAreaSettings,
-    ViaType,
     ZoneType,
 )
 from kipy.proto.common import ApiStatusCode
@@ -128,15 +127,6 @@ class Track:
     centreline: LineString
 
 
-class ViaKind(enum.Enum):
-    THROUGH = "through"
-    BLIND_BURIED = "blind/buried"
-    BLIND = "blind"
-    BURIED = "buried"
-    MICRO = "micro"
-    UNKNOWN = "unknown"
-
-
 @dataclass(frozen=True, eq=False)
 class Via:
     """A via, with copper and a hole on the layers of its span."""
@@ -146,7 +136,6 @@ class Via:
     position: Point2
     diameter: float
     drill: float
-    kind: ViaKind
     span: tuple[str, str]
     """The copper layers its drill starts and ends on."""
     locked: bool = False
@@ -162,7 +151,7 @@ class Via:
         other_low, other_high = other._range
         return low <= other_high and other_low <= high
 
-    @property
+    @cached_property
     def _range(self) -> tuple[int, int]:
         start, end = (layer_from_canonical_name(s) for s in self.span)
         return min(start, end), max(start, end)
@@ -440,8 +429,8 @@ class BoardSnapshot:
     netclass sets one, in mm."""
     via_contacts: Mapping[str, tuple[ViaContact, ...]]
     """By via id, for the vias asked for: the same-net copper touching each,
-    or the copper it carries, on any copper layer, the via itself and
-    copper zones left out."""
+    or the copper it carries, on any copper layer it spans, the via itself
+    and copper zones left out."""
     via_zones: Mapping[str, tuple[ViaZone, ...]]
     """By via id, for the vias asked for: the copper zones of its net that
     may connect to it, with the regions it stays inside; empty when none
@@ -839,15 +828,6 @@ def _read_track(t: kbt.Track | kbt.ArcTrack) -> Track:
     )
 
 
-_VIA_KINDS = {
-    ViaType.VT_THROUGH: ViaKind.THROUGH,
-    ViaType.VT_BLIND_BURIED: ViaKind.BLIND_BURIED,
-    ViaType.VT_BLIND: ViaKind.BLIND,
-    ViaType.VT_BURIED: ViaKind.BURIED,
-    ViaType.VT_MICRO: ViaKind.MICRO,
-}
-
-
 def via_from_kipy(v: kbt.Via) -> Via:
     drill = v.padstack.drill
     span = (drill.start_layer, drill.end_layer)
@@ -861,7 +841,6 @@ def via_from_kipy(v: kbt.Via) -> Via:
         position=_mm(v.position),
         diameter=v.diameter / NM_PER_MM,
         drill=v.drill_diameter / NM_PER_MM,
-        kind=_VIA_KINDS.get(v.type, ViaKind.UNKNOWN),
         span=(canonical_name(span[0]), canonical_name(span[1])),
         locked=v.locked,
     )
@@ -1019,6 +998,7 @@ class _BoardCopper:
 
 class _Copper(NamedTuple):
     net: str
+    layer: str
     geometry: BaseGeometry
     reach: float
     """How far the copper extends beyond `geometry`: a track's half width."""
@@ -1031,8 +1011,10 @@ def _via_contacts(
     copper: _BoardCopper,
     enabled: set[BoardLayer.ValueType] | None,
 ) -> dict[str, tuple[ViaContact, ...]]:
-    """The same-net copper touching any of the discs of each selected via on
-    any copper layer.
+    """The same-net copper on a copper layer each selected via spans that
+    touches any of its discs: its ring, or the disc of a chain end it
+    carries. A carried end's disc has no layer, so copper on any layer the
+    via spans counts against it, not only copper on the end's own layer.
 
     Pad copper on layers the snapshot did not read costs one request per
     such layer, asked only for pads of the vias' nets, and one for the
@@ -1055,31 +1037,34 @@ def _via_contacts(
     found = [
         _Copper(
             t.net.name,
+            layer,
             track.centreline,
             track.width / 2,
-            ViaContact(f"track {track.id} on {canonical_name(t.layer)}", track.id),
+            ViaContact(f"track {track.id} on {layer}", track.id),
         )
         for t in copper.tracks
         if t.net.name in nets
-        for track in (_read_track(t),)
+        for track, layer in ((_read_track(t), canonical_name(t.layer)),)
     ]
     found += [
-        _Copper(p.net.name, shape, 0.0, ViaContact(f"pad {names[p.id.value]}"))
+        _Copper(p.net.name, layer, shape, 0.0, ViaContact(f"pad {names[p.id.value]}"))
         for p in of_nets
-        for on_layer in pad_shapes.values()
+        for layer, on_layer in pad_shapes.items()
         if (shape := on_layer.get(p.id.value)) is not None
     ]
     found += [
         _Copper(
             s.net.name,
+            layer,
             geometry,
             0.0,
-            ViaContact(f"copper shape {s.id.value} on {canonical_name(s.layer)}"),
+            ViaContact(f"copper shape {s.id.value} on {layer}"),
         )
         for s in copper.shapes
         if s.net.name in nets
         and is_copper_layer(s.layer)
         and (geometry := _shape_geometry(s)) is not None
+        for layer in (canonical_name(s.layer),)
     ]
 
     def touching(via: Via, discs: Sequence[Disc]) -> set[ViaContact]:
@@ -1087,6 +1072,7 @@ def _via_contacts(
             c.contact
             for c in found
             if c.net == via.net
+            and via.reaches(c.layer)
             and any(
                 c.geometry.distance(Point(d.centre)) <= d.radius + c.reach
                 for d in discs
@@ -1096,6 +1082,7 @@ def _via_contacts(
             for other in copper.vias
             if other.net == via.net
             and other.id != via.id
+            and other.shares_layer(via)
             and any(
                 math.dist(other.position, d.centre) <= d.radius + other.diameter / 2
                 for d in discs

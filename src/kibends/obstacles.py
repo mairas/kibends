@@ -19,7 +19,9 @@ where its zones connect it (`containment`) and the fabrication rules
 within its net, hole-to-hole and pad overlap (`own_net_stops`). On a
 zone's layers the via also keeps the zone's clearance and margin from
 other-net copper where that exceeds the netclass rule (`_zone_inflation`),
-so the refill reconnects it wherever the other copper ends up.
+so the refill reconnects it wherever the other copper ends up. Two vias
+keep their distance, and a via's zones count against another, only where
+their spans overlap (`via_via_inflation`).
 
 With ground nets, the vias standing still that a moving via pairs with,
 ground with regular or of two ground nets (`vias.pairs_with`), leave its
@@ -1248,18 +1250,32 @@ def via_via_inflation(
 ) -> float | None:
     """The distance `via`'s centre keeps from `other`'s, mm, as
     `build_via_obstacles` counts a via on the board; None if no rule
-    applies.
+    applies, as for two vias whose spans do not overlap.
 
     Rings and holes of another net keep the copper and hole clearances,
     holes of any net keep hole-to-hole, and rings of another net the
     clearance and margin of `zones`, the zones `via` stays inside, and of
-    `other_zones`, those `other` stays inside: given both, the distance is
-    the same both ways. Moving vias are through vias, so every pair shares
-    a layer, those of the zones included."""
+    `other_zones`, those `other` stays inside, each on the layers both
+    vias span: given both, the distance is the same both ways."""
+    if not via.shares_layer(other):
+        return None
     keeper = _via_keeper(
-        via, clearance_of(via.net), hole_clearance, hole_to_hole, zones
+        via,
+        clearance_of(via.net),
+        hole_clearance,
+        hole_to_hole,
+        _zones_reaching(zones, other),
     )
-    return _via_inflation(keeper, other, clearance_of, zones=other_zones)
+    return _via_inflation(
+        keeper, other, clearance_of, zones=_zones_reaching(other_zones, via)
+    )
+
+
+def _zones_reaching(zones: Iterable[ViaZone], via: Via) -> tuple[ViaZone, ...]:
+    """The zones among `zones` on a layer `via` spans. A zone's `layers`
+    hold only layers its own via spans, so these are the zones on the
+    layers both vias span, as `zones_on` gives them for those layers."""
+    return tuple(z for z in zones if any(map(via.reaches, z.layers)))
 
 
 def via_chain_inflation(

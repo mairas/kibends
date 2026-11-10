@@ -1,10 +1,13 @@
 """Decide which selected vias may move with the chains they join.
 
-A selected via moves only when it is an unlocked through via, every copper
-item touching it on any layer is the end of a selected chain or a zone of
-its net, no other copper touches those ends, and either at least two such
-ends meet it or none does and a zone of its net reaches it: a stitching
-via, which carries no chain and moves only where other copper crowds it. A
+A selected via moves only when it is unlocked, every copper item touching
+it on a layer it spans is the end of a selected chain or a zone of its
+net, no other copper touches those ends, and either at least two such ends
+meet it or none does and a zone of its net reaches it: a stitching via,
+which carries no chain and moves only where other copper crowds it.
+Through, blind, buried and micro vias move alike, each on the layers of its
+span: copper on a layer it does not reach neither moves with it nor holds
+it (`carried_ends`, `snapshot.Via.reaches`). A
 via that moves stays inside the zones of its net whose region reaches its
 ring, taken together on each layer where one does (`zone_unions`): its
 centre stays inside the region of one of them by that zone's margin
@@ -51,7 +54,6 @@ from kibends.snapshot import (
     Disc,
     Via,
     ViaContact,
-    ViaKind,
     ViaZone,
     ZoneUnion,
     zone_unions,
@@ -174,17 +176,19 @@ def pairs_with(via: Via, ground: bool, other: StaticVia) -> bool:
 
 
 def may_move(via: Via) -> bool:
-    """Whether `via` is of a kind that moves: an unlocked through via."""
-    return not via.locked and via.kind is ViaKind.THROUGH
+    """Whether `via` may move: it is unlocked."""
+    return not via.locked
 
 
 def carried_ends(via: Via, chains: Sequence[Chain]) -> tuple[ChainEnd, ...]:
-    """The ends of `chains` whose copper overlaps `via`'s, in chain order."""
+    """The ends of `chains` on layers `via` spans whose copper overlaps
+    `via`'s, in chain order."""
     return tuple(
         ChainEnd(k, last)
         for k, chain in enumerate(chains)
         for last, point in ((False, chain.points[0]), (True, chain.points[-1]))
         if chain.net == via.net
+        and via.reaches(chain.layer)
         and math.dist(point, via.position) <= (via.diameter + chain.width) / 2
     )
 
@@ -257,8 +261,6 @@ def _fixed_reason(
 ) -> str | None:
     if via.locked:
         return "it is locked"
-    if via.kind is not ViaKind.THROUGH:
-        return f"it is a {via.kind.value} via; only through vias move"
     if strangers:
         verb = "connects" if len(strangers) == 1 else "connect"
         return f"{', '.join(strangers)} {verb} to it"
