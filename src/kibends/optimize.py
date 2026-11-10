@@ -372,7 +372,8 @@ def optimize_chains(
     the setup time and the starting length and energy, saying "again" when
     it repeats a run from `start` with sections held. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
-    passed since `started` or the last INFO line.
+    passed since `started` or the last INFO line. Each burst logs what it
+    cost at DEBUG only (`_Problem.step`).
     """
     again = start is not None
     logger.info(
@@ -844,6 +845,14 @@ class _ProblemBurst:
     """Per via, the edges at the ends it carries that newly crossed, and
     the times it ended newly inside its clearance."""
     abnormal: bool
+    iterations: int = 0
+    """The L-BFGS-B iterations it ran."""
+    evaluations: int = 0
+    """The times L-BFGS-B evaluated the energy."""
+    message: str = ""
+    """What L-BFGS-B says ended it; empty for a burst that did not run it."""
+    evaluating: float = 0.0
+    """Seconds those evaluations took."""
 
 
 class _Problem:
@@ -1328,7 +1337,13 @@ class _Problem:
 
     def step(self) -> float:
         """One burst of every member and via together; returns its largest
-        change of a shape or a via's centre."""
+        change of a shape or a via's centre.
+
+        Logs at DEBUG what the burst cost: L-BFGS-B's iterations and energy
+        evaluations, the seconds those evaluations took and the seconds of
+        the rest of the step, by the process's clock and not the run's, and
+        what L-BFGS-B says ended it."""
+        began = time.perf_counter()
         settings = self.settings
         # The change counts from the shapes as given, so that resampling the
         # inputs does not count as moving them.
@@ -1406,6 +1421,13 @@ class _Problem:
                 (not cut_short and change < settings.settled_change)
                 or stalled(self.lowest, settings)
             )
+        )
+        rest = time.perf_counter() - began - burst.evaluating
+        logger.debug(
+            f"Burst of {self.description}: {burst.iterations} L-BFGS-B iterations, "
+            f"{burst.evaluations} evaluations, {burst.evaluating:.3f} s in "
+            f"evaluations, {rest:.3f} s in the rest of the step, "
+            f'ended with "{burst.message}"'
         )
         return change
 
@@ -1554,7 +1576,16 @@ class _Problem:
         def revert(x: FloatArray) -> int:
             return revert_until_clear(x, x0, check)[1]
 
-        result = run_burst(objective, x0, revert, self.settings)
+        evaluating = 0.0
+
+        def timed(x: FloatArray) -> tuple[float, FloatArray]:
+            nonlocal evaluating
+            began = time.perf_counter()
+            answer = objective(x)
+            evaluating += time.perf_counter() - began
+            return answer
+
+        result = run_burst(timed, x0, revert, self.settings)
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
         if result.abnormal or not found:
@@ -1568,6 +1599,10 @@ class _Problem:
             [close for _, close in counted.members],
             list(counted.vias),
             result.abnormal,
+            result.iterations,
+            result.evaluations,
+            result.message,
+            evaluating,
         )
 
 
