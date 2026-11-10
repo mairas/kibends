@@ -59,10 +59,10 @@ from kibends.obstacles import (
     via_via_inflation,
     zones_on,
 )
-from kibends.optimize import LIST_SKIN, PRESSED_DEPTH
+from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
 from kibends.polylines import measure, violations
-from kibends.seen import NeighbourList, Pieces, Seen, Track, Viewer
+from kibends.seen import SKIN_LEAST, NeighbourList, Pieces, Seen, Track, Viewer
 from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
@@ -226,10 +226,12 @@ def _fan_out(net: str, end: FloatArray, drop: float) -> ChainInput:
 DISTANCE_ROUNDING = 1e-12
 """How far a distance the shared search gives may part from a member's
 own field's, which takes the same differences, mm."""
-JITTER = 0.03
-"""How far each variable moves from the start, at most, mm: past the
-neighbour list's skin, so that it finds its pairs again."""
-WITHIN_SKIN = 0.2 * LIST_SKIN
+JITTER = SKIN_LEAST
+"""How far each variable moves from the start, at most, mm: up to
+SKIN_LEAST times the square root of two for a vertex, past the skin a
+neighbour list starts with, so that it finds its pairs again with a
+wider skin."""
+WITHIN_SKIN = 0.2 * SKIN_LEAST
 """How far each variable moves from the start, at most, mm, for a state the
 neighbour list answers with the pairs it found at the start."""
 
@@ -584,7 +586,7 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
         layout = problem.layout(problem.points)
         seen = seen_parts(problem.members, layout.starts, problem.reach, problem.rings)
         masks = problem.energy_masks(problem.masks)
-        listed = NeighbourList(seen, problem.reach, LIST_SKIN)
+        listed = NeighbourList(seen, problem.reach)
         for jitter in (0.0, WITHIN_SKIN, JITTER):
             x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
             polylines, positions = layout.unflatten(x)
