@@ -84,20 +84,24 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
-   when it is an unlocked through via, at least two selected chain ends meet
-   it, and no other copper touches it or those chain ends on any layer,
-   except a zone of its net. A selected stitching via, an unlocked through
-   via that no selected track ends at and no copper but a zone of its net
-   touches, moves too, also when the selection holds no tracks but locked
-   ones: it has no length to shorten, so only the copper around it moves
-   it. Copper within `--range` of its clearance pushes it
-   (a selected track cutting a corner, a via of another net, a pad or other
+   when it is unlocked, at least two selected chain ends meet it, and no
+   other copper touches it or those chain ends on a layer it spans, except a
+   zone of its net. Through, blind, buried and micro vias move alike, each
+   on the layers it spans: a track, pad or other copper on a layer it does
+   not reach neither moves with it nor holds it. Stacked vias of one net,
+   such as a micro via on a buried via, touch on the layer they share, so
+   each holds the other where it is, selected or not. A selected stitching
+   via, an unlocked via that no selected track ends at and no copper but a
+   zone of its net touches, moves too, also when the selection holds no
+   tracks but locked ones: it has no length to shorten, so only the copper
+   around it moves it. Copper within `--range` of its clearance pushes it (a
+   selected track cutting a corner, a via of another net, a pad or other
    static copper of another net), and it backs off until the pushes balance
    or nothing is in range. A ground via and a via of any other net within
    `--attraction-range` also pull each other, and ground vias of one net
-   push each other apart (see [Return vias](#return-vias)). Other copper
-   of its own net does not push it, and the edge of its zone, the holes of
-   its net's vias and pads and its net's pads only stop it. One that no
+   push each other apart (see [Return vias](#return-vias)). Other copper of
+   its own net does not push it, and the edge of its zone, the holes of its
+   net's vias and pads and its net's pads only stop it. One that no
    zone of its net reaches stays where it is. A via in a plane stays inside the zones of its net on each layer
    where a zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
@@ -122,17 +126,16 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    through narrow necks are not modelled: a via can end up in a part of the
    zone the refill leaves out, in a gap of a hatch, or connected only
    through a neck, which only KiCad's DRC
-   sees. Any other selected via stays where it is; a
-   debug log line names it and the reason: it is locked, it is not a
-   through via, other copper touches it or a chain end it would carry (an
-   unselected track, a pad, a copper shape or another via of its net, on
-   any layer), it sits at the edge of a zone's region (closer to it than
-   that margin, so moving might lose a connection it has now), only one
-   selected track ends at it, or none does and no zone of its net reaches
-   it. A moving via that starts closer to other copper than its clearance
-   moves out of it like any other (see below). Teardrops are ignored:
-   KiCad reapplies them on the next refill. Selected pads and
-   other items are ignored.
+   sees. Any other selected via stays where it is; a debug log line names it
+   and the reason: it is locked, other copper touches it or a chain end it
+   would carry (an unselected track, a pad, a copper shape or another via of
+   its net, on a layer it spans), it sits at the edge of a zone's region
+   (closer to it than that margin, so moving might lose a connection it has
+   now), only one selected track ends at it, or none does and no zone of its
+   net reaches it. A moving via that starts closer to other copper than its
+   clearance moves out of it like any other (see below). Teardrops are
+   ignored: KiCad reapplies them on the next refill. Selected pads and other
+   items are ignored.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
    set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
@@ -155,6 +158,9 @@ including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A moving
 via that starts inside its clearance or inside such a rule area moves out
 of it where there is room, and never ends deeper inside than it started.
+Two vias keep their clearances and hole-to-hole distance from each other
+only where their spans overlap; KiCad's DRC judges any stricter rule for
+blind, buried or micro vias.
 Vias of one net, moving or not, keep only the hole-to-hole distance
 from a moving via, their rings free to overlap. Vias of one net that is
 not a ground net do not repel each other, so a grid of selected stitching
