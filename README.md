@@ -357,11 +357,15 @@ that therefore spreads, and its vias move into gaps in it, as far as the
 zones they connect to let them. Ground vias of two ground nets keep their
 clearance and repel each other as other copper does.
 
-A selected grid of ground stitching vias that moving signal vias pass
-through can take up to about seven times as many iterations to settle as
-with `--attraction 0`, as the vias creep toward their balance, and the
-chains on their layers wait for them, since moving vias tie those layers
-into one problem.
+A selected grid of ground stitching vias that signal routes pass through
+moves out of their way, and the chains on their layers wait for it, since
+moving vias tie those layers into one problem. On synthetic two-layer
+planes with 29 to 47 stitching vias the routes ended up to a fifth
+shorter than with the stitching vias left unselected, and the runs took
+1.8 to 5.8 times as long, the most with the most vias. Once the routes
+stop shortening, the vias may still creep toward their balance by tens
+of micrometres a burst for little gain, so a problem's stall check
+allows one more `--stall-tolerance` for each of its moving vias.
 
 `--attraction 0` turns the pull and the ground vias' push off together:
 ground nets are not looked for, `--ground-nets` is ignored, and vias of one
