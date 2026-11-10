@@ -24,10 +24,10 @@ DEFAULT_ATTRACTION_RANGE = 3.0
 """Centre distance at which a ground via and a regular one stop attracting
 each other, mm. Beyond the 1.8 mm over which two 0.6 mm ground vias of one
 net with 0.2 mm clearance push each other at the default range, so that
-one pushed out by its neighbours is still drawn back, and far enough that
-a pair keeping up to 1.5 mm between centres still has a neutral distance;
-2.5 mm and 4 mm move that distance by 0.02 mm, and stitching grids took
-about as many iterations to settle at ranges from 2 mm to 3 mm."""
+one pushed out by its neighbours is still drawn back. At an attraction of
+0.25, a pair keeping up to 1.5 mm between centres still balances beyond its
+clearance, 2.5 mm and 4 mm move that balance by 0.02 mm, and stitching
+grids took about as many iterations to settle at ranges from 2 mm to 3 mm."""
 
 # 1 nm, KiCad's coordinate resolution: shorter edges are treated as degenerate.
 MIN_EDGE_LENGTH = 1e-6
