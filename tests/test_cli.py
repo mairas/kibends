@@ -1582,6 +1582,48 @@ def test_prints_only_the_outcome(
     )
 
 
+Z_BUS_TRACKS = 10
+Z_BUS_PITCH = 0.6
+Z_BUS_WIDTH = 0.2
+Z_BUS_CLEARANCE = 0.2
+
+
+def z_bus_board() -> CommitBoard:
+    """The bus of issue 106: Z-shaped tracks at equal pitch, each centred
+    between its neighbours, whose bursts end abnormally on the tie."""
+    tracks: list[kbt.Track] = []
+    for i in range(Z_BUS_TRACKS):
+        y = i * Z_BUS_PITCH
+        corners = [
+            (0.0, y),
+            (10.0 - y, y),
+            (16.0 - y, y + 6.0),
+            (30.0, y + 6.0),
+        ]
+        tracks += [
+            kipy_track(f"S{i}.{k}", f"S{i}", start, end, width=Z_BUS_WIDTH)
+            for k, (start, end) in enumerate(itertools.pairwise(corners))
+        ]
+    bus = netclass("BUS", Z_BUS_CLEARANCE)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        netclasses={f"S{i}": bus for i in range(Z_BUS_TRACKS)},
+    )
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+def test_an_equally_spaced_bus_gives_up(
+    connect: Connector, capsys: pytest.CaptureFixture[str]
+) -> None:
+    connect.to(z_bus_board())
+
+    run("--dry-run")
+
+    (outcome,) = capsys.readouterr().out.splitlines()
+    assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} ")
+
+
 VIA = (4.0, 4.0)
 VIA_DIAMETER = 0.6
 """Where `l_chain` ends: the via that takes SIG down to B.Cu."""
