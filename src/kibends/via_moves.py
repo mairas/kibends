@@ -12,6 +12,7 @@ chains and vias moving with it.
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import numpy as np
 
@@ -19,6 +20,7 @@ from kibends.bursts import (
     point_distance,
 )
 from kibends.energy import (
+    BoolArray,
     FloatArray,
     ObstacleField,
 )
@@ -29,7 +31,7 @@ from kibends.obstacles import (
     via_via_inflation,
     zones_on,
 )
-from kibends.seen import ViaSight
+from kibends.seen import ObstacleDistances, ViaSight
 from kibends.snapshot import Via
 from kibends.vias import ViaInput
 
@@ -156,17 +158,51 @@ class MovingVias:
         return rings
 
 
+class FreeDistances(NamedTuple):
+    """The free distance of each via to each obstacle: its static copper
+    taken as one, and each member and via its sight finds."""
+
+    static: FloatArray
+    """Each via's, in order, to its static copper (`ViaInput.copper`)."""
+    by_obstacle: ObstacleDistances
+
+
 def free_distances(
     vias: Sequence[ViaInput],
     sight: ViaSight,
     polylines: Sequence[FloatArray],
     positions: Positions,
-) -> list[float]:
-    """The free distance of each via, in order: to its static copper
-    (`ViaInput.copper`), and to what `sight` finds of the chains or members
-    at `polylines` and the vias at `positions`."""
-    cross = sight.distances(polylines, positions, math.inf)
-    return [
-        min(point_distance(vias[k].copper, positions[k]), float(d))
-        for k, d in enumerate(cross)
-    ]
+    below: float = math.inf,
+) -> FreeDistances:
+    """The free distance of each via to each obstacle: to its static copper,
+    and to each of the chains or members at `polylines` and the vias at
+    `positions` that `sight` finds nearer than `below`."""
+    return FreeDistances(
+        np.array(
+            [
+                point_distance(via.copper, at)
+                for via, at in zip(vias, positions, strict=True)
+            ],
+            dtype=float,
+        ),
+        sight.obstacle_distances(polylines, positions, below),
+    )
+
+
+def newly_inside(
+    now: FreeDistances, start: FreeDistances, tolerance: float
+) -> tuple[BoolArray, BoolArray]:
+    """Which vias are newly inside their static copper by more than
+    `tolerance`, or deeper inside it than at `start`, and which of the
+    (via, obstacle) pairs of `now` are so. Each obstacle is judged by the
+    via's nearest distance to it against that distance at the start, so
+    that a via inside one is still kept out of the others; an edge of the
+    obstacle other than its nearest may move deeper while the nearest stays
+    the deepest. `start` holds every pair inside by more than `tolerance`."""
+    static = now.static < np.minimum(start.static, -tolerance)
+    at = np.searchsorted(start.by_obstacle.key, now.by_obstacle.key)
+    found = at < len(start.by_obstacle.key)
+    found[found] = start.by_obstacle.key[at[found]] == now.by_obstacle.key[found]
+    before = np.full(len(at), np.inf)
+    before[found] = start.by_obstacle.distance[at[found]]
+    return static, now.by_obstacle.distance < np.minimum(before, -tolerance)

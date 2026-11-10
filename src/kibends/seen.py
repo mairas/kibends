@@ -429,15 +429,18 @@ class Seen:
         polylines: Sequence[FloatArray],
         flat: FloatArray,
         tolerance: float = 0.0,
-    ) -> list[BoolArray]:
+    ) -> list[EdgesClear]:
         """Per member at `polylines`, whether each of its edges stays out of
         the pieces it sees at `flat`, as `ChainField.segments_clear` with
-        `tolerance` gives it over the member's own pieces."""
-        answers: list[BoolArray | None] = [None] * len(self.within)
+        `tolerance` gives it over the member's own pieces, and what each
+        edge that does not enters."""
+        answers: list[EdgesClear | None] = [None] * len(self.within)
         for layer in self.layers:
             a, owner, bounds = _gathered([p[:-1] for p in polylines], layer.members)
             b, _, _ = _gathered([p[1:] for p in polylines], layer.members)
             crossing = np.zeros(len(a), dtype=bool)
+            segment = np.empty(0, dtype=np.intp)
+            vertex = np.empty(0, dtype=np.intp)
             reach = float(self.within[layer.members].max()) - tolerance
             if len(layer.edges) and len(a) and reach > 0.0:
                 ca, cb = complex_points(a), complex_points(b)
@@ -454,9 +457,17 @@ class Seen:
                     inflation,
                     tolerance,
                 )
-                crossing[segment[inside]] = True
+                order = np.argsort(segment[inside], kind="stable")
+                segment = segment[inside][order]
+                vertex = self.vertex[piece[inside][order]]
+                crossing[segment] = True
             for i, (first, last) in zip(layer.members, bounds, strict=True):
-                answers[i] = ~crossing[first:last]
+                low, high = np.searchsorted(segment, [first, last])
+                answers[i] = EdgesClear(
+                    ~crossing[first:last],
+                    segment[low:high] - first,
+                    vertex[low:high],
+                )
         return _complete(answers)
 
     def candidates(
@@ -566,6 +577,17 @@ class Seen:
         piece[~ruled] = layer.piece[excepted]
         inflation[~ruled] = layer.inflation[excepted]
         return Pairs(point, piece, inflation)
+
+
+class EdgesClear(NamedTuple):
+    """Whether each edge of a member stays out of the pieces it sees, and
+    what those that do not enter: per (edge, piece) pair, the edge and the
+    first vertex of the piece's edge, numbered as `Track.first`, so that a
+    via's is its first vertex in `members.shown_flat`."""
+
+    clear: BoolArray
+    edge: IntArray
+    vertex: IntArray
 
 
 class Pairs(NamedTuple):
@@ -739,6 +761,41 @@ class ViaSight:
             view.limit[view.point],
         ).distance
 
+    def obstacle_distances(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        below: float,
+    ) -> ObstacleDistances:
+        """Each via's exact distance to each member and each via it sees,
+        as `distances` gives it over that one alone, where it is below
+        `below`."""
+        view = self._view(polylines, positions, below)
+        starts = complex_points(view.a[view.edge])
+        distance = nearest_of_pairs(
+            complex_points(view.at)[view.point],
+            np.arange(len(view.point)),
+            starts,
+            complex_points(view.b[view.edge]) - starts,
+            view.inflation,
+            view.limit[view.point],
+        ).distance
+        near = np.flatnonzero(distance < below)
+        edge = view.edge[near]
+        via, distance = view.point[near], distance[near]
+        member, vertex = view.member[edge], view.vertex[edge]
+        obstacle = np.where(member >= 0, member, len(polylines) + vertex)
+        key = via * (len(polylines) + len(view.at)) + obstacle
+        order = np.lexsort((distance, key))
+        nearest = order[np.flatnonzero(np.diff(key[order], prepend=-1) != 0)]
+        return ObstacleDistances(
+            key[nearest],
+            via[nearest],
+            obstacle[nearest],
+            distance[nearest],
+            vertex[nearest],
+        )
+
     def smooth_answers(
         self,
         polylines: Sequence[FloatArray],
@@ -823,6 +880,21 @@ class _ViaView(NamedTuple):
     edge: IntArray
     inflation: FloatArray
     limit: FloatArray
+
+
+class ObstacleDistances(NamedTuple):
+    """(via, obstacle) pairs, in ascending order of `key`, and each via's
+    exact distance to its obstacle, a member or a via. Of a member, the
+    first vertex of its edge nearest the via comes too."""
+
+    key: IntArray
+    """Each pair's via times the number of obstacles, plus its obstacle."""
+    via: IntArray
+    obstacle: IntArray
+    """A member by its index, a via by the number of members plus its."""
+    distance: FloatArray
+    vertex: IntArray
+    """The member's edge's first vertex, or the via's index."""
 
 
 class ViaSmooth(NamedTuple):
