@@ -45,7 +45,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 2. Select the track segments to smooth, on any copper layers. Each
    connected piece of one net and one width on one layer is a chain: its
    segments join end to end. Where three or more selected tracks of one net
-   meet at their ends, the selection branches: it is split there into chains
+   meet at their ends, or tracks of two widths meet end to end, as where a
+   route narrows, the selection branches: it is split there into chains
    that end at the junction, the junction moves with them unless other
    copper of the net holds it, and the branches meet at one point again in
    the result. A track that ends in the middle of another, anywhere its
@@ -58,8 +59,10 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    along it, already connects to it through the selection, or has other
    copper on its end keeps its end, and the other is held where that end's
    copper reaches it; a track that lies on another of its width merges into
-   it. Tracks of two widths that overlap, as at a neck-down, stay separate
-   chains of their own widths, held where the end of one reaches the other.
+   it. Tracks of two widths that overlap, as at a neck-down whose narrow
+   track ends inside the wide one's copper rather than on its end, stay
+   separate chains of their own widths, held where the end of one reaches
+   the other.
    Where selected tracks of one net overlap or cross away from their ends,
    nothing holds them: copper of one net does not interact, and the run may
    move them apart, even where that overlap was their only connection. So a

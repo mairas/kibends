@@ -5,11 +5,11 @@ A chain is one connected piece of one layer, net and width
 tracks and copper shapes pin it, and a pad or a via that stays is a region
 it keeps a vertex inside (`Contact`), an end sliding within it where it may
 (`_slides`), unless a vertex of the chain lies on its anchor, which pins
-that vertex there. Where three or more selected tracks of one net end, the
-selection splits into chains that end there, loose unless copper pins them;
-an end that reaches into another selected track may join it there
-(`_join_mid_track_ends`, `_may_join`). Pins never change a chain's order or
-its ends.
+that vertex there. Where three or more selected tracks of one net end, or
+tracks of more than one width (`_width_change`), the selection splits into
+chains that end there, loose unless copper pins them; an end that reaches
+into another selected track may join it there (`_join_mid_track_ends`,
+`_may_join`). Pins never change a chain's order or its ends.
 
 Where selected chains of one net overlap or cross away from their ends,
 nothing pins either: copper of one net does not interact, so a run may move
@@ -35,7 +35,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from functools import cached_property
-from itertools import accumulate, pairwise
+from itertools import accumulate, combinations, pairwise
 from typing import NamedTuple
 
 import shapely
@@ -161,10 +161,10 @@ def extract_chains(
     """Split `segments` into open chains, one per connected piece, or raise.
 
     Selected segments are grouped by layer, net and width, and each group is
-    split into connected pieces. Two widths that meet end to end both end
-    there and so are pinned; two that overlap along a span stay a chain
-    each. A point where three or more
-    selected tracks of one net on one layer meet end is a junction: the
+    split into connected pieces. Two widths that overlap along a span stay a
+    chain each, held where the end of one reaches the other. A point where
+    three or more selected tracks of one net on one layer end, or tracks of
+    more than one width that do not leave it the same way, is a junction: the
     pieces are split there into chains that end at it, loose, unless other
     copper pins any of them there, which pins them all. A stub whose end
     reaches the copper of another track inside it meets it at a junction:
@@ -227,7 +227,7 @@ def split_chains(
         junctions = {
             p
             for p, segs in _adjacency(all_edges, ()).items()
-            if len(segs) > MAX_CHAIN_DEGREE
+            if len(segs) > MAX_CHAIN_DEGREE or _width_change(p, segs)
         }
         pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
@@ -339,6 +339,28 @@ def _pin_junctions_whole(
         )
         for c in chains
     ]
+
+
+def _width_change(p: NmPoint, segs: Sequence[Segment]) -> bool:
+    """Whether tracks of more than one width end at `p`, no two of
+    different widths leaving it the same way.
+
+    Two that leave it the same way overlap along a span, so they stay held
+    there instead.
+    """
+    if len({s.width for s in segs}) < 2:
+        return False
+    return not any(
+        s.width != r.width and _same_way(p, _other_end(s, p), _other_end(r, p))
+        for s, r in combinations(segs, 2)
+    )
+
+
+def _same_way(p: NmPoint, a: NmPoint, b: NmPoint) -> bool:
+    """Whether `a` and `b` lie in the same direction from `p`, exactly."""
+    ax, ay = a[0] - p[0], a[1] - p[1]
+    bx, by = b[0] - p[0], b[1] - p[1]
+    return ax * by == ay * bx and ax * bx + ay * by > 0
 
 
 def _same_net_track(s: Segment) -> SameNetTrack:

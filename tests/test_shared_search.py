@@ -62,7 +62,7 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     scenarios.crowded,
     scenarios.drape,
     scenarios.hooks,
-    scenarios.neck_down,
+    scenarios.width_change,
     scenarios.same_net_wrap,
     scenarios.squeeze,
     scenarios.tent,

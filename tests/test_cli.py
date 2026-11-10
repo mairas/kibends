@@ -105,6 +105,25 @@ def l_board(
     )
 
 
+WIDE = 0.5
+NARROW = 0.25
+WIDTH_CHANGE = (12.0, 4.0)
+"""Where `width_change` narrows, at its corner."""
+# Positions of a straight result within this of the ideal line, mm: COARSE
+# leaves the width change bowed by about 2 µm.
+STRAIGHT_TOLERANCE = 0.01
+
+
+def width_change() -> list[kbt.Track]:
+    """A WIDE route from the origin narrowing to NARROW at `WIDTH_CHANGE`,
+    ending at (20, 4): 20.396 mm straight."""
+    return [
+        kipy_track("w1", "SIG", (0, 0), (8, 0), width=WIDE),
+        kipy_track("w2", "SIG", (8, 0), WIDTH_CHANGE, width=WIDE),
+        kipy_track("n", "SIG", WIDTH_CHANGE, (20, 4), width=NARROW),
+    ]
+
+
 def straight_board() -> CommitBoard:
     """A straight chain in free space: nothing to optimise."""
     track = kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH)
@@ -338,6 +357,47 @@ class TestSmooth:
         assert thin.covers(LineString([(0, 0), (9.775, 0)]))
         assert wide.covers(LineString([(10, 0), (20, 0)]))
         assert thin.union(wide).covers(line)
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_width_change_moves_and_commits_one_straight_line(
+        self, connect: Connector
+    ) -> None:
+        tracks = width_change()
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["n", "w1", "w2"]
+        created = cast(list[kbt.Track], board.created)
+        (wide,) = [t for t in created if t.width == nm(WIDE)]
+        (narrow,) = [t for t in created if t.width == nm(NARROW)]
+        assert (wide.start.x, wide.start.y) == (0, 0)
+        assert (wide.end.x, wide.end.y) == (narrow.start.x, narrow.start.y)
+        assert (narrow.end.x, narrow.end.y) == (nm(20), nm(4))
+        line = LineString([(0, 0), (20, 4)])
+        assert line.distance(Point(segment(wide).coords[-1])) < STRAIGHT_TOLERANCE
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize("holder", ["pad", "track"])
+    def test_copper_at_a_width_change_keeps_both_ends_there(
+        self, connect: Connector, holder: str
+    ) -> None:
+        tracks = width_change()
+        board = CommitBoard(selection=list(tracks), tracks=list(tracks))
+        if holder == "pad":
+            board.pads = [kipy_pad("p", "SIG", *WIDTH_CHANGE)]
+        else:
+            board.tracks.append(
+                kipy_track("u", "SIG", WIDTH_CHANGE, (12, 8), width=NARROW)
+            )
+        connect.to(board)
+
+        run()
+
+        # The narrow side, held at both ends, is straight and stays as drawn.
+        assert sorted(board.deleted) == ["w1", "w2"]
+        at = (nm(WIDTH_CHANGE[0]), nm(WIDTH_CHANGE[1]))
+        assert at in ends(cast(list[kbt.Track], board.created))
 
     def test_an_untouched_tee_along_one_track_commits_nothing(
         self, connect: Connector, log: list[str]
@@ -1732,6 +1792,25 @@ class TestMovingVias:
         assert moved[1] < nm(1)
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
+
+    def test_a_via_at_a_width_change_carries_both_ends(
+        self, connect: Connector
+    ) -> None:
+        tracks = width_change()
+        via = kipy_via("v", "SIG", *WIDTH_CHANGE)
+        board = connect.to(
+            CommitBoard(selection=[*tracks, via], tracks=list(tracks), vias=[via])
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["n", "v", "w1", "w2"]
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert math.dist(at, (nm(WIDTH_CHANGE[0]), nm(WIDTH_CHANGE[1]))) > nm(1)
+        created = created_on(board, BL.BL_F_Cu)
+        for width in (WIDE, NARROW):
+            assert at in ends([t for t in created if t.width == nm(width)])
 
     def test_a_stitching_via_the_chain_crowds_moves_in_the_same_commit(
         self, connect: Connector, log: list[str]

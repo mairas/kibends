@@ -102,8 +102,8 @@ def test_optimized_straight_line_simplifies_to_one_segment() -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
-# Above the 0.011 mm that COARSE leaves the neck-down's chains bowed by.
-COARSE_STRAIGHT_TOLERANCE = 0.025
+# Above the 0.002 mm that COARSE leaves the width change's chains bowed by.
+COARSE_STRAIGHT_TOLERANCE = 0.01
 # At spacing 0.3 the drape's first burst piles vertices up; see
 # test_optimize_chains.
 DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002)
@@ -179,16 +179,18 @@ class TestSeveralChains:
         with pytest.raises(ValueError, match="2 optimised chains for 1"):
             simplify_chains(scenario.chains[:1], run, scenario.params)
 
-    def test_chains_of_one_net_meeting_end_to_end_merge_up_to_the_junction(
+    def test_a_width_change_merges_each_side_up_to_the_shared_junction(
         self, log: list[str]
     ) -> None:
-        scenario = scenarios.neck_down()
+        scenario = scenarios.width_change()
         run = optimized(scenario, COARSE)
 
         result = simplify_run(scenario, run, COARSE_STRAIGHT_TOLERANCE)
 
         for simplified, c in zip(result, run.chains, strict=True):
             assert np.array_equal(simplified, c.polyline[[0, -1]])
+        wide, narrow = result
+        assert np.array_equal(wide[-1], narrow[0])
         assert not any(line.startswith("WARNING") for line in log)
 
 

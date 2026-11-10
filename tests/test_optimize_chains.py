@@ -17,7 +17,7 @@ import scenarios
 from conftest import BurstClock, Ticking
 from distance_fields import Disc, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
@@ -37,7 +37,6 @@ from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
-    optimize,
     optimize_chains,
 )
 from kibends.polylines import measure, resample
@@ -817,24 +816,29 @@ class TestChannelPair:
             assert to_wall[1] == pytest.approx(between, abs=0.05)
 
 
-# The neck-down's lengths alone and together agree to within this, mm.
-NECK_DOWN_TOLERANCE = 1e-3
+# Positions of a straight result within this of the ideal line, mm: COARSE
+# leaves the width change bowed by 2 µm.
+STRAIGHT_TOLERANCE = 0.01
+WIDTH_CHANGE_LENGTH = math.dist((0.0, 0.0), scenarios.WIDTH_CHANGE_END)
+# mm: the width change's length matches the straight line's 20.396 mm as
+# reported to three decimals.
+REPORTED = 5e-4
 
 
-def test_chains_of_one_net_meeting_end_to_end_leave_the_junction_straight() -> None:
-    scenario = scenarios.neck_down()
+def test_a_width_change_moves_its_junction_onto_the_straight_line() -> None:
+    scenario = scenarios.width_change()
 
     result = run(scenario)
 
-    stats = after(scenario.chains, result, scenario.params)
-    for chain, given in zip(stats, scenario.chains, strict=True):
-        alone = optimize(
-            given.centreline.points, given.fixed, given.field, scenario.params, COARSE
-        )
-        assert chain.length == pytest.approx(
-            alone.after.length, abs=NECK_DOWN_TOLERANCE
-        )
-        assert chain.min_clearance >= 0.0
+    assert result.termination is Termination.CONVERGED
+    wide, narrow = result.chains
+    np.testing.assert_array_equal(wide.polyline[-1], narrow.polyline[0])
+    assert not wide.fixed[-1] and not narrow.fixed[0]
+    line = LineString([(0.0, 0.0), scenarios.WIDTH_CHANGE_END])
+    for c in result.chains:
+        assert max(line.distance(Point(p)) for p in c.polyline) < STRAIGHT_TOLERANCE
+    total = sum(length(c.polyline) for c in result.chains)
+    assert total == pytest.approx(WIDTH_CHANGE_LENGTH, abs=REPORTED)
 
 
 def test_without_a_time_limit_the_clock_changes_nothing() -> None:

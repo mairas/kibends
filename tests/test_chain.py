@@ -781,7 +781,7 @@ class TestSeveralChains:
         with pytest.raises(ChainError, match=r"2 separate pieces.*\(20\.000, 0\.000\)"):
             extract_chain(segments, frame=BOARD_FRAME)
 
-    def test_neck_down_gives_two_chains_pinned_at_the_junction(self) -> None:
+    def test_a_width_change_gives_a_chain_per_width(self) -> None:
         segments = [
             seg("wide", (10, 0), (20, 0), width=500_000),
             seg("thin", (0, 0), (10, 0)),
@@ -792,6 +792,9 @@ class TestSeveralChains:
         assert (thin.width, wide.width) == (pytest.approx(0.25), pytest.approx(0.5))
         assert_points(thin, [(0, 0), (10, 0)])
         assert_points(wide, [(10, 0), (20, 0)])
+        # Collinear but leaving the point opposite ways: loose, not overlapping.
+        assert thin.pinned == (True, False)
+        assert wide.pinned == (False, True)
 
     def test_stub_of_another_width_ending_mid_segment_is_a_branch(self) -> None:
         segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0), width=500_000)]
@@ -1007,15 +1010,45 @@ class TestBranches:
 
         assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (True, True, True)
 
-    def test_a_neck_down_stays_pinned(self) -> None:
+    def test_a_width_change_end_to_end_meets_loose(self) -> None:
         segments = [
-            seg("wide", (10, 0), (20, 0), width=500_000),
-            seg("thin", (0, 0), (10, 0)),
+            seg("w1", (0, 0), (8, 0), width=500_000),
+            seg("w2", (8, 0), (12, 4), width=500_000),
+            seg("thin", (12, 4), (20, 4)),
         ]
 
-        thin, wide = extract_chains(segments, frame=BOARD_FRAME)
+        thin, wide = sorted(
+            extract_chains(segments, frame=BOARD_FRAME), key=lambda c: c.width
+        )
 
-        assert thin.pinned == wide.pinned == (True, True)
+        assert thin.points[0] == wide.points[-1] == (12.0, 4.0)
+        assert thin.pinned == (False, True)
+        assert wide.pinned == (True, False, False)
+
+    @pytest.mark.parametrize(
+        "copper",
+        [
+            SameNetTrack(LineString([(12, 4), (12, 8)]), WIDTH_MM),
+            box(11.8, 3.8, 12.2, 4.2),
+            contact(Point(12, 4).buffer(0.3), (12.0, 4.0)),
+        ],
+        ids=["unselected track", "pad", "staying via"],
+    )
+    def test_copper_at_a_width_change_pins_both_ends(
+        self, copper: SameNetTrack | Polygon | Contact
+    ) -> None:
+        segments = [
+            seg("wide", (0, 0), (12, 4), width=500_000),
+            seg("thin", (12, 4), (20, 4)),
+        ]
+
+        thin, wide = sorted(
+            extract_chains(segments, lambda _l, _n: [copper], frame=BOARD_FRAME),
+            key=lambda c: c.width,
+        )
+
+        assert thin.points[0] == wide.points[-1] == (12.0, 4.0)
+        assert thin.pinned[0] and wide.pinned[-1]
 
     def test_a_track_ending_mid_track_splits_it_at_a_junction(self) -> None:
         segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0))]
