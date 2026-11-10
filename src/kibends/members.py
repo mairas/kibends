@@ -42,7 +42,15 @@ from kibends.energy import (
 from kibends.neighbours import ChainInput, obstacle_spans
 from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.pair_blocks import PairBlock
-from kibends.seen import NeighbourList, Pieces, Seen, Track, ViaSmooth, Viewer
+from kibends.seen import (
+    NeighbourList,
+    Pieces,
+    Seen,
+    StaticList,
+    Track,
+    ViaSmooth,
+    Viewer,
+)
 
 Member = ChainInput | PairBlock
 """What a problem optimises: a chain, or a coupled section as its
@@ -84,11 +92,14 @@ def members_energy(
     seen: Seen,
     positions: Sequence[FloatArray],
     listed: NeighbourList | None = None,
+    statics: StaticList | None = None,
 ) -> tuple[float, list[FloatArray], FloatArray]:
     """`layer_energy` of members on any layers, each seeing the others on its
     own as `seen` shows them, with vias at `positions` among them; and the
     gradient at each via's centre. With `listed`, made for `seen`, each
-    layer looks only at the pieces it lists."""
+    layer looks only at the pieces it lists; with `statics`, made for the
+    members' static fields with the energy's reach, the static fields
+    answer from it, by default from one search each."""
     reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge
@@ -101,19 +112,18 @@ def members_energy(
     value = 0.0
     every_query = [quadrature_points(points, k) for points in polylines]
     answers = seen.smooth_answers(every_query, flat, reach, listed)
-    statics = [
-        body_of(member).field.smooth_distance(queries, reach)
-        for member, queries in zip(members, every_query, strict=True)
-    ]
+    if statics is None:
+        statics = static_list(members, reach, listed=False)
+    static = statics.smooth(every_query)
     # Every member's points at once, one after another.
     bounds = np.cumsum([0, *(len(queries) for queries in every_query)])
     distance, (static_share, seen_share) = combine_fields(
-        _joined_rows([d for d, _ in statics], np.empty(0)),
+        _joined_rows([d for d, _ in static], np.empty(0)),
         _joined_rows([near.distance for near in answers], np.empty(0)),
     )
     no_points = np.empty((0, 2))
     direction = static_share[:, None] * _joined_rows(
-        [g for _, g in statics], no_points
+        [g for _, g in static], no_points
     ) + seen_share[:, None] * _joined_rows(
         [near.gradient for near in answers], no_points
     )
@@ -173,6 +183,16 @@ def members_energy(
     for g, mask in zip(gradients, masks, strict=True):
         g[mask] = 0.0
     return value, gradients, via_gradients
+
+
+def static_list(
+    members: Sequence[Member], reach: float, *, listed: bool = True
+) -> StaticList:
+    """The members' static fields as a `StaticList` with the energy's
+    `reach`, for `members_energy`."""
+    return StaticList(
+        [body_of(member).field for member in members], reach, listed=listed
+    )
 
 
 def _joined_rows(arrays: Sequence[FloatArray], empty: FloatArray) -> FloatArray:
