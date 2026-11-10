@@ -123,22 +123,20 @@ A moving via is a member whose one vertex is its centre, inflated by
 and against another via by `via_via_inflation`, hole-to-hole alone for one
 of its net. The chain ends it carries move with it, and their edges are
 checked as any. The copper of other nets is judged obstacle by obstacle,
-by the via's nearest distance to each: its static copper
-(`ViaInput.copper`) taken as one, each member and each via. A via that
-ends inside its clearance of one it started the burst clear of, or deeper
+by the via's nearest distance to each: each obstacle of its static
+copper (`ViaInput.copper`), connected copper of one net on one layer as
+one (`via_moves.StaticFree`), each member and each via. A via that ends
+inside its clearance of one it started the burst clear of, or deeper
 inside one than it started, moves back with the ends it carries, so that
 a via inside one, such as its own pair's section, is still kept out of
-the others. What only stops it is judged the same way, part by part
-(`ViaInput.stop_parts`): outside where its zones, taken together on each
-layer where one reaches the via's ring, connect it at the next refill
-(`obstacles.containment`), its own net's stops, and each moving via of
-its net. On the zones' layers its inflation also holds the zone's
-clearance and margin, against static copper and members alike, so that
-the refill reaches the via wherever the others move. The chains a via
-carries are of its net, so it does not see them, nor they it. Static
-copper and each part of the stops are each one obstacle, however many
-items they hold, so a via inside one item of static copper may move into
-another by as deep.
+the others. What only stops it is judged the same way, obstacle by
+obstacle of each part (`ViaInput.stop_parts`): outside where its zones,
+taken together on each layer where one reaches the via's ring, connect it
+at the next refill (`obstacles.containment`), its own net's stops, and
+each moving via of its net. On the zones' layers its inflation also holds
+the zone's clearance and margin, against static copper and members alike,
+so that the refill reaches the via wherever the others move. The chains a
+via carries are of its net, so it does not see them, nor they it.
 
 A crossing between two members, a via and a member or two vias moves
 back both sides: a member or via that a via newly or more deeply enters
@@ -195,6 +193,7 @@ import numpy as np
 from loguru import logger
 
 from kibends.bursts import (
+    DEEPER_ROUND_OFF,
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     OptimizerSettings,
@@ -1115,7 +1114,7 @@ class _Problem:
                 (self.via_distances(polylines, positions), self.inside),
                 (self.stop_distances(polylines, positions), self.stopped),
             )
-            for inside in newly_inside(now, start, INSIDE_TOLERANCE)
+            for inside in newly_inside(now, start, INSIDE_TOLERANCE, DEEPER_ROUND_OFF)
         )
 
     def violations(
@@ -1632,7 +1631,9 @@ class _Problem:
                 (self.via_distances(polylines, centres), free_before),
                 (self.stop_distances(polylines, centres), stopped_before),
             ):
-                static, inside = newly_inside(now, before, INSIDE_TOLERANCE)
+                static, inside = newly_inside(
+                    now, before, INSIDE_TOLERANCE, DEEPER_ROUND_OFF
+                )
                 judged = now.by_obstacle
                 for obstacle, vertex in zip(
                     judged.obstacle[inside], judged.vertex[inside], strict=True
@@ -1642,7 +1643,7 @@ class _Problem:
                         back[edge[edge >= 0]] = True
                     else:
                         back[layout.via_index[obstacle - len(members)]] = True
-                entering |= static
+                entering[now.static.via[static]] = True
                 entering[judged.via[inside]] = True
             back[layout.via_index[entering]] = True
             for k in np.flatnonzero(entering):

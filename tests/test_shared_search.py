@@ -254,6 +254,9 @@ def _fan_out(net: str, end: FloatArray, drop: float) -> ChainInput:
 DISTANCE_ROUNDING = 1e-12
 """How far a distance the shared search gives may part from a member's
 own field's, which takes the same differences, mm."""
+STATIC_ROUNDING = 1e-12
+"""How far a via's distance to its static copper, measured on the static
+edges, may part from shapely's, mm: round-off in the same formula."""
 JITTER = SKIN_LEAST
 """How far each variable moves from the start, at most, mm: up to
 SKIN_LEAST times the square root of two for a vertex, past the skin a
@@ -554,12 +557,14 @@ def _reference_distances(
 
 
 def _free_by_obstacle(
-    free: FreeDistances,
+    free: FreeDistances, vias: int
 ) -> tuple[list[float], dict[tuple[int, int], float]]:
-    """`free` as `_reference_distances` gives it."""
+    """`free` of `vias` vias as `_reference_distances` gives it, each via's
+    static copper at its nearest obstacle."""
     pairs = free.by_obstacle
-    # The vias' static copper is one part.
-    return [float(d) for d in free.static.ravel()], {
+    static = np.full(vias, np.inf)
+    np.minimum.at(static, free.static.via, free.static.distance)
+    return [float(d) for d in static], {
         (int(k), int(o)): float(d)
         for k, o, d in zip(pairs.via, pairs.obstacle, pairs.distance, strict=True)
     }
@@ -667,12 +672,15 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 problem.via_energy(polylines, positions, via_statics), expected_vias
             )
             static, by_obstacle = _free_by_obstacle(
-                problem.via_distances(polylines, positions, math.inf)
+                problem.via_distances(polylines, positions, math.inf),
+                len(problem.vias),
             )
             expected_static, expected_seen = _reference_distances(
                 problem, polylines, positions
             )
-            np.testing.assert_allclose(static, expected_static, rtol=0, atol=0)
+            np.testing.assert_allclose(
+                static, expected_static, rtol=0.0, atol=STATIC_ROUNDING
+            )
             assert by_obstacle.keys() == expected_seen.keys()
             np.testing.assert_allclose(
                 [by_obstacle[key] for key in expected_seen],
@@ -1191,7 +1199,8 @@ def test_the_free_distance_of_zoned_vias_is_their_own_fields(
             x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
             polylines, positions = layout.unflatten(x)
             static, seen = _free_by_obstacle(
-                problem.via_distances(polylines, positions, math.inf)
+                problem.via_distances(polylines, positions, math.inf),
+                len(problem.vias),
             )
             nearest = [
                 min([d, *(s for (k, _), s in seen.items() if k == via)])

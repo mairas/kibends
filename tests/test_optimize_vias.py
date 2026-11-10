@@ -47,6 +47,8 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     ChainCentreline,
+    Obstacle,
+    Obstacles,
     build_via_obstacles,
     own_net_stops,
     split_via_obstacles,
@@ -845,6 +847,129 @@ def test_the_guard_refuses_a_via_newly_inside_one_obstacle_while_inside_another(
     assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
 
 
+def inside_one_item_beside_another(stops: bool = False) -> ViasScenario:
+    """`beside_a_wall_under_pinned` with the pinned chain and the wall two
+    items of the via's static copper, or of its own net's stops."""
+    x, y = scenarios.DETOUR_VIA
+    level = y + VIA_TO_CHAIN - INSIDE_PINNED
+    items = Obstacles(
+        [
+            Obstacle("track", LineString([(0.0, level), (10.0, level)]), VIA_TO_CHAIN),
+            Obstacle("wall", box(x - 0.1 - 10.0, y - 10.0, x - 0.1, y + 10.0), 0.0),
+        ]
+    )
+    scenario = scenarios.via_detour()
+    (given,) = scenario.vias
+    placed = replace(given, own_net=items) if stops else replace(given, field=items)
+    return replace(scenario, vias=(placed,))
+
+
+STEM = 1.0
+"""How far along the track above the via a branch of it leaves, mm: the
+via starts clear of the branch."""
+STEM_EXTENT = scenarios.PAIR_WIDTH / 2
+"""How far the copper of the track and its branch reaches beyond their
+centrelines, mm."""
+
+
+def inside_a_track_beside_its_branch(
+    branch_net: str, branch_layer: str = "F.Cu"
+) -> ViasScenario:
+    """The detour's via INSIDE_PINNED inside the clearance of a static track
+    of net T on F.Cu running along x above it, and a branch of net
+    `branch_net` on `branch_layer` leaving the track STEM along it, away
+    from the via: of net T on F.Cu, a T-junction, which the energy keeps
+    two obstacles."""
+    x, y = scenarios.DETOUR_VIA
+    level = y + VIA_TO_CHAIN - INSIDE_PINNED
+    items = Obstacles(
+        [
+            Obstacle(
+                "track",
+                LineString([(0.0, level), (10.0, level)]),
+                VIA_TO_CHAIN,
+                "T",
+                STEM_EXTENT,
+                "F.Cu",
+            ),
+            Obstacle(
+                "branch",
+                LineString([(x + STEM, level), (x + STEM, level + 5.0)]),
+                VIA_TO_CHAIN,
+                branch_net,
+                STEM_EXTENT,
+                branch_layer,
+            ),
+        ]
+    )
+    scenario = scenarios.via_detour()
+    (given,) = scenario.vias
+    return replace(scenario, vias=(replace(given, field=items),))
+
+
+UNDER_THE_BRANCH = (scenarios.DETOUR_VIA[0] + STEM, scenarios.DETOUR_VIA[1])
+"""Along the track under where its branch leaves, as deep inside the
+track's clearance as before and so inside the branch's."""
+
+
+BRANCHES = [("T", "F.Cu", False), ("U", "F.Cu", True), ("T", "B.Cu", True)]
+"""Each branch's net and layer, and whether a via moving under it from
+inside the track's clearance enters new copper's."""
+BRANCH_IDS = ["same-net", "other-net", "other-layer"]
+
+
+@pytest.mark.parametrize(
+    ("branch_net", "branch_layer", "back"), BRANCHES, ids=BRANCH_IDS
+)
+def test_a_burst_judges_a_via_against_a_track_and_its_branch_as_one(
+    monkeypatch: pytest.MonkeyPatch,
+    log: list[str],
+    branch_net: str,
+    branch_layer: str,
+    back: bool,
+) -> None:
+    revert, start = first_revert(
+        monkeypatch, inside_a_track_beside_its_branch(branch_net, branch_layer)
+    )
+    candidate = start.copy()
+    candidate[-2:] = UNDER_THE_BRANCH
+
+    crossings = revert(candidate)
+
+    assert (crossings > 0) is back
+    assert np.array_equal(candidate[-2:], start[-2:]) is back
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+def test_a_burst_moves_back_a_via_newly_inside_one_static_item_inside_another(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    revert, start = first_revert(monkeypatch, inside_one_item_beside_another())
+    candidate = start.copy()
+    candidate[-2:] = SIDEWAYS
+
+    crossings = revert(candidate)
+
+    assert crossings > 0
+    assert np.array_equal(candidate[-2:], start[-2:])
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+@pytest.mark.parametrize("stops", [False, True], ids=["copper", "own-net"])
+def test_the_guard_refuses_a_via_newly_inside_one_static_item_inside_another(
+    stops: bool,
+) -> None:
+    scenario = inside_one_item_beside_another(stops)
+    (placed,) = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+    )
+    problem = placed.problem
+
+    moved = [np.array(SIDEWAYS)]
+
+    assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
+
+
 def crowded_at(
     scenario: ViasScenario,
     *at: tuple[float, float],
@@ -887,6 +1012,28 @@ class TestCrowded:
         self,
     ) -> None:
         assert crowded_at(beside_a_wall_under_pinned(), SIDEWAYS) == [True]
+
+    def test_a_via_starting_inside_one_static_item_moved_into_another_is(
+        self,
+    ) -> None:
+        assert crowded_at(inside_one_item_beside_another(), SIDEWAYS) == [True]
+
+    @pytest.mark.parametrize(
+        ("branch_net", "branch_layer", "found"), BRANCHES, ids=BRANCH_IDS
+    )
+    def test_a_via_moved_along_a_track_under_its_branch_is_unless_connected(
+        self, branch_net: str, branch_layer: str, found: bool
+    ) -> None:
+        scenario = inside_a_track_beside_its_branch(branch_net, branch_layer)
+
+        assert crowded_at(scenario, UNDER_THE_BRANCH) == [found]
+
+    def test_a_via_starting_inside_one_static_item_moved_along_it_is_not(
+        self,
+    ) -> None:
+        x, y = scenarios.DETOUR_VIA
+
+        assert crowded_at(inside_one_item_beside_another(), (x + 0.5, y)) == [False]
 
     def test_a_via_starting_inside_one_obstacle_moved_no_deeper_is_not(
         self,
