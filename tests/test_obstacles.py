@@ -24,20 +24,27 @@ from kipy.proto.board.board_types_pb2 import PadType
 from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
+import kibends.obstacles as obstacles_module
 from kibends.energy import (
+    SMOOTH_REACH,
     SMOOTH_WIDTH,
     DistanceField,
     EnergyParams,
     FloatArray,
     ObstacleField,
     clearance_energy,
+    smooth_minimum,
     total_energy,
+    weighted_sum,
 )
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
+    INDEXED_EDGES,
     ChainCentreline,
+    ComplexArray,
     CompositeField,
+    Found,
     Obstacle,
     Obstacles,
     build_obstacles,
@@ -1051,3 +1058,195 @@ def test_tracks_of_two_inflations_meeting_end_to_end_are_two_obstacles() -> None
     assert smooth[0] == pytest.approx(
         exact - SMOOTH_WIDTH * math.log(2), abs=NM_TOLERANCE
     )
+
+
+SCENE_OUTLINE = box(-3.0, -3.0, 9.0, 4.0)
+SCENE_EDGE_INFLATION = 0.4
+SCENE = [
+    Obstacle("rectangular pad", box(0.0, 0.0, 1.0, 0.6), 0.3),
+    Obstacle("round pad", Point(3.0, 0.3).buffer(0.4), 0.25),
+    Obstacle(
+        "copper with a hole",
+        Polygon(
+            box(5.0, -1.0, 7.0, 1.0).exterior.coords,
+            [box(5.5, -0.5, 6.5, 0.5).exterior.coords],
+        ),
+        0.2,
+    ),
+    Obstacle("track", LineString([(0.0, 2.0), (4.0, 2.5)]), 0.35),
+    Obstacle("via", Point(6.0, 2.5), 0.5),
+    Obstacle("keepout", box(-2.0, -2.0, -1.5, -1.5), 0.0),
+]
+"""Static copper of every kind, each item an obstacle of its own, inside
+`SCENE_OUTLINE`."""
+EXACT = 1e-9
+"""How far the edge list's distances may differ from shapely's, mm:
+round-off only."""
+
+
+def _scene_points(seed: int) -> FloatArray:
+    """Points around and between `SCENE`'s items, some outside the board."""
+    return np.random.default_rng(seed).uniform((-4.0, -4.0), (10.0, 5.0), (400, 2))
+
+
+def _shapely_smooth(points: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """The smooth minimum over `SCENE` and its board edge, each obstacle at
+    the exact distance shapely gives with it alone (`signed_distance`)."""
+    alone = [Obstacles([item]) for item in SCENE]
+    alone.append(Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION))
+    answers = [field.signed_distance(points) for field in alone]
+    count = len(points)
+    point = np.tile(np.arange(count), len(answers))
+    distance = np.concatenate([d for d, _ in answers])
+    smooth, share = smooth_minimum(point, distance, count)
+    gradient = weighted_sum(
+        point, share, np.concatenate([g for _, g in answers]), count
+    )
+    return smooth, gradient
+
+
+class TestEdgeList:
+    """The static field from its edges agrees with shapely's exact distance."""
+
+    @pytest.mark.parametrize("seed", [1, 2])
+    def test_matches_shapely_per_obstacle_everywhere(self, seed: int) -> None:
+        points = _scene_points(seed)
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+
+        smooth, toward = field.smooth_distance(points)
+
+        expected, expected_toward = _shapely_smooth(points)
+        np.testing.assert_allclose(smooth, expected, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(toward, expected_toward, atol=EXACT, rtol=0.0)
+
+    def test_matches_shapely_within_reach(self) -> None:
+        reach = 0.3
+        points = _scene_points(3)
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+
+        smooth, toward = field.smooth_distance(points, reach)
+
+        expected, expected_toward = _shapely_smooth(points)
+        near = expected <= reach
+        assert near.any() and not near.all()
+        np.testing.assert_allclose(smooth[near], expected[near], atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(
+            toward[near], expected_toward[near], atol=EXACT, rtol=0.0
+        )
+        assert (smooth[~near] > reach).all()
+
+    def test_is_the_exact_distance_where_one_obstacle_is_nearest(self) -> None:
+        points = _scene_points(4)
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        alone = [Obstacles([item]).signed_distance(points)[0] for item in SCENE]
+        edge = Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        every = np.sort(np.vstack([*alone, edge.signed_distance(points)[0]]), axis=0)
+        reach = 1.0
+        single = (every[1] - every[0] > SMOOTH_REACH) & (every[0] <= reach)
+
+        smooth, toward = field.smooth_distance(points, reach)
+
+        exact, exact_toward = field.signed_distance(points)
+        assert single.sum() > len(points) // 2
+        np.testing.assert_allclose(smooth[single], exact[single], atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(
+            toward[single], exact_toward[single], atol=EXACT, rtol=0.0
+        )
+
+    @pytest.mark.parametrize(
+        ("item", "at"),
+        [
+            (Obstacle("big pad", box(0.0, 0.0, 4.0, 4.0), 0.2), (2.0, 1.5)),
+            (Obstacle("pad", box(0.0, 0.0, 1.0, 0.6), 0.3), (1.0, 0.3)),
+            (Obstacle("pad", box(0.0, 0.0, 1.0, 0.6), 0.3), (1.0, 0.6)),
+            (Obstacle("keepout", box(0.0, 0.0, 1.0, 0.6), 0.0), (1.2, 0.3)),
+            (Obstacle("keepout", box(0.0, 0.0, 1.0, 0.6), 0.0), (0.9, 0.3)),
+            (Obstacle("track", LineString([(0.0, 0.0), (2.0, 0.0)]), 0.3), (1.0, 0.0)),
+        ],
+        ids=[
+            "deep inside a pad",
+            "on a pad's side",
+            "at a pad's corner",
+            "beside an item of no inflation",
+            "inside an item of no inflation",
+            "on a centreline",
+        ],
+    )
+    def test_single_item(self, item: Obstacle, at: tuple[float, float]) -> None:
+        field = Obstacles([item])
+        point = np.array([at])
+
+        smooth, toward = field.smooth_distance(point, 0.3)
+
+        exact, exact_toward = field.signed_distance(point)
+        np.testing.assert_allclose(smooth, exact, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(toward, exact_toward, atol=EXACT, rtol=0.0)
+
+    def test_far_outside_the_board_is_reported(self) -> None:
+        field = Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        points = np.array([[50.0, 0.0], [0.0, 0.0], [9.0, 0.0]])
+
+        smooth, toward = field.smooth_distance(points, 0.3)
+
+        exact, exact_toward = field.signed_distance(points)
+        assert smooth[0] == pytest.approx(-41.0 - SCENE_EDGE_INFLATION, abs=EXACT)
+        assert smooth[1] == np.inf
+        np.testing.assert_allclose(smooth[[0, 2]], exact[[0, 2]], atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(
+            toward[[0, 2]], exact_toward[[0, 2]], atol=EXACT, rtol=0.0
+        )
+
+    def test_no_items_and_no_outline_is_free(self) -> None:
+        smooth, toward = Obstacles([]).smooth_distance(np.zeros((3, 2)), 0.3)
+
+        assert (smooth == np.inf).all()
+        assert (toward == 0.0).all()
+
+    def test_a_many_edged_item_measures_only_edges_near_each_point(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        measured: list[int] = []
+        offsets = obstacles_module._offsets  # pyright: ignore[reportPrivateUsage]
+
+        def counted(points: ComplexArray, *rest: ComplexArray) -> ComplexArray:
+            measured.append(len(points))
+            return offsets(points, *rest)
+
+        monkeypatch.setattr(obstacles_module, "_offsets", counted)
+        disc = Point(0.0, 0.0).buffer(3.0, quad_segs=256)
+        edges = len(disc.exterior.coords) - 1
+        assert edges > INDEXED_EDGES
+        field = Obstacles([Obstacle("logo", disc, 0.3)])
+        angle = np.linspace(0.0, 2 * np.pi, 400)
+        points = 3.5 * np.column_stack([np.cos(angle), np.sin(angle)])
+
+        field.static_edges.search(points, 0.6, 0.05)
+
+        assert sum(measured) < 0.1 * len(points) * edges
+
+    def test_an_indexed_search_finds_what_measuring_every_edge_finds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rng = np.random.default_rng(3)
+        strokes = [
+            LineString(rng.uniform(0.0, 1.5, (2, 2))).buffer(0.1, quad_segs=8)
+            for _ in range(10)
+        ]
+        items = [
+            Obstacle("text", shapely.union_all(strokes), 0.3),
+            Obstacle("logo", Point(4.0, 1.0).buffer(1.5, quad_segs=64), 0.2),
+            Obstacle("track", LineString([(0.0, 3.0), (6.0, 3.5)]), 0.35),
+            *SCENE[:3],
+        ]
+        outline = box(-1.0, -1.0, 7.0, 5.0).buffer(0.5, quad_segs=64)
+        points = rng.uniform(-1.5, 7.5, (300, 2))
+        for reach in (0.3, math.inf):
+            for slack in (0.0, 0.05):
+                found: list[Found] = []
+                # Every item through a tree over its edges, then none.
+                for indexed in (0, math.inf):
+                    monkeypatch.setattr(obstacles_module, "INDEXED_EDGES", indexed)
+                    field = Obstacles(items, outline, SCENE_EDGE_INFLATION)
+                    found.append(field.static_edges.search(points, reach, slack))
+                for a, b in zip(*found, strict=True):
+                    np.testing.assert_array_equal(a, b)

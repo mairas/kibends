@@ -20,6 +20,22 @@ end to end, and the board edge (`_obstacle_ids`); in `ChainField`, the edges its
 groups, a chain or a via (`chains_field`); in `CompositeField`, each
 field's own.
 
+`Obstacles` answers `signed_distance` and every segment check with
+shapely, and `smooth_distance` from its items as edges (`StaticEdges`):
+a search with the field's tree finds the items near the points and the
+edges of them that can answer, and numpy measures those by GEOS's
+point-to-segment formula (`static_smooth`). An `Obstacles` field's
+distances are then shapely's to round-off, and bit for bit with the GEOS
+it was tested on (shapely 2.2.0, GEOS 3.14.1). A static `ChainField` and
+the joined fields of a `CompositeField` take the same path in the energy
+(`static_parts`): the first differs from `ChainField.smooth_distance` by
+round-off, and the second takes one smooth minimum over every part's
+obstacles, where
+`CompositeField.smooth_distance` combines each field's own. The energy
+keeps each member's and moving via's search between evaluations
+(`seen.StaticList`), so that static copper costs no tree query and no
+shapely call per evaluation.
+
 A chain's static field is one per (layer, net, width), from other nets'
 copper, holes, keepouts and the board edge, with every selected track and
 moving via removed (`build_obstacles`); no copper of the chain's net is an
@@ -163,9 +179,7 @@ class Obstacles:
         self._max_inflation = float(self._inflations.max(initial=0.0))
         self._deep: dict[float, BaseGeometry] = {}
         self._obstacle = _obstacle_ids(self.items)
-        obstacles = int(self._obstacle.max(initial=-1)) + 1
-        self._shared = obstacles < len(self.items)
-        self._edge_obstacle = obstacles
+        self._edge_obstacle = int(self._obstacle.max(initial=-1)) + 1
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -178,44 +192,51 @@ class Obstacles:
         gradient; points outside the board are always reported.
         """
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
-        point, _, distance, gradient = self._candidates(coords, reach, 0.0)
+        point, _, distance, gradient = self._candidates(coords, reach)
         return _nearest(point, distance, gradient, len(coords))
 
     def smooth_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         """`signed_distance` as the energy takes it: the smooth minimum over
-        the obstacles (`_obstacle_ids`)."""
-        coords = np.asarray(points, dtype=float).reshape(-1, 2)
-        point, obstacle, distance, gradient = self._candidates(
-            coords, smooth_reach(reach), SMOOTH_REACH
+        the obstacles (`_obstacle_ids`), from the field's edges
+        (`static_edges`)."""
+        return parts_smooth_distance([self.static_edges], points, reach)
+
+    @cached_property
+    def static_edges(self) -> StaticEdges:
+        """The field as edges, its items in order, then the board edge."""
+        geometries = list(self._geometries)
+        kinds = np.where(self._is_area, AREA, LINE)
+        inflations = self._inflations
+        obstacles = self._obstacle
+        if self.board_outline is not None:
+            geometries.append(self.board_outline)
+            kinds = np.append(kinds, OUTSIDE)
+            inflations = np.append(inflations, self.edge_inflation)
+            obstacles = np.append(obstacles, self._edge_obstacle)
+        return StaticEdges(
+            np.array(geometries, dtype=object),
+            kinds.astype(np.intp),
+            inflations,
+            obstacles.astype(np.intp),
+            self._tree,
         )
-        if self._shared:
-            # Unshared, each candidate is an obstacle and a run of its own
-            # in any order.
-            tiebreak = np.arange(len(point), dtype=np.intp)
-            order = obstacle_order(point, obstacle, tiebreak)
-            point, obstacle = point[order], obstacle[order]
-            distance, gradient = distance[order], gradient[order]
-        best, smooth, share = _nearest_then_smooth(
-            point, obstacle, distance, len(coords)
-        )
-        return smooth, weighted_sum(point[best], share, gradient[best], len(coords))
 
     def _candidates(
-        self, coords: FloatArray, reach: float, beyond: float
+        self, coords: FloatArray, reach: float
     ) -> tuple[IntArray, IntArray, FloatArray, FloatArray]:
         """Each item's and the board edge's obstacle, signed distance and
         unit gradient at the points they answer, by the point's index: every
-        one within `reach`, or without a finite reach every one within
-        `beyond` of the nearest, and the board edge."""
+        one within `reach`, or without a finite reach every one as near as
+        the nearest, and the board edge."""
         if not self.items and self.board_outline is None:
             return _NO_CANDIDATES
         found: list[tuple[IntArray, IntArray, FloatArray, FloatArray]] = []
         query: ObjectArray = np.asarray(shapely.points(coords), dtype=object)
         if self.items:
             point, item, distance, gradient = self._item_candidates(
-                coords, query, reach, beyond
+                coords, query, reach
             )
             found.append((point, self._obstacle[item], distance, gradient))
         if self.board_outline is not None:
@@ -302,7 +323,7 @@ class Obstacles:
         return clear
 
     def _item_candidates(
-        self, coords: FloatArray, query: ObjectArray, reach: float, beyond: float
+        self, coords: FloatArray, query: ObjectArray, reach: float
     ) -> tuple[IntArray, IntArray, FloatArray, FloatArray]:
         if math.isfinite(reach):
             # An item is within reach once inflated only if its raw geometry
@@ -316,7 +337,7 @@ class Obstacles:
             # once inflated, by at most the spread of the inflations.
             search = np.empty(len(coords))
             search[point_index] = (
-                nearest - self._inflations[nearest_index] + self._max_inflation + beyond
+                nearest - self._inflations[nearest_index] + self._max_inflation
             )
         pairs_point, pairs_item = self._tree.query(
             query, predicate="dwithin", distance=search + DEGENERATE_DISTANCE
@@ -361,8 +382,10 @@ class CompositeField:
     def smooth_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
-        """The smooth minimum of the fields' smooth distances, which is the
-        one over all their obstacles (`energy.combine_fields`)."""
+        """The smooth minimum of the fields' smooth distances
+        (`energy.combine_fields`). It is the one over all their obstacles
+        but for those SMOOTH_REACH leaves out within each field: up to
+        τ·e⁻¹⁰ per obstacle apart from the one `static_parts` gives."""
         n = len(np.asarray(points).reshape(-1, 2))
         gradient = np.zeros((n, 2))
         if not self.fields:
@@ -382,6 +405,558 @@ class CompositeField:
         for field in self.fields:
             clear &= field.segments_clear(starts, ends, tolerance)
         return clear
+
+
+LINE = 0
+"""A `StaticEdges` item measured to its own geometry: a centreline or a
+centre."""
+AREA = 1
+"""A `StaticEdges` item measured to the boundary of its area, negative
+inside it: copper, a keepout."""
+OUTSIDE = 2
+"""A `StaticEdges` item measured to the boundary of its area, negative
+outside it: the board edge, the region a via's zones connect it in."""
+
+INDEXED_EDGES = 128
+"""A `StaticEdges` item with more edges than this, such as copper text, a
+logo or a board outline, finds its edges near a point with a tree over
+them rather than measuring every one; twice a default buffered circle's."""
+
+
+class Found(NamedTuple):
+    """(point, edge) pairs of static fields that can answer points, as
+    `static_smooth` takes them: by point, then obstacle, then edge, so
+    that the pairs of one item and those of one obstacle at a point lie
+    together. Each pair's edge, where it starts and the way to its end, its
+    inflation, how far from the point it counts unless the point is inside
+    its item, its obstacle and item; whether the point was inside the item
+    when found, and whether it may have crossed the item's boundary since,
+    so that it is tested again."""
+
+    point: IntArray
+    starts: ComplexArray
+    ends: ComplexArray
+    inflation: FloatArray
+    limit: FloatArray
+    obstacle: IntArray
+    item: IntArray
+    inside: BoolArray
+    unsure: BoolArray
+
+    def taken(self, pairs: IntArray) -> Found:
+        """The pairs `pairs` indexes, in that order."""
+        return Found(
+            self.point[pairs],
+            self.starts[pairs],
+            self.ends[pairs],
+            self.inflation[pairs],
+            self.limit[pairs],
+            self.obstacle[pairs],
+            self.item[pairs],
+            self.inside[pairs],
+            self.unsure[pairs],
+        )
+
+
+NO_FOUND = Found(
+    np.empty(0, dtype=np.intp),
+    np.empty(0, dtype=complex),
+    np.empty(0, dtype=complex),
+    np.empty(0),
+    np.empty(0),
+    np.empty(0, dtype=np.intp),
+    np.empty(0, dtype=np.intp),
+    np.empty(0, dtype=bool),
+    np.empty(0, dtype=bool),
+)
+
+
+def join_found(founds: Sequence[Found]) -> Found:
+    """`founds` one after another."""
+    if len(founds) == 1:
+        return founds[0]
+    every = [NO_FOUND, *founds]
+    return Found(
+        np.concatenate([f.point for f in every]),
+        np.concatenate([f.starts for f in every]),
+        np.concatenate([f.ends for f in every]),
+        np.concatenate([f.inflation for f in every]),
+        np.concatenate([f.limit for f in every]),
+        np.concatenate([f.obstacle for f in every]),
+        np.concatenate([f.item for f in every]),
+        np.concatenate([f.inside for f in every]),
+        np.concatenate([f.unsure for f in every]),
+    )
+
+
+class StaticEdges:
+    """A static field's obstacles as edges, with the search that finds the
+    edges near points.
+
+    Each item is a geometry of a kind (`LINE`, `AREA`, `OUTSIDE`), with its
+    inflation and its obstacle. It is looked for as far beyond the reach as
+    the largest inflation of the items but the `OUTSIDE` ones, as
+    `Obstacles` and `ChainField` look, or for the outside of an area as far
+    as its own. Its edges are its geometry's, or its boundary's, and an
+    item's are numbered together. They are taken from shapely only for items
+    a search finds, so that a field over a whole board costs what lies near
+    the points that ask it: eight bytes for each item never found, as the
+    index of where a found item's edges and bounding box are kept.
+
+    A tree over the items finds those near a point; the `OUTSIDE` items
+    come last and are few, and a point is near one unless it lies deep
+    inside its area. Whether a point is inside an area is tested exactly,
+    and only where the point is inside the area's bounding box. Of an item
+    with more than INDEXED_EDGES edges, a tree over pieces of its edges
+    finds those near a point (`_indexed_pairs`).
+    """
+
+    def __init__(
+        self,
+        geometries: ObjectArray,
+        kinds: IntArray,
+        inflations: FloatArray,
+        obstacles: IntArray,
+        tree: STRtree | None = None,
+    ) -> None:
+        self.geometries = geometries
+        self.kinds = kinds
+        self.inflations = inflations
+        self.obstacles = obstacles
+        self.indexed = int(np.count_nonzero(kinds != OUTSIDE))
+        """How many items the tree over the items holds, all but the
+        `OUTSIDE` ones, which come after them."""
+        assert (kinds[self.indexed :] == OUTSIDE).all()
+        if tree is None and self.indexed:
+            tree = STRtree(geometries[: self.indexed])
+        self._tree = tree if self.indexed else None
+        self.obstacle_count = int(obstacles.max(initial=-1)) + 1
+        self._inflation = float(inflations[: self.indexed].max(initial=0.0))
+        self._slot = np.full(len(geometries), -1, dtype=np.intp)
+        self._first: IntArray = np.empty(0, dtype=np.intp)
+        self._count: IntArray = np.empty(0, dtype=np.intp)
+        self._bounds: FloatArray = np.empty((0, 4))
+        self._starts: ComplexArray = np.empty(0, dtype=complex)
+        self._ends: ComplexArray = np.empty(0, dtype=complex)
+        self._pieces: dict[int, tuple[cKDTree, IntArray, float]] = {}
+        self._deep: dict[tuple[int, float, float], BaseGeometry] = {}
+
+    def search(self, coords: FloatArray, reach: float, slack: float) -> Found:
+        """The pairs that can answer the points `coords` within `reach` once
+        each has moved at most `slack` mm: of an item's edges those that
+        can be its nearest, of the items those that can come within
+        SMOOTH_REACH of the point's nearest, as `static_smooth` measures
+        them. Without a finite reach, those within SMOOTH_REACH of the
+        nearest. Items and obstacles are numbered as given."""
+        point, item = self._near(coords, reach, slack)
+        self._split(item)
+        slot = self._slot[item]
+        some = self._count[slot] > 0
+        point, item, slot = point[some], item[some], slot[some]
+        if not len(point):
+            return NO_FOUND
+        inside = self.inside(item, coords[point])
+        query = complex_points(coords)
+        pair, edge = self._pair_edges(query[point], item, slot, slack)
+        per_pair = np.bincount(pair, minlength=len(point))
+        firsts = np.cumsum(per_pair) - per_pair
+        starts = self._starts[edge]
+        raw = np.abs(_offsets(query[point[pair]], starts, self._ends[edge] - starts))
+        nearest = np.minimum.reduceat(raw, firsts)
+        limit = reach + np.where(
+            self.kinds[item] == OUTSIDE, self.inflations[item], self._inflation
+        )
+        distance = np.where(inside, -nearest, nearest) - self.inflations[item]
+        unsure = (
+            (slack > 0.0)
+            & (self.kinds[item] != LINE)
+            & (nearest <= slack + DEGENERATE_DISTANCE)
+        )
+        # Distance changes no faster than the point moves, so an item that
+        # stays in reach bounds how far the point's nearest can lie.
+        stays = (inside & ~unsure) | (nearest + slack <= limit)
+        bound = np.full(len(coords), np.inf)
+        np.minimum.at(bound, point[stays], distance[stays] + slack)
+        tolerance = 2 * DEGENERATE_DISTANCE
+        reachable = inside | unsure | (nearest - slack <= limit + DEGENERATE_DISTANCE)
+        keep = reachable & (distance - slack <= bound[point] + SMOOTH_REACH + tolerance)
+        kept = keep[pair] & (raw <= nearest[pair] + 2 * slack + tolerance)
+        pair, edge = pair[kept], edge[kept]
+        order = obstacle_order(point[pair], self.obstacles[item[pair]], edge)
+        pair, edge = pair[order], edge[order]
+        return Found(
+            point[pair],
+            self._starts[edge],
+            self._ends[edge],
+            self.inflations[item[pair]],
+            limit[pair],
+            self.obstacles[item[pair]],
+            item[pair],
+            inside[pair],
+            unsure[pair],
+        )
+
+    def inside(self, items: IntArray, coords: FloatArray) -> BoolArray:
+        """Whether each point lies inside its item, items[i] of coords[i]:
+        in an `AREA`'s area or outside an `OUTSIDE`'s, never for a `LINE`.
+        Only items a search found are asked."""
+        kind = self.kinds[items]
+        bounds = self._bounds[self._slot[items]]
+        x, y = coords[:, 0], coords[:, 1]
+        boxed = (
+            (x >= bounds[:, 0])
+            & (y >= bounds[:, 1])
+            & (x <= bounds[:, 2])
+            & (y <= bounds[:, 3])
+        )
+        test = boxed & (kind != LINE)
+        within = np.zeros(len(items), dtype=bool)
+        within[test] = shapely.contains_xy(
+            self.geometries[items[test]], x[test], y[test]
+        )
+        return np.where(kind == OUTSIDE, ~within, within)
+
+    def normal(self, item: int, point: FloatArray) -> tuple[float, float]:
+        """The unit gradient at a point lying on the item's edges, where
+        the direction to them is noise, as `Obstacles` takes it."""
+        geometry = self.geometries[item]
+        kind = int(self.kinds[item])
+        target = geometry if kind == LINE else geometry.boundary
+        nx, ny = _outward_normal(point, geometry, target, kind != LINE)
+        return (-nx, -ny) if kind == OUTSIDE else (nx, ny)
+
+    def _near(
+        self, coords: FloatArray, reach: float, slack: float
+    ) -> tuple[IntArray, IntArray]:
+        """(point, item) pairs, among them every item that can come within
+        `reach` of a point once inflated and once the point has moved
+        `slack`, or without a finite reach within SMOOTH_REACH of its
+        nearest."""
+        points: list[IntArray] = [np.empty(0, dtype=np.intp)]
+        items: list[IntArray] = [np.empty(0, dtype=np.intp)]
+        if self._tree is not None and len(coords):
+            query: ObjectArray = np.asarray(shapely.points(coords), dtype=object)
+            if math.isfinite(reach):
+                radius = np.full(len(coords), reach + self._inflation + slack)
+            else:
+                (at, nearest_item), nearest = self._tree.query_nearest(
+                    query, return_distance=True, all_matches=False
+                )
+                # As in `Obstacles._item_candidates`, once the nearest has
+                # come `slack` nearer and another gone `slack` farther.
+                radius = np.empty(len(coords))
+                radius[at] = (
+                    nearest
+                    - self.inflations[nearest_item]
+                    + self._inflation
+                    + SMOOTH_REACH
+                    + 2 * slack
+                )
+            point, item = self._tree.query(
+                query, predicate="dwithin", distance=radius + DEGENERATE_DISTANCE
+            )
+            points.append(point.astype(np.intp))
+            items.append(item.astype(np.intp))
+        for k in range(self.indexed, len(self.geometries)):
+            near = np.ones(len(coords), dtype=bool)
+            if math.isfinite(reach):
+                near = ~shapely.contains_xy(
+                    self._deep_inside(k, reach, slack), coords[:, 0], coords[:, 1]
+                )
+            at = np.flatnonzero(near)
+            points.append(at)
+            items.append(np.full(len(at), k, dtype=np.intp))
+        return np.concatenate(points), np.concatenate(items)
+
+    def _deep_inside(self, k: int, reach: float, slack: float) -> BaseGeometry:
+        """The part of `OUTSIDE` item k's area that no point within `slack`
+        of it can see the item from within `reach`, prepared, with a margin
+        for the buffer's arc approximation."""
+        deep = self._deep.get((k, reach, slack))
+        if deep is None:
+            margin = float(self.inflations[k]) + reach + slack + DEEP_MARGIN
+            deep = self._deep[(k, reach, slack)] = self.geometries[k].buffer(-margin)
+            shapely.prepare(deep)
+        return deep
+
+    def _pair_edges(
+        self, at: ComplexArray, item: IntArray, slot: IntArray, slack: float
+    ) -> tuple[IntArray, IntArray]:
+        """(pair, edge) of the pairs of points `at` and their items `item`,
+        by pair: every edge of an item, or of one with more than
+        INDEXED_EDGES those that `_indexed_pairs` finds."""
+        counts = self._count[slot]
+        few = np.flatnonzero(counts <= INDEXED_EDGES)
+        each = counts[few]
+        pairs = [np.repeat(few, each)]
+        firsts = np.repeat(self._first[slot[few]] - (np.cumsum(each) - each), each)
+        edges = [firsts + np.arange(len(pairs[0]))]
+        many = np.flatnonzero(counts > INDEXED_EDGES)
+        by_item = many[np.argsort(item[many], kind="stable")]
+        cuts = np.flatnonzero(np.diff(item[by_item])) + 1
+        for group in np.split(by_item, cuts) if len(by_item) else ():
+            k = int(item[group[0]])
+            local, edge = self._indexed_pairs(k, at[group], slack)
+            pairs.append(group[local])
+            edges.append(self._first[self._slot[k]] + edge)
+        pair, edge = np.concatenate(pairs), np.concatenate(edges)
+        order = np.argsort(pair, kind="stable")
+        return pair[order], edge[order]
+
+    def _indexed_pairs(
+        self, k: int, at: ComplexArray, slack: float
+    ) -> tuple[IntArray, IntArray]:
+        """(point, edge) pairs of points `at` and item k's edges, numbered
+        from its first, among them every edge `search` can keep: each edge
+        within 2·slack of the point's nearest. The nearest piece's middle
+        is no nearer than the nearest edge, and every edge has a piece whose
+        middle is within half the longest piece of the edge's nearest point,
+        so the pieces within that bound, 2·slack and half a piece hold every
+        such edge, the nearest among them."""
+        tree, edge_of, half_piece = self._pieces_of(k)
+        points = np.column_stack([at.real, at.imag])
+        nearest, _ = tree.query(points)
+        bound = np.asarray(nearest, dtype=float)
+        # Round-off in the distances, far below the nanometre allowed.
+        radius = bound + 2 * slack + half_piece + 3 * DEGENERATE_DISTANCE
+        point, piece = _pairs_each_within(tree, points, radius)
+        key = np.unique(point * len(edge_of) + edge_of[piece])
+        return key // len(edge_of), key % len(edge_of)
+
+    def _pieces_of(self, k: int) -> tuple[cKDTree, IntArray, float]:
+        """A tree over the middles of item k's edges split into pieces of at
+        most MAX_EDGE_LENGTH, each piece's edge, numbered from the item's
+        first, and half the longest piece."""
+        pieces = self._pieces.get(k)
+        if pieces is None:
+            slot = int(self._slot[k])
+            first, count = int(self._first[slot]), int(self._count[slot])
+            a = self._starts[first : first + count]
+            along = self._ends[first : first + count] - a
+            lengths = np.abs(along)
+            parts = np.maximum(np.ceil(lengths / MAX_EDGE_LENGTH), 1).astype(np.intp)
+            edge = np.repeat(np.arange(count), parts)
+            part = np.arange(len(edge)) - np.repeat(np.cumsum(parts) - parts, parts)
+            middles = a[edge] + (part + 0.5) / parts[edge] * along[edge]
+            tree = cKDTree(np.column_stack([middles.real, middles.imag]))
+            half_piece = float((lengths / parts).max()) / 2
+            pieces = self._pieces[k] = (tree, edge, half_piece)
+        return pieces
+
+    def _split(self, items: IntArray) -> None:
+        """Take the edges and bounds of those of `items` not yet split."""
+        new = np.unique(items[self._slot[items] < 0])
+        if not len(new):
+            return
+        geometries = self.geometries[new]
+        area = self.kinds[new] != LINE
+        targets = geometries.copy()
+        targets[area] = shapely.boundary(geometries[area])
+        starts, ends, of = _edges_of(targets)
+        counts = np.bincount(of, minlength=len(new))
+        self._slot[new] = len(self._count) + np.arange(len(new))
+        self._first = np.concatenate(
+            [self._first, len(self._starts) + np.cumsum(counts) - counts]
+        )
+        self._count = np.concatenate([self._count, counts])
+        a, b = complex_points(starts), complex_points(ends)
+        self._starts = np.concatenate([self._starts, a])
+        self._ends = np.concatenate([self._ends, b])
+        # Untyped **kwargs in types-shapely, as in Obstacles.__init__.
+        bounds: FloatArray = shapely.bounds(geometries)  # pyright: ignore[reportUnknownMemberType]
+        self._bounds = np.concatenate([self._bounds, bounds])
+
+
+def _edges_of(targets: ObjectArray) -> tuple[FloatArray, FloatArray, IntArray]:
+    """The edges of each linear geometry or point in `targets`, a point as
+    an edge of no length: where each starts and ends, (m, 2), and its
+    geometry's index, ascending."""
+    parts, part_of = shapely.get_parts(targets, return_index=True)
+    coords, coord_part = shapely.get_coordinates(parts, return_index=True)
+    sizes = np.bincount(coord_part, minlength=len(parts))
+    linked = np.flatnonzero(coord_part[1:] == coord_part[:-1])
+    single = (np.cumsum(sizes) - sizes)[sizes == 1]
+    first = np.concatenate([linked, single])
+    last = np.concatenate([linked + 1, single])
+    order = np.argsort(first, kind="stable")
+    first, last = first[order], last[order]
+    return coords[first], coords[last], part_of[coord_part[first]].astype(np.intp)
+
+
+class StaticItems:
+    """The items of several `StaticEdges`, numbered one part after
+    another, for what `static_smooth` asks of an item."""
+
+    def __init__(self, parts: Sequence[StaticEdges]) -> None:
+        self.parts = tuple(parts)
+        self.starts: IntArray = np.cumsum(
+            [0, *(len(p.geometries) for p in parts)], dtype=np.intp
+        )
+        """Where each part's items start, and then their count."""
+
+    def inside(self, items: IntArray, coords: FloatArray) -> BoolArray:
+        """`StaticEdges.inside` of items numbered across the parts."""
+        part = np.searchsorted(self.starts, items, side="right") - 1
+        within = np.zeros(len(items), dtype=bool)
+        for p in map(int, np.unique(part)):
+            at = part == p
+            within[at] = self.parts[p].inside(items[at] - self.starts[p], coords[at])
+        return within
+
+    def normal(self, item: int, point: FloatArray) -> tuple[float, float]:
+        """`StaticEdges.normal` of an item numbered across the parts."""
+        p = int(np.searchsorted(self.starts, item, side="right")) - 1
+        return self.parts[p].normal(item - int(self.starts[p]), point)
+
+
+def static_parts(field: ObstacleField) -> list[StaticEdges] | None:
+    """`field` as `StaticEdges`, one per field it joins, or None if it is
+    of a kind that gives none."""
+    if isinstance(field, Obstacles | ChainField):
+        return [field.static_edges]
+    if not isinstance(field, CompositeField):
+        return None
+    parts: list[StaticEdges] = []
+    for f in field.fields:
+        found = static_parts(f)
+        if found is None:
+            return None
+        parts += found
+    return parts
+
+
+def search_parts(
+    parts: Sequence[tuple[StaticEdges, int]],
+    coords: FloatArray,
+    reach: float,
+    slack: float,
+) -> Found:
+    """`StaticEdges.search` over several parts, each with the number its
+    items start at, their obstacles numbered one part after another, so
+    that the smooth minimum is over all of them."""
+    founds: list[Found] = []
+    obstacles = 0
+    for part, first in parts:
+        found = part.search(coords, reach, slack)
+        founds.append(
+            found._replace(obstacle=found.obstacle + obstacles, item=found.item + first)
+        )
+        obstacles += part.obstacle_count
+    if len(founds) <= 1:
+        return founds[0] if founds else NO_FOUND
+    joined = join_found(founds)
+    order = obstacle_order(
+        joined.point, joined.obstacle, np.arange(len(joined.point), dtype=np.intp)
+    )
+    return joined.taken(order)
+
+
+def parts_smooth_distance(
+    parts: Sequence[StaticEdges], points: FloatArray, reach: float = math.inf
+) -> tuple[FloatArray, FloatArray]:
+    """`smooth_distance` over the obstacles of `parts`, from one search."""
+    coords = np.asarray(points, dtype=float).reshape(-1, 2)
+    items = StaticItems(parts)
+    found = search_parts(
+        list(zip(parts, items.starts, strict=False)), coords, smooth_reach(reach), 0.0
+    )
+    return static_smooth(complex_points(coords), found, items)
+
+
+def static_smooth(
+    query: ComplexArray, found: Found, items: StaticItems
+) -> tuple[FloatArray, FloatArray]:
+    """The smooth distance at each point of `query` and its gradient over
+    the pairs `found` gives, its items numbered as `items` numbers them:
+    of each item the nearest edge to a point, the exact signed distance,
+    then of each obstacle the nearest item, then the smooth minimum over
+    the obstacles (`energy.smooth_minimum`). A point inside an area is at
+    the negative of its distance to the area's boundary, and a point on
+    an item's edge takes its normal (`StaticEdges.normal`)."""
+    count = len(query)
+    if not len(found.point):
+        return np.full(count, np.inf), np.zeros((count, 2))
+    at = query[found.point]
+    key = _segment_distances(at, found.starts, found.ends)
+    inside = found.inside
+    unsure = np.flatnonzero(found.unsure)
+    if len(unsure):
+        inside = inside.copy()
+        where = at[unsure]
+        inside[unsure] = items.inside(
+            found.item[unsure], np.column_stack([where.real, where.imag])
+        )
+    counted = np.where(inside | (key <= found.limit + DEGENERATE_DISTANCE), key, np.inf)
+    best = _nearest_in_groups(counted, *_groups(found.point, found.item))
+    nearest = _closest_points(at[best], found.starts[best], found.ends[best])
+    offset = np.column_stack([at[best].real, at[best].imag]) - nearest
+    length = np.linalg.norm(offset, axis=1)
+    sign = np.where(inside[best], -1.0, 1.0)
+    reached = np.isfinite(counted[best])
+    distance = np.where(reached, sign * length, np.inf) - found.inflation[best]
+    point = found.point[best]
+    chosen, smooth, share = _nearest_then_smooth(
+        point, found.obstacle[best], distance, count
+    )
+    length = length[chosen]
+    degenerate = length < DEGENERATE_DISTANCE
+    safe = np.where(degenerate, 1.0, length)
+    direction = sign[chosen, None] * offset[chosen] / safe[:, None]
+    for k in np.flatnonzero(degenerate):
+        c = query[point[chosen[k]]]
+        direction[k] = items.normal(
+            int(found.item[best[chosen[k]]]), np.array([c.real, c.imag])
+        )
+    return smooth, weighted_sum(point[chosen], share, direction, count)
+
+
+# GEOS's point-to-segment formula, which `Obstacles.signed_distance` gets
+# through shapely: equal to shapely's distances to round-off, and bit for
+# bit with shapely 2.2.0 on GEOS 3.14.1.
+
+
+def _segment_distances(
+    points: ComplexArray, starts: ComplexArray, ends: ComplexArray
+) -> FloatArray:
+    """The distance from each point to the segment from starts[i] to
+    ends[i], as GEOS measures it to choose a geometry's nearest segment."""
+    px, py, ax, ay = points.real, points.imag, starts.real, starts.imag
+    bx, by = ends.real, ends.imag
+    dx, dy = bx - ax, by - ay
+    squared = dx * dx + dy * dy
+    single = squared == 0.0
+    scale = np.where(single, 1.0, squared)
+    r = ((px - ax) * dx + (py - ay) * dy) / scale
+    across = ((ay - py) * dx - (ax - px) * dy) / scale
+    to_start = np.sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay))
+    to_end = np.sqrt((px - bx) * (px - bx) + (py - by) * (py - by))
+    return np.where(
+        single | (r <= 0.0),
+        to_start,
+        np.where(r >= 1.0, to_end, np.abs(across) * np.sqrt(scale)),
+    )
+
+
+def _closest_points(
+    points: ComplexArray, starts: ComplexArray, ends: ComplexArray
+) -> FloatArray:
+    """The point of each segment from starts[i] to ends[i] nearest
+    points[i], (n, 2), as GEOS finds it."""
+    px, py, ax, ay = points.real, points.imag, starts.real, starts.imag
+    bx, by = ends.real, ends.imag
+    dx, dy = bx - ax, by - ay
+    squared = dx * dx + dy * dy
+    on_start = (px == ax) & (py == ay)
+    on_end = (px == bx) & (py == by)
+    r = ((px - ax) * dx + (py - ay) * dy) / np.where(squared == 0.0, 1.0, squared)
+    factor = np.where(on_start | (squared == 0.0), 0.0, np.where(on_end, 1.0, r))
+    inner = (factor > 0.0) & (factor < 1.0)
+    to_start = np.sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay))
+    to_end = np.sqrt((px - bx) * (px - bx) + (py - by) * (py - by))
+    first = to_start < to_end
+    x = np.where(inner, ax + factor * dx, np.where(first, ax, bx))
+    y = np.where(inner, ay + factor * dy, np.where(first, ay, by))
+    return np.column_stack([x, y])
 
 
 def _obstacle_ids(items: Sequence[Obstacle]) -> IntArray:
@@ -552,6 +1127,34 @@ class ChainField:
     def _tree(self) -> cKDTree | None:
         # Built on first use: a field whose checks all end early needs none.
         return cKDTree(self._middles) if len(self._middles) else None
+
+    @cached_property
+    def static_edges(self) -> StaticEdges:
+        """The field as `StaticEdges`, each edge an item of its own, for a
+        field that stands still. Its distances differ from
+        `smooth_distance`'s by round-off, since `static_smooth` measures
+        by GEOS's point-to-segment formula."""
+        ends = self._starts + self._along
+        lines: ObjectArray = np.empty(0, dtype=object)
+        if len(ends):
+            lines = np.asarray(
+                shapely.linestrings(
+                    np.stack(
+                        [
+                            np.column_stack([self._starts.real, self._starts.imag]),
+                            np.column_stack([ends.real, ends.imag]),
+                        ],
+                        axis=1,
+                    )
+                ),
+                dtype=object,
+            )
+        return StaticEdges(
+            lines,
+            np.full(len(self._inflations), LINE, dtype=np.intp),
+            self._inflations,
+            self._obstacles,
+        )
 
     @staticmethod
     def merged(fields: Sequence[ChainField]) -> ChainField:
