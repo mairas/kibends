@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 from distance_fields import FreeSpace
@@ -7,7 +9,12 @@ from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.pair_layout import ChainPair, find_pairs, lay_out
+from kibends.pair_layout import (
+    ChainPair,
+    find_pairs,
+    lay_out,
+    pairs_and_partners_taken,
+)
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.vias import ChainEnd
 
@@ -102,6 +109,21 @@ def test_a_chain_pairs_only_once_and_its_other_partner_warns(log: list[str]) -> 
     (warning,) = [line for line in log if line.startswith("WARNING")]
     assert f"USB_D+ on F.Cu from (-1.000, {3 * HALF_PITCH - 1.0:.3f})" in warning
     assert "pairs with another chain of USB_D+" in warning
+
+
+@pytest.mark.parametrize(
+    ("other", "taken"), [(beyond, [(2, 1)]), (far, [])], ids=["coupled", "far"]
+)
+def test_partners_taken_name_the_chain_left_alone_and_its_partner(
+    log: list[str], other: Callable[[str], Chain], taken: list[tuple[int, int]]
+) -> None:
+    chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), other("USB_D+")]
+
+    found, partners_taken = pairs_and_partners_taken(chains, CHORD)
+
+    assert [(p.a, p.b) for p in found] == [(0, 1)]
+    assert partners_taken == taken
+    assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_coupled_chains_of_nets_that_do_not_pair_do_not_warn(

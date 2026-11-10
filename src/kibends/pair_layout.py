@@ -76,9 +76,14 @@ def find_pairs(
     return found
 
 
-def pairs_among(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPair]:
-    """The pairs `find_pairs` finds, without its warnings."""
-    return _pair_up(chains, chord_tolerance).found
+def pairs_and_partners_taken(
+    chains: Sequence[Chain], chord_tolerance: float
+) -> tuple[list[ChainPair], list[tuple[int, int]]]:
+    """What `find_pairs` finds, without its warnings: the pairs, and the
+    partners taken (`_partners_taken`), a list of (alone, partner) chain
+    indices."""
+    found, taken, _, skipped = _pair_up(chains, chord_tolerance)
+    return found, _partners_taken(chains, skipped, taken, chord_tolerance)
 
 
 class _Pairing(NamedTuple):
@@ -127,20 +132,35 @@ def _warn_partners_taken(
 ) -> None:
     """Warn about each chain of `skipped` left unpaired that runs coupled
     with a chain of its pair net that pairs with another chain."""
-    warned: set[int] = set()
-    for k, m in skipped:
-        if (k in taken) == (m in taken):
-            continue
-        alone, partner = (m, k) if k in taken else (k, m)
+    for alone, partner in _partners_taken(chains, skipped, taken, chord_tolerance):
         a, b = chains[alone], chains[partner]
-        if alone in warned or not runs_coupled(a, b, chord_tolerance):
-            continue
-        warned.add(alone)
         logger.warning(
             f"{a.net} on {a.layer} from {frame.point(a.points[0])} runs coupled with "
             f"{b.net}, which pairs with another chain of {a.net}; smoothing it "
             "on its own"
         )
+
+
+def _partners_taken(
+    chains: Sequence[Chain],
+    skipped: Sequence[tuple[int, int]],
+    taken: Collection[int],
+    chord_tolerance: float,
+) -> list[tuple[int, int]]:
+    """The partners taken, as a list of (alone, partner) chain indices:
+    `alone` is a chain of `skipped` left unpaired, and `partner` the first
+    chain of its pair net it runs coupled with that pairs with another
+    chain. Each `alone` appears once."""
+    alone: dict[int, int] = {}
+    for k, m in skipped:
+        if (k in taken) == (m in taken):
+            continue
+        lone, partner = (m, k) if k in taken else (k, m)
+        a, b = chains[lone], chains[partner]
+        if lone in alone or not runs_coupled(a, b, chord_tolerance):
+            continue
+        alone[lone] = partner
+    return list(alone.items())
 
 
 SectionField = Callable[[str, ChainCentreline, ChainCentreline, float], ObstacleField]
