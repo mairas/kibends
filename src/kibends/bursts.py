@@ -39,10 +39,6 @@ LBFGSB_GTOL = 1e-10
 class OptimizerSettings:
     spacing: float = 0.1
     """Target distance between resampled vertices, mm."""
-    frozen_depth: float = 0.01
-    """δ, mm: vertices and vias that start deeper than δ inside an
-    obstacle's clearance are frozen; resampling also keeps vertices a few δ
-    inside the other members' clearance where they are."""
     settled_change: float = 1e-3
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles."""

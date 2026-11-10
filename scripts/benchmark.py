@@ -32,15 +32,18 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings; width-change is skipped for a tree without it,
-  whose neck-down is another geometry.
+  at default settings; width-change and starts-inside are each skipped for
+  a tree without them (an older tree's neck-down is another geometry).
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Three go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
   0.5: ten Z-shaped tracks at 0.6 mm pitch, each as far from one neighbour
   as from the other; the same with each track up to 0.03 mm off its pitch;
-  and 262 chains of 5 mm for one outer iteration, to time setup and the
-  work around a burst among many chains. The fourth runs end to end
+  262 chains of 5 mm for one outer iteration, to time setup and the
+  work around a burst among many chains; and the same chains all of one
+  net with one of another net far from them, whose distances in the
+  starting statistics lie beyond every edge of the one net. The last runs
+  end to end
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
   rows of pads at 1 mm pitch, whose distance field every energy evaluation
   queries.
@@ -413,7 +416,11 @@ def scenario_cases() -> dict[str, Case]:
         "channel-1": single(lambda: scenarios.channel(1.0)),
         "topology": single(scenarios.topology),
         "pad-row": single(scenarios.pad_row),
-        "frozen": single(scenarios.frozen),
+        **(
+            {"starts-inside": single(scenarios.starts_inside)}
+            if hasattr(scenarios, "starts_inside")
+            else {}
+        ),
         "detour": single(scenarios.detour),
         "narrow-gap": single(scenarios.narrow_gap),
         "channel-pair": several(scenarios.channel_pair),
@@ -483,6 +490,8 @@ def scenarios_table() -> None:
         f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
         f"| {total.step:.2f} | |"
     )
+    if not hasattr(scenarios, "starts_inside"):
+        print("starts-inside: skipped, the tree has no scenarios.starts_inside")
 
 
 CROSSED = {
@@ -578,6 +587,8 @@ BUS_SEED = 1
 """Seeds the uneven tracks' offsets, so that every run places them alike."""
 BUS_REPULSION = 0.5
 SHORT_CHAINS = 262
+FAR_TRACK = 50.0
+"""How far below the chains of one net the chain of another lies, mm."""
 PAD_TRACK_LENGTH = 30.0
 """How far the tracks between the pad rows run, mm."""
 PAD_TRACK_PITCH = 2.0
@@ -622,6 +633,23 @@ def short_chains() -> list[ChainInput]:
         )
         for i, y in enumerate(bus_rows(SHORT_CHAINS, BUS_JITTER))
     ]
+
+
+def one_net_chains() -> list[ChainInput]:
+    """`short_chains`, all of one net, and one chain of another net
+    FAR_TRACK below them."""
+    chains = [
+        replace(c, centreline=replace(c.centreline, net="GND")) for c in short_chains()
+    ]
+    far = scenarios.selected(
+        "far",
+        "S",
+        FreeSpace(),
+        (0.0, -FAR_TRACK),
+        (2.5, 0.15 - FAR_TRACK),
+        (5.0, -FAR_TRACK),
+    )
+    return [*chains, far]
 
 
 def pad_rows_board() -> CommitBoard:
@@ -710,6 +738,9 @@ def bus_cases() -> dict[str, Case]:
         ),
         "262 chains of 5 mm, 1 iteration": bus_run(
             short_chains(), replace(settings, max_iterations=1)
+        ),
+        "262 chains of one net and one far off, 1 iteration": bus_run(
+            one_net_chains(), replace(settings, max_iterations=1)
         ),
         "10 tracks between pad rows at 1 mm": pad_rows_run(),
     }

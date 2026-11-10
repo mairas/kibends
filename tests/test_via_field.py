@@ -264,7 +264,7 @@ def limits(
     snaps: list[LayerSnapshot], via: Via, *, zones: Sequence[ViaZone]
 ) -> ObstacleField:
     """Every limit on where `via` may go: its static field and its zones'
-    regions, as `ViaInput.limits` gives them."""
+    regions."""
     return contained(build_via_obstacles(snaps, via, zones=zones), zones)
 
 
@@ -994,19 +994,19 @@ class TestStaticViasSplit:
         assert via_ids(apart.static_vias) == split
 
     @pytest.mark.parametrize("net", ["SIG", "GND"])
-    def test_limits_are_the_unsplit_field_s(self, net: str) -> None:
+    def test_its_copper_is_the_unsplit_field(self, net: str) -> None:
         whole, apart = split_inputs(net)
         at = around()
 
-        distance, gradient = apart.limits.signed_distance(at)
-        expected, expected_gradient = whole.limits.signed_distance(at)
+        distance, gradient = apart.copper.signed_distance(at)
+        expected, expected_gradient = whole.field.signed_distance(at)
 
         np.testing.assert_array_equal(distance, expected)
         np.testing.assert_array_equal(gradient, expected_gradient)
         starts, ends = at[:-1], at[1:]
         np.testing.assert_array_equal(
-            apart.limits.segments_clear(starts, ends),
-            whole.limits.segments_clear(starts, ends),
+            apart.copper.segments_clear(starts, ends),
+            whole.field.segments_clear(starts, ends),
         )
 
     @pytest.mark.parametrize("net", ["SIG", "GND"])
@@ -1019,7 +1019,6 @@ class TestStaticViasSplit:
         static = [s for s in classed if pairs_with(via, apart.ground, s)]
         pairs = ViaPairs(
             [apart],
-            [0],
             [{}],
             static,
             PAIR_PARAMS,

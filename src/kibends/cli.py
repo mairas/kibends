@@ -1,10 +1,10 @@
 """The `kibends` command line.
 
-`smooth` prints the optimizer's outcome line, logs its warnings (frozen
-vertices, an iteration cap or time limit) and, at debug, the frozen vias
-and abnormal bursts, all from `run_smooth`'s `on_optimized` callback, and
-raises the returned report's refusal. The per-chain, per-pair and per-via
-figures stay in the reports and are not printed. Every IPC failure ends the
+`smooth` prints the optimizer's outcome line, logs its warnings (an
+iteration cap or time limit) and, at debug, the abnormal bursts, all from
+`run_smooth`'s `on_optimized` callback, and raises the returned report's
+refusal. The per-chain, per-pair and per-via figures stay in the reports
+and are not printed. Every IPC failure ends the
 run with one log line (`_exit_on_failure`), except a copper-text render
 KiCad refuses for another reason, which only warns, and the selection
 after the push (`commit._select`), logged at debug since the commit has
@@ -37,10 +37,9 @@ from kibends.commit import (
     CreateItemsError,
     DeleteItemsError,
 )
-from kibends.coords import UserFrame
 from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
-from kibends.results import FrozenVertex, Termination
+from kibends.results import Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
     NoBoardError,
@@ -136,13 +135,6 @@ def smooth(options: SmoothOptions) -> None:
         print(format_outcome(optimized))
         for warning in report_warnings(optimized):
             logger.warning(warning)
-        for v in optimized.vias:
-            if v.frozen:
-                logger.debug(
-                    f"Left via {v.id} at {optimized.frame.point(v.start)} in "
-                    "place: it starts inside another item's clearance or a rule "
-                    "area keeping out vias"
-                )
         for description, n in optimized.abnormal:
             logger.debug(
                 f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of "
@@ -173,11 +165,8 @@ def format_outcome(report: OptimizerReport) -> str:
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """Frozen vertices and an iteration cap or time limit, one line each,
-    positions in the report's frame."""
-    frame = report.frame
-    warnings = [_frozen_warning(v, frame) for c in report.chains for v in c.frozen]
-    warnings += [_frozen_warning(v, frame) for p in report.pairs for v in p.frozen]
+    """An iteration cap or time limit, one line each."""
+    warnings: list[str] = []
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
             f"The optimizer stopped at its cap of {report.iterations} "
@@ -189,19 +178,6 @@ def report_warnings(report: OptimizerReport) -> list[str]:
             "using the best result found"
         )
     return warnings
-
-
-def _frozen_warning(v: FrozenVertex, frame: UserFrame) -> str:
-    message = (
-        f"Left the vertex at {frame.point(v.position)} in "
-        f"place: it starts {-v.distance:.3f} mm inside another item's clearance"
-    )
-    if v.neighbours:
-        message += (
-            f", that of the selected chain {' and '.join(v.neighbours)}; "
-            "a re-run may free it"
-        )
-    return message
 
 
 def _finite(text: str) -> float:

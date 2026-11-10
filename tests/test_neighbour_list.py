@@ -15,7 +15,7 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.optimize import LIST_SKIN
 from kibends.pair_blocks import pair_block
-from kibends.seen import NeighbourList, Seen
+from kibends.seen import NeighbourList, Pairs, Seen
 from kibends.via_moves import MovingVias
 
 Scenario = ChainsScenario | PairsScenario | ViasScenario
@@ -67,7 +67,7 @@ def test_the_listed_energy_is_the_searched_one(
         flat: FloatArray,
         reach: float,
         slack: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> Pairs:
         nonlocal searches
         searches += 1
         return real(self, n, points, owner, flat, reach, slack)
@@ -121,7 +121,7 @@ def _counted(monkeypatch: pytest.MonkeyPatch) -> list[int]:
         flat: FloatArray,
         reach: float,
         slack: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> Pairs:
         searches[0] += 1
         return real(self, n, points, owner, flat, reach, slack)
 

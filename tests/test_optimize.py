@@ -1,5 +1,5 @@
-"""Single chains through `optimize.optimize`: shapes, clearance, frozen
-vertices and stop rules, on the scenarios of `tests/scenarios.py`."""
+"""Single chains through `optimize.optimize`: shapes, clearance, copper
+that starts inside it and stop rules, on the scenarios of `tests/scenarios.py`."""
 
 import json
 import re
@@ -18,10 +18,12 @@ from shapely import wkt
 import kibends.optimize as optimize_module
 from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
 from kibends.energy import BoolArray, ObstacleField, total_energy
-from kibends.obstacles import Obstacle, Obstacles
+from kibends.neighbours import ChainInput
+from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
 from kibends.polylines import measure, resample, violations
 from kibends.results import OptimizeResult, Termination
+from kibends.via_moves import MovingVias
 
 SETTINGS = OptimizerSettings()
 # For long runs: about 20x faster than the defaults and, on the detour and
@@ -169,12 +171,11 @@ def test_path_left_of_disc_stays_left() -> None:
     assert result.after.length < result.before.length
 
 
-def test_path_at_exact_clearance_is_not_frozen_and_moves() -> None:
+def test_path_at_exact_clearance_moves() -> None:
     scenario = scenarios.pad_row()
 
     result = run(scenario, COARSE)
 
-    assert result.frozen == ()
     assert result.termination is Termination.CONVERGED
     assert y_at(result.polyline, 5.0) < -0.05
     assert all_edges_clear(result.polyline, scenario.field)
@@ -205,19 +206,36 @@ def test_input_that_cuts_a_corner_is_still_pulled_tight() -> None:
     assert crossing_starts.sum() <= 1
 
 
-def test_vertex_deep_inside_obstacle_is_frozen_and_kept() -> None:
-    scenario = scenarios.frozen()
+def test_a_vertex_deep_inside_an_obstacle_moves_out() -> None:
+    scenario = scenarios.starts_inside()
 
-    result = run(scenario)
+    result = run(scenario, COARSE)
 
-    assert len(result.frozen) == 1
-    frozen = result.frozen[0]
-    assert frozen.position == scenarios.FROZEN_VERTEX
-    assert frozen.distance == pytest.approx(-0.5)
-    kept = np.all(result.polyline == scenarios.FROZEN_VERTEX, axis=1)
-    assert kept.sum() == 1
-    assert result.fixed[kept].all()
+    assert not np.all(result.polyline == scenarios.INSIDE_VERTEX, axis=1).any()
+    assert result.after.min_clearance >= -INSIDE_TOLERANCE
     assert result.after.length < result.before.length
+
+
+PAD_DEPTH = 0.02
+"""How far the vertex starts inside the pad's clearance, mm."""
+
+
+def test_a_vertex_just_inside_a_pad_s_clearance_ends_clear_of_it() -> None:
+    pad = Box(5.0, 1.0, 1.0, 1.0, corner_radius=scenarios.ENVELOPE)
+    polyline, fixed = chain((0.0, -1.0), (5.0, PAD_DEPTH), (10.0, -1.0))
+
+    result = optimize(polyline, fixed, pad, PARAMS, COARSE)
+
+    assert result.before.min_clearance == pytest.approx(-PAD_DEPTH)
+    assert result.after.min_clearance >= -INSIDE_TOLERANCE
+
+
+def test_a_pinned_end_inside_a_clearance_stays() -> None:
+    polyline, fixed = chain((0.0, 0.0), (5.0, 2.0), (10.0, 0.0))
+
+    result = optimize(polyline, fixed, Disc(0.0, 0.0, 0.5), PARAMS, COARSE)
+
+    np.testing.assert_array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
 # Too weak to hold the taut wrap off the box's corner: bursts cut across it,
@@ -249,81 +267,103 @@ def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
     assert all_edges_clear(result.polyline, scenario.field)
 
 
-FROZEN_DISC_RADIUS = 0.3
+DISC_CLIP = 0.12
+"""Radius of two discs either side of the detour's pocket, which its legs
+cut into by 20 µm, mm."""
 
 
-# At 0.3 mm, with the frozen vertex at x = 16, every burst from the third
-# presses the track into the pocket's sharp corners, so none becomes the best
-# state and the run settles 3.4 mm long; at 0.2 mm every x pulls tight.
-FROZEN_DETOUR = replace(COARSE, spacing=0.2)
-
-
-@pytest.mark.parametrize("x", [3.0, 9.0, 16.0])
-def test_detour_with_a_frozen_vertex_is_still_pulled_tight(x: float) -> None:
+# A run stopped at its cap can trade the input's violation for one at another
+# obstacle (https://github.com/mairas/kibends/issues/14). The run converges
+# in 5 iterations at these settings, so every cap here stops it unsettled.
+@pytest.mark.parametrize("cap", [1, 2, 3, 4])
+def test_a_clipped_detour_stopped_at_the_cap_adds_no_violation(cap: int) -> None:
     detour = scenarios.detour()
     assert isinstance(detour.field, Union)
-    field = Union([*detour.field.shapes, Disc(x, 0.0, FROZEN_DISC_RADIUS)])
-    polyline = np.insert(detour.polyline, 1 if x < 9.85 else 5, [x, 0.0], axis=0)
-
-    result = optimize(
-        polyline,
-        scenarios.endpoints_fixed(polyline),
-        field,
-        detour.params,
-        FROZEN_DETOUR,
+    field = Union(
+        [
+            *detour.field.shapes,
+            Disc(9.75, 1.2, DISC_CLIP),
+            Disc(10.25, 1.2, DISC_CLIP),
+        ]
     )
 
-    assert result.termination is Termination.CONVERGED
-    assert len(result.frozen) == 1
-    assert result.after.length == pytest.approx(scenarios.DETOUR_LENGTH, abs=1e-2)
-
-
-# Without the guard, the result at this cap has a vertex 16 µm inside the
-# pocket's clearance.
-FROZEN_DETOUR_CAP = 13
-
-
-def test_frozen_vertex_does_not_excuse_a_violation_elsewhere() -> None:
-    detour = scenarios.detour()
-    assert isinstance(detour.field, Union)
-    frozen_at = (3.0, 0.0)
-    field = Union([*detour.field.shapes, Disc(*frozen_at, FROZEN_DISC_RADIUS)])
-    polyline = np.insert(detour.polyline, 1, frozen_at, axis=0)
-
     result = optimize(
-        polyline,
-        scenarios.endpoints_fixed(polyline),
+        detour.polyline,
+        detour.fixed,
         field,
         detour.params,
-        replace(COARSE, max_iterations=FROZEN_DETOUR_CAP),
+        replace(COARSE, max_iterations=cap),
     )
 
-    assert [vertex.position for vertex in result.frozen] == [frozen_at]
-    assert np.all(result.polyline == frozen_at, axis=1).sum() == 1
-    assert result.after.length < result.before.length
-    assert all_edges_clear(result.polyline, detour.field)
+    assert result.termination is Termination.ITERATION_CAP
+    assert violations(result.polyline, result.fixed, field) <= violations(
+        detour.polyline, detour.fixed, field
+    )
+
+
+GUARDED_DISC = Disc(5.0, -1.0, 0.5)
+"""Clear of the chain the guard test starts with."""
+
+
+@pytest.mark.parametrize(("inside", "taken"), [(False, True), (True, False)])
+def test_the_guard_takes_no_more_violations_than_the_start(
+    inside: bool, taken: bool
+) -> None:
+    polyline, fixed = chain((0.0, 0.0), (5.0, 2.0), (10.0, 0.0))
+    alone = ChainInput(
+        ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, GUARDED_DISC
+    )
+    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE, None
+    )
+    problem = placed.problem
+    moved = problem.points[0].copy()
+    if inside:
+        # One free vertex in the disc: a run of one inside, no anchor in it.
+        free = np.flatnonzero(~problem.masks[0])
+        moved[free[len(free) // 2]] = (GUARDED_DISC.cx, GUARDED_DISC.cy)
+
+    assert problem.allowed == [0]
+    seen = problem.seeing([moved])
+    assert problem.guard([moved], problem.masks, problem.positions, seen) is taken
+
+
+NARROW = 0.05
+"""How far each wall of the slot reaches past the middle, mm: no line
+through it is clear."""
+
+
+def test_a_chain_through_a_slot_narrower_than_its_clearance_adds_no_violation() -> None:
+    # The walls reach far beyond the ends, so the chain cannot go around.
+    field = Union(
+        [
+            Box(5.0, 50.0 - NARROW, 1.0, 50.0),
+            Box(5.0, NARROW - 50.0, 1.0, 50.0),
+        ]
+    )
+    polyline, fixed = chain((0.0, 0.0), (5.0, 0.5), (10.0, 0.0))
+
+    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+
+    assert violations(result.polyline, result.fixed, field) <= violations(
+        polyline, fixed, field
+    )
 
 
 SHALLOW_DEPTH = 0.001
 
 
 def test_inside_run_holding_anchors_may_split() -> None:
-    # Pins at both ends and a frozen vertex between them share one run of
-    # vertices 1 µm inside the box; the standoff pushes the free ones out,
-    # leaving a separate run at each anchor.
-    frozen_at = (6.0, 0.0)
-    field = Union(
-        [
-            Box(5.0, SHALLOW_DEPTH - 5.0, 6.0, 5.0),
-            Disc(*frozen_at, FROZEN_DISC_RADIUS),
-        ]
-    )
-    polyline, fixed = chain((0.0, 0.0), frozen_at, (10.0, 0.0))
+    # Pins at both ends and one between them share one run of vertices 1 µm
+    # inside the box; the standoff pushes the free ones out, leaving a
+    # separate run at each pin.
+    pinned_at = (6.0, 0.0)
+    field = Box(5.0, SHALLOW_DEPTH - 5.0, 6.0, 5.0)
+    polyline = path((0.0, 0.0), pinned_at, (10.0, 0.0))
 
-    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+    result = optimize(polyline, np.ones(3, dtype=bool), field, PARAMS, COARSE)
 
-    assert [vertex.position for vertex in result.frozen] == [frozen_at]
-    assert np.all(result.polyline == frozen_at, axis=1).sum() == 1
+    assert np.all(result.polyline == pinned_at, axis=1).sum() == 1
     assert y_at(result.polyline, 3.0) > SHALLOW_DEPTH
     assert y_at(result.polyline, 8.0) > SHALLOW_DEPTH
 

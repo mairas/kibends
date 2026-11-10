@@ -247,7 +247,7 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     run = RunResult(
         (
             ChainResult(
-                line, fixed, 0, (), measure(line, field, SPACING), no_contacts(line)
+                line, fixed, 0, measure(line, field, SPACING), no_contacts(line)
             ),
         ),
         Termination.CONVERGED,

@@ -24,7 +24,7 @@ so the refill reconnects it wherever the other copper ends up.
 With ground nets, the vias standing still that a moving via pairs with,
 ground with regular or of two ground nets (`vias.pairs_with`), leave its
 field and are built apart, each as the field would count it
-(`split_via_obstacles`): `vias.ViaInput.limits` takes them back in, so
+(`split_via_obstacles`): `vias.ViaInput.copper` takes them back in, so
 the distances it gives are the unsplit field's, and the optimizer's
 pairwise term (`via_pairs`) gives their energy.
 """
@@ -509,11 +509,31 @@ class ChainField:
         )
         if not len(segment):
             return clear
-        gap = _segment_gaps(
-            a[segment], b[segment] - a[segment], self._starts[edge], self._along[edge]
+        inside = pairs_inside(
+            a[segment],
+            b[segment] - a[segment],
+            self._starts[edge],
+            self._along[edge],
+            self._inflations[edge],
+            tolerance,
         )
-        clear[segment[gap < self._inflations[edge] - tolerance - ROUND_OFF]] = False
+        clear[segment[inside]] = False
         return clear
+
+
+def pairs_inside(
+    a: ComplexArray,
+    ab: ComplexArray,
+    starts: ComplexArray,
+    along: ComplexArray,
+    inflations: FloatArray,
+    tolerance: float,
+) -> BoolArray:
+    """`ChainField.segments_clear` over (segment, edge) pairs: whether the
+    segment from a[k] along ab[k] enters the edge from starts[k] along
+    along[k], inflated by inflations[k], by more than `tolerance`."""
+    gap = _segment_gaps(a, ab, starts, along)
+    return gap < inflations - tolerance - ROUND_OFF
 
 
 def nearest_of_pairs(
@@ -687,9 +707,22 @@ def chain_inflation(
     keeps its centreline from `other`'s, mm: both half widths and the larger
     of both clearances, as from an unselected track; None for a chain of its
     net, since copper of one net may come close, overlap or cross."""
+    if other.net == net:
+        return None
+    return track_inflation(width, clearance, other.width, other.clearance)
+
+
+def track_inflation(
+    width: float, clearance: float, other_width: float, other_clearance: float
+) -> float:
+    """`chain_inflation` between tracks of two nets, of `width` and
+    `clearance` and of `other_width` and `other_clearance`, mm."""
     # Tracks have no holes, so the keeper's hole clearance is never asked.
-    keeper = _Keeper(net, width / 2, clearance, HOLE_CLEARANCE)
-    return keeper.copper(other.net, other.width / 2, other.clearance)
+    keeper = _Keeper(None, width / 2, clearance, HOLE_CLEARANCE)
+    inflation = keeper.copper("", other_width / 2, other_clearance)
+    # A keeper of no net keeps clear of every net.
+    assert inflation is not None
+    return inflation
 
 
 def chains_field(

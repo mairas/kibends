@@ -1,8 +1,8 @@
 """What the optimizer returns (`optimize.optimize_chains`): a `RunResult`
 with a `ChainResult` per chain, a `ViaResult` per moving via and a
 `PairResult` per coupled section, each chain's and section's statistics
-before the run (`PolylineStats`, from `polylines.measure`), the vertices it
-froze (`FrozenVertex`) and how the run ended (`Termination`).
+before the run (`PolylineStats`, from `polylines.measure`) and how the run
+ended (`Termination`).
 `OptimizeResult` is the single-chain form `optimize.optimize` returns.
 `run` turns these into its reports.
 """
@@ -28,17 +28,6 @@ class Termination(Enum):
 
 
 @dataclass(frozen=True)
-class FrozenVertex:
-    """A vertex left in place because it starts inside an obstacle."""
-
-    position: Point2
-    distance: float
-    """Signed distance to the clearance boundary, negative, mm."""
-    neighbours: tuple[str, ...] = ()
-    """Descriptions of the other selected chains whose clearance it starts in."""
-
-
-@dataclass(frozen=True)
 class PolylineStats:
     length: float
     segment_count: int
@@ -55,14 +44,13 @@ class PolylineStats:
 class OptimizeResult:
     polyline: FloatArray
     fixed: BoolArray
-    """Pinned and frozen vertices of `polyline`; simplification keeps them."""
+    """Pinned vertices of `polyline`; simplification keeps them."""
     termination: Termination
     iterations: int
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
     abnormal_bursts: int
     """Bursts L-BFGS-B ended abnormally; each was judged like any other."""
-    frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     after: PolylineStats
 
@@ -71,11 +59,10 @@ class OptimizeResult:
 class ChainResult:
     polyline: FloatArray
     fixed: BoolArray
-    """Pinned and frozen vertices of `polyline`, and those that keep a
-    contact; simplification keeps them."""
+    """Pinned vertices of `polyline`, and those that keep a contact;
+    simplification keeps them."""
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
-    frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     contact_of: IntArray
     """Per vertex of `polyline`, the index among its input's contacts of
@@ -85,8 +72,6 @@ class ChainResult:
 @dataclass(frozen=True)
 class ViaResult:
     position: Point2
-    frozen: bool
-    """It started more than δ inside its clearance and was left in place."""
     rejected_edges: int
     """End edges of its chains whose crossing an obstacle undid its move."""
 
@@ -98,7 +83,7 @@ class PairResult:
     centreline: FloatArray
     fixed: BoolArray
     """The vertices of `centreline` that simplification keeps: those the run
-    pinned or froze, but the direction pins of a section it moved, as a
+    pinned, but the direction pins of a section it moved, as a
     merged edge stays within the chord tolerance of them."""
     a: FloatArray
     b: FloatArray
@@ -108,7 +93,6 @@ class PairResult:
     too_close: int
     """Of `rejected_edges`, the vertex pairs that came closer than the
     section keeps its parts beyond a turn (`polylines.close_to_itself`)."""
-    frozen: tuple[FrozenVertex, ...]
     before: PolylineStats
     """Of the starting centreline."""
     bend: BendCheck | None

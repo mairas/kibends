@@ -23,7 +23,7 @@ which resampling keeps where they are (`_Problem.pressed`), run L-BFGS-B
 what the checks reject.
 
 Copper of one net does not interact: a chain sees nothing of the chains,
-tracks and vias of its net (`neighbours.neighbour_field`), and its static
+tracks and vias of its net (`members.seen_parts`), and its static
 field holds none of its net's copper, so chains of one net may come close,
 overlap or cross. A selection that branches is split at each junction into
 chains that end there, loose (`junctions`): those ends are one shared
@@ -63,10 +63,7 @@ the gradient reaches its centre too. A section and a via see each other as the s
 centreline as wide as `PairBlock.chain`. A stitching via carries no chain
 ends, so with no length term only repulsion moves it. A moving via ties the
 layers it spans into one problem, every member on them included, since moving vias are
-through vias and share every layer. A via that starts more than δ inside
-its clearance stands still, as copper the members see; its own terms then
-could only push them a second time, so they are left out, and it ties no
-layers together.
+through vias and share every layer.
 
 The board's vias that are none of the run's, each a ground via or a
 regular one (`vias.StaticVia`), reach `optimize_chains` as `static_vias`;
@@ -115,11 +112,15 @@ A moving via is a member whose one vertex is its centre, inflated by
 `via_chain_inflation` against a member of another net and seen by it so,
 and against another via by `via_via_inflation`, hole-to-hole alone for one
 of its net. The chain ends it carries move with it, and their edges are
-checked as any. A via clear at the burst's start that ends inside its
-clearance, of static copper, a member or another via, or outside where its
-zones, taken together on each layer where one reaches the via's ring,
-connect it at the next refill (`ViaInput.limits`,
-`obstacles.containment`), moves back with the ends it carries. On those
+checked as any. A via clear at the burst's start of the copper of other
+nets, static (`ViaInput.copper`), a member or a via, that ends inside its
+clearance of it moves back with the ends it carries, and so does any via
+that ends deeper inside what only stops it than it started the burst and
+inside it: outside where its zones, taken together on each layer where one
+reaches the via's ring, connect it at the next refill
+(`obstacles.containment`), or inside its own net's stops (`ViaInput.stops`,
+its net's other vias). The two are measured apart, so that a via inside
+one cannot be pushed deeper into the other. On those
 layers its inflation also holds the zone's clearance and margin, against
 static copper and members alike, so that the refill reaches the via
 wherever the others move. The chains a via carries are of its net, so it
@@ -132,13 +133,14 @@ repelling, and the check below moves it back if it newly ends outside
 (`contacts.contacts_left`).
 Every state a burst leaves, and so the best state, has it inside.
 
-Vertices and vias that start more than δ inside their clearance are
-frozen, and resampling keeps a vertex more than PRESSED_DEPTH times δ
-inside the others' clearance where it is, as a free vertex
+A vertex or via that starts inside its clearance moves like any other: the
+clearance hinge pushes it out, and the check after a burst moves back only
+what was clear at the burst's start. Resampling keeps a vertex more than
+PRESSED_DEPTH inside the others' clearance where it is, as a free vertex
 (`_Problem.pressed`). Each problem keeps its best
 state, taken only from a burst that does not raise its energy, add
-violations to any member or leave a via deeper inside its clearance than
-it started.
+violations to any member or leave a via deeper inside its clearance or
+its stops than it started.
 
 When it stops
 -------------
@@ -163,6 +165,7 @@ from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     OptimizerSettings,
+    point_distance,
     revert_until_clear,
     run_burst,
 )
@@ -182,29 +185,25 @@ from kibends.members import (
     Member,
     body_of,
     members_energy,
-    pieces_field,
     pull_answers,
     seen_parts,
     shown,
     shown_flat,
-    viewer_of,
 )
-from kibends.neighbours import (
-    ChainInput,
-    chain_field,
-    neighbour_field,
-)
-from kibends.obstacles import (
-    HOLE_CLEARANCE,
-    HOLE_TO_HOLE,
-    ChainCentreline,
-    ChainField,
-)
+from kibends.neighbours import ChainInput
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
-from kibends.polylines import SelfCheck, measure, resample, shape_change, violations
+from kibends.polylines import (
+    SelfCheck,
+    clearance_points,
+    count_violations,
+    measure,
+    measured,
+    resample,
+    shape_change,
+)
 from kibends.results import (
     ChainResult,
-    FrozenVertex,
     OptimizeResult,
     PairResult,
     PolylineStats,
@@ -255,41 +254,8 @@ def optimize(
         iterations=run.iterations,
         rejected_edges=chain.rejected_edges,
         abnormal_bursts=sum(n for _, n in run.abnormal),
-        frozen=chain.frozen,
         before=chain.before,
         after=after,
-    )
-
-
-def _frozen_vertices(
-    chain: ChainInput,
-    field: ObstacleField,
-    dynamic: dict[int, ObstacleField | None],
-    chains: Sequence[ChainInput],
-    settings: OptimizerSettings,
-) -> tuple[BoolArray, tuple[FrozenVertex, ...]]:
-    """Free vertices starting more than δ inside the clearance, and their records."""
-    points = chain.centreline.points
-    distance, _ = field.signed_distance(points)
-    mask = ~chain.fixed & (distance < -settings.frozen_depth)
-    if not mask.any():
-        return mask, ()
-    stuck = points[mask]
-    inside = [
-        (
-            chains[j].centreline.description,
-            other.signed_distance(stuck)[0] < -settings.frozen_depth,
-        )
-        for j, other in dynamic.items()
-        if other is not None
-    ]
-    return mask, tuple(
-        FrozenVertex(
-            (float(x), float(y)),
-            float(d),
-            tuple(name for name, near in inside if near[k]),
-        )
-        for k, ((x, y), d) in enumerate(zip(stuck, distance[mask], strict=True))
     )
 
 
@@ -305,11 +271,10 @@ def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
 # pairs at every evaluation, a narrower one searches more often.
 LIST_SKIN = 0.05
 
-# How many δ deep inside the other members' and vias' clearance a vertex
-# lies when resampling keeps it where it is (`_Problem.pressed`): twice the
-# depth that freezes a vertex against static copper, so that one that only
-# grazes a neighbour's clearance resamples as any other.
-PRESSED_DEPTH = 2.0
+# How deep inside the other members' and vias' clearance, mm, a vertex lies
+# when resampling keeps it where it is (`_Problem.pressed`), so that one that
+# only grazes a neighbour's clearance resamples as any other.
+PRESSED_DEPTH = 0.02
 
 End = tuple[int, int]
 """A chain end: the chain's index and 0 or -1."""
@@ -341,14 +306,12 @@ def optimize_chains(
     (`junctions`), coupled sections of pairs (`pairs`) and moving `vias`,
     and returns each chain's, section's and via's best state; a junction's
     ends come back at one point, loose. A via keeps `hole_clearance` and
-    `hole_to_hole` where holes are involved, and one that starts more than
-    δ inside its clearance stays where it is, `frozen` in its result, with
-    the chain ends it carries pinned. `static_vias` are the board's vias
-    that are none of `vias`; each problem keeps those its moving vias share
-    a layer with. Each problem keeps its best state, replaced only after a
+    `hole_to_hole` where holes are involved. `static_vias` are the board's
+    vias that are none of `vias`; each problem keeps those its moving vias
+    share a layer with. Each problem keeps its best state, replaced only after a
     burst that does not raise its energy, leaves no chain or section with
     more violations than it started with, and leaves no via deeper inside
-    its clearance than it started.
+    its clearance or its stops than it started.
 
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back but for a section's parts that
@@ -407,17 +370,12 @@ def optimize_chains(
             v: p.problem.via_result(k, best=best)
             for p in placed
             for k, v in enumerate(p.vias)
-            if not p.problem.vias[k].frozen
         }
         return RunResult(
             tuple(by_index[i] for i in range(len(chains))),
             termination,
             iterations,
-            vias=tuple(
-                by_via.get(v)
-                or ViaResult(via.via.position, frozen=True, rejected_edges=0)
-                for v, via in enumerate(vias)
-            ),
+            vias=tuple(by_via[v] for v in range(len(vias))),
             pairs=tuple(by_section[k] for k in range(len(blocks))),
             gave_up=tuple(
                 (p.description, p.abnormal_streak)
@@ -496,45 +454,16 @@ def _problems(
     start: RunResult | None,
     static_vias: Sequence[StaticVia] = (),
 ) -> list[_Placed]:
-    """The run's problems: the layers that the vias that move tie together,
-    with every via and the `static_vias` they share a layer with, and each
-    other layer alone, with the vias that stand still on it. `vias` holds
-    the chains, then the sections' centrelines."""
-    originals = [chain.centreline.points for chain in vias.chains]
-    positions = vias.starting_positions()
-    frozen = [
-        distance < -settings.frozen_depth
-        for distance in vias.distances(positions, originals)
-    ]
-    vias = vias.standing({v for v, still in enumerate(frozen) if still})
-    # The ends a via that stays would carry are pinned, as at an unselected one.
-    chains = _pinned(
-        chains,
-        [
-            [(end.chain, end.index) for end in vias.ends[v]]
-            for v, still in enumerate(frozen)
-            if still
-        ],
-    )
+    """The run's problems: the layers that the vias tie together, with
+    every via and the `static_vias` they share a layer with, and each other
+    layer alone. `vias` holds the chains, then the sections' centrelines."""
     layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
     tied = [
-        layer
-        for layer in layers
-        if any(
-            not still and via.via.reaches(layer)
-            for via, still in zip(vias.vias, frozen, strict=True)
-        )
+        layer for layer in layers if any(via.via.reaches(layer) for via in vias.vias)
     ]
     if not tied:
-        # Vias that move on no chain's layer, stitching vias selected alone.
-        tied = list(
-            dict.fromkeys(
-                layer
-                for via, still in zip(vias.vias, frozen, strict=True)
-                if not still
-                for layer in via.via.span
-            )
-        )
+        # Vias on no chain's layer, stitching vias selected alone.
+        tied = list(dict.fromkeys(layer for via in vias.vias for layer in via.via.span))
     groups = [tied] if tied else []
     groups += [[layer] for layer in layers if layer not in tied]
     placed: list[_Placed] = []
@@ -560,7 +489,7 @@ def _problems(
             group,
             [chains[i] for i in on],
             [blocks[k] for k in sections],
-            [_problem_via(vias, v, frozen[v], local, joined) for v in joined],
+            [_problem_via(vias, v, local, joined) for v in joined],
             params,
             settings,
             resume,
@@ -575,7 +504,6 @@ def _problems(
 def _problem_via(
     vias: MovingVias,
     v: int,
-    frozen: bool,
     local: Mapping[int, int],
     joined: Sequence[int],
 ) -> _Via:
@@ -588,15 +516,9 @@ def _problem_via(
         inflation = vias.apart(v, u)
         if inflation is not None:
             apart[k] = inflation
-    carried = (
-        ()
-        if frozen
-        else tuple((local[e.chain], e.index, e.offset) for e in vias.ends[v])
-    )
     return _Via(
         vias.vias[v],
-        frozen,
-        carried,
+        tuple((local[e.chain], e.index, e.offset) for e in vias.ends[v]),
         {local[i]: ring for i, ring in vias.rings(v).items() if i in local},
         apart,
     )
@@ -608,11 +530,9 @@ class _Via:
     index in it."""
 
     given: ViaInput
-    frozen: bool
-    """It started more than δ inside its clearance and stays."""
     carried: tuple[tuple[int, int, FloatArray], ...]
-    """The chain ends it carries, if it moves: the member, 0 or -1 for its
-    first or last point, and the end's offset from the via's centre."""
+    """The chain ends it carries: the member, 0 or -1 for its first or last
+    point, and the end's offset from the via's centre."""
     rings: Mapping[int, float]
     """The members it sees and that see it, and how far their centrelines
     keep from its centre."""
@@ -687,18 +607,6 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     return list(groups.values())
 
 
-def _pinned(
-    chains: Sequence[ChainInput], groups: Sequence[Sequence[End]]
-) -> list[ChainInput]:
-    pinned = list(chains)
-    for group in groups:
-        for i, end in group:
-            fixed = pinned[i].fixed.copy()
-            fixed[end] = True
-            pinned[i] = replace(pinned[i], fixed=fixed)
-    return pinned
-
-
 def _starting(problems: Sequence[_Problem], setup: float, *, again: bool) -> str:
     """One line on the run about to start, after `setup` seconds of setup,
     `again` when it repeats a run with sections held."""
@@ -768,8 +676,8 @@ def _variables(
 @dataclass(frozen=True)
 class _Layout:
     """How a burst's variables make the members' polylines and the vias'
-    centres: each moving via's centre is a variable, and an end it carries
-    is that variable plus the end's offset."""
+    centres: each via's centre is a variable, and an end it carries is that
+    variable plus the end's offset."""
 
     starts: list[FloatArray]
     positions: list[FloatArray]
@@ -778,7 +686,7 @@ class _Layout:
     offsets: list[FloatArray]
     """Per member, each vertex's offset from its variable."""
     via_index: IntArray
-    """Each via's variable, -1 for one that stays."""
+    """Each via's variable."""
     count: int
 
     @property
@@ -788,8 +696,7 @@ class _Layout:
             free = i >= 0
             x[i[free]] = start[free] - offset[free]
         for v, at in zip(self.via_index, self.positions, strict=True):
-            if v >= 0:
-                x[v] = at
+            x[v] = at
         return x.ravel()
 
     def unflatten(self, x: FloatArray) -> tuple[list[FloatArray], list[FloatArray]]:
@@ -801,10 +708,7 @@ class _Layout:
             free = i >= 0
             points[free] = at[i[free]] + offset[free]
             polylines.append(points)
-        positions = [
-            at[v].copy() if v >= 0 else p
-            for v, p in zip(self.via_index, self.positions, strict=True)
-        ]
+        positions = [at[v].copy() for v in self.via_index]
         return polylines, positions
 
     def gradient(
@@ -816,8 +720,7 @@ class _Layout:
         for g, i in zip(gradients, self.index, strict=True):
             free = i >= 0
             np.add.at(gradient, i[free], g[free])
-        moving = self.via_index >= 0
-        np.add.at(gradient, self.via_index[moving], via_gradients[moving])
+        np.add.at(gradient, self.via_index, via_gradients)
         return gradient.ravel()
 
 
@@ -876,15 +779,13 @@ class _Problem:
         hole_to_hole: float,
     ) -> None:
         self.vias = list(vias)
-        self.free_vias = [k for k, via in enumerate(vias) if not via.frozen]
         self.static_vias = [
             s
             for s in static_vias
-            if any(s.via.shares_layer(vias[k].given.via) for k in self.free_vias)
+            if any(s.via.shares_layer(via.given.via) for via in vias)
         ]
         pairs = ViaPairs(
             [via.given for via in vias],
-            self.free_vias,
             [via.apart for via in vias],
             self.static_vias,
             params,
@@ -895,9 +796,9 @@ class _Problem:
         """The pairwise term (`via_pairs`); None without a pair, so that
         the energy is the one without ground vias term for term."""
         self.via_diameters = np.array(
-            [vias[k].given.via.diameter for k in self.free_vias], dtype=float
+            [via.given.via.diameter for via in vias], dtype=float
         )
-        self.description = _description(layers, bool(self.free_vias))
+        self.description = _description(layers, bool(vias))
         self.groups = junctions(chains)
         count = len(chains) + len(sections)
         self.loose: list[list[int]] = [[] for _ in range(count)]
@@ -905,21 +806,27 @@ class _Problem:
             for i, end in group:
                 self.loose[i].append(end)
         self.carried: list[list[tuple[int, int]]] = [[] for _ in range(count)]
-        for k in self.free_vias:
-            for i, end, _ in vias[k].carried:
+        for k, via in enumerate(vias):
+            for i, end, _ in via.carried:
                 self.carried[i].append((k, end))
         self.rings = [via.rings for via in vias]
         apart = [via.apart for via in vias]
-        self.via_sight = ViaSight(self.free_vias, self.rings, apart, count)
         # Vias of one net only stop each other; the pairs of the pairwise
         # term are summed apart from the nearest; the rest repel.
         own_net = [
             {u: d for u, d in a.items() if _one_net(vias[k], vias[u])}
             for k, a in enumerate(apart)
         ]
+        self.via_sight = ViaSight(
+            self.rings,
+            [
+                {u: d for u, d in a.items() if u not in own}
+                for a, own in zip(apart, own_net, strict=True)
+            ],
+            count,
+        )
         paired = pairs.paired
         self.via_repel = ViaSight(
-            self.free_vias,
             self.rings,
             [
                 {u: d for u, d in a.items() if u not in own and u not in pairs_of}
@@ -927,19 +834,9 @@ class _Problem:
             ],
             count,
         )
-        self.via_stop = ViaSight(self.free_vias, [{} for _ in vias], own_net, count)
-        # The chains with their junction ends pinned, so that those are
-        # never frozen: their own masks below leave them loose.
-        self.members: list[Member] = [*_pinned(chains, self.groups), *sections]
+        self.via_stop = ViaSight([{} for _ in vias], own_net, count)
+        self.members: list[Member] = [*chains, *sections]
         self.bodies = [body_of(member) for member in self.members]
-        self.neighbours = [
-            [
-                j
-                for j, other in enumerate(self.bodies)
-                if j != i and other.layer == b.layer
-            ]
-            for i, b in enumerate(self.bodies)
-        ]
         self.params = params
         self.settings = settings
         self.reach = obstacle_reach(params)
@@ -953,20 +850,7 @@ class _Problem:
         self.start_positions = [
             np.array(via.given.via.position, dtype=float) for via in vias
         ]
-        start_fields = self.fields(self.originals, self.start_positions)
-        self.anchors: list[BoolArray] = []
-        self.frozen: list[tuple[FrozenVertex, ...]] = []
-        for i, (given, body) in enumerate(
-            zip([*chains, *(s.chain for s in sections)], self.bodies, strict=True)
-        ):
-            others: dict[int, ObstacleField | None] = {
-                j: self.neighbour(i, [j], self.originals) for j in self.neighbours[i]
-            }
-            mask, records = _frozen_vertices(
-                body, start_fields[i], others, self.bodies, settings
-            )
-            self.anchors.append(given.fixed | mask)
-            self.frozen.append(records)
+        self.anchors = [body.fixed for body in self.bodies]
         # A vertex that stays keeps its contact without one.
         self.within = [[field for _, field in body.contacts] for body in self.bodies]
         self.sliding = [i for i, body in enumerate(self.bodies) if body.contacts]
@@ -977,10 +861,7 @@ class _Problem:
                 contact_of[v] = k
             contact_of[anchors] = -1
             self.given_contact_of.append(contact_of)
-        self.before: list[PolylineStats] = [
-            measure(points, field, settings.spacing)
-            for points, field in zip(self.originals, start_fields, strict=True)
-        ]
+        self.before = self.start_statistics(self.originals, self.start_positions)
         # A burst starts from the members resampled; the shapes as the burst
         # left them are what the energy, the guard and the best state see.
         # Resampling would put free vertices between a held section's pins.
@@ -1010,20 +891,26 @@ class _Problem:
         self.free = [
             i for i, mask in enumerate(self.masks) if not mask.all() or self.carried[i]
         ]
-        self.moving = bool(self.free) or bool(self.free_vias)
+        self.moving = bool(self.free) or bool(vias)
         # Resampling can lay a chord across an obstacle corner, and a burst
         # only rejects crossings its own moves create, so the result is
         # limited to no more violations per member than the resampled start,
-        # and to no via deeper inside its clearance than it started.
-        self.allowed = self.violations(self.points, self.masks, self.positions)
+        # and to no via deeper inside its clearance or its stops than it
+        # started.
+        self.seen = self.seeing(self.points)
+        """What the members see of each other at `points`."""
+        self.allowed = self.violations(
+            self.points, self.masks, self.positions, self.seen
+        )
         self.inside = self.via_distances(self.points, self.positions)
+        self.stopped = self.stop_distances(self.points, self.positions)
         self.moved = False
         # The first burst starts from the shapes `allowed` was measured on:
         # resampled again, they would cut corners deeper still.
         self.resampled = [True] * count
         if resume is not None:
             self.resume(resume)
-        self.energy = self.energy_of(self.points, self.positions)
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
         self.start_energy = self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
@@ -1051,19 +938,18 @@ class _Problem:
             given = state.members[i]
             if given is not None:
                 points[i], masks[i], contact_of[i] = given
-        positions = [
-            at if k in self.free_vias else self.positions[k]
-            for k, at in enumerate(state.positions)
-        ]
+        positions = list(state.positions)
+        seen = self.seeing(points)
         across = zip(
-            self.edges_across(points, positions),
-            self.edges_across(self.points, self.positions),
+            self.edges_across(points, positions, seen),
+            self.edges_across(self.points, self.positions, self.seen),
             strict=True,
         )
-        if self.guard(points, masks, positions) and all(
+        if self.guard(points, masks, positions, seen) and all(
             count <= before for count, before in across
         ):
             self.points, self.masks, self.positions = points, masks, positions
+            self.seen = seen
             self.contact_of = contact_of
             self.resampled = [
                 done and given is None
@@ -1071,20 +957,40 @@ class _Problem:
             ]
             self.moved = True
 
-    def edges_across(
+    def seeing(self, polylines: Sequence[FloatArray]) -> Seen:
+        """What each member sees of the others and of the vias with the
+        members at `polylines` (`members.seen_parts`)."""
+        return seen_parts(self.members, polylines, self.reach, self.rings)
+
+    def start_statistics(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+    ) -> list[PolylineStats]:
+        """Each member's statistics at `polylines` (`polylines.measure`),
+        its clearance taken from its static copper, the other members and
+        the vias at `positions`."""
+        spacing = self.settings.spacing
+        samples = [clearance_points(points, spacing) for points in polylines]
+        flat = shown_flat(self.members, polylines, positions)
+        near = self.seeing(polylines).distances(samples, flat)
+        return [
+            measured(points, np.minimum(body.field.signed_distance(at)[0], d), spacing)
+            for body, points, at, d in zip(
+                self.bodies, polylines, samples, near, strict=True
+            )
+        ]
+
+    def edges_across(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[int]:
         """Per member at `polylines`, its edges not clear of the other
-        members and the vias at `positions` as it sees them."""
-        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        members and the vias at `positions` as it sees them, `seen` there."""
         flat = shown_flat(self.members, polylines, positions)
         return [
-            int(
-                np.count_nonzero(
-                    ~pieces_field(part, flat).segments_clear(p[:-1], p[1:])
-                )
-            )
-            for p, part in zip(polylines, seen, strict=True)
+            int(np.count_nonzero(~clear))
+            for clear in seen.segments_clear(polylines, flat)
         ]
 
     def guard(
@@ -1092,83 +998,80 @@ class _Problem:
         polylines: Sequence[FloatArray],
         masks: Sequence[BoolArray],
         positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> bool:
         """Whether no member has more violations than `allowed` and no via
-        is deeper inside its clearance than it started, and inside it."""
-        return all(
-            count <= allowed
-            for count, allowed in zip(
-                self.violations(polylines, masks, positions), self.allowed, strict=True
+        is deeper inside its clearance, or inside its stops, than it started,
+        and inside them. The two are measured apart, so that a via inside
+        one cannot be pushed deeper into the other. `seen` is what the
+        members see at `polylines`."""
+        return (
+            all(
+                count <= allowed
+                for count, allowed in zip(
+                    self.violations(polylines, masks, positions, seen),
+                    self.allowed,
+                    strict=True,
+                )
             )
-        ) and all(
-            distance >= min(start, -INSIDE_TOLERANCE)
-            for distance, start in zip(
-                self.via_distances(polylines, positions), self.inside, strict=True
-            )
+            and _no_deeper(self.via_distances(polylines, positions), self.inside)
+            and _no_deeper(self.stop_distances(polylines, positions), self.stopped)
         )
-
-    def neighbour(
-        self, i: int, others: Sequence[int], polylines: Sequence[FloatArray]
-    ) -> ObstacleField | None:
-        """The members `others` at `polylines` as obstacles to member i at
-        its own."""
-        own, as_net = viewer_of(self.members[i])
-        return neighbour_field(
-            own,
-            [part for j in others for part in shown(self.members[j], polylines[j])],
-            self.reach,
-            polylines[i],
-            as_net=as_net,
-        )
-
-    def via_obstacles(
-        self, i: int, positions: Sequence[FloatArray]
-    ) -> ChainField | None:
-        """The vias that member i sees, at `positions`, as obstacles to it."""
-        seen = [(k, ring[i]) for k, ring in enumerate(self.rings) if i in ring]
-        if not seen:
-            return None
-        at = np.array([positions[k] for k, _ in seen])
-        return ChainField(at, at, np.array([inflation for _, inflation in seen]))
-
-    def fields(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[ObstacleField]:
-        """Each member's field with the others at `polylines` and the vias
-        at `positions`."""
-        return [
-            chain_field(
-                body.field,
-                [
-                    self.neighbour(i, self.neighbours[i], polylines),
-                    self.via_obstacles(i, positions),
-                ],
-            )
-            for i, body in enumerate(self.bodies)
-        ]
 
     def violations(
         self,
         polylines: Sequence[FloatArray],
         masks: Sequence[BoolArray],
         positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[int]:
-        return [
-            violations(points, mask, field)
-            for points, mask, field in zip(
-                polylines, masks, self.fields(polylines, positions), strict=True
+        """Per member at `polylines`, its `polylines.violations` of its
+        static copper, the other members and the vias at `positions`
+        together, every member's at once through `seen`, what they see
+        there."""
+        flat = shown_flat(self.members, polylines, positions)
+        near = seen.distances(polylines, flat, -INSIDE_TOLERANCE)
+        clear = seen.segments_clear(polylines, flat, INSIDE_TOLERANCE)
+        counts: list[int] = []
+        for body, points, mask, distance, others_clear in zip(
+            self.bodies, polylines, masks, near, clear, strict=True
+        ):
+            static = body.field
+            inside = (static.signed_distance(points)[0] < -INSIDE_TOLERANCE) | (
+                distance < -INSIDE_TOLERANCE
             )
-        ]
+            ends_clear = ~inside[:-1] & ~inside[1:]
+            cut = ~others_clear
+            cut[ends_clear] |= ~static.segments_clear(
+                points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
+            )
+            counts.append(count_violations(inside, cut, mask))
+        return counts
 
     def via_distances(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
     ) -> list[float]:
-        """Each moving via's free distance, in order: to its static copper,
-        the members near it at `polylines` and the other vias at
-        `positions`."""
+        """Each moving via's free distance, in order, to the copper of other
+        nets: its static copper, the members near it at `polylines` and the
+        vias of other nets at `positions`. What only stops it is
+        `stop_distances`."""
         return free_distances(
             [via.given for via in self.vias], self.via_sight, polylines, positions
         )
+
+    def stop_distances(
+        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+    ) -> list[float]:
+        """Each moving via's distance, in order, to what only stops it: its
+        stops (`ViaInput.stops`) and the other vias of its net at
+        `positions`."""
+        near = self.via_stop.nearest(polylines, positions, math.inf).distance
+        return [
+            float(d)
+            if via.given.stops is None
+            else min(point_distance(via.given.stops, at), float(d))
+            for via, at, d in zip(self.vias, positions, near, strict=True)
+        ]
 
     def via_energy(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
@@ -1185,9 +1088,9 @@ class _Problem:
         zones' regions and the vias of its net, moving or standing still."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
-        if not self.free_vias:
+        if not self.vias:
             return 0.0, gradients, via_gradients
-        at = np.array([positions[k] for k in self.free_vias])
+        at = np.array(positions)
         distances, directions = self.via_statics(at)
         value = 0.0
         for part, static, toward in zip(
@@ -1200,7 +1103,7 @@ class _Problem:
             term, slope = part.integrand(distance)
             value += float(self.via_diameters @ term)
             push = (self.via_diameters * slope)[:, None] * direction
-            via_gradients[self.free_vias] += push
+            via_gradients += push
             pull_answers(near, nearer, at, push, gradients, via_gradients)
         return value, gradients, via_gradients
 
@@ -1211,8 +1114,8 @@ class _Problem:
         where it gives none or it is beyond the reach."""
         distance = np.full((len(self.via_parts), len(at)), math.inf)
         direction = np.zeros((len(self.via_parts), len(at), 2))
-        for n, (k, point) in enumerate(zip(self.free_vias, at, strict=True)):
-            given = self.vias[k].given
+        for n, (via, point) in enumerate(zip(self.vias, at, strict=True)):
+            given = via.given
             for p, part in enumerate(self.via_parts):
                 field = part.static(given)
                 if field is not None:
@@ -1248,7 +1151,7 @@ class _Problem:
         at every vertex and every via's centre; `listed` as for
         `members.members_energy`."""
         if seen is None:
-            seen = seen_parts(self.members, polylines, self.reach, self.rings)
+            seen = self.seeing(polylines)
         value, gradients, via_gradients = members_energy(
             self.members,
             polylines,
@@ -1280,9 +1183,14 @@ class _Problem:
         return value + own, gradients, via_gradients + own_gradients
 
     def energy_of(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> float:
-        return self.total(polylines, positions, self.masks)[0]
+        """The problem's energy, with what the members see of each other at
+        `polylines` given as `seen`."""
+        return self.total(polylines, positions, self.masks, seen)[0]
 
     def length(self) -> float:
         """The summed length of the selected tracks at their current shapes,
@@ -1301,7 +1209,6 @@ class _Problem:
             polyline=self.best[k] if best else self.originals[k],
             fixed=mask | (contact_of >= 0),
             rejected_edges=self.rejected_edges[k],
-            frozen=self.frozen[k],
             before=self.before[k],
             contact_of=contact_of,
         )
@@ -1323,7 +1230,6 @@ class _Problem:
             b=b,
             rejected_edges=self.rejected_edges[k],
             too_close=self.too_close[k],
-            frozen=self.frozen[k],
             before=self.before[k],
             bend=block.bend(points) if moved else block.tight_start,
         )
@@ -1331,9 +1237,7 @@ class _Problem:
     def via_result(self, k: int, *, best: bool) -> ViaResult:
         """Via k's best centre, with `best`, else its input."""
         x, y = self.best_positions[k] if best else self.start_positions[k]
-        return ViaResult(
-            (float(x), float(y)), self.vias[k].frozen, self.via_rejected[k]
-        )
+        return ViaResult((float(x), float(y)), self.via_rejected[k])
 
     def step(self) -> float:
         """One burst of every member and via together; returns its largest
@@ -1358,7 +1262,7 @@ class _Problem:
         starts: list[FloatArray] = []
         masks: list[BoolArray] = []
         contact_of: list[IntArray] = []
-        pressed = self.pressed(self.points, self.positions)
+        pressed = self.pressed(self.points, self.positions, self.seen)
         for i, (points, mask, kept) in enumerate(
             zip(self.points, self.masks, self.contact_of, strict=True)
         ):
@@ -1376,13 +1280,16 @@ class _Problem:
             [
                 *(shape_change(before[i], burst.polylines[i]) for i in self.free),
                 *(
-                    float(np.linalg.norm(burst.positions[k] - self.positions[k]))
-                    for k in self.free_vias
+                    float(np.linalg.norm(after - before))
+                    for after, before in zip(
+                        burst.positions, self.positions, strict=True
+                    )
                 ),
             ]
         )
         self.moved |= change > NOTHING_MOVED
         self.points, self.positions = burst.polylines, burst.positions
+        self.seen = self.seeing(self.points)
         for i, (count, close) in enumerate(
             zip(burst.rejected_edges, burst.too_close, strict=True)
         ):
@@ -1390,9 +1297,9 @@ class _Problem:
             self.too_close[i] += close
         for k, count in enumerate(burst.via_rejected):
             self.via_rejected[k] += count
-        self.energy = self.energy_of(self.points, self.positions)
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
         if self.energy <= self.best_energy and self.guard(
-            self.points, self.masks, self.positions
+            self.points, self.masks, self.positions, self.seen
         ):
             self.best, self.best_masks = list(self.points), list(self.masks)
             self.best_contact_of = list(self.contact_of)
@@ -1434,36 +1341,36 @@ class _Problem:
         return change
 
     def pressed(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[BoolArray]:
         """Per member, its vertices at `polylines` more than PRESSED_DEPTH
-        times δ inside the clearance of the other members and vias at
+        inside the clearance of the other members and vias at
         `positions`, which resampling keeps where they are, as free
         vertices that the next burst moves. Spread along a shape that the
         free vertices beside them bend, they would creep out of the
         clearance a little every burst, and the run would settle later.
         Vertices deep inside static copper are left to resampling, which
         lays them there where a chord cuts a corner and moves them out
-        again."""
-        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        again. `seen` is what the members see at `polylines`."""
         flat = shown_flat(self.members, polylines, positions)
         return [
-            pieces_field(part, flat).signed_distance(points)[0]
-            < -PRESSED_DEPTH * self.settings.frozen_depth
-            for points, part in zip(polylines, seen, strict=True)
+            distance < -PRESSED_DEPTH
+            for distance in seen.distances(polylines, flat, -PRESSED_DEPTH)
         ]
 
     def layout(self, starts: Sequence[FloatArray]) -> _Layout:
         """The variables of a burst from `starts` and the current centres."""
         index, count = _variables(self.masks, self.groups)
         offsets = [np.zeros_like(points) for points in starts]
-        via_index = np.full(len(self.vias), -1, dtype=np.intp)
-        for k in self.free_vias:
-            via_index[k] = count
-            for i, end, offset in self.vias[k].carried:
-                index[i][end] = count
+        via_index = count + np.arange(len(self.vias), dtype=np.intp)
+        for k, via in zip(via_index, self.vias, strict=True):
+            for i, end, offset in via.carried:
+                index[i][end] = k
                 offsets[i][end] = offset
-            count += 1
+        count += len(self.vias)
         return _Layout(
             list(starts), list(self.positions), index, offsets, via_index, count
         )
@@ -1478,7 +1385,7 @@ class _Problem:
         what each member sees of the others measured at the layout's start
         unless given, through a `NeighbourList` unless not `listed`."""
         if seen is None:
-            seen = seen_parts(self.members, layout.starts, self.reach, self.rings)
+            seen = self.seeing(layout.starts)
         masks = self.masks
         neighbours = NeighbourList(seen, self.reach, LIST_SKIN) if listed else None
 
@@ -1502,7 +1409,7 @@ class _Problem:
         layout = self.layout(starts)
         index, count = layout.index, layout.count
         free = [i >= 0 for i in index]
-        seen = seen_parts(members, starts, self.reach, self.rings)
+        seen = self.seeing(starts)
         objective = self.objective(layout, seen)
         x0 = layout.x0
         flat_start = shown_flat(members, starts, positions)
@@ -1510,10 +1417,7 @@ class _Problem:
             body.field.segments_clear(s[:-1], s[1:])
             for body, s in zip(self.bodies, starts, strict=True)
         ]
-        others_before = [
-            pieces_field(seen[i], flat_start).segments_clear(s[:-1], s[1:])
-            for i, s in enumerate(starts)
-        ]
+        others_before = seen.segments_clear(starts, flat_start)
         # Only a vertex that newly leaves its contact moves back, so that
         # moving back always ends.
         left_before = [self.left(i, s) for i, s in enumerate(starts)]
@@ -1523,12 +1427,11 @@ class _Problem:
             else None
             for member, s in zip(members, starts, strict=True)
         ]
-        clear_before = {
-            k: distance >= -INSIDE_TOLERANCE
-            for k, distance in zip(
-                self.free_vias, self.via_distances(starts, positions), strict=True
-            )
-        }
+        clear_before = [
+            distance >= -INSIDE_TOLERANCE
+            for distance in self.via_distances(starts, positions)
+        ]
+        stopped_before = self.stop_distances(starts, positions)
 
         def crossings(x: FloatArray) -> tuple[_Round, BoolArray]:
             """What `_Round` counts at `x`, and the coordinates of the
@@ -1538,12 +1441,12 @@ class _Problem:
             back = np.zeros(count, dtype=bool)
             counts: list[tuple[int, int]] = []
             via_counts = [0] * len(self.vias)
+            others = seen.segments_clear(polylines, flat)
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
-                others = pieces_field(seen[i], flat)
                 crossing = (
                     static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
-                ) | (others_before[i] & ~others.segments_clear(a, b))
+                ) | (others_before[i] & ~others[i])
                 ends = np.zeros(len(points), dtype=bool)
                 ends[:-1] |= crossing
                 ends[1:] |= crossing
@@ -1559,10 +1462,16 @@ class _Problem:
                     rejected += more
                 counts.append((rejected, close))
                 back[index[i][ends & free[i]]] = True
-            for k, distance in zip(
-                self.free_vias, self.via_distances(polylines, centres), strict=True
+            for k, (distance, stopped) in enumerate(
+                zip(
+                    self.via_distances(polylines, centres),
+                    self.stop_distances(polylines, centres),
+                    strict=True,
+                )
             ):
-                if clear_before[k] and distance < -INSIDE_TOLERANCE:
+                if (clear_before[k] and distance < -INSIDE_TOLERANCE) or (
+                    stopped < min(stopped_before[k], -INSIDE_TOLERANCE)
+                ):
                     back[layout.via_index[k]] = True
                     via_counts[k] += 1
             return _Round(counts, via_counts), np.repeat(back, 2)
@@ -1615,6 +1524,15 @@ def _description(layers: Sequence[str], vias: bool) -> str:
         layers[0] if len(layers) == 1 else f"{', '.join(layers[:-1])} and {layers[-1]}"
     )
     return f"the chains and vias on {named}" if vias else f"the chains on {named}"
+
+
+def _no_deeper(distances: Sequence[float], starts: Sequence[float]) -> bool:
+    """Whether each of `distances` is no deeper inside than its start, and
+    inside."""
+    return all(
+        distance >= min(start, -INSIDE_TOLERANCE)
+        for distance, start in zip(distances, starts, strict=True)
+    )
 
 
 def _one_net(via: _Via, other: _Via) -> bool:

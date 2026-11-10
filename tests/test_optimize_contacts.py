@@ -147,16 +147,18 @@ def test_a_run_resumed_from_another_slides_its_vertices_again() -> None:
     assert before[1] - after[1] >= RESUMED_MOVE
 
 
-def test_a_frozen_sliding_vertex_is_pinned_and_keeps_no_contact() -> None:
-    # Starting deep inside another net's clearance, the end cannot move.
+def test_a_sliding_vertex_inside_another_net_s_clearance_keeps_its_contact() -> None:
+    # Deep inside the other net's clearance, which covers the pad's edge
+    # nearest the route.
     blocked = Obstacles([Obstacle("other", Point(0.3, 0.0), 0.5)])
     chain = replace(end_in_pad(), field=blocked)
 
     result = optimize_chains([chain], scenarios.PARAMS, SETTINGS)
 
     (got,) = result.chains
-    np.testing.assert_array_equal(got.polyline[0], (0.0, 0.0))
-    assert got.contact_of[0] < 0
+    assert got.contact_of[0] == 0
+    (end,) = kept(got)
+    assert PAD.covers(Point(end))
 
 
 def test_the_stop_s_gradient_matches_finite_differences() -> None:

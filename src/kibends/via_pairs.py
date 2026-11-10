@@ -85,13 +85,12 @@ def _spread(given: ViaInput, other: Via, clearance: float) -> float:
 
 
 class ViaPairs:
-    """The pairwise term of a problem's moving vias, with the problem's
-    other vias and with the vias standing still."""
+    """The pairwise term of a problem's moving vias, with each other and
+    with the vias standing still."""
 
     def __init__(
         self,
         vias: Sequence[ViaInput],
-        free: Sequence[int],
         apart: Sequence[Mapping[int, float]],
         static: Sequence[StaticVia],
         params: EnergyParams,
@@ -99,16 +98,12 @@ class ViaPairs:
         hole_clearance: float,
         hole_to_hole: float,
     ) -> None:
-        """The pairs of the moving vias `free`, by their index among the
-        problem's `vias`, which keep the distances `apart` gives from the
-        problem's other vias, and of them with the `static` vias, which
-        keep the distances `via_via_inflation` gives with `hole_clearance`
-        and `hole_to_hole`."""
+        """The pairs of the problem's moving `vias`, which keep the
+        distances `apart` gives from each other, and of them with the
+        `static` vias, which keep the distances `via_via_inflation` gives
+        with `hole_clearance` and `hole_to_hole`."""
         self.vias = vias
-        self.free = np.array(free, dtype=np.intp)
-        self.free_diameters = np.array(
-            [vias[k].via.diameter for k in free], dtype=float
-        )
+        self.diameters = np.array([v.via.diameter for v in vias], dtype=float)
         self.hole_clearance = hole_clearance
         self.hole_to_hole = hole_to_hole
         self.obstacle = obstacle_integrand(params)
@@ -118,8 +113,7 @@ class ViaPairs:
         second: list[int] = []
         distances: list[float] = []
         kinds: list[PairKind] = []
-        for k in free:
-            given = vias[k]
+        for k, given in enumerate(vias):
             for u, other in enumerate(vias):
                 kind = pair_kind(given.via, given.ground, other.via, other.ground)
                 if u == k or kind is None:
@@ -166,10 +160,10 @@ class ViaPairs:
                     else kind
                     for s in static
                 ]
-                for k in free
+                for k in range(len(vias))
             ],
             dtype=np.int8,
-        ).reshape(len(free), len(static))
+        ).reshape(len(vias), len(static))
         met = (static_kinds != _NO_PAIR).any(axis=0)
         self.static = [s for s, m in zip(static, met, strict=True) if m]
         self.static_kinds = static_kinds[:, met]
@@ -181,7 +175,7 @@ class ViaPairs:
         self.tree = cKDTree(at.reshape(-1, 2)) if self.static else None
         self.static_at = at.reshape(-1, 2)
         self.static_reach = np.array(
-            [max(cutoff, self._widest(vias[k]) + reach) for k in free], dtype=float
+            [max(cutoff, self._widest(v) + reach) for v in vias], dtype=float
         )
         """By moving via, how far from its centre a static via may give it
         energy."""
@@ -202,16 +196,15 @@ class ViaPairs:
         _scatter(gradient, first, push)
         _scatter(gradient, second, -push)
         if self.tree is not None:
-            rows, columns = self._static_near(at[self.free])
-            moving = self.free[rows]
+            rows, columns = self._static_near(at)
             static_value, static_push = self._terms(
-                at[moving] - self.static_at[columns],
+                at[rows] - self.static_at[columns],
                 self.static_apart[rows, columns],
                 self.static_kinds[rows, columns],
-                self.free_diameters[rows],
+                self.diameters[rows],
             )
             value += static_value
-            _scatter(gradient, moving, static_push)
+            _scatter(gradient, rows, static_push)
         return value, gradient
 
     def _near(self, at: FloatArray) -> IntArray:
@@ -229,7 +222,6 @@ class ViaPairs:
         it pairs with that is near enough to give it energy, with the
         distance they keep worked out."""
         assert self.tree is not None
-        free: list[int] = self.free.tolist()
         found = self.tree.query_ball_point(at, self.static_reach, return_sorted=False)
         counts = np.fromiter(map(len, found), dtype=np.intp, count=len(found))
         rows = np.repeat(np.arange(len(found), dtype=np.intp), counts)
@@ -244,9 +236,9 @@ class ViaPairs:
         for n, s in zip(new_rows, new_columns, strict=True):
             other = self.static[s]
             self.static_apart[n, s] = (
-                _spread(self.vias[free[n]], other.via, other.clearance)
+                _spread(self.vias[n], other.via, other.clearance)
                 if self.static_kinds[n, s] == PairKind.SPREAD
-                else self._kept(free[n], other)
+                else self._kept(n, other)
             )
         return rows, columns
 

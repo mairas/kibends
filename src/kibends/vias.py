@@ -13,8 +13,8 @@ their margins, so that the next refill reconnects it through one of them.
 One whose centre does not start so, and may be connected only now, stays
 fixed, with a debug line naming the zones and layers. One that starts
 closer to other nets' copper than the zone's clearance and the
-margin is left to the optimizer, which keeps it where it is as it keeps any
-via starting inside its clearance. Every other selected via stays fixed,
+margin is left to the optimizer, which moves it out as it moves any via
+starting inside its clearance. Every other selected via stays fixed,
 with a debug line naming the reason, and holds the chains it touches like
 an unselected via: a chain vertex on its centre stays there, and a chain
 with none there keeps a vertex inside it.
@@ -116,11 +116,12 @@ class ViaInput:
         return CompositeField(parts) if parts else None
 
     @cached_property
-    def limits(self) -> ObstacleField:
-        """Everything that stands still and limits where it may go: `field`,
-        `static_vias` and `stops`, as `field` unsplit with `stops`."""
-        parts = [f for f in (self.static_vias, self.stops) if f is not None]
-        return CompositeField([self.field, *parts]) if parts else self.field
+    def copper(self) -> ObstacleField:
+        """What stands still that it keeps its clearance from: `field` and
+        `static_vias`, as `field` unsplit; what only stops it is `stops`."""
+        if self.static_vias is None:
+            return self.field
+        return CompositeField([self.field, self.static_vias])
 
 
 class StaticVia(NamedTuple):
