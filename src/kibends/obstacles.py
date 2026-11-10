@@ -359,12 +359,8 @@ class CompositeField:
         if not self.fields:
             return np.full(n, np.inf), gradient
         answers = [field.smooth_distance(points, reach) for field in self.fields]
-        answering = [a for a in answers if np.isfinite(a[0]).any()]
-        if len(answering) <= 1:
-            # A field that answers nowhere has no share anywhere.
-            return answering[0] if answering else answers[0]
-        smooth, shares = combine_fields(*(d for d, _ in answering))
-        for share, (_, g) in zip(shares, answering, strict=True):
+        smooth, shares = combine_fields(*(d for d, _ in answers))
+        for share, (_, g) in zip(shares, answers, strict=True):
             gradient += share[:, None] * g
         return smooth, gradient
 
@@ -797,7 +793,8 @@ def obstacle_order(point: IntArray, obstacle: IntArray, tiebreak: IntArray) -> I
     tiebreaks = int(tiebreak.max(initial=0)) + 1
     obstacles = int(obstacle.max(initial=0)) + 1
     key = (point.astype(np.int64) * obstacles + obstacle) * tiebreaks + tiebreak
-    return np.argsort(key, kind="stable")
+    # Unique keys need no stable sort, which costs twice as much.
+    return np.argsort(key)
 
 
 def candidate_pairs(

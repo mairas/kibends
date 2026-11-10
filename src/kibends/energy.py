@@ -374,6 +374,14 @@ def combine_fields(*distances: FloatArray) -> tuple[FloatArray, list[FloatArray]
     smooth distances, and each field's share at each point. A smooth
     minimum of smooth minima is the one over all their obstacles, but for
     the obstacles SMOOTH_REACH leaves out."""
+    answering = [k for k, d in enumerate(distances) if not np.isinf(d).all()]
+    if len(answering) == 1:
+        # As in `smooth_minimum`, one term at each point is its own minimum,
+        # and fields often have no other in reach.
+        alone = distances[answering[0]]
+        shares = [np.zeros(len(alone)) for _ in distances]
+        shares[answering[0]] = np.isfinite(alone).astype(float)
+        return alone, shares
     base = _finite(np.minimum.reduce(distances))
     shares = [_share(d - base) for d in distances]
     total = np.add.reduce(shares)

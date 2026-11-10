@@ -108,13 +108,14 @@ def members_energy(
     # Every member's points at once, one after another.
     bounds = np.cumsum([0, *(len(queries) for queries in every_query)])
     distance, (static_share, seen_share) = combine_fields(
-        np.concatenate([np.empty(0), *(d for d, _ in statics)]),
-        np.concatenate([np.empty(0), *(near.distance for near in answers)]),
+        _joined_rows([d for d, _ in statics], np.empty(0)),
+        _joined_rows([near.distance for near in answers], np.empty(0)),
     )
-    direction = static_share[:, None] * np.concatenate(
-        [np.empty((0, 2)), *(g for _, g in statics)]
-    ) + seen_share[:, None] * np.concatenate(
-        [np.empty((0, 2)), *(near.gradient for near in answers)]
+    no_points = np.empty((0, 2))
+    direction = static_share[:, None] * _joined_rows(
+        [g for _, g in statics], no_points
+    ) + seen_share[:, None] * _joined_rows(
+        [near.gradient for near in answers], no_points
     )
     slopes = np.empty(len(distance))
     for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
@@ -138,17 +139,17 @@ def members_energy(
             *(near.point + bounds[i] for i, near in enumerate(answers)),
         ]
     )
-    pull = (slopes * seen_share)[point] * np.concatenate(
-        [np.empty(0), *(near.share for near in answers)]
+    pull = (slopes * seen_share)[point] * _joined_rows(
+        [near.share for near in answers], np.empty(0)
     )
     pulled = np.flatnonzero(pull != 0.0)
     if len(pulled):
         piece = np.concatenate(
             [np.empty(0, dtype=np.intp), *(near.edge for near in answers)]
         )[pulled]
-        toward = np.concatenate([np.empty((0, 2)), *(n.direction for n in answers)])
+        toward = _joined_rows([near.direction for near in answers], no_points)
         start = seen.vertex[piece]
-        at = np.concatenate([np.empty((0, 2)), *every_query])[point[pulled]]
+        at = _joined_rows(every_query, no_points)[point[pulled]]
         along = _parameters(at, *seen.segments(piece, flat))
         t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
         push = pull[pulled, None] * toward[pulled]
@@ -172,6 +173,14 @@ def members_energy(
     for g, mask in zip(gradients, masks, strict=True):
         g[mask] = 0.0
     return value, gradients, via_gradients
+
+
+def _joined_rows(arrays: Sequence[FloatArray], empty: FloatArray) -> FloatArray:
+    """`arrays` one after another, `empty` if there are none; one of them
+    as it is."""
+    if len(arrays) == 1:
+        return arrays[0]
+    return np.concatenate([empty, *arrays])
 
 
 def shown(member: Member, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
