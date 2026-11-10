@@ -46,6 +46,11 @@ from kibends.simplify import simplify_chains
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
+EQUAL_PITCH = 0.6
+"""How far apart the tracks of an equally spaced bus lie, mm, as in issue
+106's reproduction."""
+
+
 def run(scenario: ChainsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
     return optimize_chains(scenario.chains, scenario.params, settings)
 
@@ -214,6 +219,38 @@ class TestEnergy:
             value -= alone
             np.testing.assert_allclose(gradient, alone_gradient[0], atol=1e-12)
         assert value == pytest.approx(0.0, abs=1e-12)
+
+    def test_gradient_of_a_chain_midway_between_two_matches_finite_differences(
+        self,
+    ) -> None:
+        """Three chains exactly EQUAL_PITCH apart: the middle one's points
+        are as near to either neighbour, where the nearest alone would give
+        the gradient of one side."""
+        free = FreeSpace()
+        xs = (0.0, 0.5, 1.0, 1.5, 2.0)
+        chains = tuple(
+            selected(net, net, free, *((x, k * EQUAL_PITCH) for x in xs))
+            for k, net in enumerate("ABC")
+        )
+        polylines = [c.centreline.points.copy() for c in chains]
+        masks = [c.fixed for c in chains]
+        params = self.params()
+        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        _, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        step = 1e-7
+
+        for i in range(len(polylines)):
+            for j in np.flatnonzero(~masks[i]):
+                for axis in (0, 1):
+                    shifted = [p.copy() for p in polylines]
+                    shifted[i][j, axis] += step
+                    up = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    shifted[i][j, axis] -= 2 * step
+                    down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    numeric = (up - down) / (2 * step)
+                    assert gradients[i][j, axis] == pytest.approx(
+                        numeric, rel=1e-5, abs=1e-7
+                    )
 
     def test_gradient_with_chains_of_one_net_and_another(self) -> None:
         chains = self.mixed()
@@ -1253,3 +1290,43 @@ class TestJunctionEnergy:
             numeric = (moved(axis, step) - moved(axis, -step)) / (2 * step)
             analytic = sum(g[0, axis] for g in gradients)
             assert analytic == pytest.approx(numeric, rel=1e-5)
+
+
+BUS_TRACKS = 10
+BUS_STRAIGHT = 305.941
+"""The summed length of straight lines between the bus's ends, mm."""
+BUS_SHORTENED = 316.0
+"""A summed length the bus falls below once it moves, mm: from 324.853 mm,
+where the nearest neighbour alone left it, about a third of the way to
+straight."""
+BUS_SETTINGS = OptimizerSettings(spacing=1.6, burst_maxiter=30, max_iterations=4)
+"""Coarse settings: vertices as far apart as issue 106's faster experiment."""
+
+
+def test_an_equally_spaced_bus_moves() -> None:
+    """Issue 106's bus: ten Z-shaped tracks of as many nets, EQUAL_PITCH
+    apart, each as near to one neighbour as to the other. No burst ends
+    abnormally and the bus shortens."""
+    chains = [
+        selected(
+            f"S{i}",
+            f"S{i}",
+            FreeSpace(),
+            (0.0, y),
+            (10.0 - y, y),
+            (16.0 - y, y + 6.0),
+            (30.0, y + 6.0),
+        )
+        for i, y in ((i, i * EQUAL_PITCH) for i in range(BUS_TRACKS))
+    ]
+
+    result = optimize_chains(
+        chains, replace(scenarios.PARAMS, repulsion=0.5), BUS_SETTINGS
+    )
+
+    assert result.abnormal == ()
+    length = sum(
+        float(np.linalg.norm(np.diff(c.polyline, axis=0), axis=1).sum())
+        for c in result.chains
+    )
+    assert BUS_STRAIGHT < length < BUS_SHORTENED

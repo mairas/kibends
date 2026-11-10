@@ -3,6 +3,22 @@
 Polylines are (n, 2) float arrays in mm. Every term returns the gradient with
 respect to all vertex coordinates as an (n, 2) array, with the rows of fixed
 vertices zeroed.
+
+The distance the obstacle terms take is a smooth minimum over the
+obstacles near a point, -τ·log Σ exp(-d/τ) with τ = SMOOTH_WIDTH
+(`smooth_minimum`), and not the nearest one's alone: where a track lies
+equally near two obstacles the nearest-only distance has a kink, its
+gradient that of one side, and a track centred between its neighbours
+could not move. An obstacle is one chain or one track of a section, one
+via, the board edge, or static copper as `obstacles.Obstacles` groups
+it. Within one obstacle the distance stays its nearest edge's, so a
+straight neighbour made of many edges adds nothing, but where two parts
+of one obstacle are equally near, the kink of the nearest-only distance
+remains: inside the corner of a bent track, or between two arms of one,
+as in a U or a meander, or of copper that one obstacle joins elsewhere.
+Where n obstacles are equally near, the energy sees the point τ·ln n
+nearer than it is. Every clearance judgement takes the exact distance
+(`DistanceField.signed_distance`).
 """
 
 import math
@@ -36,6 +52,16 @@ MIN_EDGE_LENGTH = 1e-6
 # in φ, keeping hairpins and full reversals finite, costly and differentiable.
 MAX_SMOOTH_TURN = 0.95 * np.pi
 
+SMOOTH_WIDTH = 0.005
+"""τ of the smooth minimum over obstacles (`smooth_minimum`), mm: two
+equally near obstacles look τ·ln 2, 3.5 µm, nearer than either."""
+SMOOTH_REACH = 10 * SMOOTH_WIDTH
+"""How much farther than the nearest an obstacle still counts in the smooth
+minimum, and how far beyond the energy's reach obstacles are looked for,
+mm: one farther would lower it by less than τ·e⁻¹⁰, 0.2 nm. Looking
+beyond the reach keeps a second obstacle's arrival at the reach from
+lowering the distance by up to τ·ln 2 at once."""
+
 
 class DistanceField(Protocol):
     """Signed distance to the nearest inflated obstacle boundary."""
@@ -49,6 +75,16 @@ class DistanceField(Protocol):
         obstacle; the gradient points toward increasing distance. Distances
         beyond `reach` may be returned as +inf with a zero gradient.
         """
+        ...
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        """`signed_distance` as the energy takes it: the smooth minimum over
+        the field's obstacles (`smooth_minimum`) of each one's exact
+        distance, and its gradient, the obstacles' unit gradients weighted
+        by their shares. Obstacles farther than `reach` plus SMOOTH_REACH
+        may be left out, and a point with none gets +inf."""
         ...
 
 
@@ -279,6 +315,87 @@ def attraction_integrand(params: EnergyParams) -> PairIntegrand:
     return attraction
 
 
+def smooth_minimum(
+    point: IntArray, distance: FloatArray, count: int
+) -> tuple[FloatArray, FloatArray]:
+    """-τ·log Σ exp(-d/τ), τ = SMOOTH_WIDTH, at each of `count` points over
+    the obstacles' distances d, obstacle k's distance[k] at point[k], +inf
+    at a point with none; and each obstacle's share of the gradient there,
+    exp(-d/τ) over the sum, the shares of a point summing to 1. Obstacles
+    farther than the nearest by more than SMOOTH_REACH, and those at +inf,
+    have no share, so that a search can leave them out and give the same.
+    A point with one obstacle gets its distance and a share of 1."""
+    if np.bincount(point, minlength=count).max(initial=0) <= 1:
+        # The sum has one term at most: log 1 is 0, without the work.
+        smooth = np.full(count, np.inf)
+        smooth[point] = distance
+        return smooth, np.isfinite(distance).astype(float)
+    lowest = np.full(count, np.inf)
+    np.minimum.at(lowest, point, distance)
+    base = _finite(lowest)
+    share = _share(distance - base[point])
+    total = np.bincount(point, share, minlength=count)
+    found = total > 0.0
+    return _smoothed(base, total, found), share / np.where(found, total, 1.0)[point]
+
+
+def _finite(lowest: FloatArray) -> FloatArray:
+    """`lowest`, 0 where it is +inf: what each obstacle's distance is taken
+    from, so that one at +inf stays at +inf and none gives NaN."""
+    return np.where(np.isfinite(lowest), lowest, 0.0)
+
+
+def _share(above: FloatArray) -> FloatArray:
+    """exp(-a/τ) of how far each obstacle lies beyond the nearest, 0 beyond
+    SMOOTH_REACH."""
+    return np.where(above <= SMOOTH_REACH, np.exp(-above / SMOOTH_WIDTH), 0.0)
+
+
+def _smoothed(base: FloatArray, total: FloatArray, found: BoolArray) -> FloatArray:
+    """The smooth minimum from the nearest distance `base` and the `total`
+    of the shares, +inf where none is `found`."""
+    return np.where(
+        found, base - SMOOTH_WIDTH * np.log(np.where(found, total, 1.0)), np.inf
+    )
+
+
+def weighted_sum(
+    point: IntArray, share: FloatArray, direction: FloatArray, count: int
+) -> FloatArray:
+    """At each of `count` points, the sum of the (m, 2) `direction`s at it,
+    each weighted by its `share`; the smooth minimum's gradient."""
+    return np.column_stack(
+        [np.bincount(point, share * direction[:, k], minlength=count) for k in (0, 1)]
+    ).reshape(count, 2)
+
+
+def combine_fields(*distances: FloatArray) -> tuple[FloatArray, list[FloatArray]]:
+    """`smooth_minimum` over fields, each of `distances` one field's (n,)
+    smooth distances, and each field's share at each point. A smooth
+    minimum of smooth minima is the one over all their obstacles, but for
+    the obstacles SMOOTH_REACH leaves out."""
+    answering = [k for k, d in enumerate(distances) if not np.isinf(d).all()]
+    if len(answering) == 1:
+        # As in `smooth_minimum`, one term at each point is its own minimum,
+        # and fields often have no other in reach.
+        alone = distances[answering[0]]
+        shares = [np.zeros(len(alone)) for _ in distances]
+        shares[answering[0]] = np.isfinite(alone).astype(float)
+        return alone, shares
+    base = _finite(np.minimum.reduce(distances))
+    shares = [_share(d - base) for d in distances]
+    total = np.add.reduce(shares)
+    found = total > 0.0
+    scale = np.where(found, total, 1.0)
+    return _smoothed(base, total, found), [share / scale for share in shares]
+
+
+def smooth_reach(reach: float) -> float:
+    """How far from a point the smooth distance looks for obstacles, for
+    an energy whose terms end at `reach`, mm (SMOOTH_REACH)."""
+    return reach + SMOOTH_REACH
+
+
 def obstacle_reach(params: EnergyParams) -> float:
     """Distance from an obstacle beyond which both obstacle terms of the
     energy are zero, mm, so farther copper need not be looked up."""
@@ -443,8 +560,9 @@ def _edge_integral(
     points_per_edge: int,
     reach: float,
 ) -> TermValue:
-    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge."""
-    distance, direction = field.signed_distance(
+    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge,
+    d the field's smooth distance."""
+    distance, direction = field.smooth_distance(
         quadrature_points(points, points_per_edge), reach=reach
     )
     value, gradient, _ = edge_integral(

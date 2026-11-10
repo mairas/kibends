@@ -12,9 +12,12 @@ statistics, violations, shape change and a section's self check),
 
 The energy of a problem is the sum of each chain's energy in its static
 field plus the other chains on its layer (`members.members_energy`), taken
-as one function of every free vertex: where a quadrature point of one chain
-is nearest another chain's edge, the obstacle term's gradient also reaches
-that edge's two vertices. Without moving vias the layers do not interact,
+as one function of every free vertex. The distance the obstacle terms take
+is the smooth minimum over the obstacles near a point
+(`energy.smooth_minimum`), so where a quadrature point of one chain sees
+another chain, the obstacle term's gradient also reaches, by that chain's
+share, the two vertices of its edge nearest the point. The checks take
+exact distances. Without moving vias the layers do not interact,
 so each layer is a problem of its own, and an outer iteration gives every
 problem that has not settled one burst: resample each chain to the spacing
 between its fixed vertices and those pressed into the others' clearance,
@@ -49,19 +52,22 @@ A moving via (`kibends.via_moves`) is two more variables, its centre. The
 ends of the chains it joins are not variables of their own: each is the
 via's centre plus its offset at the start, at every evaluation, so they keep
 their offsets exactly and their gradient goes to the via. Its own obstacle
-terms are its ring's, standing for a track as long as it is wide, against
-its static field over every layer it spans, the members of other nets near
-it on those layers and the vias of other nets it does not pair with (below),
-each the nearest of them, with their gradient also at
-the edge or via that answers it, and the clearance hinge alone, which limits
-without repelling, against the outside of its zones' regions and the
-fabrication rules that hold within its net: hole-to-hole from its net's
-vias, moving or standing still, and plated pads, and no overlap with its
-net's pads (`obstacles.own_net_stops`). The members of other nets see it as
-a disc on each of its layers, so that where the obstacle term pulls on it,
-the gradient reaches its centre too. A section and a via see each other as the section's
-centreline as wide as `PairBlock.chain`. A stitching via carries no chain
-ends, so with no length term only repulsion moves it. The layers that any
+terms are its ring's, standing for a track as long as it is wide, and
+there are two of them, each taking the smooth minimum over what it covers.
+The first, the full integrand, covers the via's static field over every
+layer it spans, the members of other nets near it on those layers and the
+vias of other nets it does not pair with (below). The second, the
+clearance hinge alone, which limits without repelling, covers what only
+stops the via: the outside of its zones' regions and the fabrication rules
+that hold within its net, hole-to-hole from its net's vias, moving or
+standing still, and plated pads, and no overlap with its net's pads
+(`obstacles.own_net_stops`). Each term's gradient also reaches every edge
+or via that answers it, by its share. The members of other nets see the
+via as a disc on each of its layers, so that where the obstacle term
+pulls on it, the gradient reaches its centre too. A section and a via see
+each other as the section's centreline as wide as `PairBlock.chain`. A
+stitching via carries no chain ends, so with no length term only
+repulsion moves it. The layers that any
 moving via spans make one problem, every member on them included, whether
 or not the vias' spans overlap; a via sees only what lies on its layers,
 and two vias keep their distance only where their spans overlap
@@ -183,6 +189,7 @@ from kibends.energy import (
     IntArray,
     Integrand,
     ObstacleField,
+    combine_fields,
     hinge_integrand,
     obstacle_integrand,
     obstacle_reach,
@@ -558,7 +565,8 @@ class _Via:
 @dataclass(frozen=True)
 class _ViaPart:
     """One of each moving via's two terms: the integrand applied to the
-    nearest of what `static` gives of the via and what `sight` finds."""
+    smooth minimum over what `static` gives of the via and what `sight`
+    finds."""
 
     static: Callable[[ViaInput], ObstacleField | None]
     sight: ViaSight
@@ -826,7 +834,7 @@ class _Problem:
         self.rings = [via.rings for via in vias]
         apart = [via.apart for via in vias]
         # Vias of one net only stop each other; the pairs of the pairwise
-        # term are summed apart from the nearest; the rest repel.
+        # term are summed apart from the smooth minimum; the rest repel.
         own_net = [
             {u: d for u, d in a.items() if _one_net(vias[k], vias[u])}
             for k, a in enumerate(apart)
@@ -1088,7 +1096,7 @@ class _Problem:
         """Each moving via's distance, in order, to what only stops it: its
         stops (`ViaInput.stops`) and the other vias of its net at
         `positions`."""
-        near = self.via_stop.nearest(polylines, positions, math.inf).distance
+        near = self.via_stop.distances(polylines, positions, math.inf)
         return [
             float(d)
             if via.given.stops is None
@@ -1104,11 +1112,12 @@ class _Problem:
         at every via's centre. Where a member's edge or another via answers a
         via, the gradient also pulls on it.
 
-        Each via has two terms, each for the nearest of what it covers: the
-        full integrand for its static field and the members and the vias of
-        other nets it does not pair with (`via_pairs` has those), and the
-        clearance hinge alone for what only stops it, its
-        zones' regions and the vias of its net, moving or standing still."""
+        Each via has two terms, each for the smooth minimum over what it
+        covers (`energy.smooth_minimum`): the full integrand for its static
+        field and the members and the vias of other nets it does not pair
+        with (`via_pairs` has those), and the clearance hinge alone for what
+        only stops it, its zones' regions and the vias of its net, moving
+        or standing still."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
         if not self.vias:
@@ -1119,22 +1128,23 @@ class _Problem:
         for part, static, toward in zip(
             self.via_parts, distances, directions, strict=True
         ):
-            near = part.sight.nearest(polylines, positions, self.reach)
-            nearer = near.distance < static
-            distance = np.where(nearer, near.distance, static)
-            direction = np.where(nearer[:, None], near.gradient, toward)
+            near = part.sight.smooth_answers(polylines, positions, self.reach)
+            distance, (static_share, seen_share) = combine_fields(static, near.distance)
+            direction = (
+                static_share[:, None] * toward + seen_share[:, None] * near.gradient
+            )
             term, slope = part.integrand(distance)
             value += float(self.via_diameters @ term)
-            push = (self.via_diameters * slope)[:, None] * direction
-            via_gradients += push
-            pull_answers(near, nearer, at, push, gradients, via_gradients)
+            weighted = self.via_diameters * slope
+            via_gradients += weighted[:, None] * direction
+            pull_answers(near, weighted * seen_share, at, gradients, via_gradients)
         return value, gradients, via_gradients
 
     def via_statics(self, at: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """The distance (parts, n) and unit gradient (parts, n, 2) of each
-        moving via, at its row of `at`, to what the static field of each of
-        `via_parts` gives of it, in one loop over the vias; +inf and zero
-        where it gives none or it is beyond the reach."""
+        """The smooth distance (parts, n) and its gradient (parts, n, 2) of
+        each moving via, at its row of `at`, to what the static field of
+        each of `via_parts` gives of it, in one loop over the vias; +inf and
+        zero where it gives none or it is beyond the reach."""
         distance = np.full((len(self.via_parts), len(at)), math.inf)
         direction = np.zeros((len(self.via_parts), len(at), 2))
         for n, (via, point) in enumerate(zip(self.vias, at, strict=True)):
@@ -1142,7 +1152,7 @@ class _Problem:
             for p, part in enumerate(self.via_parts):
                 field = part.static(given)
                 if field is not None:
-                    d, g = field.signed_distance(point[None], self.reach)
+                    d, g = field.smooth_distance(point[None], self.reach)
                     distance[p, n], direction[p, n] = d[0], g[0]
         return distance, direction
 

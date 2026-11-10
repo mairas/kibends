@@ -292,7 +292,14 @@ class TestEnergy:
         value, gradients = layer_energy(members, polylines, masks, params, 0.01)
 
         def edges(line: FloatArray, inflation: float) -> ChainField:
-            return ChainField(line[:-1], line[1:], np.full(len(line) - 1, inflation))
+            """`line` as one obstacle."""
+            count = len(line) - 1
+            return ChainField(
+                line[:-1],
+                line[1:],
+                np.full(count, inflation),
+                np.zeros(count, dtype=np.intp),
+            )
 
         facing = block.facing.centreline
         seeing_bar = chain_field(
@@ -865,6 +872,12 @@ class Counting:
     ) -> tuple[FloatArray, FloatArray]:
         self.points += len(points)
         return self.field.signed_distance(points, reach)
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        self.points += len(points)
+        return self.field.smooth_distance(points, reach)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0

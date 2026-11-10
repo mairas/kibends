@@ -108,15 +108,15 @@ def neighbour_field(
 ) -> ObstacleField | None:
     """The chains of `shown`, each at its points, as obstacles to `own` at
     `own_points`, by default its starting polyline, in one field, each as
-    `obstacle_spans` gives it; None if nothing is left."""
-    parts: list[tuple[ChainCentreline, float]] = []
+    `obstacle_spans` gives it and an obstacle of its own; None if nothing
+    is left."""
+    parts: list[tuple[list[ChainCentreline], float]] = []
     for other, points in shown:
         kept = obstacle_spans(own, other, points, reach, own_points, as_net=as_net)
         if kept is not None:
-            parts += (
-                (part, kept.inflation)
-                for part in _centrelines(other, points, kept.spans)
-            )
+            pieces = _centrelines(other, points, kept.spans)
+            if pieces:
+                parts.append((pieces, kept.inflation))
     if not parts:
         return None
     return chains_field(parts)

@@ -661,6 +661,11 @@ class ReachIgnored:
     ) -> tuple[FloatArray, FloatArray]:
         return self.field.signed_distance(points)
 
+    def smooth_distance(
+        self, points: FloatArray, reach: float = np.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        return self.field.smooth_distance(points)
+
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
     ) -> BoolArray:

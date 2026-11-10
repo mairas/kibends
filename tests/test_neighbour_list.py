@@ -9,10 +9,10 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario
 
 import kibends.optimize as optimize_module
 from kibends.bursts import DEFAULT_SETTINGS
-from kibends.energy import quadrature_points
+from kibends.energy import SMOOTH_REACH, quadrature_points
 from kibends.members import seen_parts
 from kibends.neighbours import ChainInput
-from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, SmoothAnswer
 from kibends.optimize import LIST_SKIN
 from kibends.pair_blocks import pair_block
 from kibends.seen import NeighbourList, Pairs, Seen
@@ -94,8 +94,9 @@ def test_the_listed_energy_is_the_searched_one(
 
 
 REACH = 1.0
-WITHIN = REACH + scenarios.PAIR_INFLATION
-"""How far from another net's centreline a point is still within reach."""
+WITHIN = REACH + SMOOTH_REACH + scenarios.PAIR_INFLATION
+"""How far from another net's centreline a point is still within reach of
+the smooth minimum."""
 APPROACH = 0.95 * LIST_SKIN
 """How far a point and an edge each move toward each other, within the
 skin, so that the list does not search again."""
@@ -141,13 +142,10 @@ def _assert_listed_is_searched(
 
     def answers(
         polylines: list[FloatArray], neighbours: NeighbourList | None
-    ) -> list[tuple[FloatArray, np.ndarray]]:
+    ) -> list[SmoothAnswer]:
         queries = [quadrature_points(points, 3) for points in polylines]
         flat = np.concatenate(polylines)
-        return [
-            (near.distance, near.edge)
-            for near in seen.nearest(queries, flat, REACH, neighbours)
-        ]
+        return seen.smooth_answers(queries, flat, REACH, neighbours)
 
     answers(starts, listed)
     moved = [
@@ -156,11 +154,11 @@ def _assert_listed_is_searched(
     ]
     found = answers(moved, listed)
     assert searches[0] == 1
-    for (distance, edge), (expected, expected_edge) in zip(
-        found, answers(moved, None), strict=True
-    ):
-        np.testing.assert_allclose(distance, expected, rtol=1e-12, atol=1e-12)
-        np.testing.assert_array_equal(edge, expected_edge)
+    for got, expected in zip(found, answers(moved, None), strict=True):
+        np.testing.assert_array_equal(got.distance, expected.distance)
+        np.testing.assert_array_equal(got.point, expected.point)
+        np.testing.assert_array_equal(got.edge, expected.edge)
+        np.testing.assert_array_equal(got.share, expected.share)
 
 
 def test_an_edge_listed_beyond_reach_answers_once_it_comes_within_it(
@@ -178,9 +176,10 @@ def test_an_edge_listed_behind_the_nearest_answers_once_it_comes_nearer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A chain between two others, one surely within reach and the other
-    farther by less than twice the skin, moving toward the farther one by
-    almost a skin as it moves closer by as much and the nearer one away."""
-    near, far = 0.6, 0.6 + 3 * LIST_SKIN
+    farther than SMOOTH_REACH behind it, by less than twice the skin,
+    moving toward the farther one by almost a skin as it moves closer by as
+    much and the nearer one away."""
+    near, far = 0.6, 0.6 + SMOOTH_REACH + 1.8 * LIST_SKIN
     chains = [_level("A", 0.0), _level("B", near), _level("C", -far)]
     _assert_listed_is_searched(chains, [-APPROACH, APPROACH, APPROACH], monkeypatch)
     assert far - 2 * APPROACH < near + 2 * APPROACH

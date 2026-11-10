@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 
 import numpy as np
@@ -6,6 +7,8 @@ from distance_fields import Box, Disc, FloatArray, Walls
 from numpy.typing import NDArray
 
 from kibends.energy import (
+    SMOOTH_REACH,
+    SMOOTH_WIDTH,
     DistanceField,
     EnergyParams,
     TermValue,
@@ -14,8 +17,10 @@ from kibends.energy import (
     clearance_energy,
     length_energy,
     repulsion_energy,
+    smooth_minimum,
     total_energy,
 )
+from kibends.obstacles import ChainCentreline, ChainField, chains_field
 
 Term = Callable[[FloatArray, NDArray[np.bool_]], tuple[float, FloatArray]]
 
@@ -232,6 +237,11 @@ class TestTotal:
             ) -> tuple[FloatArray, FloatArray]:
                 return np.full(len(points), np.nan), np.zeros_like(points)
 
+            def smooth_distance(
+                self, points: FloatArray, reach: float = np.inf
+            ) -> tuple[FloatArray, FloatArray]:
+                return self.signed_distance(points, reach)
+
         with pytest.raises(ValueError, match="finite"):
             total_energy(NEAR_DISC[0], free(len(NEAR_DISC[0])), NanField(), PARAMS)
 
@@ -447,3 +457,76 @@ class TestAttraction:
         off = attraction_integrand(PARAMS)(np.array([0.5, 1.0]), np.array([LIMIT] * 2))
         np.testing.assert_array_equal(off[0], 0.0)
         np.testing.assert_array_equal(off[1], 0.0)
+
+
+SMOOTH_POINT = np.array([[5.0, 0.4]])
+"""Beside the middle of `smooth_chain`, nearest one of its vertices, mm."""
+EXACT = 1e-12
+"""How far the smooth distance of one obstacle may part from the exact one,
+mm: they take the same differences."""
+MICROMETRE_THOUSANDTH = 1e-6
+"""How far an obstacle farther than SMOOTH_REACH may move the smooth
+distance, mm."""
+
+
+def smooth_chain() -> ChainField:
+    """A straight track along y = 0 of 100 edges 0.1 mm long, one obstacle,
+    kept 0.2 mm from."""
+    points = np.column_stack([np.linspace(0.0, 10.0, 101), np.zeros(101)])
+    track = ChainCentreline("track", "T", 0.2, 0.2, points)
+    return chains_field([(track, 0.2)])
+
+
+class TestSmoothMinimum:
+    def test_one_obstacle_is_its_exact_distance(self) -> None:
+        smooth, share = smooth_minimum(np.array([0]), np.array([0.3]), 1)
+        assert smooth[0] == pytest.approx(0.3, abs=EXACT)
+        assert share[0] == 1.0
+
+    def test_a_farther_obstacle_beyond_the_reach_leaves_the_nearer(self) -> None:
+        far = 0.1 + SMOOTH_REACH + SMOOTH_WIDTH
+        smooth, share = smooth_minimum(np.array([0, 0]), np.array([0.1, far]), 1)
+        assert smooth[0] == pytest.approx(0.1, abs=MICROMETRE_THOUSANDTH)
+        np.testing.assert_array_equal(share, [1.0, 0.0])
+
+    def test_two_equally_near_are_seen_tau_ln_2_nearer(self) -> None:
+        smooth, share = smooth_minimum(np.array([0, 0]), np.array([0.2, 0.2]), 1)
+        assert smooth[0] == pytest.approx(0.2 - SMOOTH_WIDTH * math.log(2), abs=EXACT)
+        np.testing.assert_allclose(share, [0.5, 0.5])
+
+    def test_a_point_with_none_is_infinitely_far(self) -> None:
+        smooth, _ = smooth_minimum(np.array([1]), np.array([0.2]), 2)
+        assert smooth[0] == math.inf
+        assert smooth[1] == pytest.approx(0.2)
+
+    def test_a_straight_track_of_many_edges_is_one_obstacle(self) -> None:
+        field = smooth_chain()
+
+        smooth, toward = field.smooth_distance(SMOOTH_POINT, 1.0)
+
+        exact, exact_toward = field.signed_distance(SMOOTH_POINT)
+        assert smooth[0] == pytest.approx(exact[0], abs=EXACT)
+        np.testing.assert_allclose(toward, exact_toward, atol=EXACT)
+
+
+def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
+    """A straight track midway between two walls: the energy's slope across
+    it, to either side, is the gradient's, 0, where the nearest wall alone
+    would give a kink."""
+    points = np.column_stack([np.linspace(0.0, 2.0, 5), np.zeros(5)])
+    fixed = np.array([True, False, False, False, True])
+    walls = Walls(0.3)
+    _, gradient = total_energy(points, fixed, walls, PARAMS)
+
+    def energy(at: FloatArray) -> float:
+        return total_energy(at, fixed, walls, PARAMS)[0]
+
+    step = np.zeros_like(points)
+    step[2, 1] = FD_STEP
+    up = (energy(points + step) - energy(points)) / FD_STEP
+    down = (energy(points) - energy(points - step)) / FD_STEP
+    # One-sided differences err by the curvature times the step.
+    scale = abs(energy(points)) * FD_STEP / SMOOTH_WIDTH
+    assert gradient[2, 1] == pytest.approx(0.0, abs=EXACT)
+    assert up == pytest.approx(gradient[2, 1], abs=scale)
+    assert down == pytest.approx(gradient[2, 1], abs=scale)
