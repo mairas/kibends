@@ -2280,22 +2280,12 @@ class TestSeveralLayers:
         assert VIA_NM in ends(created_on(board, BL.BL_F_Cu))
         assert VIA_NM in ends(created_on(board, BL.BL_B_Cu))
 
-    @pytest.mark.parametrize(
-        "fixed",
-        [
-            partial(kipy_via, locked=True),
-            partial(kipy_via, via_type=ViaType.VT_BLIND),
-        ],
-        ids=["locked", "blind"],
-    )
-    def test_selected_vias_that_cannot_move_cost_no_reads(
-        self, connect: Connector, fixed: Callable[[str, str, float, float], kbt.Via]
-    ) -> None:
+    def test_a_selected_locked_via_costs_no_reads(self, connect: Connector) -> None:
         # A through-hole pad of the via's net lists layers no run reads.
         pth = kipy_pad("pth", "SIG", 0, 8, layers=list(iter_copper_layers()))
         board = via_route_board()
         board.pads.append(pth)
-        board.vias = [fixed("v", "SIG", *VIA)]
+        board.vias = [kipy_via("v", "SIG", *VIA, locked=True)]
         board.selection.append(board.vias[0])
         connect.to(board)
 

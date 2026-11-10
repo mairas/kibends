@@ -23,7 +23,6 @@ from kibends.snapshot import (
     KICAD_MAX_ERROR,
     BoardSnapshot,
     Via,
-    ViaKind,
     read_selection,
 )
 from kibends.vias import (
@@ -52,6 +51,20 @@ def back() -> list[kbt.Track]:
         kipy_track("e", "SIG", VIA, (8, 4), layer=BL.BL_B_Cu),
         kipy_track("f", "SIG", (8, 4), (8, 8), layer=BL.BL_B_Cu),
     ]
+
+
+def inner() -> list[kbt.Track]:
+    return [
+        kipy_track("g", "SIG", VIA, (8, 4), layer=BL.BL_In1_Cu),
+        kipy_track("h", "SIG", (8, 4), (8, 8), layer=BL.BL_In1_Cu),
+    ]
+
+
+def blind(via_id: str = "v", net: str = "SIG") -> kbt.Via:
+    """A blind via at `VIA` from F.Cu to In1.Cu."""
+    return kipy_via(
+        via_id, net, *VIA, via_type=ViaType.VT_BLIND, span=(BL.BL_F_Cu, BL.BL_In1_Cu)
+    )
 
 
 def judge(
@@ -173,14 +186,46 @@ class TestMovableVias:
         (warning,) = warnings(log)
         assert "Via v at (3.000, -1.000) stays fixed" in warning
 
-    def test_blind_via_stays_fixed(self, log: list[str]) -> None:
-        blind = kipy_via(
-            "v", "SIG", *VIA, via_type=ViaType.VT_BLIND, span=(BL.BL_F_Cu, BL.BL_B_Cu)
+    def test_blind_via_joining_an_end_on_each_of_its_layers_moves(
+        self, log: list[str]
+    ) -> None:
+        v = blind()
+
+        movable, chains = judge([*front(), *inner(), v], [*front(), *inner()], [v])
+
+        assert [c.layer for c in chains] == ["F.Cu", "In1.Cu"]
+        (via,) = movable
+        assert via.ends == (ChainEnd(chain=0, last=True), ChainEnd(chain=1, last=False))
+        assert warnings(log) == []
+
+    @pytest.mark.parametrize("selected", [False, True])
+    def test_track_ending_at_a_blind_via_on_a_layer_it_misses_is_ignored(
+        self, log: list[str], selected: bool
+    ) -> None:
+        v = blind()
+        under = kipy_track("u", "SIG", VIA, (4, 9), layer=BL.BL_B_Cu)
+        route = [*front(), *inner()]
+
+        movable, chains = judge(
+            [*route, *([under] if selected else []), v], [*route, under], [v]
         )
 
-        warning = fixed(log, blind)
+        (via,) = movable
+        carried = {chains[end.chain].layer for end in via.ends}
+        assert carried == {"F.Cu", "In1.Cu"}
+        assert warnings(log) == []
 
-        assert "blind via" in warning and "only through vias move" in warning
+    def test_pad_under_a_blind_via_on_a_layer_it_misses_leaves_it_free(
+        self, log: list[str]
+    ) -> None:
+        v = blind()
+        pad = kipy_pad("p", "SIG", *VIA, layers=(BL.BL_B_Cu,))
+        route = [*front(), *inner()]
+
+        movable, _ = judge([*route, v], route, [v], pads=[pad])
+
+        assert [m.via.id for m in movable] == ["v"]
+        assert warnings(log) == []
 
     def test_unselected_third_track_pins_it(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA)
@@ -647,16 +692,25 @@ class TestStitchingVias:
         (warning,) = warnings(log)
         assert warning.rstrip().endswith("stays fixed: it is locked")
 
-    def test_blind_one_stays_fixed(self, log: list[str]) -> None:
+    def test_buried_one_moves_inside_a_zone_on_one_of_its_layers(
+        self, log: list[str]
+    ) -> None:
         s = kipy_via(
-            "s", "GND", *VIA, via_type=ViaType.VT_BLIND, span=(BL.BL_F_Cu, BL.BL_B_Cu)
+            "s",
+            "GND",
+            *VIA,
+            via_type=ViaType.VT_BLIND_BURIED,
+            span=(BL.BL_In1_Cu, BL.BL_In2_Cu),
         )
+        zone = kipy_copper_zone("plane", "GND", kipy_rect(2, 2, 6, 6), [BL.BL_In2_Cu])
 
-        movable, _ = judge([nearby(), s], [nearby()], [s], zones=[plane()])
+        movable, _ = judge([nearby(), s], [nearby()], [s], zones=[zone])
 
-        assert movable == []
-        (warning,) = warnings(log)
-        assert "blind via" in warning and "only through vias move" in warning
+        (via,) = movable
+        assert via.ends == ()
+        (inside,) = via.zones
+        assert inside.description == "zone plane on In2.Cu"
+        assert warnings(log) == []
 
     def test_one_an_unselected_track_reaches_stays_fixed(self, log: list[str]) -> None:
         s = stitching()
@@ -744,8 +798,7 @@ GROUND = frozenset({"GND", "AGND"})
 
 
 def via_on(net: str, span: tuple[str, str] = ("F.Cu", "B.Cu")) -> Via:
-    kind = ViaKind.THROUGH if span == ("F.Cu", "B.Cu") else ViaKind.BLIND_BURIED
-    return Via(net, net, (0.0, 0.0), 0.6, 0.3, kind, span)
+    return Via(net, net, (0.0, 0.0), 0.6, 0.3, span)
 
 
 @pytest.mark.parametrize(

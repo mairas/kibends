@@ -47,7 +47,7 @@ from kibends.obstacles import (
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
-from kibends.snapshot import LayerSnapshot, ViaKind, ViaZone
+from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 
@@ -754,7 +754,6 @@ def static_vias() -> tuple[StaticVia, ...]:
     """A GND via and a buried via of another net, standing still."""
     buried_via = replace(
         scenarios.through_via("b", "P", (2.0, 2.0)),
-        kind=ViaKind.BURIED,
         span=("In1.Cu", "In2.Cu"),
     )
     return (
@@ -803,7 +802,6 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
     # A buried stitching via ties In1.Cu and In2.Cu, which no chain is on.
     buried_via = replace(
         scenarios.through_via("s", "G", (5.0, 6.0)),
-        kind=ViaKind.BURIED,
         span=("In1.Cu", "In2.Cu"),
     )
     stitching = ViaInput(buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE)

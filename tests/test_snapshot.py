@@ -58,7 +58,6 @@ from kibends.snapshot import (
     SelectionError,
     Via,
     ViaContact,
-    ViaKind,
     ViaZone,
     arc_points,
     edge_paths_closed,
@@ -154,16 +153,13 @@ class TestReadSelection:
 
         assert plain(selection.vias) == plain(
             (
-                Via(
-                    "v", "SIG", (1.0, 2.0), 0.5, 0.25, ViaKind.THROUGH, ("F.Cu", "B.Cu")
-                ),
+                Via("v", "SIG", (1.0, 2.0), 0.5, 0.25, ("F.Cu", "B.Cu")),
                 Via(
                     "w",
                     "SIG",
                     (3.0, 0.0),
                     0.6,
                     0.3,
-                    ViaKind.BLIND,
                     ("F.Cu", "In2.Cu"),
                     locked=True,
                 ),
@@ -880,8 +876,8 @@ class TestBoardSnapshot:
     def test_vias_share_a_layer_where_their_spans_overlap(
         self, span: tuple[str, str], expected: bool
     ) -> None:
-        buried = Via("b", "N", (0, 0), 0.6, 0.3, ViaKind.BURIED, ("In2.Cu", "In1.Cu"))
-        other = Via("o", "N", (1, 0), 0.6, 0.3, ViaKind.BURIED, span)
+        buried = Via("b", "N", (0, 0), 0.6, 0.3, ("In2.Cu", "In1.Cu"))
+        other = Via("o", "N", (1, 0), 0.6, 0.3, span)
 
         assert buried.shares_layer(other) is expected
         assert other.shares_layer(buried) is expected
@@ -947,6 +943,24 @@ class TestViaContacts:
                 ViaContact("track front on F.Cu", "front"),
                 ViaContact("track inner on In1.Cu", "inner"),
                 ViaContact("via w"),
+            )
+        }
+
+    def test_copper_on_layers_a_blind_via_misses_does_not_touch_it(self) -> None:
+        x, y = self.VIA
+        fake = self.contact_board()
+        span = (BL.BL_F_Cu, BL.BL_In1_Cu)
+        fake.selection[0] = kipy_via("v", "SIG", x, y, span=span)
+        fake.vias[0] = kipy_via("v", "SIG", x, y, span=span)
+        fake.vias[1] = kipy_via("w", "SIG", x + 0.5, y, span=(BL.BL_In2_Cu, BL.BL_B_Cu))
+        (via,) = read_selection(board(fake)).vias
+
+        snap = BoardSnapshot.read(board(fake), ["F.Cu"], [via])
+
+        assert snap.via_contacts == {
+            "v": (
+                ViaContact("track front on F.Cu", "front"),
+                ViaContact("track inner on In1.Cu", "inner"),
             )
         }
 

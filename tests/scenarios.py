@@ -18,7 +18,7 @@ from kibends.obstacles import ChainCentreline
 from kibends.pair_blocks import PairInput
 from kibends.pair_layout import split_pair
 from kibends.pairs import find_pair, offset_pair
-from kibends.snapshot import Via, ViaKind
+from kibends.snapshot import Via
 from kibends.vias import ChainEnd, ViaInput
 
 ENVELOPE = 0.35
@@ -353,9 +353,7 @@ class ViasScenario:
 
 
 def through_via(via_id: str, net: str, at: tuple[float, float]) -> Via:
-    return Via(
-        via_id, net, at, VIA_DIAMETER, VIA_DRILL, ViaKind.THROUGH, ("F.Cu", "B.Cu")
-    )
+    return Via(via_id, net, at, VIA_DIAMETER, VIA_DRILL, ("F.Cu", "B.Cu"))
 
 
 def route(
