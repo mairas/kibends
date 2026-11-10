@@ -912,6 +912,70 @@ def test_a_via_whose_ring_a_pinned_edge_newly_enters_moves_back(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+ACROSS_X = 5.0
+"""Where a free chain of net A runs up across a pinned chain of net B."""
+BESIDE_X = 6.5
+"""Where a pinned chain of net C runs up, clear of both."""
+ALONG_X = 4.0
+"""Along B from where A crosses it, where B's edges start clear of A."""
+
+
+def pinned(chain: ChainInput) -> ChainInput:
+    return replace(chain, fixed=np.ones(len(chain.centreline.points), dtype=bool))
+
+
+def across_and_beside() -> ViasScenario:
+    """A free chain of net A crossing a pinned chain of net B, ending short
+    of A's other side, and a pinned chain of net C beside them."""
+    free = FreeSpace()
+    along = [(float(x), 0.0) for x in np.linspace(3.0, 5.5, 11)]
+    return ViasScenario(
+        "across-and-beside",
+        (
+            selected("A", "A", free, (ACROSS_X, -2.0), (ACROSS_X, 2.0)),
+            pinned(selected("B", "B", free, *along)),
+            pinned(selected("C", "C", free, (BESIDE_X, -2.0), (BESIDE_X, 2.0))),
+        ),
+        (),
+    )
+
+
+def test_an_edge_across_one_member_moved_into_another_moves_back(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # A's edges at the crossing start across B, so only judging each member
+    # apart finds them entering C; C, pinned, cannot move back.
+    revert, start = first_revert(monkeypatch, across_and_beside())
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    nearest = int(np.argmin(np.abs(vertices[:, 1])))
+    vertices[nearest, 0] = BESIDE_X
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted.reshape(-1, 2)[nearest].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+def test_an_edge_slid_along_a_pinned_member_it_crosses_moves_back(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # A still crosses B, so only B's edges, which cannot move, find the move:
+    # the crossing moves back A's edge, the other side.
+    revert, start = first_revert(monkeypatch, across_and_beside())
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    nearest = int(np.argmin(np.abs(vertices[:, 1])))
+    vertices[nearest, 0] = ALONG_X
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted.reshape(-1, 2)[nearest].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
 def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1513,6 +1577,57 @@ def beside_still(at_y: float, still_y: float) -> ViasScenario:
     layers = [replace(layer(name), vias=(still,)) for name in given.via.span]
     own = own_net_stops(layers, given.via)
     return replace(scenario, vias=(replace(given, own_net=own),))
+
+
+OUTSIDE_ZONE = 0.5
+"""How far above its zone's region the stitching vias start, mm: deeper
+inside their containment than they come inside each other's hole-to-hole."""
+HOLES_SPARE = 0.05
+"""How far beyond hole-to-hole of each other the stitching vias start, mm."""
+TOWARD = 0.15
+"""How far a move takes one via toward the other, mm; more than HOLES_SPARE
+and less than OUTSIDE_ZONE."""
+
+
+def outside_their_zone() -> ViasScenario:
+    """Two stitching vias of one net side by side OUTSIDE_ZONE above their
+    zone's region, HOLES_SPARE beyond hole-to-hole of each other."""
+    level = 1.5
+    scenario = stitched(level, level, top=level - OUTSIDE_ZONE)
+    left, right = scenario.vias
+    moved = replace(right.via, position=(STITCH_X + HOLES_APART + HOLES_SPARE, level))
+    return replace(scenario, vias=(left, replace(right, via=moved)))
+
+
+def test_a_burst_moves_back_a_via_deep_outside_its_zone_entering_another_s_holes(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # The move keeps the left via as deep outside its zone, so only judging
+    # each stop apart finds it; both vias move back, not the whole burst.
+    revert, start = first_revert(monkeypatch, outside_their_zone())
+    candidate = start.copy()
+    candidate[-4] += TOWARD
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted[-4:].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+def test_the_guard_refuses_a_via_deep_outside_its_zone_entering_another_s_holes() -> (
+    None
+):
+    scenario = outside_their_zone()
+    (placed,) = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+    )
+    problem = placed.problem
+    left, right = problem.positions
+
+    moved = [left + np.array((TOWARD, 0.0)), right]
+
+    assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
 
 
 class TestStitchingVia:

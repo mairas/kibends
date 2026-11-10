@@ -558,7 +558,8 @@ def _free_by_obstacle(
 ) -> tuple[list[float], dict[tuple[int, int], float]]:
     """`free` as `_reference_distances` gives it."""
     pairs = free.by_obstacle
-    return [float(d) for d in free.static], {
+    # The vias' static copper is one part.
+    return [float(d) for d in free.static.ravel()], {
         (int(k), int(o)): float(d)
         for k, o, d in zip(pairs.via, pairs.obstacle, pairs.distance, strict=True)
     }

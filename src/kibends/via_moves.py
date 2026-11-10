@@ -21,6 +21,7 @@ from kibends.bursts import (
 )
 from kibends.energy import (
     BoolArray,
+    DistanceField,
     FloatArray,
     ObstacleField,
 )
@@ -159,47 +160,49 @@ class MovingVias:
 
 
 class FreeDistances(NamedTuple):
-    """The free distance of each via to each obstacle: its static copper
-    taken as one, and each member and via its sight finds."""
+    """The free distance of each via to each obstacle: each part of what
+    stands still, and each member and via its sight finds."""
 
     static: FloatArray
-    """Each via's, in order, to its static copper (`ViaInput.copper`)."""
+    """(vias, parts): each via's, in order, to each part of what stands
+    still for it, +inf where it has no such part."""
     by_obstacle: ObstacleDistances
 
 
+StaticParts = Sequence[DistanceField | None]
+"""What stands still for a via, in parts that are judged apart."""
+
+
 def free_distances(
-    vias: Sequence[ViaInput],
+    statics: Sequence[StaticParts],
     sight: ViaSight,
     polylines: Sequence[FloatArray],
     positions: Positions,
     below: float = math.inf,
 ) -> FreeDistances:
-    """The free distance of each via to each obstacle: to its static copper,
-    and to each of the chains or members at `polylines` and the vias at
-    `positions` that `sight` finds nearer than `below`."""
-    return FreeDistances(
-        np.array(
-            [
-                point_distance(via.copper, at)
-                for via, at in zip(vias, positions, strict=True)
-            ],
-            dtype=float,
-        ),
-        sight.obstacle_distances(polylines, positions, below),
-    )
+    """The free distance of each via to each obstacle: to each of its
+    `statics`, and to each of the chains or members at `polylines` and the
+    vias at `positions` that `sight` finds nearer than `below`."""
+    parts = max((len(p) for p in statics), default=0)
+    static = np.full((len(positions), parts), np.inf)
+    for row, fields, at in zip(static, statics, positions, strict=True):
+        for k, field in enumerate(fields):
+            if field is not None:
+                row[k] = point_distance(field, at)
+    return FreeDistances(static, sight.obstacle_distances(polylines, positions, below))
 
 
 def newly_inside(
     now: FreeDistances, start: FreeDistances, tolerance: float
 ) -> tuple[BoolArray, BoolArray]:
-    """Which vias are newly inside their static copper by more than
-    `tolerance`, or deeper inside it than at `start`, and which of the
-    (via, obstacle) pairs of `now` are so. Each obstacle is judged by the
-    via's nearest distance to it against that distance at the start, so
+    """Which vias are newly inside some part of what stands still for them
+    by more than `tolerance`, or deeper inside it than at `start`, and which
+    of the (via, obstacle) pairs of `now` are so. Each obstacle is judged by
+    the via's nearest distance to it against that distance at the start, so
     that a via inside one is still kept out of the others; an edge of the
     obstacle other than its nearest may move deeper while the nearest stays
     the deepest. `start` holds every pair inside by more than `tolerance`."""
-    static = now.static < np.minimum(start.static, -tolerance)
+    static = (now.static < np.minimum(start.static, -tolerance)).any(axis=1)
     at = np.searchsorted(start.by_obstacle.key, now.by_obstacle.key)
     found = at < len(start.by_obstacle.key)
     found[found] = start.by_obstacle.key[at[found]] == now.by_obstacle.key[found]
