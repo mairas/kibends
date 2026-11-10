@@ -49,12 +49,16 @@ from shapely.geometry import LineString, MultiLineString, Point, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
+import kibends.optimize as optimize_module
 from kibends import cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
+    Burst,
+    Objective,
     OptimizerSettings,
+    Revert,
 )
 from kibends.chain import NM_PER_MM
 from kibends.coords import BOARD_FRAME, UserFrame
@@ -744,6 +748,37 @@ class TestSmooth:
 
         assert any(
             line.startswith("WARNING") and "without converging" in line for line in log
+        )
+        assert "push_commit" in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_run_given_up_after_progress_says_so_and_commits(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        real = optimize_module.run_burst
+
+        def failing(
+            objective: Objective,
+            start: FloatArray,
+            revert: Revert,
+            settings: OptimizerSettings,
+        ) -> Burst:
+            return replace(real(objective, start, revert, settings), abnormal=True)
+
+        monkeypatch.setattr(optimize_module, "run_burst", failing)
+
+        run()
+
+        (outcome,) = capsys.readouterr().out.splitlines()
+        assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} after ")
+        assert "converged" not in outcome
+        assert not any(
+            line.startswith("WARNING") and "abnormal" in line for line in log
         )
         assert "push_commit" in board.calls
 
@@ -3556,7 +3591,79 @@ class TestPairs:
         total = first.iterations + second.iterations
         assert f"after {total} iterations" in capsys.readouterr().out
 
-    def test_a_second_run_reports_only_its_own_abandoned_chains(
+    def first_run_gives_up(
+        self, monkeypatch: pytest.MonkeyPatch, last: Termination | None = None
+    ) -> list[RunResult]:
+        """Make the first run give up and leave its section too tight, so
+        that the stage repeats it, and the repeat end `last` if given; the
+        runs it makes, as reported."""
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+
+        def first_gives_up(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            if kwargs["start"] is None:
+                pairs = tuple(
+                    replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
+                    for p in result.pairs
+                )
+                abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
+                result = replace(
+                    result,
+                    pairs=pairs,
+                    gave_up=(abandoned,),
+                    termination=Termination.GAVE_UP,
+                )
+            elif last is not None:
+                result = replace(result, termination=last)
+            runs.append(result)
+            return result
+
+        monkeypatch.setattr(pipeline, "optimize_chains", first_gives_up)
+        return runs
+
+    def test_a_first_run_s_give_up_outlasts_a_second_that_converges(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        runs = self.first_run_gives_up(monkeypatch)
+        connect.to(pair_board())
+
+        run("--dry-run")
+
+        assert [r.termination for r in runs] == [
+            Termination.GAVE_UP,
+            Termination.CONVERGED,
+        ]
+        assert not runs[1].gave_up
+        (outcome,) = capsys.readouterr().out.splitlines()
+        assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} after ")
+        (line,) = [w for w in log if "Gave up" in w]
+        assert ABANDONED in line
+
+    @pytest.mark.parametrize(
+        "last", [Termination.TIME_LIMIT, Termination.ITERATION_CAP]
+    )
+    def test_a_second_run_that_stops_early_reports_its_own_ending(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        last: Termination,
+    ) -> None:
+        runs = self.first_run_gives_up(monkeypatch, last)
+        connect.to(pair_board())
+
+        run("--dry-run")
+
+        assert len(runs) == 2
+        (outcome,) = capsys.readouterr().out.splitlines()
+        assert outcome.startswith(f"Optimizer: {last.value} after ")
+
+    def test_a_problem_abandoned_in_both_runs_is_logged_once(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         real: Callable[..., RunResult] = pipeline.optimize_chains

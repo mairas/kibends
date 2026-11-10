@@ -147,10 +147,14 @@ When it stops
 A problem settles when its burst moves nothing by `settled_change` and
 moves nothing back but a section's own parts, when its lowest energy
 stalls over `stall_window` bursts, or after MAX_ABNORMAL_BURSTS abnormal
-bursts in a row. The run converges when every problem has settled, and
-otherwise stops at the iteration cap or after the first burst that ends
-past the time limit, counted from the start of the whole stage, keeping
-each problem's best state either way (`optimize_chains`).
+bursts in a row. The run converges when every problem has settled, none
+of them on abnormal bursts, and otherwise stops at the iteration cap or
+after the first burst that ends past the time limit, counted from the
+start of the whole stage, keeping each problem's best state either way
+(`optimize_chains`). A run in which some problem settled on abnormal
+bursts gave up: it keeps the best state if that is lower in energy than
+the inputs, from which a resumed run measures too, and ends abnormally if
+not.
 """
 
 import math
@@ -319,9 +323,13 @@ def optimize_chains(
     reached fell by less than `stall_tolerance` over `stall_window` bursts,
     whether or not the guard took them as its best state, or after
     MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
-    every problem has. With a time limit in `settings`, the run stops after
-    the first burst that ends when `clock` reads the limit or more past
-    `started`, by default when the run starts.
+    every problem has, and gives up (`Termination.GAVE_UP`) if some problem
+    settled on abnormal bursts. A run that gave up on some problem and
+    whose best states sum to no less energy than its inputs, not where it
+    resumed, ends `Termination.ABNORMAL`, whatever stopped it. With a time
+    limit in `settings`, the run stops after the first burst that ends when
+    `clock` reads the limit or more past `started`, by default when the run
+    starts.
 
     A run given the result of an earlier one on the same inputs as `start`
     starts each problem from that run's best state, the sections held in
@@ -378,9 +386,7 @@ def optimize_chains(
             vias=tuple(by_via[v] for v in range(len(vias))),
             pairs=tuple(by_section[k] for k in range(len(blocks))),
             gave_up=tuple(
-                (p.description, p.abnormal_streak)
-                for p in problems
-                if p.abnormal_streak >= MAX_ABNORMAL_BURSTS
+                (p.description, p.abnormal_streak) for p in problems if p.gave_up
             ),
             abnormal=tuple(
                 (p.description, p.abnormal_bursts)
@@ -421,14 +427,18 @@ def optimize_chains(
         if all(p.settled for p in moving):
             if iteration == 1 and not any(p.moved for p in moving):
                 return result(Termination.NOTHING_TO_DO, 1, best=False)
-            termination = Termination.CONVERGED
+            termination = (
+                Termination.GAVE_UP
+                if any(p.gave_up for p in moving)
+                else Termination.CONVERGED
+            )
             break
         if out_of_time:
             termination = Termination.TIME_LIMIT
             break
     final = result(termination, iteration, best=True)
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
-        p.start_energy for p in moving
+        p.input_energy for p in moving
     ):
         return replace(final, termination=Termination.ABNORMAL)
     return final
@@ -908,10 +918,14 @@ class _Problem:
         # The first burst starts from the shapes `allowed` was measured on:
         # resampled again, they would cut corners deeper still.
         self.resampled = [True] * count
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
+        # A resumed run has improved on its inputs, not only on where it
+        # resumes, if its best state beats them.
+        self.input_energy = self.energy
         if resume is not None:
             self.resume(resume)
-        self.energy = self.energy_of(self.points, self.positions, self.seen)
-        self.start_energy = self.best_energy = self.energy
+            self.energy = self.energy_of(self.points, self.positions, self.seen)
+        self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
         self.best_contact_of = list(self.contact_of)
@@ -923,6 +937,11 @@ class _Problem:
         self.abnormal_bursts = 0
         self.abnormal_streak = 0
         self.settled = not self.moving
+
+    @property
+    def gave_up(self) -> bool:
+        """Whether it settled on MAX_ABNORMAL_BURSTS abnormal bursts in a row."""
+        return self.abnormal_streak >= MAX_ABNORMAL_BURSTS
 
     def resume(self, state: _Resume) -> None:
         """Take `state` as the current shapes of the members that move and
@@ -1324,7 +1343,7 @@ class _Problem:
             count > close
             for count, close in zip(burst.rejected_edges, burst.too_close, strict=True)
         )
-        self.settled = self.abnormal_streak >= MAX_ABNORMAL_BURSTS or (
+        self.settled = self.gave_up or (
             not burst.abnormal
             and (
                 (not cut_short and change < settings.settled_change)

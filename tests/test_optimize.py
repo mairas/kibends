@@ -16,7 +16,7 @@ from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
 import kibends.optimize as optimize_module
-from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
+from kibends.bursts import INSIDE_TOLERANCE, Burst, Objective, OptimizerSettings, Revert
 from kibends.energy import BoolArray, ObstacleField, total_energy
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
@@ -542,6 +542,31 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
 
     assert result.termination is Termination.ABNORMAL
     assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
+
+
+def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.run_burst
+
+    def failing(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+    ) -> Burst:
+        return replace(real(objective, start, revert, settings), abnormal=True)
+
+    monkeypatch.setattr(optimize_module, "run_burst", failing)
+    polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
+
+    result = optimize(polyline, fixed, FreeSpace(), PARAMS, COARSE)
+
+    assert result.termination is Termination.GAVE_UP
+    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    # The bursts before the streak ended were kept: the best state is shorter.
+    assert result.after.length < result.before.length
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
