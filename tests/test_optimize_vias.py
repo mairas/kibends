@@ -12,9 +12,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import neutral_distance
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
-from scipy.optimize import brentq
 from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
@@ -28,7 +28,6 @@ from kibends.bursts import (
     Revert,
 )
 from kibends.energy import (
-    EnergyParams,
     ObstacleField,
     attraction_integrand,
     obstacle_integrand,
@@ -1528,21 +1527,6 @@ class TestPairEnergy:
             assert want != 0.0
             assert value == pytest.approx(want, rel=1e-12, abs=1e-12)
             np.testing.assert_allclose(gradient, want_gradient, rtol=1e-10, atol=1e-12)
-
-
-def neutral_distance(params: EnergyParams, apart: float) -> float:
-    """The centre distance at which a ground via and a regular one that
-    keep `apart` stop pushing or pulling each other: where the slopes of
-    their obstacle term and attraction cancel."""
-    obstacle = obstacle_integrand(params)
-    attraction = attraction_integrand(params)
-
-    def slope(r: float) -> float:
-        push = obstacle(np.array([r - apart]))[1]
-        pull = attraction(np.array([r]), np.array([apart]))[1]
-        return float(push[0] + pull[0])
-
-    return float(brentq(slope, apart + params.standoff, apart + params.falloff_range))
 
 
 NEUTRAL = neutral_distance(RETURN_PARAMS, scenarios.VIA_TO_VIA)
