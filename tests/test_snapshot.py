@@ -176,14 +176,16 @@ class TestReadSelection:
         with pytest.raises(SelectionError, match=r"arc.*arc1"):
             read_selection(board(fake))
 
-    def test_no_tracks_is_an_error(self) -> None:
+    def test_vias_alone_are_a_selection(self) -> None:
         fake = FakeBoard(selection=[kipy_via("v", "SIG", 0, 0)])
 
-        with pytest.raises(SelectionError, match="no tracks"):
-            read_selection(board(fake))
+        selection = read_selection(board(fake))
+
+        assert selection.segments == []
+        assert [v.id for v in selection.vias] == ["v"]
 
     def test_empty_selection_is_an_error(self) -> None:
-        with pytest.raises(SelectionError, match="no tracks"):
+        with pytest.raises(SelectionError, match="no tracks or vias"):
             read_selection(board(FakeBoard()))
 
 

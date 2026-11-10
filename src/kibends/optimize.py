@@ -524,6 +524,16 @@ def _problems(
             for via, still in zip(vias.vias, frozen, strict=True)
         )
     ]
+    if not tied:
+        # Vias that move on no chain's layer, stitching vias selected alone.
+        tied = list(
+            dict.fromkeys(
+                layer
+                for via, still in zip(vias.vias, frozen, strict=True)
+                if not still
+                for layer in via.via.span
+            )
+        )
     groups = [tied] if tied else []
     groups += [[layer] for layer in layers if layer not in tied]
     placed: list[_Placed] = []

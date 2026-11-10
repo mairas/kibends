@@ -74,8 +74,9 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    it, and no other copper touches it or those chain ends on any layer,
    except a zone of its net. A selected stitching via, an unlocked through
    via that no selected track ends at and no copper but a zone of its net
-   touches, moves too: it has no length to shorten, so only the copper
-   around it moves it. Copper within `--range` of its clearance pushes it
+   touches, moves too, also when the selection holds no tracks but locked
+   ones: it has no length to shorten, so only the copper around it moves
+   it. Copper within `--range` of its clearance pushes it
    (a selected track cutting a corner, a via of another net, a pad or other
    static copper of another net), and it backs off until the pushes balance
    or nothing is in range. A ground via and a via of any other net within
