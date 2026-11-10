@@ -27,11 +27,13 @@ from shapely.geometry import LineString, Point
 import kibends.members as members_module
 import kibends.optimize as optimize_module
 from kibends.bursts import (
+    DEFAULT_CHORD_TOLERANCE,
     INSIDE_TOLERANCE,
     Burst,
     Objective,
     OptimizerSettings,
     Revert,
+    Stop,
     revert_until_clear,
     run_burst,
 )
@@ -61,7 +63,7 @@ from kibends.pairs import (
 )
 from kibends.polylines import SelfCheck, close_to_itself, resample
 from kibends.results import ChainResult, PairResult, RunResult, Termination
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify_chains
+from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 CORNER = OptimizerSettings(burst_maxiter=30)
@@ -514,11 +516,12 @@ class TestTightCorner:
             start: FloatArray,
             revert: Revert,
             settings: OptimizerSettings,
+            stop: Stop | None = None,
         ) -> Burst:
             if not trials:
                 trials.append(folded(start.reshape(-1, 2), 0).ravel())
                 objective(trials[0])
-            return run_burst(objective, start, revert, settings)
+            return run_burst(objective, start, revert, settings, stop)
 
         monkeypatch.setattr(optimize_module, "run_burst", folding_first)
         (pair,) = run(scenarios.pair_corner(), CORNER).pairs
@@ -1076,6 +1079,7 @@ def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_part
     def still(
         self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
         starts: list[FloatArray],
+        stop: Stop | None = None,
     ) -> optimize_module._ProblemBurst:  # pyright: ignore[reportPrivateUsage]
         count = len(starts)
         return optimize_module._ProblemBurst(  # pyright: ignore[reportPrivateUsage]

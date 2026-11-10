@@ -171,7 +171,9 @@ class SmoothOptions:
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
-    """Its time limit covers the whole optimize stage, re-runs included."""
+    """Its time limit covers the whole optimize stage, re-runs included.
+    Its settle threshold should be half `chord_tolerance` at most, as
+    `cli.smooth_options` sets it; the default suits the default tolerance."""
     ground_nets: tuple[str, ...] = ()
     """The ground nets, overriding their detection when not empty
     (`BoardSnapshot.ground_nets`)."""

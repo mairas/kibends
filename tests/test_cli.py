@@ -59,6 +59,7 @@ from kibends.bursts import (
     Objective,
     OptimizerSettings,
     Revert,
+    Stop,
 )
 from kibends.chain import NM_PER_MM, Chain, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
@@ -767,8 +768,11 @@ class TestSmooth:
             start: FloatArray,
             revert: Revert,
             settings: OptimizerSettings,
+            stop: Stop | None = None,
         ) -> Burst:
-            return replace(real(objective, start, revert, settings), abnormal=True)
+            return replace(
+                real(objective, start, revert, settings, stop), abnormal=True
+            )
 
         monkeypatch.setattr(optimize_module, "run_burst", failing)
 
@@ -796,7 +800,7 @@ class TestSmooth:
         )
         run()
         monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
-        monkeypatch.setattr(pipeline, "monotonic", Ticking())
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
         capsys.readouterr()
         board = connect.to(l_board())
 
@@ -866,7 +870,7 @@ class TestSmooth:
             cli.parse_args(
                 [
                     "smooth",
-                    "--settled-change=0.005",
+                    "--settled-change=0.002",
                     "--stall-tolerance=0.01",
                     "--stall-window=5",
                     "--max-iterations=50",
@@ -879,7 +883,7 @@ class TestSmooth:
         )
 
         s = options.settings
-        assert s.settled_change == 0.005
+        assert s.settled_change == 0.002
         assert (s.stall_tolerance, s.stall_window) == (0.01, 5)
         assert (s.max_iterations, s.burst_maxiter, s.time_limit) == (50, 40, 60.0)
         assert (s.lbfgs_ftol, s.lbfgs_gtol) == (1e-8, 1e-6)
@@ -888,6 +892,18 @@ class TestSmooth:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 
         assert options.settings == DEFAULT_SETTINGS
+
+    def test_settled_change_is_half_the_chord_tolerance(self) -> None:
+        args = cli.parse_args(["smooth", "--chord-tolerance=0.04"])
+
+        assert cli.smooth_options(args).settings.settled_change == 0.02
+
+    def test_a_given_settled_change_wins_over_the_chord_tolerance(self) -> None:
+        args = ["smooth", "--chord-tolerance=0.04", "--settled-change=0.003"]
+
+        options = cli.smooth_options(cli.parse_args(args))
+
+        assert options.settings.settled_change == 0.003
 
 
 class TestPlot:

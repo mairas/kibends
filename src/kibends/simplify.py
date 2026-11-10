@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 from loguru import logger
 
-from kibends.bursts import INSIDE_TOLERANCE
+from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
 from kibends.energy import (
     BoolArray,
     EnergyParams,
@@ -35,11 +35,6 @@ from kibends.neighbours import (
 from kibends.obstacles import CompositeField
 from kibends.pair_blocks import PairBlock
 from kibends.results import RunResult
-
-DEFAULT_CHORD_TOLERANCE = 0.01
-"""mm: well below fabrication tolerances; at 5 µm a 23 mm chain on a real
-board came out as 63 tracks, and at 0.025 mm the committed tracks strayed
-visibly from the optimised curve."""
 
 
 def simplify(

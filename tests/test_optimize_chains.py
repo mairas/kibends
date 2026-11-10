@@ -20,7 +20,7 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
-from kibends.bursts import Burst, Objective, OptimizerSettings, Revert
+from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, Stop
 from kibends.chain import NM_PER_MM, Segment, extract_chains
 from kibends.commit import snapped_points
 from kibends.coords import BOARD_FRAME
@@ -368,8 +368,9 @@ def test_resampling_keeps_vertices_pressed_into_another_chains_clearance(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings)
+        burst = real(objective, start, revert, settings, stop)
         bursts.append((start.reshape(-1, 2).copy(), burst.points.reshape(-1, 2)))
         return burst
 
@@ -498,7 +499,7 @@ def on_layer(chain: ChainInput, layer: str) -> ChainInput:
     return replace(chain, layer=layer)
 
 
-def test_time_limit_stops_after_the_burst_that_passes_it() -> None:
+def test_time_limit_stops_in_the_burst_that_passes_it() -> None:
     scenario = bumps()
     back = on_layer(
         selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)), "B.Cu"
@@ -520,6 +521,104 @@ def test_time_limit_stops_after_the_burst_that_passes_it() -> None:
     )
 
 
+def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
+    """The bursts the optimizer runs, as `run_burst` returns them."""
+    bursts: list[Burst] = []
+    real = optimize_module.run_burst
+
+    def recording(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        burst = real(objective, start, revert, settings, stop)
+        bursts.append(burst)
+        return burst
+
+    monkeypatch.setattr(optimize_module, "run_burst", recording)
+    return bursts
+
+
+TIMED_ITERATIONS = 2
+"""The L-BFGS-B iterations a burst runs before a clock that ticks a second
+a reading, from 0, passes a limit half a second beyond: the run reads it
+when setup begins and ends, then after each iteration."""
+
+
+EVERY_CHANGE = 100.0
+"""A settle threshold, mm, beyond any change of the scenarios here."""
+
+
+def test_time_limit_ends_the_burst_at_the_iteration_past_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+    # Any burst would settle by its change, so only being cut keeps the run
+    # from converging.
+    limited = replace(
+        COARSE, time_limit=TIMED_ITERATIONS + 0.5, settled_change=EVERY_CHANGE
+    )
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
+    )
+
+    (burst,) = bursts
+    assert burst.cut
+    assert burst.iterations == TIMED_ITERATIONS
+    assert result.termination is Termination.TIME_LIMIT
+    # The cut burst's state passed the guard and is the best.
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+
+    def rejecting(*_: object) -> bool:
+        return False
+
+    monkeypatch.setattr(optimize_module._Problem, "guard", rejecting)  # pyright: ignore[reportPrivateUsage]
+    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
+    )
+
+    (burst,) = bursts
+    assert burst.cut
+    assert result.termination is Termination.TIME_LIMIT
+    for chain, given in zip(result.chains, scenario.chains, strict=True):
+        start = resample(given.centreline.points, given.fixed, COARSE.spacing)[0]
+        np.testing.assert_array_equal(chain.polyline, start)
+
+
+def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    first = run(scenario, replace(COARSE, max_iterations=1))
+    bursts = recorded_bursts(monkeypatch)
+
+    again = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        replace(COARSE, time_limit=0.0),
+        clock=Ticking(),
+        start=first,
+    )
+
+    assert again.iterations == 1
+    assert not bursts[0].cut
+    assert bursts[0].iterations > 1
+
+
 def test_time_limit_counts_from_when_the_stage_started() -> None:
     scenario = bumps()
     limited = replace(COARSE, time_limit=5.0)
@@ -534,6 +633,48 @@ def test_time_limit_counts_from_when_the_stage_started() -> None:
 
     assert result.termination is Termination.TIME_LIMIT
     assert result.iterations == 1
+
+
+FAR_APART = 64.0
+"""How far a copy of a scenario lies from it, mm: beyond what either sees."""
+
+
+def far_copy(chain: ChainInput) -> ChainInput:
+    """`chain` FAR_APART above itself, of a net of its own."""
+    moved = replace(
+        chain.centreline,
+        net=f"{chain.centreline.net}'",
+        points=chain.centreline.points + np.array([0.0, FAR_APART]),
+    )
+    return replace(chain, centreline=moved)
+
+
+def test_the_stall_rule_counts_a_problem_s_moving_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counted: list[tuple[int, int]] = []
+    real = optimize_module.stalled
+
+    def spy(
+        lowest: Sequence[float],
+        lengths: Sequence[float],
+        settings: OptimizerSettings,
+        members: int,
+        vias: int = 0,
+    ) -> bool:
+        counted.append((members, vias))
+        return real(lowest, lengths, settings, members, vias)
+
+    monkeypatch.setattr(optimize_module, "stalled", spy)
+    chains = bumps().chains
+
+    optimize_chains(
+        [*chains, *(far_copy(c) for c in chains)],
+        scenarios.PARAMS,
+        replace(COARSE, max_iterations=1),
+    )
+
+    assert counted == [(2 * len(chains), 0)]
 
 
 def test_iteration_cap_ends_the_run() -> None:
@@ -762,8 +903,9 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings)
+        burst = real(objective, start, revert, settings, stop)
         bursts.append(burst)
         return replace(burst, abnormal=True)
 
@@ -792,8 +934,9 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings)
+        burst = real(objective, start, revert, settings, stop)
         return replace(burst, abnormal=bool(start.max() > reach))
 
     monkeypatch.setattr(optimize_module, "run_burst", back_fails)
@@ -826,6 +969,7 @@ def test_a_resumed_run_that_gives_up_keeps_the_earlier_run_s_progress(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
         zigzag = start.copy()
         zigzag[1::4] += ZIGZAG
@@ -853,8 +997,9 @@ def test_a_normal_burst_ends_an_abnormal_streak(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings)
+        burst = real(objective, start, revert, settings, stop)
         bursts.append(burst)
         return replace(burst, abnormal=len(bursts) != 2)
 
@@ -878,6 +1023,7 @@ def test_an_abnormal_burst_s_last_check_is_not_counted(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
         candidate = start.copy()
         candidate[1::2] += 1.0

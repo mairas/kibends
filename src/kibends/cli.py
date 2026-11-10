@@ -29,7 +29,7 @@ from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends.bursts import DEFAULT_SETTINGS
+from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
 from kibends.chain import ChainError
 from kibends.commit import (
     BoardChangedError,
@@ -48,7 +48,6 @@ from kibends.run import (
     SmoothOptions,
     run_smooth,
 )
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.snapshot import SelectionError
 
 DEFAULT_REPULSION = 0.5
@@ -283,19 +282,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     smooth_parser.add_argument(
         "--settled-change",
         type=_positive,
-        default=DEFAULT_SETTINGS.settled_change,
         metavar="MM",
         help="A problem, the chains of one layer or of the layers moving vias "
         "tie together, settles when its burst moves no chain and no via by "
-        f"this much (default: {DEFAULT_SETTINGS.settled_change:g})",
+        "this much (default: half --chord-tolerance)",
     )
     smooth_parser.add_argument(
         "--stall-tolerance",
         type=_positive,
         default=DEFAULT_SETTINGS.stall_tolerance,
         metavar="MM",
-        help="A problem also settles when its energy, in mm of track length, "
-        "improves by less than this over --stall-window of its bursts "
+        help="A problem also settles when, over --stall-window of its bursts, "
+        "its energy, in mm of track length, improves by less than this for "
+        "each of its moving chains and vias, and its tracks' summed length by "
+        "less than this "
         f"(default: {DEFAULT_SETTINGS.stall_tolerance:g})",
     )
     smooth_parser.add_argument(
@@ -407,7 +407,11 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         ground_nets=tuple(args.ground_nets),
         settings=replace(
             DEFAULT_SETTINGS,
-            settled_change=args.settled_change,
+            settled_change=(
+                args.chord_tolerance / 2
+                if args.settled_change is None
+                else args.settled_change
+            ),
             stall_tolerance=args.stall_tolerance,
             stall_window=args.stall_window,
             max_iterations=args.max_iterations,

@@ -39,24 +39,35 @@ SHORT_EDGE_FRACTION = 0.1
 LBFGSB_FTOL = 1e-9
 LBFGSB_GTOL = 1e-10
 
+DEFAULT_CHORD_TOLERANCE = 0.01
+"""How far the committed tracks may depart from the optimised curve, mm
+(`simplify`): well below fabrication tolerances; at 5 µm a 23 mm chain on a
+real board came out as 63 tracks, and at 0.025 mm the committed tracks
+strayed visibly from the optimised curve."""
+
 
 @dataclass(frozen=True)
 class OptimizerSettings:
     spacing: float = 0.1
     """Target distance between resampled vertices, mm."""
-    settled_change: float = 1e-3
+    settled_change: float = DEFAULT_CHORD_TOLERANCE / 2
     """A problem whose burst moves no shape and no via's centre by this much,
-    mm, settles."""
+    mm, settles. Half the chord tolerance, the run's own unless
+    `--settled-change` is given (`cli.smooth_options`): a smaller move
+    cannot change the committed tracks by more than simplification already
+    may."""
     max_iterations: int = 200
     """Outer iterations after which the run stops unconverged and keeps each
     problem's best state. This and the stall rule were measured in
     https://github.com/mairas/kibends/issues/27 and
     https://github.com/mairas/kibends/issues/28."""
     stall_tolerance: float = 1e-3
-    """A problem settles when its best energy improved by less than this
-    over `stall_window` of its bursts. The energy is in mm of track length,
-    so this is 1 µm of length: in flat stretches the shapes keep wandering
-    by tens of µm while the energy creeps down by far less."""
+    """A problem settles when, over `stall_window` of its bursts, its best
+    energy improved by less than this for each moving member and via and
+    its tracks shortened by less than this in all (`optimize.stalled`).
+    The energy is in mm of track length, so this is 1 µm of length: in
+    flat stretches the shapes keep wandering by tens of µm while the
+    energy creeps down by far less."""
     stall_window: int = 3
     burst_maxiter: int = 50
     """L-BFGS-B iterations per burst of a problem. Shorter bursts resample
@@ -75,8 +86,9 @@ class OptimizerSettings:
     lbfgs_gtol: float = LBFGSB_GTOL
     """L-BFGS-B's projected gradient below which a burst ends."""
     time_limit: float | None = None
-    """Seconds after which the run stops at the next burst's end and keeps
-    its best state, as at the iteration cap; None for no limit."""
+    """Seconds after which the run ends the running burst at its next
+    L-BFGS-B iteration and keeps its best state, as at the iteration cap;
+    None for no limit."""
 
     def __post_init__(self) -> None:
         if self.spacing <= 0.0:
@@ -97,6 +109,7 @@ def point_distance(field: DistanceField, point: FloatArray) -> float:
 
 Objective = Callable[[FloatArray], tuple[float, FloatArray]]
 Revert = Callable[[FloatArray], int]
+Stop = Callable[[], bool]
 Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 
@@ -111,6 +124,8 @@ class Burst:
     """The times L-BFGS-B evaluated the objective."""
     message: str = ""
     """What L-BFGS-B says ended it; empty for a burst that did not run."""
+    cut: bool = False
+    """Whether `stop` ended it before its iteration cap."""
 
 
 def revert_until_clear(
@@ -151,18 +166,30 @@ def run_burst(
     start: FloatArray,
     revert: Revert,
     settings: OptimizerSettings,
+    stop: Stop | None = None,
 ) -> Burst:
     """Minimise `objective` from `start` with L-BFGS-B, then move back what
     `revert` finds.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
-    an obstacle, and returns how many edges crossed. With no coordinate to
-    move, the burst ends where it is without running L-BFGS-B. The burst
-    carries what L-BFGS-B reports of its run.
+    an obstacle, and returns how many edges crossed. `stop`, asked after
+    each L-BFGS-B iteration, ends the run there when it answers True, such
+    as when the time limit has passed. With no coordinate to move, the
+    burst ends where it is without running L-BFGS-B. The burst carries what
+    L-BFGS-B reports of its run.
     """
     if len(start) == 0:
         # L-BFGS-B would return a result without a status.
         return Burst(start.copy(), False)
+    halted = False
+
+    # scipy's callback types and dispatch key on this parameter name.
+    def asked(intermediate_result: object) -> None:
+        nonlocal halted
+        if stop is not None and stop():
+            halted = True
+            raise StopIteration
+
     result = minimize(
         objective,
         start.copy(),
@@ -173,13 +200,16 @@ def run_burst(
             "ftol": settings.lbfgs_ftol,
             "gtol": settings.lbfgs_gtol,
         },
+        callback=asked,
     )
     current = np.array(result.x, dtype=float)
     revert(current)
+    cut = halted and result.nit < settings.burst_maxiter
     return Burst(
         current,
         result.status == LBFGSB_ABNORMAL,
         result.nit,
         result.nfev,
         result.message,
+        cut,
     )

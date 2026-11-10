@@ -163,16 +163,23 @@ its clearance of any obstacle, or its stops, than it started.
 When it stops
 -------------
 A problem settles when its burst moves nothing by `settled_change` and
-moves nothing back but a section's own parts, when its lowest energy
-stalls over `stall_window` bursts, or after MAX_ABNORMAL_BURSTS abnormal
-bursts in a row. The run converges when every problem has settled, none
-of them on abnormal bursts, and otherwise stops at the iteration cap or
-after the first burst that ends past the time limit, counted from the
-start of the whole stage, keeping each problem's best state either way
-(`optimize_chains`). A run in which some problem settled on abnormal
-bursts gave up: it keeps the best state if that is lower in energy than
-the inputs, from which a resumed run measures too, and ends abnormally if
-not.
+moves nothing back but a section's own parts, when its lowest energy and
+its tracks' length stall over `stall_window` bursts, the energy by a
+tolerance for each moving member and via and the length by one
+(`stalled`), or after MAX_ABNORMAL_BURSTS abnormal bursts in a row. The
+settle threshold and the energy's tolerance hold per member, so that a
+problem and far-apart copies of it stall together. Members that have
+settled still add their tolerance, so one still gaining energy while its
+length grows may stop sooner beside them. The run
+converges when every problem has settled, none of them on abnormal
+bursts, and otherwise stops at the iteration cap or at the time limit,
+counted from the start of the whole stage, which ends the running burst
+at its next L-BFGS-B iteration; that burst's state goes through the
+checks and the guard as any, and it settles nothing. Each problem keeps
+its best state either way (`optimize_chains`). A run in which some
+problem settled on abnormal bursts gave up: it keeps the best state if
+that is lower in energy than the inputs, from which a resumed run
+measures too, and ends abnormally if not.
 """
 
 import math
@@ -187,6 +194,7 @@ from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     OptimizerSettings,
+    Stop,
     point_distance,
     revert_until_clear,
     run_burst,
@@ -287,11 +295,36 @@ def optimize(
     )
 
 
-def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
-    if len(lowest_energies) <= settings.stall_window:
+def stalled(
+    lowest_energies: Sequence[float],
+    lengths: Sequence[float],
+    settings: OptimizerSettings,
+    members: int,
+    vias: int = 0,
+) -> bool:
+    """Whether a problem of `members` moving members and `vias` moving vias
+    has stalled: over `stall_window` bursts its lowest energy fell by no
+    more than `stall_tolerance` for each member and via, and its tracks'
+    summed `lengths` by no more than one tolerance.
+
+    The energy side counts per member and via, so that a problem and two
+    far-apart copies of it stall together on it. Moving vias that repel
+    each other, such as a selected grid of stitching vias, settle on a
+    shallow energy: once they have made way for the routes they creep on by
+    tens of micrometres a burst while the energy keeps falling by about a
+    micrometre a burst, and their share of the tolerance trades that small
+    gain away. The length side keeps that share from stopping routes that
+    still get shorter as the vias spread, and holds for the whole problem:
+    per member, it let a stitched plane's routes end 17 µm longer. So two
+    copies of a problem may run longer than one, never stop sooner.
+    Measured in https://github.com/mairas/kibends/issues/138 and
+    https://github.com/mairas/kibends/issues/114."""
+    window, tolerance = settings.stall_window, settings.stall_tolerance
+    if len(lowest_energies) <= window:
         return False
-    earlier = lowest_energies[-1 - settings.stall_window]
-    return earlier - lowest_energies[-1] <= settings.stall_tolerance
+    gain = lowest_energies[-1 - window] - lowest_energies[-1]
+    shortened = lengths[-1 - window] - lengths[-1]
+    return gain <= tolerance * (members + vias) and shortened <= tolerance
 
 
 # How deep inside the other members' and vias' clearance, mm, a vertex lies
@@ -340,16 +373,17 @@ def optimize_chains(
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back but for a section's parts that
     came too close to each other, or when the lowest energy its bursts
-    reached fell by less than `stall_tolerance` over `stall_window` bursts,
-    whether or not the guard took them as its best state, or after
+    reached, whether or not the guard took them as its best state, and its
+    tracks' length stalled over `stall_window` bursts (`stalled`), or after
     MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
     every problem has, and gives up (`Termination.GAVE_UP`) if some problem
     settled on abnormal bursts. A run that gave up on some problem and
     whose best states sum to no less energy than its inputs, not where it
     resumed, ends `Termination.ABNORMAL`, whatever stopped it. With a time
-    limit in `settings`, the run stops after the first burst that ends when
-    `clock` reads the limit or more past `started`, by default when the run
-    starts.
+    limit in `settings`, the run stops once `clock` reads the limit or more
+    past `started`, by default when the run starts: the running burst ends
+    at its next L-BFGS-B iteration, and its state goes through the checks
+    and the guard as any burst's.
 
     A run given the result of an earlier one on the same inputs as `start`
     starts each problem from that run's best state, the sections held in
@@ -423,6 +457,10 @@ def optimize_chains(
     origin = begun if started is None else started
     deadline = None if settings.time_limit is None else origin + settings.time_limit
     last_shown = begun
+
+    def expired() -> bool:
+        return deadline is not None and clock() >= deadline
+
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
@@ -434,8 +472,8 @@ def optimize_chains(
         for problem in moving:
             if problem.settled:
                 continue
-            change = max(change, problem.step())
-            if timed and deadline is not None and clock() >= deadline:
+            change = max(change, problem.step(expired if timed else None))
+            if timed and expired():
                 out_of_time = True
                 break
         now = clock()
@@ -790,6 +828,8 @@ class _ProblemBurst:
     """What L-BFGS-B says ended it; empty for a burst that did not run it."""
     evaluating: float = 0.0
     """Seconds those evaluations took."""
+    cut: bool = False
+    """Whether the time limit ended it early (`bursts.Burst.cut`)."""
 
 
 class _Problem:
@@ -955,6 +995,7 @@ class _Problem:
         self.best_contact_of = list(self.contact_of)
         self.best_positions = list(self.positions)
         self.lowest = [self.energy]
+        self.lengths = [self.length()]
         self.rejected_edges = [0] * count
         self.too_close = [0] * count
         self.via_rejected = [0] * len(vias)
@@ -1300,9 +1341,11 @@ class _Problem:
         x, y = self.best_positions[k] if best else self.start_positions[k]
         return ViaResult((float(x), float(y)), self.via_rejected[k])
 
-    def step(self) -> float:
+    def step(self, stop: Stop | None = None) -> float:
         """One burst of every member and via together; returns its largest
-        change of a shape or a via's centre.
+        change of a shape or a via's centre. `stop`, asked after each
+        L-BFGS-B iteration, ends the burst there (`bursts.run_burst`); a
+        burst it cut short does not settle the problem.
 
         Logs at DEBUG what the burst cost: L-BFGS-B's iterations and energy
         evaluations, the seconds those evaluations took and the seconds of
@@ -1336,7 +1379,7 @@ class _Problem:
             contact_of.append(kept)
         self.masks, self.contact_of = masks, contact_of
         self.resampled = [False] * len(starts)
-        burst = self.burst(starts)
+        burst = self.burst(starts, stop)
         change = max(
             [
                 *(shape_change(before[i], burst.polylines[i]) for i in self.free),
@@ -1367,6 +1410,7 @@ class _Problem:
             self.best_positions = list(self.positions)
             self.best_energy = self.energy
         self.lowest.append(min(self.lowest[-1], self.energy))
+        self.lengths.append(self.length())
         if burst.abnormal:
             self.abnormal_bursts += 1
             self.abnormal_streak += 1
@@ -1387,9 +1431,16 @@ class _Problem:
         )
         self.settled = self.gave_up or (
             not burst.abnormal
+            and not burst.cut
             and (
                 (not cut_short and change < settings.settled_change)
-                or stalled(self.lowest, settings)
+                or stalled(
+                    self.lowest,
+                    self.lengths,
+                    settings,
+                    members=len(self.free),
+                    vias=len(self.vias),
+                )
             )
         )
         rest = time.perf_counter() - began - burst.evaluating
@@ -1459,7 +1510,9 @@ class _Problem:
 
         return objective
 
-    def burst(self, starts: list[FloatArray]) -> _ProblemBurst:
+    def burst(
+        self, starts: list[FloatArray], stop: Stop | None = None
+    ) -> _ProblemBurst:
         """One L-BFGS-B run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
         copper or another member's new shape, a section newly bent below its
@@ -1567,7 +1620,7 @@ class _Problem:
             evaluating += time.perf_counter() - began
             return answer
 
-        result = run_burst(timed, x0, revert, self.settings)
+        result = run_burst(timed, x0, revert, self.settings, stop)
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
         if result.abnormal or not found:
@@ -1585,6 +1638,7 @@ class _Problem:
             result.evaluations,
             result.message,
             evaluating,
+            result.cut,
         )
 
 

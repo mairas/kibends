@@ -357,11 +357,15 @@ that therefore spreads, and its vias move into gaps in it, as far as the
 zones they connect to let them. Ground vias of two ground nets keep their
 clearance and repel each other as other copper does.
 
-A selected grid of ground stitching vias that moving signal vias pass
-through can take up to about seven times as many iterations to settle as
-with `--attraction 0`, as the vias creep toward their balance, and the
-chains on their layers wait for them, since moving vias tie those layers
-into one problem.
+A selected grid of ground stitching vias that signal routes pass through
+moves out of their way, and the chains on their layers wait for it, since
+moving vias tie those layers into one problem. On synthetic two-layer
+planes with 29 to 47 stitching vias the routes ended up to a fifth
+shorter than with the stitching vias left unselected, and the runs took
+1.8 to 5.8 times as long, the most with the most vias. Once the routes
+stop shortening, the vias may still creep toward their balance by tens
+of micrometres a burst for little gain, so a problem's stall check
+allows one more `--stall-tolerance` for each of its moving vias.
 
 `--attraction 0` turns the pull and the ground vias' push off together:
 ground nets are not looked for, `--ground-nets` is ignored, and vias of one
@@ -379,9 +383,9 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration and one burst more for each. |
-| `--settled-change MM` | 0.001 | A problem settles when a burst moves none of its tracks or vias by this much. Raising it alone saves little time and can leave visibly different tracks. |
-| `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts. Raising it saves little time and lets some tracks end slightly longer. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration more for each. |
+| `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
+| `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
 | `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
 | `--burst-iterations N` | 50 | L-BFGS-B iterations per burst. Each burst resamples the tracks and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |

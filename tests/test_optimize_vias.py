@@ -6,6 +6,7 @@ clearance.
 The problem's energy and gradient with moving vias are checked against a
 reference built via by via (`reference_via_energy`)."""
 
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import replace
@@ -20,7 +21,9 @@ from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
+from kibends import cli
 from kibends.bursts import (
+    DEFAULT_SETTINGS,
     FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
@@ -28,6 +31,7 @@ from kibends.bursts import (
     Objective,
     OptimizerSettings,
     Revert,
+    Stop,
 )
 from kibends.energy import (
     SMOOTH_WIDTH,
@@ -48,7 +52,7 @@ from kibends.obstacles import (
     split_via_obstacles,
     via_via_inflation,
 )
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains, stalled
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaZone
@@ -423,9 +427,10 @@ def first_revert(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
         captured.append((revert, start.copy()))
-        return real(objective, start, revert, settings)
+        return real(objective, start, revert, settings, stop)
 
     monkeypatch.setattr(optimize_module, "run_burst", capturing)
     run(scenario, replace(COARSE, max_iterations=1))
@@ -1109,8 +1114,9 @@ def test_two_layers_joined_by_a_via_are_one_problem(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings)
+        burst = real(objective, start, revert, settings, stop)
         bursts.append(burst)
         return replace(burst, abnormal=True)
 
@@ -1130,7 +1136,9 @@ def test_a_via_moved_back_keeps_its_problem_from_settling(
     monkeypatch: pytest.MonkeyPatch, moved_back: int, settles: bool
 ) -> None:
     def still(
-        self: optimize_module._Problem, starts: list[FloatArray]
+        self: optimize_module._Problem,
+        starts: list[FloatArray],
+        stop: Stop | None = None,
     ) -> optimize_module._ProblemBurst:
         count = len(starts)
         return optimize_module._ProblemBurst(
@@ -2219,3 +2227,113 @@ class TestGroundVias:
         assert moved.position[1] < scenarios.DETOUR_VIA[1] - 1.0
         distance = math.dist(moved.position, under.via.position)
         assert distance >= scenarios.VIA_TO_VIA - INSIDE_TOLERANCE
+
+
+STITCHING_PITCH = 1.27
+STITCHING_COUNT = 3
+SIGNAL_KEEPOUT = 0.85
+"""How near the signal via no stitching via is placed, mm."""
+ROUTE_SPAN = 2.0
+"""How far the route starts and ends beyond the grid, mm."""
+ROUTE_RISE = 1.0
+"""How far the route rises to each side of its via, mm."""
+
+
+def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
+    """A route through a signal via amid a selected grid of GND stitching
+    vias in a GND zone on both layers, which spread and creep once the
+    route has its shape."""
+    size = (STITCHING_COUNT - 1) * STITCHING_PITCH
+    region = box(-1.0, -1.0, size + 1.0, size + 1.0)
+    zone = ViaZone("GND", dict.fromkeys(("F.Cu", "B.Cu"), region), 0.2, 0.0)
+    middle = size / 2 - STITCHING_PITCH / 2
+    at = (middle, middle)
+    signal = scenarios.through_via("x", "S", at)
+    start = (-ROUTE_SPAN, middle - ROUTE_RISE)
+    end = (size + ROUTE_SPAN, middle + ROUTE_RISE)
+    chains = list(scenarios.route("S", at, start, end))
+    vias = [scenarios.joining(signal, 0)]
+    for i in range(STITCHING_COUNT):
+        for j in range(STITCHING_COUNT):
+            where = (i * STITCHING_PITCH, j * STITCHING_PITCH)
+            if math.dist(where, at) > SIGNAL_KEEPOUT:
+                via = scenarios.through_via(f"g{i}_{j}", "GND", where)
+                vias.append(
+                    ViaInput(
+                        via,
+                        (),
+                        FreeSpace(),
+                        scenarios.PAIR_CLEARANCE,
+                        zones=(zone,),
+                        ground=True,
+                    )
+                )
+    return chains, vias
+
+
+DEFAULT_PARAMS = cli.smooth_options(cli.parse_args(["smooth"])).params
+STITCHED_SETTINGS = replace(DEFAULT_SETTINGS, burst_maxiter=20, max_iterations=12)
+"""Short bursts keep the stitched grid's runs fast; the cap ends a run
+that the stall rule does not."""
+
+Stalls = list[tuple[list[float], list[float], int, int, bool]]
+
+
+def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
+    """Record what each call of `optimize.stalled` was given and answered."""
+    calls: Stalls = []
+    real = optimize_module.stalled
+
+    def spy(
+        lowest: Sequence[float],
+        lengths: Sequence[float],
+        settings: OptimizerSettings,
+        members: int,
+        vias: int = 0,
+    ) -> bool:
+        answer = real(lowest, lengths, settings, members, vias)
+        calls.append((list(lowest), list(lengths), members, vias, answer))
+        return answer
+
+    monkeypatch.setattr(optimize_module, "stalled", spy)
+    return calls
+
+
+def test_moving_vias_end_a_stitched_grid_s_creep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chains, vias = crossed_stitching()
+    calls = spy_on_stalls(monkeypatch)
+
+    result = optimize_chains(chains, DEFAULT_PARAMS, STITCHED_SETTINGS, vias)
+
+    lowest, lengths, members, counted, answer = calls[-1]
+    assert result.termination is Termination.CONVERGED
+    assert answer
+    assert (members, counted) == (len(chains), len(vias))
+    # Without the vias' share the problem would have gone on.
+    assert not stalled(lowest, lengths, STITCHED_SETTINGS, members)
+
+
+def test_shortening_tracks_keep_a_stitched_grid_going(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chains, vias = crossed_stitching()
+    calls = spy_on_stalls(monkeypatch)
+    shrinking = itertools.count()
+    # More than a tolerance over the window.
+    shortening = DEFAULT_SETTINGS.stall_tolerance
+
+    def length(_: object) -> float:
+        return 10.0 - shortening * next(shrinking)
+
+    monkeypatch.setattr(optimize_module._Problem, "length", length)
+
+    optimize_chains(chains, DEFAULT_PARAMS, STITCHED_SETTINGS, vias)
+
+    assert not any(answer for *_, answer in calls)
+    # The energy alone would have stalled it.
+    assert any(
+        stalled(lowest, [0.0] * len(lengths), STITCHED_SETTINGS, members, counted)
+        for lowest, lengths, members, counted, _ in calls
+    )
