@@ -5,6 +5,9 @@ Two selected chains on one layer whose nets KiCad pairs by name form a pair
 where they run coupled (`pairs.find_pair`). The optimizer sees a pair as its
 coupled sections, each a block of its own (`pair_blocks`), and its uncoupled
 pieces, each an ordinary chain; the other selected chains stay as they are.
+A moving via at a paired chain's end carries the piece that owns that end;
+where a section itself reaches the end, no piece owns it, and the via stays
+fixed (`ChainPair.coupled_ends`).
 After the run, the pieces and the sections' tracks join back into one
 polyline per selected chain, which the commit takes like any other chain.
 """
@@ -43,6 +46,16 @@ class ChainPair:
     b: int
     """Indices of the pair's two chains among the selected ones."""
     pair: Pair
+
+    def coupled_ends(self) -> frozenset[ChainEnd]:
+        """The ends of its chains at which a coupled section itself ends,
+        with no uncoupled piece between."""
+        return frozenset(
+            ChainEnd(k, last)
+            for k, pieces in zip((self.a, self.b), self.pair.uncoupled(), strict=True)
+            for last, piece in ((False, pieces[0]), (True, pieces[-1]))
+            if piece.start == piece.end
+        )
 
 
 def find_pairs(
@@ -252,12 +265,17 @@ class Layout:
         return whole
 
     def ends(self, ends: Sequence[ChainEnd]) -> tuple[ChainEnd, ...]:
-        """Chain ends of the selected chains as ends of the optimizer's."""
+        """Chain ends of the selected chains as ends of the optimizer's: a
+        paired chain's end as the end of the uncoupled piece that owns it.
+        Raises where a coupled section reaches the end, as no optimizer
+        chain owns it then (`ChainPair.coupled_ends`)."""
         moved: list[ChainEnd] = []
         for end in ends:
             slot = self.slots[end.chain]
             if slot is None:
-                raise ValueError("a moving via joins a chain of a differential pair")
+                slot = self.stretches[end.chain][-1 if end.last else 0].piece
+            if slot is None:
+                raise ValueError("a moving via joins a coupled section's end")
             moved.append(end._replace(chain=slot))
         return tuple(moved)
 

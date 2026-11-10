@@ -5,10 +5,13 @@ it hands over; it prints nothing.
 
 `run_smooth` reads the board once, extracts the chains, and, if any
 selected via could have moved but stays fixed, extracts them again with
-that via's copper pinning. Selected tracks that form no chain, a loop
-nothing of its net touches or a stray zero-length track, stay on the board
-as unselected copper, and the chains are extracted again with them
-pinning. With `fixed_vias`, a via that carries no chain
+that via's copper pinning. A via at which a coupled section of a
+differential pair ends stays fixed; the final chains, paired as the
+optimizer pairs them, decide that, and the chains are extracted again
+until no moving via is left at such an end. Selected tracks that form no
+chain, a loop nothing of its net touches or a stray zero-length track,
+stay on the board as unselected copper, and the chains are extracted
+again with them pinning. With `fixed_vias`, a via that carries no chain
 end is dropped from the candidates before the board is read. When a
 selected via may move and attraction is on, it finds the ground nets,
 logs them and classes every via by them; with attraction off nothing is
@@ -449,26 +452,42 @@ def _read(
         frame=frame,
         zones=whole.via_zones,
     )
-    if movable:
-        # Pairing depends on the chains' shapes, not their pins, so the
-        # chains extracted again below pair alike.
-        movable = _off_pairs(
-            movable, chains, pairs_among(chains, chord_tolerance), frame
+    extracted_with: Collection[str] = candidates
+    while True:
+        said: list[str] = []
+        moving = {m.via.id for m in movable}
+        if chained and moving != extracted_with:
+            notes = []
+            chains = _extract_chains(
+                kept, locked, snapshots, moving, frame, notes.append
+            )
+            extracted_with = moving
+        final, final_snapshots = _leave_out(
+            _Extracted(kept, locked, snapshots, chains, notes),
+            whole,
+            replaced,
+            moving,
+            frame,
+            said.append,
         )
-    moving = {m.via.id for m in movable}
-    if chained and moving != candidates:
-        notes = []
-        chains = _extract_chains(kept, locked, snapshots, moving, frame, notes.append)
-    chains, snapshots = _leave_out(
-        _Extracted(kept, locked, snapshots, chains, notes),
-        whole,
-        replaced,
-        moving,
-        frame,
+        # Extracting again may order the chains differently.
+        movable = [replace(m, ends=carried_ends(m.via, final)) for m in movable]
+        # The optimizer pairs these chains, and a via that stays pins them
+        # anew, so they decide until no moving via is left at a section's end.
+        staying = _off_pairs(
+            movable,
+            final,
+            pairs_among(_as_paired(final), chord_tolerance) if movable else [],
+            frame,
+        )
+        if len(staying) == len(movable):
+            break
+        movable = staying
+    for line in said:
+        logger.debug(line)
+    return _Read(
+        selected, final, final_snapshots, movable, frame, ground, selection.arcs
     )
-    # Extracting again may order the chains differently.
-    movable = [replace(m, ends=carried_ends(m.via, chains)) for m in movable]
-    return _Read(selected, chains, snapshots, movable, frame, ground, selection.arcs)
 
 
 def _slices(
@@ -495,24 +514,25 @@ def _leave_out(
     replaced: Collection[str],
     moving: Collection[str],
     frame: UserFrame,
+    say: Callable[[str], None],
 ) -> tuple[list[Chain], dict[str, LayerSnapshot]]:
     """The final chains and the layers they are extracted over. The selected
     tracks no chain of `extracted` took are taken out of the `replaced`
     ones and stay on the board as unselected copper, which pins and blocks
     the chains as any other does, and the chains are extracted again; the
-    extraction's notes on them are logged."""
+    extraction's notes on them, and the new one's, go to `say`."""
     kept, locked, snapshots, chains, notes = extracted
     left_out = {s.id for s in kept} - {i for c in chains for i in c.segment_ids}
     if not left_out:
         return chains, snapshots
     for note in notes:
-        logger.debug(note)
+        say(note)
     still = [s for s in kept if s.id not in left_out]
     snapshots = _slices(whole, {*replaced} - left_out)
     if not still:
         return [], snapshots
     return (
-        _extract_chains(still, locked, snapshots, moving, frame, logger.debug),
+        _extract_chains(still, locked, snapshots, moving, frame, say),
         snapshots,
     )
 
@@ -773,11 +793,8 @@ def _optimize(
     count in."""
     moving = {m.via.id for m in read.movable}
     whole = _chain_inputs(read.chains, read.snapshots, fields, moving, read.frame)
-    # A pair's tracks keep their contacts where they are.
     pairs = find_pairs(
-        [chain.with_slides_pinned() for chain in read.chains],
-        options.chord_tolerance,
-        frame=read.frame,
+        _as_paired(read.chains), options.chord_tolerance, frame=read.frame
     )
 
     def section_field(
@@ -1088,28 +1105,36 @@ def _carrying(
     )
 
 
+def _as_paired(chains: Sequence[Chain]) -> list[Chain]:
+    """`chains` as the run pairs them: a pair's tracks keep their contacts
+    where they are."""
+    return [chain.with_slides_pinned() for chain in chains]
+
+
 def _off_pairs(
     movable: Sequence[MovableVia],
     chains: Sequence[Chain],
     pairs: Sequence[ChainPair],
     frame: UserFrame,
 ) -> list[MovableVia]:
-    """`movable` but the vias that join a chain of one of `pairs`, which stay
-    fixed, with a warning each."""
+    """`movable` but the vias at which a coupled section of one of `pairs`
+    itself ends, which stay fixed, with a debug line each: a section's ends
+    do not move. A via at an uncoupled piece of a pair's chain moves with
+    that piece."""
     described = {
-        k: f"{chains[p.a].net} and {chains[p.b].net} on {chains[k].layer}"
+        end: f"{chains[p.a].net} and {chains[p.b].net} on {chains[end.chain].layer}"
         for p in pairs
-        for k in (p.a, p.b)
+        for end in p.coupled_ends()
     }
     kept: list[MovableVia] = []
     for m in movable:
-        pair = next((described[e.chain] for e in m.ends if e.chain in described), None)
+        pair = next((described[e] for e in m.ends if e in described), None)
         if pair is None:
             kept.append(m)
             continue
         logger.debug(
             f"Via {m.via.id} at {frame.point(m.via.position)} stays fixed: "
-            f"differential pair {pair} ends at it"
+            f"a coupled section of differential pair {pair} ends at it"
         )
     return kept
 
