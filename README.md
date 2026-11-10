@@ -177,9 +177,7 @@ unselected one; vias of one ground net do (see
 zone it stays inside either, which only stops it, while the board edge and
 other nets' copper still repel it. Tracks and copper shapes of the via's own
 net do not affect it, and its net's pads only stop it from overlapping them
-(see `--allow-via-in-pad`). Each moving via adds to the run's time: leave stitching vias out
-of the selection, lock them, or pass `--fixed-vias` where they should
-stay.
+(see `--allow-via-in-pad`). Each moving via adds to the run's time.
 
 All the chains of one layer are one problem, which a single optimizer run
 moves at once; a moving via joins every layer it spans, and the chains on
@@ -363,8 +361,7 @@ A selected grid of ground stitching vias that moving signal vias pass
 through can take up to about seven times as many iterations to settle as
 with `--attraction 0`, as the vias creep toward their balance, and the
 chains on their layers wait for them, since moving vias tie those layers
-into one problem. Leave the stitching vias out of the selection, lock
-them or pass `--fixed-vias` where they need not move.
+into one problem.
 
 `--attraction 0` turns the pull and the ground vias' push off together:
 ground nets are not looked for, `--ground-nets` is ignored, and vias of one
@@ -391,7 +388,6 @@ ground net leave each other alone, as vias of any other net do.
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
-| `--fixed-vias` | | Keep every selected stitching via (one no selected track ends at) where it is, as if it were not selected, and spend no time moving it. Vias that carry selected tracks still move. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 | `--verbose`, `-v` | | Log at DEBUG: progress after every iteration and the debug lines, such as why a selected via stays where it is. Overrides the level the `LOGURU_LEVEL` environment variable sets; without either, kibends logs at INFO. |
