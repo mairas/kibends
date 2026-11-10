@@ -40,6 +40,7 @@ from kibends.obstacles import (
     HOLE_TO_HOLE,
     build_via_obstacles,
     own_net_stops,
+    split_via_obstacles,
     via_via_inflation,
 )
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
@@ -47,7 +48,7 @@ from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaKind, ViaZone
 from kibends.via_moves import MovingVias
-from kibends.vias import ChainEnd, StaticVia, ViaInput
+from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -1550,6 +1551,23 @@ def static_of(given: ViaInput) -> StaticVia:
     return StaticVia(given.via, given.ground, given.clearance)
 
 
+def split_from(given: ViaInput, static: Sequence[StaticVia]) -> ViaInput:
+    """`given` with its field and `static_vias` built as `run` builds them
+    over layers that hold the `static` vias."""
+    layers = [
+        replace(layer(name), vias=tuple(s.via for s in static))
+        for name in given.via.span
+    ]
+    by_id = {s.via.id: s for s in static}
+    field, static_vias = split_via_obstacles(
+        layers,
+        given.via,
+        lambda other: pairs_with(given.via, given.ground, by_id[other.id]),
+        zones=given.zones,
+    )
+    return replace(given, field=field, static_vias=static_vias)
+
+
 def pair_run(vias: Sequence[ViaInput], static: Sequence[StaticVia] = ()) -> RunResult:
     return optimize_chains(
         (far_chain(),), RETURN_PARAMS, COARSE, vias, static_vias=static
@@ -1570,8 +1588,12 @@ class TestReturnVia:
     def test_a_pair_3_mm_apart_settles_at_it(self, still: str | None) -> None:
         signal = stitching("s", "SIG", (0.0, 0.0))
         ground = stitching("g", "GND", (0.0, 3.0))
-        moving = [v for v in (signal, ground) if v.via.net != still]
         static = [static_of(v) for v in (signal, ground) if v.via.net == still]
+        moving = [split_from(v, static) for v in (signal, ground) if v.via.net != still]
+        if static:
+            # A fixed attractor stands in the static_vias field alone, so
+            # that its repulsion is counted once, by the pairwise term.
+            assert all(v.static_vias is not None for v in moving)
 
         result = pair_run(moving, static)
 
