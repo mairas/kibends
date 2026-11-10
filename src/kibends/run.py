@@ -4,35 +4,32 @@ The command line and the GUI both call `run_smooth` and present the reports
 it hands over; it prints nothing.
 
 `run_smooth` reads the board once, extracts the chains, cut at every
-selected via that may move, and, if any of them stays fixed, extracts
-them again with the chains through that via whole and its copper
-pinning. A via at which a coupled section of a differential pair ends
-stays fixed, as does one whose cut takes a piece's partner: the pair's
-other track pairs with one piece of the cut track and runs coupled with
-the other, which is left unpaired (`_off_pairs`). The final chains,
-paired as the optimizer pairs them, decide that, and `_settle` extracts
-the chains again until no moving via is left so. Selected tracks that
-form no chain, a loop nothing of its net touches or a stray zero-length
-track, stay on the board as unselected copper, and the chains are
-extracted again with them pinning. With `fixed_vias`, a via that carries
-no chain end is dropped from the candidates before the board is read.
-When a
-selected via may move and attraction is on, it finds the ground nets,
-logs them and classes every via by them; with attraction off nothing is
-classed, and the optimizer's energy is the one without ground vias. It then
-builds the fields, optimizes, simplifies and commits. A coupled section
-the run leaves bent too tightly is held, and the optimizer runs again from
-the previous run's best state. A loop that surrounds nothing would shrink
-to no area, to a point or a line doubled back: one that nothing holds
-open is held as drawn from the start (`_collapsing`), with the junction it
-hangs off if any, and one that shrinks all the same (`_shrunk`) is held
-as drawn in a run that resumes from the previous one's best state, on the
-same clock and time limit. A chain whose result equals its selected
-tracks, and that shares no split track with a changed chain, is left out
-of the commit; nothing is committed when every chain is unchanged and no
-via moved. A selected arc thus stays an arc only in a chain left exactly
-as drawn; simplification merges its pieces and the optimizer shortens it,
-so it is nearly always replaced.
+selected via that may move, and, if any of them stays fixed, extracts them
+again with the chains through that via whole and its copper pinning. A via
+at which a coupled section of a differential pair ends stays fixed, as does
+one whose cut takes a piece's partner: the pair's other track pairs with one
+piece of the cut track and runs coupled with the other, which is left
+unpaired (`_off_pairs`). The final chains, paired as the optimizer pairs
+them, decide that, and `_settle` extracts the chains again until no moving
+via is left so. Selected tracks that form no chain, a loop nothing of its
+net touches or a stray zero-length track, stay on the board as unselected
+copper, and the chains are extracted again with them pinning. When a
+selected via may move and attraction is on, it finds the ground nets, logs
+them and classes every via by them; with attraction off nothing is classed,
+and the optimizer's energy is the one without ground vias. It then builds
+the fields, optimizes, simplifies and commits. A coupled section the run
+leaves bent too tightly is held, and the optimizer runs again from the
+previous run's best state. A loop that surrounds nothing would shrink to no
+area, to a point or a line doubled back: one that nothing holds open is held
+as drawn from the start (`_collapsing`), with the junction it hangs off if
+any, and one that shrinks all the same (`_shrunk`) is held as drawn in a run
+that resumes from the previous one's best state, on the same clock and time
+limit. A chain whose result equals its selected tracks, and that shares no
+split track with a changed chain, is left out of the commit; nothing is
+committed when every chain is unchanged and no via moved. A selected arc
+thus stays an arc only in a chain left exactly as drawn; simplification
+merges its pieces and the optimizer shortens it, so it is nearly always
+replaced.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
@@ -119,7 +116,6 @@ from kibends.snapshot import (
     FALLBACK_GROUND,
     Arc,
     BoardSnapshot,
-    Disc,
     GroundSource,
     LayerSnapshot,
     Via,
@@ -174,9 +170,6 @@ class SmoothOptions:
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
-    fixed_vias: bool = False
-    """Keep every selected stitching via, one that carries no chain end,
-    where it is, as an unselected via."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
     """Its time limit covers the whole optimize stage, re-runs included."""
     ground_nets: tuple[str, ...] = ()
@@ -367,7 +360,6 @@ def run_smooth(
         board,
         options.chord_tolerance,
         read_user_frame(board),
-        fixed_vias=options.fixed_vias,
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
@@ -398,15 +390,13 @@ def _read(
     chord_tolerance: float,
     frame: UserFrame,
     *,
-    fixed_vias: bool,
     ground_nets: Collection[str] = (),
     paired: bool = True,
 ) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
-    judge which selected vias move, no stitching via with `fixed_vias`,
-    giving positions in `frame`. When a selected via may move and vias are
-    `paired`, find the ground nets, `ground_nets` if given, and name
-    them."""
+    judge which selected vias move, giving positions in `frame`. When a
+    selected via may move and vias are `paired`, find the ground nets,
+    `ground_nets` if given, and name them."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
@@ -432,9 +422,6 @@ def _read(
         if may and chained
         else [],
     )
-    judged = list(selection.vias)
-    if fixed_vias:
-        judged, may = _carrying(judged, may, carried, frame)
     # A moving via meets the copper of every layer it spans, so a selection
     # holding one reads them all.
     whole = BoardSnapshot.read(
@@ -456,7 +443,7 @@ def _read(
         else []
     )
     movable = movable_vias(
-        judged,
+        selection.vias,
         whole.via_contacts,
         chains,
         frame=frame,
@@ -1121,28 +1108,6 @@ def _optimizing(chains: int, pairs: int, vias: int) -> str:
     if not vias:
         return message
     return f"{message} and {vias} moving via{'' if vias == 1 else 's'}"
-
-
-def _carrying(
-    vias: Sequence[Via],
-    may: Sequence[Via],
-    carried: Mapping[str, Sequence[Disc]],
-    frame: UserFrame,
-) -> tuple[list[Via], list[Via]]:
-    """`vias` and `may` without the vias of `may` that carry no chain end,
-    which stay fixed, each with a debug line; so a selection whose only
-    candidates are those reads no more layers than one without them."""
-    stitching = {v.id for v in may if not carried[v.id]}
-    for v in may:
-        if v.id in stitching:
-            logger.debug(
-                f"Via {v.id} at {frame.point(v.position)} stays fixed: "
-                "no selected track ends at it and --fixed-vias is given"
-            )
-    return (
-        [v for v in vias if v.id not in stitching],
-        [v for v in may if v.id not in stitching],
-    )
 
 
 def _as_paired(chains: Sequence[Chain]) -> list[Chain]:

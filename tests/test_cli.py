@@ -2633,15 +2633,12 @@ class TestMovingVias:
         assert at in ends(created_on(board, BL.BL_F_Cu))
         assert at in ends(created_on(board, BL.BL_In1_Cu))
 
-    @pytest.mark.parametrize("flags", [(), ("--fixed-vias",)], ids=["", "fixed"])
     def test_a_via_a_chain_runs_through_moves_carrying_both_sides(
-        self, connect: Connector, log: list[str], flags: tuple[str, ...]
+        self, connect: Connector, log: list[str]
     ) -> None:
-        # With --fixed-vias too: the via carries the ends of the chain cut
-        # at it, so it is no stitching via.
         board = connect.to(through_via_board())
 
-        run(*flags)
+        run()
 
         assert not any("stays fixed" in line for line in log)
         assert sorted(board.deleted) == ["a", "b", "c", "v"]
@@ -2786,25 +2783,8 @@ class TestMovingVias:
         assert "Dry run: nothing committed" in "".join(log)
         assert "Nothing to do" not in "".join(log)
 
-    def test_with_fixed_vias_a_stitching_via_stays(
+    def test_a_routing_via_and_a_stitching_via_both_move(
         self, connect: Connector, log: list[str]
-    ) -> None:
-        board = connect.to(pushed_stitching_board())
-
-        run("--fixed-vias")
-
-        assert board.calls == []
-        (line,) = [line for line in log if "stays fixed" in line]
-        assert line.startswith("DEBUG Via s ")
-        assert line.rstrip().endswith(
-            "stays fixed: no selected track ends at it and --fixed-vias is given"
-        )
-        # It is no candidate, so the run reads only the selection's layers.
-        assert board.reads["get_enabled_layers"] == 0
-
-    @pytest.mark.parametrize("fixed", [False, True])
-    def test_with_fixed_vias_a_routing_via_still_moves(
-        self, connect: Connector, log: list[str], fixed: bool
     ) -> None:
         # Beside the route, an unselected PWR track within range above the
         # stitching via pushes it down.
@@ -2819,15 +2799,14 @@ class TestMovingVias:
         ]
         connect.to(board)
 
-        run(*(["--fixed-vias"] if fixed else []))
+        run()
 
         assert board.calls == COMMIT_CALLS
-        moved = {"a", "b", "e", "f", "v", *([] if fixed else ["s"])}
-        assert sorted(board.deleted) == sorted(moved)
+        assert sorted(board.deleted) == ["a", "b", "e", "f", "s", "v"]
         created = {v.net.name: v for v in created_vias(board)}
-        assert sorted(created) == (["SIG"] if fixed else ["GND", "SIG"])
+        assert sorted(created) == ["GND", "SIG"]
         assert created["SIG"].position.y < nm(1)
-        assert ("stays fixed" in "".join(log)) == fixed
+        assert "stays fixed" not in "".join(log)
 
     @pytest.mark.parametrize("unfilled", ["pwr pour", "pour keepout"])
     def test_a_via_in_a_zone_of_its_net_moves_within_its_region_and_commits(
@@ -3308,20 +3287,12 @@ class TestGroundNets:
             "INFO Ground nets GND and PGND, as given",
         ]
 
-    @pytest.mark.parametrize(
-        ("board", "args"),
-        [(straight_board, ()), (pushed_stitching_board, ("--fixed-vias",))],
-    )
     def test_are_not_named_without_a_via_that_may_move(
-        self,
-        connect: Connector,
-        log: list[str],
-        board: Callable[[], CommitBoard],
-        args: tuple[str, ...],
+        self, connect: Connector, log: list[str]
     ) -> None:
-        connect.to(board())
+        connect.to(straight_board())
 
-        run("--dry-run", "--ground-nets", "PGND", *args)
+        run("--dry-run", "--ground-nets", "PGND")
 
         assert ground_lines(log) == []
 
@@ -3404,24 +3375,6 @@ class TestViaClasses:
 
         assert classes(optimized.vias) == {"v": True}
         assert classes(optimized.static_vias) == {"u": True}
-
-    def test_a_via_held_by_fixed_vias_is_static(
-        self, connect: Connector, optimized: Optimized
-    ) -> None:
-        board = moving_via_board()
-        stitching = kipy_via("s", "GND", 12.0, 3.0)
-        board.vias.append(stitching)
-        board.selection.append(stitching)
-        plane = kipy_rect(-2, -3, 16, 10)
-        board.zones = [
-            kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
-        ]
-        connect.to(board)
-
-        run("--dry-run", "--fixed-vias")
-
-        assert classes(optimized.vias) == {"v": False}
-        assert classes(optimized.static_vias) == {"s": True}
 
     def test_given_ground_nets_set_the_classes(
         self, connect: Connector, optimized: Optimized
@@ -3530,17 +3483,6 @@ class TestViaClasses:
             via.start, RETURN_SIGNAL_VIA
         )
         assert reports[-1].chains == ()
-
-    def test_fixed_vias_hold_a_stitching_via_selected_without_tracks(
-        self, connect: Connector, reports: list[pipeline.RunReport]
-    ) -> None:
-        board = return_via_board((5.0, 2.5), stitching=True)
-        board.selection = [v for v in board.vias if v.id.value == "g"]
-        connect.to(board)
-
-        run("--dry-run", "--fixed-vias")
-
-        assert not any(v.moved for v in reports[-1].vias)
 
     def test_a_selection_without_tracks_draws_no_plot(
         self,
