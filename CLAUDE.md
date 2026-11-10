@@ -43,7 +43,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 - The loose ends of a junction's branches move together and stay one point.
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
 - Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
-- Arc tracks are refused; output is always straight tracks.
+- Selected arcs are segmented before smoothing; output is always straight tracks.
 
 ## Units and coordinates
 
