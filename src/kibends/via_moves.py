@@ -7,12 +7,16 @@ offsets from it.
 
 On a zone's layers a moving via keeps the zone's clearance from the
 chains and vias moving with it.
+
+A via's clearance is judged obstacle by obstacle (`newly_inside`), in the
+optimizer's checks and once more before the commit (`crowded`), so that a
+via inside one obstacle is still kept out of the others.
 """
 
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import numpy as np
 
@@ -192,20 +196,94 @@ def free_distances(
     return FreeDistances(static, sight.obstacle_distances(polylines, positions, below))
 
 
+def _static_inside(
+    now: FreeDistances, start: FreeDistances, tolerance: float, slack: float
+) -> BoolArray:
+    """(vias, parts): which part of what stands still for each via it is
+    newly inside by more than `tolerance`, or more than `slack` deeper
+    inside than at `start`."""
+    return now.static < np.minimum(start.static - slack, -tolerance)
+
+
 def newly_inside(
-    now: FreeDistances, start: FreeDistances, tolerance: float
+    now: FreeDistances, start: FreeDistances, tolerance: float, slack: float = 0.0
 ) -> tuple[BoolArray, BoolArray]:
     """Which vias are newly inside some part of what stands still for them
-    by more than `tolerance`, or deeper inside it than at `start`, and which
-    of the (via, obstacle) pairs of `now` are so. Each obstacle is judged by
-    the via's nearest distance to it against that distance at the start, so
-    that a via inside one is still kept out of the others; an edge of the
-    obstacle other than its nearest may move deeper while the nearest stays
-    the deepest. `start` holds every pair inside by more than `tolerance`."""
-    static = (now.static < np.minimum(start.static, -tolerance)).any(axis=1)
+    by more than `tolerance`, or more than `slack` deeper inside it than at
+    `start`, and which of the (via, obstacle) pairs of `now` are so. Each
+    obstacle is judged by the via's nearest distance to it against that
+    distance at the start, so that a via inside one is still kept out of
+    the others; an edge of the obstacle other than its nearest may move
+    deeper while the nearest stays the deepest. `start` holds every pair
+    inside by more than `tolerance`."""
+    static = _static_inside(now, start, tolerance, slack).any(axis=1)
     at = np.searchsorted(start.by_obstacle.key, now.by_obstacle.key)
     found = at < len(start.by_obstacle.key)
     found[found] = start.by_obstacle.key[at[found]] == now.by_obstacle.key[found]
     before = np.full(len(at), np.inf)
     before[found] = start.by_obstacle.distance[at[found]]
-    return static, now.by_obstacle.distance < np.minimum(before, -tolerance)
+    return static, now.by_obstacle.distance < np.minimum(before - slack, -tolerance)
+
+
+CrowdingKind = Literal["copper", "zones", "own net", "chain", "via"]
+
+STATIC_KINDS: tuple[CrowdingKind, ...] = ("copper", "zones", "own net")
+"""What each of a via's static parts in `crowded` is: its copper
+(`ViaInput.copper`), then its stops (`ViaInput.stop_parts`)."""
+
+
+class Crowding(NamedTuple):
+    """What a via ends newly or deeper inside: its static copper, the
+    outside of its zones, its net's pads and holes, or another net's chain
+    or another via, with that chain's or via's net."""
+
+    kind: CrowdingKind
+    net: str | None
+
+
+def crowded(
+    moving: MovingVias,
+    starts: Sequence[FloatArray],
+    ends: Sequence[FloatArray],
+    start_positions: Positions,
+    positions: Positions,
+    tolerance: float,
+    slack: float,
+) -> list[Crowding | None]:
+    """For each via, with the chains at `ends` and the vias at `positions`,
+    something it is newly inside, by more than `tolerance`, or more than
+    `slack` deeper inside than with the chains at `starts` and the vias at
+    `start_positions` (`newly_inside`), or None. Each obstacle is judged
+    apart: its static copper, each part of its stops, each chain of another
+    net near it and each other via, of its net by hole-to-hole."""
+    vias = range(len(moving.vias))
+    sight = ViaSight(
+        [moving.rings(v) for v in vias],
+        [
+            {u: d for u in vias if u != v and (d := moving.apart(v, u)) is not None}
+            for v in vias
+        ],
+        len(moving.chains),
+    )
+    statics = [(via.copper, *via.stop_parts) for via in moving.vias]
+
+    def judged(polylines: Sequence[FloatArray], at: Positions) -> FreeDistances:
+        return free_distances(statics, sight, polylines, at, -tolerance)
+
+    now = judged(ends, positions)
+    start = judged(starts, start_positions)
+    found: list[Crowding | None] = [None] * len(moving.vias)
+    vias_inside, parts = np.nonzero(_static_inside(now, start, tolerance, slack))
+    for v, part in zip(vias_inside, parts, strict=True):
+        found[v] = found[v] or Crowding(STATIC_KINDS[part], None)
+    _, inside = newly_inside(now, start, tolerance, slack)
+    members = len(moving.chains)
+    for v, o in zip(
+        now.by_obstacle.via[inside], now.by_obstacle.obstacle[inside], strict=True
+    ):
+        found[v] = found[v] or (
+            Crowding("chain", moving.chains[int(o)].centreline.net)
+            if o < members
+            else Crowding("via", moving.vias[int(o) - members].via.net)
+        )
+    return found

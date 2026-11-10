@@ -165,6 +165,17 @@ including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A moving
 via that starts inside its clearance or inside such a rule area moves out
 of it where there is room, and never ends deeper inside than it started.
+Starting inside the clearance of one chain or via does not let it into
+another's: each chain and each via is judged on its own, as are the static
+copper around it, taken as one, the outside of its zones and its net's
+pads and holes. A via starting inside the clearance of one piece of static
+copper may still move as deep into another's. The run refuses, naming the
+via, to commit one that would end newly or deeper inside any of these.
+This check judges a differential pair's via against its partner track
+like any other net's track, while the optimizer judges it against the
+pair's coupled section, which it starts inside: where the pair's netclass
+clearance exceeds its gap, a run that leaves such a via deeper inside its
+clearance of the partner track is refused.
 Two vias keep their clearances and hole-to-hole distance from each other
 only where their spans overlap; KiCad's DRC judges any stricter rule for
 blind, buried or micro vias.
