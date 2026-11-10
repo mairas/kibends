@@ -21,10 +21,16 @@ class Termination(Enum):
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
     TIME_LIMIT = "time limit reached"
+    GAVE_UP = "stopped on abnormal bursts"
+    """Every problem settled, some of them only after
+    `optimize.MAX_ABNORMAL_BURSTS` abnormal bursts in a row, and the run's
+    best state is lower in energy than its inputs; or, for the whole stage
+    (`run.OptimizerReport`), the last run converged after an earlier one gave
+    up. The best state is used, though it may be short of the minimum."""
     ABNORMAL = "L-BFGS-B terminated abnormally"
     """Some problem stopped after `optimize.MAX_ABNORMAL_BURSTS` abnormal
-    bursts in a row and no burst of the run lowered the energy: nothing
-    usable was found."""
+    bursts in a row and the run's best state is no lower in energy than its
+    inputs: nothing usable was found."""
 
 
 @dataclass(frozen=True)

@@ -171,9 +171,14 @@ bring an edge or a via newly into another item's clearance. An outer iteration g
 problem that has not settled one burst. A problem settles when a burst
 barely changes it or its energy stops improving.
 
-The command prints the optimizer's outcome: whether it converged or stopped
-at its iteration cap or the time limit, after how many iterations and how
-many seconds and how many edge moves it rejected.
+The command prints the optimizer's outcome, after how many iterations and
+how many seconds, and how many edge moves it rejected. It converged, had
+nothing to do, or stopped at its iteration cap or the time limit, each
+keeping the best result found. It stopped on abnormal bursts when L-BFGS-B
+ended three bursts of some problem in a row abnormally after the run had
+improved the tracks: it keeps the best result found, which may fall short
+of the smoothest. A run that ends so without improving anything prints
+"L-BFGS-B terminated abnormally" and commits nothing.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after and its minimum clearance margin.
 It reports when it starts setting up the optimizer, and before the first

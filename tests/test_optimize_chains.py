@@ -738,9 +738,70 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    # The bursts were taken: the run lowered the energy, so it converged.
-    assert result.termination is Termination.CONVERGED
+    # The bursts were taken: the run lowered the energy, but did not converge.
+    assert result.termination is Termination.GAVE_UP
     for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.run_burst
+    reach = 10.0
+
+    def back_fails(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+    ) -> Burst:
+        burst = real(objective, start, revert, settings)
+        return replace(burst, abnormal=bool(start.max() > reach))
+
+    monkeypatch.setattr(optimize_module, "run_burst", back_fails)
+    free = FreeSpace()
+    # Only the back chain's vertices reach past `reach`.
+    front = selected("front", "A", free, (0.0, 0.0), (5.0, 1.5), (reach, 0.0))
+    back = selected(
+        "back", "B", free, (0.0, 0.0), (reach, 1.5), (2 * reach, 0.0), layer="B.Cu"
+    )
+
+    result = optimize_chains([front, back], scenarios.PARAMS, COARSE)
+
+    assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.termination is Termination.GAVE_UP
+
+
+ZIGZAG = 0.1
+"""mm every other free vertex of a stuck burst moves sideways, which
+lengthens the chains."""
+
+
+def test_a_resumed_run_that_gives_up_keeps_the_earlier_run_s_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    first = run(scenario)
+
+    def stuck(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+    ) -> Burst:
+        zigzag = start.copy()
+        zigzag[1::4] += ZIGZAG
+        return Burst(zigzag, abnormal=True)
+
+    monkeypatch.setattr(optimize_module, "run_burst", stuck)
+
+    again = optimize_chains(scenario.chains, scenario.params, COARSE, start=first)
+
+    # No burst was taken, but where it resumed is below its inputs.
+    assert again.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert again.termination is Termination.GAVE_UP
+    for chain in again.chains:
         assert length(chain.polyline) < chain.before.length
 
 

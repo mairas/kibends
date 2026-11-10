@@ -228,6 +228,8 @@ class OptimizerReport:
     pairs: tuple[PairReport, ...]
     """The differential pairs among the chains."""
     termination: Termination
+    """How the last run ended, but `Termination.GAVE_UP` where it converged
+    after an earlier run gave up on some problem."""
     iterations: int
     """Outer iterations, each giving every problem that has not settled
     one burst, summed over the runs."""
@@ -501,6 +503,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     previous: RunResult | None = None
     iterations = 0
     abnormal: dict[str, int] = {}
+    gave_up: dict[str, int] = {}
     while True:
         run = optimize_chains(
             layout.inputs,
@@ -517,11 +520,26 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         iterations += run.iterations
         for description, count in run.abnormal:
             abnormal[description] = abnormal.get(description, 0) + count
+        for description, streak in run.gave_up:
+            gave_up.setdefault(description, streak)
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
-            # Only the last run's: a first one was repeated.
+            # A problem given up on stopped on abnormal bursts; a later run
+            # converging from its best state does not make that stop a
+            # convergence.
+            termination = (
+                Termination.GAVE_UP
+                if gave_up and run.termination is Termination.CONVERGED
+                else run.termination
+            )
+            run = replace(
+                run,
+                termination=termination,
+                iterations=iterations,
+                abnormal=tuple(abnormal.items()),
+                gave_up=tuple(gave_up.items()),
+            )
             _log_gave_up(run)
-            run = replace(run, iterations=iterations, abnormal=tuple(abnormal.items()))
             elapsed = monotonic() - started
             return _Optimized(whole, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
