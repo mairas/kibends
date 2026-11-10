@@ -1,14 +1,25 @@
 """What the members and moving vias of a problem see of each other, searched
 for all of them at once.
 
-A member sees pieces of the others' edges, each inflated by its own amount
-(`SeenParts`), and each evaluation of the energy asks for the piece nearest
-each of its quadrature points. One tree per layer, over every edge that a
-member on that layer sees, finds the edges near the points of all of them,
-and each pair of a point and an edge stands for the pieces of that edge
-that the point's member sees. The pairs within reach are those a tree over
-the member's own pieces would find, measured the same way, so the answers
-are the same as a field of each member's own pieces gives.
+A member sees the edges the others show (`members.shown`) by a rule with
+sparse exceptions (`Seen`). By the rule it sees every edge, on its layer,
+of a track of another net, whole, inflated by the distance the two kinds
+keep, a kind being a width and a clearance (`Seen.table`). The exceptions
+are pieces of edges, each inflated by its own amount (`Pieces`): a coupled
+section sees the tracks of its own two nets only in the stretches it keeps
+clear of, and a member sees the vias near it with their rings.
+
+Every question about what the members see, the piece nearest a point for
+the energy, how far a point lies from the nearest for the checks, or
+whether a segment enters one, is answered for all members of a layer with
+one tree over the edges they see: each pair of a point and an edge stands
+for the pieces of that edge the point's member sees, by the rule or its
+exceptions. The pairs within reach are those a tree over the member's own
+pieces would find, measured the same way, so the answers are the same as a
+field of each member's own pieces gives. A distance wanted however far is
+found beyond that tree from fields that hold only what a member sees
+(`Seen.distances`), so that many edges a member does not see, such as its
+own net's, cost nothing.
 
 A moving via sees whole members and the other vias (`ViaSight`): one tree
 over their edges and centres answers every via, each pair inflated by the
@@ -17,32 +28,56 @@ distance its via keeps from that member or via.
 
 import itertools
 import math
-from collections.abc import Iterator, Mapping, Sequence
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import cached_property
-from typing import NamedTuple, overload
+from typing import NamedTuple
 
 import numpy as np
 
 from kibends.energy import BoolArray, FloatArray, IntArray
 from kibends.obstacles import (
+    ChainField,
+    ComplexArray,
     NearestEdge,
     candidate_pairs,
     complex_points,
     near_segments,
     nearest_of_pairs,
+    pairs_inside,
 )
 
 
-@dataclass(frozen=True)
-class SeenParts:
-    """What one chain of a layer sees of the others: pieces of their edges,
-    each inflated by its own amount."""
+class Track(NamedTuple):
+    """A track a member shows the others."""
+
+    first: int
+    """Its first vertex, numbered across what every member shows, one after
+    another, then two for each via (`members.shown_flat`)."""
+    vertices: int
+    layer: str
+    net: int
+    """Its net, numbered."""
+    kind: int
+    """Its width and clearance, numbered as `Seen.table` takes them."""
+
+
+class Viewer(NamedTuple):
+    """A member as it sees the others."""
+
+    layer: str
+    net: int
+    kind: int
+    exempt: tuple[int, ...]
+    """The nets whose tracks it sees only as its exceptions give them. Its
+    own tracks are of its net or of these."""
+
+
+class Pieces(NamedTuple):
+    """Pieces of edges, each inflated by its own amount."""
 
     vertex: IntArray
-    """Each piece's edge's first vertex, numbered across what the others
-    see of every chain and section (`members.shown`), one after another,
-    then two for each via (`members.shown_flat`)."""
+    """Each piece's edge's first vertex, numbered as `Track.first`."""
     start: FloatArray
     """Where along its edge each piece starts, from 0 to 1."""
     end: FloatArray
@@ -51,93 +86,151 @@ class SeenParts:
 
 @dataclass(frozen=True)
 class SeenLayer:
-    """The members on one layer and the edges they see."""
+    """The members on one layer, the edges they see and what decides which
+    pieces of them each sees."""
 
     members: list[int]
+    first: int
+    """Its first piece, by its index in `Seen`; its pieces are the next
+    `pieces`."""
+    pieces: int
     edges: IntArray
     """Each edge some member sees, by its first vertex, ascending."""
-    first: IntArray
-    """Per member and edge, at member * len(edges) + the edge's position,
-    where the member's pieces of the edge start in `pieces`."""
-    count: IntArray
-    """How many pieces of the edge the member sees, likewise."""
-    pieces: IntArray
-    """The members' pieces, by their index in `Seen`, by member and edge."""
+    whole: IntArray
+    """Each edge's piece covering all of it, by its index in `Seen`."""
+    net: IntArray
+    """Each edge's track's net, -1 for a via."""
+    kind: IntArray
+    """Each edge's track's kind, -1 for a via."""
+    viewer_net: IntArray
+    """Per member, its net."""
+    viewer_kind: IntArray
+    exempt: IntArray
+    """Per member, a row of the nets it sees only by its exceptions, padded
+    with NO_NET."""
+    slot: IntArray
+    """The members' exceptions, each at member * len(edges) + the position
+    of its edge, ascending."""
+    piece: IntArray
+    """Each exception's piece, by its index in `Seen`."""
+    inflation: FloatArray
+    """Each exception's inflation."""
 
 
-class Seen(Sequence[SeenParts]):
-    """What each member of a problem sees of the others (`SeenParts`), and
-    one search per layer that answers every member on it."""
+NO_NET = -2
+"""Pads `SeenLayer.exempt`: no track's net, nor a via's."""
 
-    def __init__(self, parts: Sequence[SeenParts], layers: Sequence[str]) -> None:
-        """`parts` per member, each on the layer `layers` gives."""
-        counts = [len(part.vertex) for part in parts]
-        self.vertex: IntArray = np.concatenate(
-            [np.empty(0, dtype=np.intp), *(part.vertex for part in parts)]
-        )
-        self.start: FloatArray = np.concatenate(
-            [np.empty(0), *(part.start for part in parts)]
-        )
-        self.end: FloatArray = np.concatenate(
-            [np.empty(0), *(part.end for part in parts)]
-        )
-        self.inflation: FloatArray = np.concatenate(
-            [np.empty(0), *(part.inflation for part in parts)]
-        )
-        self._bounds = bounds = list(itertools.accumulate(counts, initial=0))
-        self._parts = [
-            SeenParts(
-                self.vertex[a:b], self.start[a:b], self.end[a:b], self.inflation[a:b]
-            )
-            for a, b in itertools.pairwise(bounds)
-        ]
-        self.within: FloatArray = np.array(
-            [float(part.inflation.max(initial=0.0)) for part in parts]
-        )
-        """Each member's largest inflation."""
-        self._on: dict[str, list[int]] = {}
-        for i, layer in enumerate(layers):
-            self._on.setdefault(layer, []).append(i)
 
-    @cached_property
-    def layers(self) -> list[SeenLayer]:
-        """The members of each layer and what they see, indexed for the
-        search; built on first use, as the checks that only look at one
-        member's `SeenParts` need none."""
-        return [self._layer(members) for members in self._on.values()]
+class Seen:
+    """What each member of a problem sees of the others at one set of
+    shapes, and one search per layer that answers every member on it."""
 
-    def _layer(self, members: list[int]) -> SeenLayer:
-        bounds = self._bounds
-        counts = [bounds[i + 1] - bounds[i] for i in members]
-        pieces = np.concatenate(
+    def __init__(
+        self,
+        tracks: Sequence[Track],
+        viewers: Sequence[Viewer],
+        table: FloatArray,
+        exceptions: Sequence[Pieces],
+    ) -> None:
+        """The members as `viewers` and their `exceptions`, in order,
+        seeing the `tracks`, two tracks of kinds k and l of two nets kept
+        table[k, l] apart."""
+        self.table = table
+        size = max(
             [
-                np.empty(0, dtype=np.intp),
-                *(np.arange(bounds[i], bounds[i + 1], dtype=np.intp) for i in members),
+                0,
+                *(t.first + t.vertices for t in tracks),
+                *(int(p.vertex.max(initial=-1)) + 2 for p in exceptions),
             ]
         )
-        vertex = self.vertex[pieces]
-        seen = np.zeros(int(vertex.max(initial=-1)) + 1, dtype=bool)
-        seen[vertex] = True
-        edges = np.flatnonzero(seen)
-        position = np.cumsum(seen) - 1
-        slot = np.repeat(np.arange(len(members)), counts) * len(edges)
-        slot += position[vertex]
-        count = np.bincount(slot, minlength=len(members) * len(edges))
-        order = np.argsort(slot, kind="stable")
-        return SeenLayer(members, edges, np.cumsum(count) - count, count, pieces[order])
-
-    @overload
-    def __getitem__(self, index: int) -> SeenParts: ...
-    @overload
-    def __getitem__(self, index: slice) -> Sequence[SeenParts]: ...
-    def __getitem__(self, index: int | slice) -> SeenParts | Sequence[SeenParts]:
-        return self._parts[index]
-
-    def __len__(self) -> int:
-        return len(self._parts)
-
-    def __iter__(self) -> Iterator[SeenParts]:
-        return iter(self._parts)
+        net = np.full(size, -1, dtype=np.intp)
+        kind = np.full(size, -1, dtype=np.intp)
+        for t in tracks:
+            net[t.first : t.first + t.vertices - 1] = t.net
+            kind[t.first : t.first + t.vertices - 1] = t.kind
+        self.within: FloatArray = np.zeros(len(viewers))
+        """Each member's largest inflation."""
+        vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
+        start: list[FloatArray] = [np.empty(0)]
+        end: list[FloatArray] = [np.empty(0)]
+        on: dict[str, list[int]] = {}
+        for i, viewer in enumerate(viewers):
+            on.setdefault(viewer.layer, []).append(i)
+        self.layers: list[SeenLayer] = []
+        pieces = 0
+        for layer, members in on.items():
+            seeing = [viewers[i] for i in members]
+            own = [exceptions[i] for i in members]
+            shown = [t for t in tracks if t.layer == layer]
+            blocked = Counter(n for v in seeing for n in {v.net, *v.exempt})
+            ex_vertex = np.concatenate(
+                [np.empty(0, dtype=np.intp), *(p.vertex for p in own)]
+            )
+            edges = np.unique(
+                np.concatenate(
+                    [
+                        ex_vertex,
+                        *(
+                            np.arange(t.first, t.first + t.vertices - 1, dtype=np.intp)
+                            for t in shown
+                            if blocked[t.net] < len(members)
+                        ),
+                    ]
+                )
+            )
+            count = len(edges)
+            ex_member = np.repeat(np.arange(len(members)), [len(p.vertex) for p in own])
+            slot = ex_member * count + np.searchsorted(edges, ex_vertex)
+            order = np.argsort(slot, kind="stable")
+            ex_piece = pieces + count + np.arange(len(ex_vertex), dtype=np.intp)
+            ex_inflation = np.concatenate([np.empty(0), *(p.inflation for p in own)])
+            vertex += [edges, ex_vertex]
+            start += [np.zeros(count), *(p.start for p in own)]
+            end += [np.ones(count), *(p.end for p in own)]
+            width = max([0, *(len(v.exempt) for v in seeing)])
+            exempt = np.full((len(members), width), NO_NET, dtype=np.intp)
+            for row, v in zip(exempt, seeing, strict=True):
+                row[: len(v.exempt)] = v.exempt
+            self.layers.append(
+                SeenLayer(
+                    members=members,
+                    first=pieces,
+                    pieces=count + len(ex_vertex),
+                    edges=edges,
+                    whole=pieces + np.arange(count, dtype=np.intp),
+                    net=net[edges],
+                    kind=kind[edges],
+                    viewer_net=np.array([v.net for v in seeing], dtype=np.intp),
+                    viewer_kind=np.array([v.kind for v in seeing], dtype=np.intp),
+                    exempt=exempt,
+                    slot=slot[order],
+                    piece=ex_piece[order],
+                    inflation=ex_inflation[order],
+                )
+            )
+            pieces += count + len(ex_vertex)
+            nets_of: dict[int, set[int]] = {}
+            for t in shown:
+                nets_of.setdefault(t.kind, set()).add(t.net)
+            for i, v, p in zip(members, seeing, own, strict=True):
+                excluded = {v.net, *v.exempt}
+                # Stops at the first net not excluded, so after at most
+                # len(excluded) + 1 of them, however many nets a kind has.
+                self.within[i] = max(
+                    [
+                        0.0,
+                        *(
+                            float(table[v.kind, k])
+                            for k, nets in nets_of.items()
+                            if any(n not in excluded for n in nets)
+                        ),
+                        float(p.inflation.max(initial=0.0)),
+                    ]
+                )
+        self.vertex: IntArray = np.concatenate(vertex)
+        """Each piece's edge's first vertex, numbered as `Track.first`."""
+        self.start: FloatArray = np.concatenate(start)
+        self.end: FloatArray = np.concatenate(end)
 
     def segments(
         self, pieces: IntArray, flat: FloatArray
@@ -162,44 +255,184 @@ class Seen(Sequence[SeenParts]):
         `ChainField.nearest` with `reach` gives it over the member's own
         pieces at `flat`; the edge of each answer is the piece's index.
         With `listed`, each layer looks only at the pairs it lists."""
-        answers: list[NearestEdge | None] = [None] * len(self)
+        answers: list[NearestEdge | None] = [None] * len(self.within)
         for n, layer in enumerate(self.layers):
-            members = layer.members
-            sizes = [len(queries[i]) for i in members]
-            points = np.concatenate([np.empty((0, 2)), *(queries[i] for i in members)])
-            owner = np.repeat(np.arange(len(members)), sizes)
+            points, owner, bounds = _gathered(queries, layer.members)
             limit = reach + self.within[layer.members]
             if listed is None:
-                point, piece = self._pairs(layer, points, owner, flat, limit)
+                point, piece, inflation = self._pairs(
+                    layer, points, owner, flat, float(limit.max())
+                )
             else:
-                point, piece = listed.pairs(n, points, owner, flat)
-            a, b = self.segments(piece, flat)
-            starts = complex_points(a)
+                point, piece, inflation = listed.pairs(n, points, owner, flat)
+            starts, along = self._shapes(layer, flat, piece)
             found = nearest_of_pairs(
                 complex_points(points),
                 point,
                 starts,
-                complex_points(b) - starts,
-                self.inflation[piece],
+                along,
+                inflation,
                 limit[owner[point]],
             )
             answered = found.edge >= 0
             edge = np.full(len(points), -1, dtype=np.intp)
             edge[answered] = piece[found.edge[answered]]
-            for i, (first, last) in zip(
-                members,
-                itertools.pairwise(itertools.accumulate(sizes, initial=0)),
-                strict=True,
-            ):
+            for i, (first, last) in zip(layer.members, bounds, strict=True):
                 answers[i] = NearestEdge(
                     found.distance[first:last],
                     found.gradient[first:last],
                     edge[first:last],
                 )
-        complete = [answer for answer in answers if answer is not None]
-        # Every member is on exactly one layer.
-        assert len(complete) == len(self)
-        return complete
+        return _complete(answers)
+
+    def distances(
+        self, queries: Sequence[FloatArray], flat: FloatArray, below: float = math.inf
+    ) -> list[FloatArray]:
+        """Per member, the signed distance from each of its `queries` to the
+        nearest piece it sees, as `ChainField.signed_distance` gives it over
+        the member's own pieces, +inf where it sees none. `below` is the
+        threshold the caller compares the distances against: below it they
+        are exact, elsewhere at least `below`; by default exact everywhere.
+        `flat` is what the members show (`members.shown_flat`) at the shapes
+        this was built at, with the vias where the caller holds them.
+
+        One search within the members' largest inflation plus `below`, or
+        twice that inflation, answers every point whose nearest piece lies
+        within it. Without a finite `below`, the rest are answered from the
+        pieces they see alone (`_beyond`), so that no edge a member does not
+        see, such as its own net's, is looked at however far its nearest
+        piece lies."""
+        answers: list[FloatArray | None] = [None] * len(self.within)
+        for layer in self.layers:
+            points, owner, bounds = _gathered(queries, layer.members)
+            distance = np.full(len(points), np.inf)
+            within = self.within[layer.members]
+            widest = float(within.max())
+            if len(layer.edges) and widest > 0.0:
+                finite = math.isfinite(below)
+                radius = widest + below if finite else 2 * widest
+                if radius >= 0.0:
+                    point, piece, inflation = self._pairs(
+                        layer, points, owner, flat, radius
+                    )
+                    starts, along = self._shapes(layer, flat, piece)
+                    distance = nearest_of_pairs(
+                        complex_points(points), point, starts, along, inflation, radius
+                    ).distance
+                if not finite:
+                    # A piece beyond the radius lies farther than the radius
+                    # less the member's largest inflation.
+                    far = np.flatnonzero(distance > radius - within[owner])
+                    distance[far] = self._beyond(layer, points[far], owner[far], flat)
+            for i, (first, last) in zip(layer.members, bounds, strict=True):
+                answers[i] = distance[first:last]
+        return _complete(answers)
+
+    def _beyond(
+        self, layer: SeenLayer, points: FloatArray, owner: IntArray, flat: FloatArray
+    ) -> FloatArray:
+        """`distances` at `points` of `layer`, each of the member `owner`
+        gives by its place on the layer, exactly and however far, each point
+        looking only at what its member sees.
+
+        A member's exceptions form a field of their own. The tracks a member
+        sees by the rule are those of every net but its own, or but a
+        section's: a section's are a field per distinct set of nets left out.
+        A chain's are the union, over the bits of the nets' numbers, of the
+        tracks whose net differs from its own in that bit, so each edge is
+        in one field per bit and every other net in one field at least."""
+        distance = np.full(len(points), np.inf)
+        if not len(points):
+            return distance
+        a, b = self.segments(layer.whole, flat)
+        tracks = np.flatnonzero(layer.kind >= 0)
+        net = layer.net[tracks]
+        nets = [
+            {int(n) for n in (layer.viewer_net[m], *layer.exempt[m]) if n != NO_NET}
+            for m in range(len(layer.members))
+        ]
+
+        def nearest(edges: IntArray, asking: IntArray) -> None:
+            """Lower `distance` at the points `asking` to what the track
+            `edges` give, by their positions in `layer.edges`."""
+            kinds = layer.viewer_kind[owner[asking]]
+            for kind in np.unique(kinds):
+                at = asking[kinds == kind]
+                field = ChainField(
+                    a[edges], b[edges], self.table[kind, layer.kind[edges]]
+                )
+                d = field.signed_distance(points[at])[0]
+                distance[at] = np.minimum(distance[at], d)
+
+        single = np.array([len(n) == 1 for n in nets])[owner]
+        own = np.array([min(n) if len(n) == 1 else NO_NET for n in nets])[owner]
+        # Every bit any track's or asking chain's net sets: a net that agrees
+        # with a chain's own in fewer bits would never be asked for.
+        widest = max(int(net.max(initial=0)), int(own[single].max(initial=0)))
+        for bit in range(max(1, widest.bit_length())):
+            for value in (0, 1):
+                asking = np.flatnonzero(single & ((own >> bit) & 1 != value))
+                edges = tracks[(net >> bit) & 1 == value]
+                if len(asking) and len(edges):
+                    nearest(edges, asking)
+        groups: dict[frozenset[int], list[int]] = {}
+        for m in range(len(nets)):
+            if len(nets[m]) > 1:
+                groups.setdefault(frozenset(nets[m]), []).append(m)
+        for left_out, members in groups.items():
+            asking = np.flatnonzero(np.isin(owner, members))
+            edges = tracks[~np.isin(net, list(left_out))]
+            if len(asking) and len(edges):
+                nearest(edges, asking)
+        count = len(layer.edges)
+        for m in range(len(layer.members)):
+            low, high = np.searchsorted(layer.slot, [m * count, (m + 1) * count])
+            if low == high:
+                continue
+            c, d = self.segments(layer.piece[low:high], flat)
+            at = np.flatnonzero(owner == m)
+            if not len(at):
+                continue
+            field = ChainField(c, d, layer.inflation[low:high])
+            distance[at] = np.minimum(
+                distance[at], field.signed_distance(points[at])[0]
+            )
+        return distance
+
+    def segments_clear(
+        self,
+        polylines: Sequence[FloatArray],
+        flat: FloatArray,
+        tolerance: float = 0.0,
+    ) -> list[BoolArray]:
+        """Per member at `polylines`, whether each of its edges stays out of
+        the pieces it sees at `flat`, as `ChainField.segments_clear` with
+        `tolerance` gives it over the member's own pieces."""
+        answers: list[BoolArray | None] = [None] * len(self.within)
+        for layer in self.layers:
+            a, owner, bounds = _gathered([p[:-1] for p in polylines], layer.members)
+            b, _, _ = _gathered([p[1:] for p in polylines], layer.members)
+            crossing = np.zeros(len(a), dtype=bool)
+            reach = float(self.within[layer.members].max()) - tolerance
+            if len(layer.edges) and len(a) and reach > 0.0:
+                ca, cb = complex_points(a), complex_points(b)
+                radius = reach + float(np.abs(cb - ca).max()) / 2
+                segment, piece, inflation = self._pairs(
+                    layer, (a + b) / 2, owner, flat, radius
+                )
+                starts, along = self._shapes(layer, flat, piece)
+                inside = pairs_inside(
+                    ca[segment],
+                    cb[segment] - ca[segment],
+                    starts,
+                    along,
+                    inflation,
+                    tolerance,
+                )
+                crossing[segment[inside]] = True
+            for i, (first, last) in zip(layer.members, bounds, strict=True):
+                answers[i] = ~crossing[first:last]
+        return _complete(answers)
 
     def candidates(
         self,
@@ -209,27 +442,43 @@ class Seen(Sequence[SeenParts]):
         flat: FloatArray,
         reach: float,
         slack: float,
-    ) -> tuple[IntArray, IntArray]:
+    ) -> Pairs:
         """The (point, piece) pairs of layer n, with its members' quadrature
         points `points`, each of the member `owner` gives by its place on the
         layer, that `nearest` with `reach` can answer a point with once the
         distance from each point to each piece has changed by at most
-        `slack`, mm (`obstacles.candidate_pairs`)."""
+        `slack`, mm (`obstacles.candidate_pairs`), and each pair's
+        inflation."""
         layer = self.layers[n]
         within = reach + self.within[layer.members]
-        point, piece = self._pairs(layer, points, owner, flat, within + slack)
-        a, b = self.segments(piece, flat)
-        starts = complex_points(a)
+        point, piece, inflation = self._pairs(
+            layer, points, owner, flat, float(within.max()) + slack
+        )
+        starts, along = self._shapes(layer, flat, piece)
         keep = candidate_pairs(
             complex_points(points),
             point,
             starts,
-            complex_points(b) - starts,
-            self.inflation[piece],
+            along,
+            inflation,
             within[owner[point]],
             slack,
         )
-        return point[keep], piece[keep]
+        return Pairs(point[keep], piece[keep], inflation[keep])
+
+    def _shapes(
+        self, layer: SeenLayer, flat: FloatArray, pieces: IntArray
+    ) -> tuple[ComplexArray, ComplexArray]:
+        """Where each of `pieces`, all of `layer`, starts and the way to its
+        end, as complex numbers, with what the members show at `flat`; each
+        piece of the layer is measured once, however many pairs it is in."""
+        a, b = self.segments(
+            np.arange(layer.first, layer.first + layer.pieces, dtype=np.intp), flat
+        )
+        starts = complex_points(a)
+        along = complex_points(b) - starts
+        local = pieces - layer.first
+        return starts[local], along[local]
 
     def _pairs(
         self,
@@ -237,33 +486,82 @@ class Seen(Sequence[SeenParts]):
         points: FloatArray,
         owner: IntArray,
         flat: FloatArray,
-        limit: FloatArray,
-    ) -> tuple[IntArray, IntArray]:
+        radius: float,
+    ) -> Pairs:
         """(point, piece) pairs of `layer`, among them every piece within
-        limit[m] of a point of member m, or more than limit[m] beyond."""
-        if not len(layer.edges):
-            empty = np.empty(0, dtype=np.intp)
-            return empty, empty
+        `radius` of a point that the point's member, by its place on the
+        layer in `owner`, sees, and each pair's inflation."""
+        if not len(layer.edges) or not len(points):
+            return _NO_PAIRS
         point, edge = near_segments(
-            flat[layer.edges],
-            flat[layer.edges + 1],
-            points,
-            float(limit.max()) + _ROUND_OFF,
+            flat[layer.edges], flat[layer.edges + 1], points, radius + _ROUND_OFF
         )
-        visible = self._visible(layer, owner[point], edge)
-        point, slot = point[visible], (owner[point] * len(layer.edges) + edge)[visible]
-        count = layer.count[slot]
+        member = owner[point]
+        net = layer.net[edge]
+        ruled = (
+            (layer.kind[edge] >= 0)
+            & (net != layer.viewer_net[member])
+            & ~(net[:, None] == layer.exempt[member]).any(axis=1)
+        )
+        if not len(layer.slot):
+            point, edge, member = point[ruled], edge[ruled], member[ruled]
+            return Pairs(
+                point,
+                layer.whole[edge],
+                self.table[layer.viewer_kind[member], layer.kind[edge]],
+            )
+        slot = member * len(layer.edges) + edge
+        first = np.searchsorted(layer.slot, slot)
+        count = np.where(
+            ruled, 1, np.searchsorted(layer.slot, slot, side="right") - first
+        )
         point = np.repeat(point, count)
         rank = np.arange(len(point)) - np.repeat(np.cumsum(count) - count, count)
-        return point, layer.pieces[np.repeat(layer.first[slot], count) + rank]
+        ruled, edge, member = (np.repeat(x, count) for x in (ruled, edge, member))
+        excepted = np.repeat(first, count)[~ruled] + rank[~ruled]
+        piece = np.empty(len(point), dtype=np.intp)
+        inflation = np.empty(len(point))
+        piece[ruled] = layer.whole[edge[ruled]]
+        inflation[ruled] = self.table[
+            layer.viewer_kind[member[ruled]], layer.kind[edge[ruled]]
+        ]
+        piece[~ruled] = layer.piece[excepted]
+        inflation[~ruled] = layer.inflation[excepted]
+        return Pairs(point, piece, inflation)
 
-    @staticmethod
-    def _visible(layer: SeenLayer, owner: IntArray, edge: IntArray) -> BoolArray:
-        """Which (member, edge) pairs of `layer`, the member by its place on
-        the layer and the edge by its position in `layer.edges`, the member
-        sees any piece of: the pairs the search keeps before each stands for
-        the member's pieces of its edge."""
-        return layer.count[owner * len(layer.edges) + edge] > 0
+
+class Pairs(NamedTuple):
+    """(point, piece) pairs, and the inflation each pair's member sees its
+    piece with."""
+
+    point: IntArray
+    piece: IntArray
+    inflation: FloatArray
+
+
+_NO_PAIRS = Pairs(np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp), np.empty(0))
+
+
+def _gathered(
+    queries: Sequence[FloatArray], members: Sequence[int]
+) -> tuple[FloatArray, IntArray, list[tuple[int, int]]]:
+    """The `queries` of `members` one after another, each one's member by
+    its place among them, and where each member's lie."""
+    sizes = [len(queries[i]) for i in members]
+    points = np.concatenate([np.empty((0, 2)), *(queries[i] for i in members)])
+    owner = np.repeat(np.arange(len(members)), sizes)
+    return (
+        points,
+        owner,
+        list(itertools.pairwise(itertools.accumulate(sizes, initial=0))),
+    )
+
+
+def _complete[T](answers: Sequence[T | None]) -> list[T]:
+    complete = [answer for answer in answers if answer is not None]
+    # Every member is on exactly one layer.
+    assert len(complete) == len(answers)
+    return complete
 
 
 # The trees are searched a little beyond the limits, so that rounding in a
@@ -275,12 +573,12 @@ _ROUND_OFF = 1e-9
 class _Found:
     points: FloatArray
     ends: FloatArray
-    pairs: tuple[IntArray, IntArray]
+    pairs: Pairs
 
 
 class NeighbourList:
     """A Verlet list: per layer, the pairs of its members' quadrature points
-    and the pieces they see of the others (`SeenParts`) that can answer
+    and the pieces they see of the others (`Seen`) that can answer
     each other while every one of those points and every vertex of the
     edges they see stays within `skin` of where it was when the pairs were
     found. Once any has moved farther, the layer finds its pairs again where
@@ -295,10 +593,10 @@ class NeighbourList:
 
     def pairs(
         self, n: int, points: FloatArray, owner: IntArray, flat: FloatArray
-    ) -> tuple[IntArray, IntArray]:
+    ) -> Pairs:
         """Layer n's (point, piece) pairs with its members' quadrature
         points at `points`, each of the member `owner` gives, and what they
-        see of the others at `flat`."""
+        see of the others at `flat`, with each pair's inflation."""
         edges = self.seen.layers[n].edges
         ends = flat[np.concatenate([edges, edges + 1])]
         found = self._found[n]

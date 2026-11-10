@@ -274,7 +274,7 @@ def test_the_guard_takes_a_via_starting_inside_only_shallower(
 
     moved = [problem.positions[0] + np.array(step)]
 
-    assert problem.guard(problem.points, problem.masks, moved) is taken
+    assert problem.guard(problem.points, problem.masks, moved, problem.seen) is taken
 
 
 class TestInsideAZone:

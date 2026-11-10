@@ -63,6 +63,11 @@ def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> 
     to it whatever obstacles the edge passes through. Vertices and edges
     within INSIDE_TOLERANCE of the clearance count as clear, so a track
     routed at exactly the clearance starts with no violations.
+
+    This is the count's definition, against one field. The optimizer asks
+    its fields for every member at once and counts with `count_violations`
+    (`optimize._Problem.violations`); the tests hold the two to the same
+    answer.
     """
     distance, _ = field.signed_distance(points)
     inside = distance < -INSIDE_TOLERANCE

@@ -2,7 +2,9 @@
 
 Each chain has a static field of everything on the board but the selected
 chains. The other selected chains on its layer are added to it as obstacles,
-one field each, at whatever shape the caller holds them in. Chains of one
+one field each, at whatever shape the caller holds them in; the optimizer
+asks the same of all its members at once instead (`members.seen_parts`),
+with no field per member. Chains of one
 net are no obstacles to each other: copper of one net may come close,
 overlap or cross. A coupled section's centreline does keep clear of its own
 nets' chains, as its other track must, and leaves each out near where it

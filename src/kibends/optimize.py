@@ -23,7 +23,7 @@ which resampling keeps where they are (`_Problem.pressed`), run L-BFGS-B
 what the checks reject.
 
 Copper of one net does not interact: a chain sees nothing of the chains,
-tracks and vias of its net (`neighbours.neighbour_field`), and its static
+tracks and vias of its net (`members.seen_parts`), and its static
 field holds none of its net's copper, so chains of one net may come close,
 overlap or cross. A selection that branches is split at each junction into
 chains that end there, loose (`junctions`): those ends are one shared
@@ -185,26 +185,23 @@ from kibends.members import (
     Member,
     body_of,
     members_energy,
-    pieces_field,
     pull_answers,
     seen_parts,
     shown,
     shown_flat,
-    viewer_of,
 )
-from kibends.neighbours import (
-    ChainInput,
-    chain_field,
-    neighbour_field,
-)
-from kibends.obstacles import (
-    HOLE_CLEARANCE,
-    HOLE_TO_HOLE,
-    ChainCentreline,
-    ChainField,
-)
+from kibends.neighbours import ChainInput
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
-from kibends.polylines import SelfCheck, measure, resample, shape_change, violations
+from kibends.polylines import (
+    SelfCheck,
+    clearance_points,
+    count_violations,
+    measure,
+    measured,
+    resample,
+    shape_change,
+)
 from kibends.results import (
     ChainResult,
     OptimizeResult,
@@ -840,14 +837,6 @@ class _Problem:
         self.via_stop = ViaSight([{} for _ in vias], own_net, count)
         self.members: list[Member] = [*chains, *sections]
         self.bodies = [body_of(member) for member in self.members]
-        self.neighbours = [
-            [
-                j
-                for j, other in enumerate(self.bodies)
-                if j != i and other.layer == b.layer
-            ]
-            for i, b in enumerate(self.bodies)
-        ]
         self.params = params
         self.settings = settings
         self.reach = obstacle_reach(params)
@@ -861,7 +850,6 @@ class _Problem:
         self.start_positions = [
             np.array(via.given.via.position, dtype=float) for via in vias
         ]
-        start_fields = self.fields(self.originals, self.start_positions)
         self.anchors = [body.fixed for body in self.bodies]
         # A vertex that stays keeps its contact without one.
         self.within = [[field for _, field in body.contacts] for body in self.bodies]
@@ -873,10 +861,7 @@ class _Problem:
                 contact_of[v] = k
             contact_of[anchors] = -1
             self.given_contact_of.append(contact_of)
-        self.before: list[PolylineStats] = [
-            measure(points, field, settings.spacing)
-            for points, field in zip(self.originals, start_fields, strict=True)
-        ]
+        self.before = self.start_statistics(self.originals, self.start_positions)
         # A burst starts from the members resampled; the shapes as the burst
         # left them are what the energy, the guard and the best state see.
         # Resampling would put free vertices between a held section's pins.
@@ -912,7 +897,11 @@ class _Problem:
         # limited to no more violations per member than the resampled start,
         # and to no via deeper inside its clearance or its stops than it
         # started.
-        self.allowed = self.violations(self.points, self.masks, self.positions)
+        self.seen = self.seeing(self.points)
+        """What the members see of each other at `points`."""
+        self.allowed = self.violations(
+            self.points, self.masks, self.positions, self.seen
+        )
         self.inside = self.via_distances(self.points, self.positions)
         self.stopped = self.stop_distances(self.points, self.positions)
         self.moved = False
@@ -921,7 +910,7 @@ class _Problem:
         self.resampled = [True] * count
         if resume is not None:
             self.resume(resume)
-        self.energy = self.energy_of(self.points, self.positions)
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
         self.start_energy = self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
@@ -950,15 +939,17 @@ class _Problem:
             if given is not None:
                 points[i], masks[i], contact_of[i] = given
         positions = list(state.positions)
+        seen = self.seeing(points)
         across = zip(
-            self.edges_across(points, positions),
-            self.edges_across(self.points, self.positions),
+            self.edges_across(points, positions, seen),
+            self.edges_across(self.points, self.positions, self.seen),
             strict=True,
         )
-        if self.guard(points, masks, positions) and all(
+        if self.guard(points, masks, positions, seen) and all(
             count <= before for count, before in across
         ):
             self.points, self.masks, self.positions = points, masks, positions
+            self.seen = seen
             self.contact_of = contact_of
             self.resampled = [
                 done and given is None
@@ -966,20 +957,40 @@ class _Problem:
             ]
             self.moved = True
 
-    def edges_across(
+    def seeing(self, polylines: Sequence[FloatArray]) -> Seen:
+        """What each member sees of the others and of the vias with the
+        members at `polylines` (`members.seen_parts`)."""
+        return seen_parts(self.members, polylines, self.reach, self.rings)
+
+    def start_statistics(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+    ) -> list[PolylineStats]:
+        """Each member's statistics at `polylines` (`polylines.measure`),
+        its clearance taken from its static copper, the other members and
+        the vias at `positions`."""
+        spacing = self.settings.spacing
+        samples = [clearance_points(points, spacing) for points in polylines]
+        flat = shown_flat(self.members, polylines, positions)
+        near = self.seeing(polylines).distances(samples, flat)
+        return [
+            measured(points, np.minimum(body.field.signed_distance(at)[0], d), spacing)
+            for body, points, at, d in zip(
+                self.bodies, polylines, samples, near, strict=True
+            )
+        ]
+
+    def edges_across(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[int]:
         """Per member at `polylines`, its edges not clear of the other
-        members and the vias at `positions` as it sees them."""
-        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        members and the vias at `positions` as it sees them, `seen` there."""
         flat = shown_flat(self.members, polylines, positions)
         return [
-            int(
-                np.count_nonzero(
-                    ~pieces_field(part, flat).segments_clear(p[:-1], p[1:])
-                )
-            )
-            for p, part in zip(polylines, seen, strict=True)
+            int(np.count_nonzero(~clear))
+            for clear in seen.segments_clear(polylines, flat)
         ]
 
     def guard(
@@ -987,16 +998,18 @@ class _Problem:
         polylines: Sequence[FloatArray],
         masks: Sequence[BoolArray],
         positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> bool:
         """Whether no member has more violations than `allowed` and no via
         is deeper inside its clearance, or inside its stops, than it started,
         and inside them. The two are measured apart, so that a via inside
-        one cannot be pushed deeper into the other."""
+        one cannot be pushed deeper into the other. `seen` is what the
+        members see at `polylines`."""
         return (
             all(
                 count <= allowed
                 for count, allowed in zip(
-                    self.violations(polylines, masks, positions),
+                    self.violations(polylines, masks, positions, seen),
                     self.allowed,
                     strict=True,
                 )
@@ -1005,58 +1018,35 @@ class _Problem:
             and _no_deeper(self.stop_distances(polylines, positions), self.stopped)
         )
 
-    def neighbour(
-        self, i: int, others: Sequence[int], polylines: Sequence[FloatArray]
-    ) -> ObstacleField | None:
-        """The members `others` at `polylines` as obstacles to member i at
-        its own."""
-        own, as_net = viewer_of(self.members[i])
-        return neighbour_field(
-            own,
-            [part for j in others for part in shown(self.members[j], polylines[j])],
-            self.reach,
-            polylines[i],
-            as_net=as_net,
-        )
-
-    def via_obstacles(
-        self, i: int, positions: Sequence[FloatArray]
-    ) -> ChainField | None:
-        """The vias that member i sees, at `positions`, as obstacles to it."""
-        seen = [(k, ring[i]) for k, ring in enumerate(self.rings) if i in ring]
-        if not seen:
-            return None
-        at = np.array([positions[k] for k, _ in seen])
-        return ChainField(at, at, np.array([inflation for _, inflation in seen]))
-
-    def fields(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[ObstacleField]:
-        """Each member's field with the others at `polylines` and the vias
-        at `positions`."""
-        return [
-            chain_field(
-                body.field,
-                [
-                    self.neighbour(i, self.neighbours[i], polylines),
-                    self.via_obstacles(i, positions),
-                ],
-            )
-            for i, body in enumerate(self.bodies)
-        ]
-
     def violations(
         self,
         polylines: Sequence[FloatArray],
         masks: Sequence[BoolArray],
         positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[int]:
-        return [
-            violations(points, mask, field)
-            for points, mask, field in zip(
-                polylines, masks, self.fields(polylines, positions), strict=True
+        """Per member at `polylines`, its `polylines.violations` of its
+        static copper, the other members and the vias at `positions`
+        together, every member's at once through `seen`, what they see
+        there."""
+        flat = shown_flat(self.members, polylines, positions)
+        near = seen.distances(polylines, flat, -INSIDE_TOLERANCE)
+        clear = seen.segments_clear(polylines, flat, INSIDE_TOLERANCE)
+        counts: list[int] = []
+        for body, points, mask, distance, others_clear in zip(
+            self.bodies, polylines, masks, near, clear, strict=True
+        ):
+            static = body.field
+            inside = (static.signed_distance(points)[0] < -INSIDE_TOLERANCE) | (
+                distance < -INSIDE_TOLERANCE
             )
-        ]
+            ends_clear = ~inside[:-1] & ~inside[1:]
+            cut = ~others_clear
+            cut[ends_clear] |= ~static.segments_clear(
+                points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
+            )
+            counts.append(count_violations(inside, cut, mask))
+        return counts
 
     def via_distances(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
@@ -1161,7 +1151,7 @@ class _Problem:
         at every vertex and every via's centre; `listed` as for
         `members.members_energy`."""
         if seen is None:
-            seen = seen_parts(self.members, polylines, self.reach, self.rings)
+            seen = self.seeing(polylines)
         value, gradients, via_gradients = members_energy(
             self.members,
             polylines,
@@ -1193,9 +1183,14 @@ class _Problem:
         return value + own, gradients, via_gradients + own_gradients
 
     def energy_of(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> float:
-        return self.total(polylines, positions, self.masks)[0]
+        """The problem's energy, with what the members see of each other at
+        `polylines` given as `seen`."""
+        return self.total(polylines, positions, self.masks, seen)[0]
 
     def length(self) -> float:
         """The summed length of the selected tracks at their current shapes,
@@ -1267,7 +1262,7 @@ class _Problem:
         starts: list[FloatArray] = []
         masks: list[BoolArray] = []
         contact_of: list[IntArray] = []
-        pressed = self.pressed(self.points, self.positions)
+        pressed = self.pressed(self.points, self.positions, self.seen)
         for i, (points, mask, kept) in enumerate(
             zip(self.points, self.masks, self.contact_of, strict=True)
         ):
@@ -1294,6 +1289,7 @@ class _Problem:
         )
         self.moved |= change > NOTHING_MOVED
         self.points, self.positions = burst.polylines, burst.positions
+        self.seen = self.seeing(self.points)
         for i, (count, close) in enumerate(
             zip(burst.rejected_edges, burst.too_close, strict=True)
         ):
@@ -1301,9 +1297,9 @@ class _Problem:
             self.too_close[i] += close
         for k, count in enumerate(burst.via_rejected):
             self.via_rejected[k] += count
-        self.energy = self.energy_of(self.points, self.positions)
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
         if self.energy <= self.best_energy and self.guard(
-            self.points, self.masks, self.positions
+            self.points, self.masks, self.positions, self.seen
         ):
             self.best, self.best_masks = list(self.points), list(self.masks)
             self.best_contact_of = list(self.contact_of)
@@ -1345,7 +1341,10 @@ class _Problem:
         return change
 
     def pressed(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
     ) -> list[BoolArray]:
         """Per member, its vertices at `polylines` more than PRESSED_DEPTH
         inside the clearance of the other members and vias at
@@ -1355,12 +1354,11 @@ class _Problem:
         clearance a little every burst, and the run would settle later.
         Vertices deep inside static copper are left to resampling, which
         lays them there where a chord cuts a corner and moves them out
-        again."""
-        seen = seen_parts(self.members, polylines, self.reach, self.rings)
+        again. `seen` is what the members see at `polylines`."""
         flat = shown_flat(self.members, polylines, positions)
         return [
-            pieces_field(part, flat).signed_distance(points)[0] < -PRESSED_DEPTH
-            for points, part in zip(polylines, seen, strict=True)
+            distance < -PRESSED_DEPTH
+            for distance in seen.distances(polylines, flat, -PRESSED_DEPTH)
         ]
 
     def layout(self, starts: Sequence[FloatArray]) -> _Layout:
@@ -1387,7 +1385,7 @@ class _Problem:
         what each member sees of the others measured at the layout's start
         unless given, through a `NeighbourList` unless not `listed`."""
         if seen is None:
-            seen = seen_parts(self.members, layout.starts, self.reach, self.rings)
+            seen = self.seeing(layout.starts)
         masks = self.masks
         neighbours = NeighbourList(seen, self.reach, LIST_SKIN) if listed else None
 
@@ -1411,7 +1409,7 @@ class _Problem:
         layout = self.layout(starts)
         index, count = layout.index, layout.count
         free = [i >= 0 for i in index]
-        seen = seen_parts(members, starts, self.reach, self.rings)
+        seen = self.seeing(starts)
         objective = self.objective(layout, seen)
         x0 = layout.x0
         flat_start = shown_flat(members, starts, positions)
@@ -1419,10 +1417,7 @@ class _Problem:
             body.field.segments_clear(s[:-1], s[1:])
             for body, s in zip(self.bodies, starts, strict=True)
         ]
-        others_before = [
-            pieces_field(seen[i], flat_start).segments_clear(s[:-1], s[1:])
-            for i, s in enumerate(starts)
-        ]
+        others_before = seen.segments_clear(starts, flat_start)
         # Only a vertex that newly leaves its contact moves back, so that
         # moving back always ends.
         left_before = [self.left(i, s) for i, s in enumerate(starts)]
@@ -1446,12 +1441,12 @@ class _Problem:
             back = np.zeros(count, dtype=bool)
             counts: list[tuple[int, int]] = []
             via_counts = [0] * len(self.vias)
+            others = seen.segments_clear(polylines, flat)
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
-                others = pieces_field(seen[i], flat)
                 crossing = (
                     static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
-                ) | (others_before[i] & ~others.segments_clear(a, b))
+                ) | (others_before[i] & ~others[i])
                 ends = np.zeros(len(points), dtype=bool)
                 ends[:-1] |= crossing
                 ends[1:] |= crossing

@@ -324,7 +324,8 @@ def test_the_guard_takes_no_more_violations_than_the_start(
         moved[free[len(free) // 2]] = (GUARDED_DISC.cx, GUARDED_DISC.cy)
 
     assert problem.allowed == [0]
-    assert problem.guard([moved], problem.masks, problem.positions) is taken
+    seen = problem.seeing([moved])
+    assert problem.guard([moved], problem.masks, problem.positions, seen) is taken
 
 
 NARROW = 0.05

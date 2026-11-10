@@ -4,9 +4,11 @@ energy, independent of the problem that holds them (`optimize._Problem`).
 A `Member` is a chain or a coupled section as its centreline. The others
 see a chain as itself and a section as its two tracks (`shown`), laid one
 after another, then each via's centre twice (`shown_flat`). `seen_parts`
-finds, for each member, the pieces of the others on its layer that it
-sees, by the rule `neighbours.neighbour_field` builds its field by, as a
-`seen.Seen`. `members_energy` sums each member's energy in its static
+gives what each member sees of the others on its layer, by the rule
+`neighbours.neighbour_field` builds its field by, as a `seen.Seen`: the
+rule by net and kind, and as exceptions only a section's view of its own
+nets' tracks and the vias, so that it grows with the members, not with
+pairs of them. `members_energy` sums each member's energy in its static
 field plus what it sees of the others, and gives its gradient at every
 vertex and via centre: where a member's obstacle term pulls on another's
 edge, the gradient reaches that edge's ends, and through a section's
@@ -34,9 +36,9 @@ from kibends.energy import (
     shape_energy,
 )
 from kibends.neighbours import ChainInput, obstacle_spans
-from kibends.obstacles import ChainField
+from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.pair_blocks import PairBlock
-from kibends.seen import NeighbourList, Seen, SeenParts, ViaNearest
+from kibends.seen import NeighbourList, Pieces, Seen, Track, ViaNearest, Viewer
 
 Member = ChainInput | PairBlock
 """What a problem optimises: a chain, or a coupled section as its
@@ -203,48 +205,80 @@ def seen_parts(
     centreline of the pair's outer extent under either of its nets
     (`PairBlock.as_net`), and is seen as its two tracks. Each
     via of `rings` is seen by the members it names, inflated by the distance
-    it gives."""
+    it gives.
+
+    The tracks of another net than a member's are seen whole, by the rule
+    `seen.Seen` applies; only a section's view of its own nets' tracks and
+    the vias are listed, as its exceptions, so the work grows with the
+    members and their edges, not with pairs of members."""
+    nets: dict[str, int] = {}
+    kinds: dict[tuple[float, float], int] = {}
+
+    def kind(centreline: ChainCentreline) -> int:
+        return kinds.setdefault((centreline.width, centreline.clearance), len(kinds))
+
+    def net(name: str) -> int:
+        return nets.setdefault(name, len(nets))
+
     lines = [
         shown(member, points) for member, points in zip(chains, polylines, strict=True)
     ]
     first = np.cumsum([0, *(len(points) for parts in lines for _, points in parts)])
-    seen: list[SeenParts] = []
+    tracks: list[Track] = []
+    owned: dict[tuple[str, str], list[tuple[int, ChainInput, FloatArray, int]]] = {}
+    for j, parts in enumerate(lines):
+        for other, points in parts:
+            them, start = other.centreline, int(first[len(tracks)])
+            owned.setdefault((other.layer, them.net), []).append(
+                (j, other, points, start)
+            )
+            tracks.append(
+                Track(start, len(points), other.layer, net(them.net), kind(them))
+            )
+    viewers: list[Viewer] = []
+    exceptions: list[list[Pieces]] = [[] for _ in chains]
     for i, member in enumerate(chains):
         own, as_net = viewer_of(member)
-        vertices: list[IntArray] = [np.empty(0, dtype=np.intp)]
-        starts: list[FloatArray] = [np.empty(0)]
-        ends: list[FloatArray] = [np.empty(0)]
-        inflations: list[FloatArray] = [np.empty(0)]
-        line = 0
-        for j, parts in enumerate(lines):
-            for other, points in parts:
-                line += 1
-                if j == i or other.layer != own.layer:
+        me = own.centreline
+        viewers.append(
+            Viewer(
+                own.layer, net(me.net), kind(me), tuple(net(n) for n in as_net or {})
+            )
+        )
+        for name in as_net or {}:
+            for j, other, points, start in owned.get((own.layer, name), []):
+                if j == i:
                     continue
                 kept = obstacle_spans(
                     own, other, points, reach, polylines[i], as_net=as_net
                 )
                 if kept is None:
                     continue
-                edge, start, end = _pieces(points, kept.spans)
-                vertices.append(first[line - 1] + edge)
-                starts.append(start)
-                ends.append(end)
-                inflations.append(np.full(len(edge), kept.inflation))
-        seeing = [(k, ring[i]) for k, ring in enumerate(rings) if i in ring]
-        vertices.append(np.array([first[-1] + 2 * k for k, _ in seeing], dtype=np.intp))
-        starts.append(np.zeros(len(seeing)))
-        ends.append(np.ones(len(seeing)))
-        inflations.append(np.array([inflation for _, inflation in seeing]))
-        seen.append(
-            SeenParts(
-                np.concatenate(vertices),
-                np.concatenate(starts),
-                np.concatenate(ends),
-                np.concatenate(inflations),
+                edge, begin, end = _pieces(points, kept.spans)
+                exceptions[i].append(
+                    Pieces(start + edge, begin, end, np.full(len(edge), kept.inflation))
+                )
+    for k, ring in enumerate(rings):
+        at = np.array([first[-1] + 2 * k], dtype=np.intp)
+        for i, inflation in ring.items():
+            exceptions[i].append(
+                Pieces(at, np.zeros(1), np.ones(1), np.array([inflation]))
             )
-        )
-    return Seen(seen, [viewer_of(member)[0].layer for member in chains])
+    every = list(kinds)
+    table = np.array(
+        [[track_inflation(*a, *b) for b in every] for a in every], dtype=float
+    ).reshape(len(every), len(every))
+    return Seen(tracks, viewers, table, [_joined(pieces) for pieces in exceptions])
+
+
+def _joined(pieces: Sequence[Pieces]) -> Pieces:
+    """`pieces` one after another."""
+    return Pieces(
+        np.concatenate([np.empty(0, dtype=np.intp), *(p.vertex for p in pieces)]),
+        np.concatenate([np.empty(0), *(p.start for p in pieces)]),
+        np.concatenate([np.empty(0), *(p.end for p in pieces)]),
+        np.concatenate([np.empty(0), *(p.inflation for p in pieces)]),
+    )
 
 
 def _pieces(
@@ -267,16 +301,6 @@ def _pieces(
         starts.append(np.clip((left - arc[k]) / length, 0.0, 1.0))
         ends.append(np.clip((right - arc[k]) / length, 0.0, 1.0))
     return np.concatenate(found), np.concatenate(starts), np.concatenate(ends)
-
-
-def pieces_field(seen: SeenParts, flat: FloatArray) -> ChainField:
-    """The pieces of `seen` as obstacles, with the layer's chains at `flat`,
-    their polylines one after another."""
-    a, b = flat[seen.vertex], flat[seen.vertex + 1]
-    along = b - a
-    return ChainField(
-        a + seen.start[:, None] * along, a + seen.end[:, None] * along, seen.inflation
-    )
 
 
 def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> FloatArray:
