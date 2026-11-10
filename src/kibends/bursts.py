@@ -104,6 +104,12 @@ class Burst:
     points: FloatArray
     """Where the burst left its flat coordinates."""
     abnormal: bool
+    iterations: int = 0
+    """The L-BFGS-B iterations it ran."""
+    evaluations: int = 0
+    """The times L-BFGS-B evaluated the objective."""
+    message: str = ""
+    """What L-BFGS-B says ended it; empty for a burst that did not run."""
 
 
 def revert_until_clear(
@@ -147,7 +153,8 @@ def run_burst(
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns how many edges crossed. With no coordinate to
-    move, the burst ends where it is.
+    move, the burst ends where it is without running L-BFGS-B. The burst
+    carries what L-BFGS-B reports of its run.
     """
     if len(start) == 0:
         # L-BFGS-B would return a result without a status.
@@ -165,4 +172,10 @@ def run_burst(
     )
     current = np.array(result.x, dtype=float)
     revert(current)
-    return Burst(current, result.status == LBFGSB_ABNORMAL)
+    return Burst(
+        current,
+        result.status == LBFGSB_ABNORMAL,
+        result.nit,
+        result.nfev,
+        result.message,
+    )

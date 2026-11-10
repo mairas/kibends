@@ -2,8 +2,10 @@
 vertices and stop rules, on the scenarios of `tests/scenarios.py`."""
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pytest
@@ -445,6 +447,53 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
     assert result.after.length < result.before.length
 
 
+BURST_LINE = re.compile(
+    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS-B iterations, "
+    r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
+    r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"$'
+)
+LOGGED_BURSTS = 3
+
+
+class BurstCost(NamedTuple):
+    iterations: int
+    evaluations: int
+    evaluating: float
+    rest: float
+    ending: str
+
+
+def burst_costs(log: list[str]) -> list[BurstCost]:
+    """Each burst's cost and ending, as logged."""
+    lines = [line.strip() for line in log if "evaluations" in line]
+    matches = [BURST_LINE.match(line) for line in lines]
+    assert all(matches), lines
+    return [
+        BurstCost(int(m[1]), int(m[2]), float(m[3]), float(m[4]), m[5])
+        for m in matches
+        if m
+    ]
+
+
+def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
+    log: list[str],
+) -> None:
+    settings = replace(COARSE, max_iterations=LOGGED_BURSTS)
+
+    result = run(scenarios.wrap(), settings)
+
+    costs = burst_costs(log)
+    assert len(costs) == result.iterations == LOGGED_BURSTS
+    for cost in costs:
+        assert 1 <= cost.iterations <= settings.burst_maxiter
+        assert cost.evaluations >= cost.iterations
+    # Each figure is rounded to a millisecond; the evaluations of three
+    # bursts together take more than one.
+    assert sum(cost.evaluating for cost in costs) > 0
+    info = [line for line in log if line.startswith("INFO")]
+    assert info and not any("Burst" in line for line in info)
+
+
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
@@ -454,6 +503,21 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     assert result.termination is Termination.ABNORMAL
     assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
+
+
+def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
+    log: list[str],
+) -> None:
+    polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
+    params = replace(PARAMS, repulsion=5.0)
+
+    optimize(polyline, fixed, MisleadingWalls(1.0), params)
+
+    costs = burst_costs(log)
+    assert len(costs) == MAX_ABNORMAL_BURSTS
+    for cost in costs:
+        assert cost.evaluations > 0
+        assert cost.ending.startswith("ABNORMAL")
 
 
 def shortest_edge(points: FloatArray) -> float:

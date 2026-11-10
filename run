@@ -41,7 +41,7 @@ function test-all {
 }
 
 function bench {
-  #@ Measure the optimizer on stitched planes, the scenarios and return vias (see scripts/benchmark.py)
+  #@ Measure the optimizer on stitched planes, the scenarios, buses and return vias (see scripts/benchmark.py)
   #@ Category: Development
   OPENBLAS_NUM_THREADS=1 .venv/bin/python scripts/benchmark.py "$@"
 }
