@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from distance_fields import FreeSpace
 
+from kibends.bursts import DEFAULT_CHORD_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import FloatArray, ObstacleField
@@ -15,7 +16,6 @@ from kibends.pair_layout import (
     lay_out,
     pairs_and_partners_taken,
 )
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.vias import ChainEnd
 
 WIDTH = 0.2

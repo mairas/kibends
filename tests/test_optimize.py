@@ -16,7 +16,14 @@ from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
 import kibends.optimize as optimize_module
-from kibends.bursts import INSIDE_TOLERANCE, Burst, Objective, OptimizerSettings, Revert
+from kibends.bursts import (
+    INSIDE_TOLERANCE,
+    Burst,
+    Objective,
+    OptimizerSettings,
+    Revert,
+    Stop,
+)
 from kibends.energy import BoolArray, ObstacleField, total_energy
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
@@ -555,8 +562,9 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Stop | None = None,
     ) -> Burst:
-        return replace(real(objective, start, revert, settings), abnormal=True)
+        return replace(real(objective, start, revert, settings, stop), abnormal=True)
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
@@ -639,15 +647,73 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
 class TestStalled:
     # Binary-exact values, so the boundary comparison is not a rounding test.
     SETTINGS = OptimizerSettings(stall_tolerance=0.5, stall_window=3)
+    STILL = (3.0, 3.0, 3.0, 3.0)
+    """Track lengths that do not change."""
+
+    def stalled(
+        self, lowest: list[float], lengths: tuple[float, ...], members: int, vias: int
+    ) -> bool:
+        return optimize_module.stalled(lowest, lengths, self.SETTINGS, members, vias)
 
     def test_needs_a_full_window_of_history(self) -> None:
-        assert not optimize_module.stalled([5.0, 5.0, 5.0], self.SETTINGS)
+        assert not self.stalled([5.0, 5.0, 5.0], self.STILL[:3], 1, 0)
 
     def test_improvement_of_exactly_the_tolerance_is_a_stall(self) -> None:
-        assert optimize_module.stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
+        assert self.stalled([5.0, 4.75, 4.625, 4.5], self.STILL, 1, 0)
 
     def test_larger_improvement_over_the_window_keeps_going(self) -> None:
-        assert not optimize_module.stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
+        assert not self.stalled([5.0, 4.75, 4.625, 4.25], self.STILL, 1, 0)
+
+    def test_each_member_adds_a_tolerance(self) -> None:
+        # 1.0 over the window: two tolerances.
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        assert not self.stalled(lowest, self.STILL, 1, 0)
+        assert self.stalled(lowest, self.STILL, 2, 0)
+
+    def test_each_moving_via_adds_a_tolerance(self) -> None:
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        assert self.stalled(lowest, self.STILL, 1, 1)
+
+    def test_tracks_shortening_by_more_than_a_tolerance_keep_going(self) -> None:
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        # 0.75 over the window: more than one tolerance, however many members.
+        shortening = (3.0, 2.75, 2.5, 2.25)
+        assert not self.stalled(lowest, shortening, 1, 1)
+        assert not self.stalled(lowest, shortening, 4, 0)
+
+    @pytest.mark.parametrize(
+        "lowest",
+        [[5.0, 4.75, 4.625, 4.5], [5.0, 4.75, 4.625, 4.25], [5.0, 4.5, 4.25, 4.0]],
+    )
+    def test_two_far_apart_copies_stall_on_energy_as_one_does(
+        self, lowest: list[float]
+    ) -> None:
+        # Far apart, two copies sum to twice one's energy.
+        doubled = [2 * e for e in lowest]
+        assert self.stalled(doubled, self.STILL, 2, 2) == self.stalled(
+            lowest, self.STILL, 1, 1
+        )
+
+    @pytest.mark.parametrize(
+        "lengths",
+        [(3.0, 3.0, 3.0, 3.0), (3.0, 3.0, 2.75, 2.5), (3.0, 2.75, 2.5, 2.25)],
+    )
+    def test_two_far_apart_copies_never_stall_sooner_than_one(
+        self, lengths: tuple[float, ...]
+    ) -> None:
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        doubled = [2 * e for e in lowest]
+        twice = tuple(2 * length for length in lengths)
+        one = self.stalled(lowest, lengths, 1, 1)
+        assert one or not self.stalled(doubled, twice, 2, 2)
+
+    def test_two_copies_run_on_while_their_summed_length_still_falls(self) -> None:
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        # One tolerance of shortening for one copy, two for both.
+        lengths = (3.0, 3.0, 2.75, 2.5)
+        twice = tuple(2 * length for length in lengths)
+        assert self.stalled(lowest, lengths, 1, 1)
+        assert not self.stalled([2 * e for e in lowest], twice, 2, 2)
 
 
 class ReachIgnored:

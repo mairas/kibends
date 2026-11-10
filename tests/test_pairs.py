@@ -5,6 +5,7 @@ import pytest
 from distance_fields import FreeSpace
 from shapely.geometry import LineString
 
+from kibends.bursts import DEFAULT_CHORD_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.energy import BoolArray, FloatArray, arc_lengths
 from kibends.pairs import (
@@ -24,7 +25,7 @@ from kibends.pairs import (
     offset_pair,
     offset_pair_pullback,
 )
-from kibends.simplify import DEFAULT_CHORD_TOLERANCE, simplify
+from kibends.simplify import simplify
 
 WIDTH = 0.2
 GAP = 0.15

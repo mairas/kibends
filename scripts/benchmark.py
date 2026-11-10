@@ -170,6 +170,7 @@ def counted() -> Generator[Count]:
         start: FloatArray,
         revert: Revert,
         settings: OptimizerSettings,
+        stop: Callable[[], bool] | None = None,
     ) -> Burst:
         count.bursts += 1
         checking = 0.0
@@ -186,7 +187,12 @@ def counted() -> Generator[Count]:
             return crossed
 
         began = time.perf_counter()
-        result = real(evaluated, start, checked, settings)
+        # An older tree's bursts take no stop.
+        result = (
+            real(evaluated, start, checked, settings)
+            if stop is None
+            else real(evaluated, start, checked, settings, stop)
+        )
         count.minimising += time.perf_counter() - began - checking
         if len(start):
             moved = (result.points - start).reshape(-1, 2)

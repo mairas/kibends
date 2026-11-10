@@ -117,3 +117,40 @@ def test_crossings_naming_nothing_to_move_back_move_all_back_and_warn(
     assert reverted.all()
     assert np.array_equal(candidate, start)
     assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
+
+
+def ask_until(answers: int) -> Callable[[], bool]:
+    """A stop that answers True from its `answers`th question on."""
+    asked = 0
+
+    def stop() -> bool:
+        nonlocal asked
+        asked += 1
+        return asked >= answers
+
+    return stop
+
+
+def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
+    start = np.array([3.0, 2.0])
+    whole = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS)
+
+    burst = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS, ask_until(2))
+
+    assert whole.iterations > 2
+    assert burst.iterations == 2
+    assert burst.cut
+    assert not burst.abnormal
+
+
+def test_a_burst_its_stop_never_ends_runs_whole() -> None:
+    start = np.array([3.0, 2.0])
+    whole = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS)
+
+    burst = run_burst(
+        steep_valley, start, nothing_crosses, WRAP_SETTINGS, lambda: False
+    )
+
+    np.testing.assert_array_equal(burst.points, whole.points)
+    assert burst.iterations == whole.iterations
+    assert not burst.cut
