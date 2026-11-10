@@ -60,7 +60,7 @@ from kibends.bursts import (
     OptimizerSettings,
     Revert,
 )
-from kibends.chain import NM_PER_MM, Point2
+from kibends.chain import NM_PER_MM, Chain, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import (
     EnergyParams,
@@ -1642,40 +1642,44 @@ def pad_box(x: float, y: float) -> BaseGeometry:
     return box(x - h, y - h, x + h, y + h)
 
 
+def assert_round_the_pad(path: LineString, loop: Sequence[kbt.Track]) -> None:
+    """`path` goes round the pad at `IN_TRIANGLE` at its clearance and is
+    shorter than `loop`."""
+    pad = pad_box(*IN_TRIANGLE)
+    assert shapely.Polygon(path.coords).contains(pad)
+    assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+    assert path.length < sum(segment(t).length for t in loop)
+
+
 def created_path(board: CommitBoard) -> LineString:
     """The created tracks merged into one line, which they must form."""
-    merged = linemerge([segment(t) for t in cast(list[kbt.Track], board.created)])
+    tracks = [t for t in board.created if isinstance(t, kbt.Track)]
+    merged = linemerge([segment(t) for t in tracks])
     assert isinstance(merged, LineString)
     return merged
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestLoopsAndDots:
-    # A selected via that may move makes the run extract the chains once
-    # without pins first, to find the copper the via carries.
     @pytest.mark.parametrize(
         ("held_by", "at"),
         [
             ([kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)], (0.0, 0.0)),
-            ([kipy_via("v", "SIG", 9, 0)], (9.0, 0.0)),
             ([kipy_pad("corner", "SIG", 0, 0)], (0.0, 0.0)),
         ],
-        ids=["track", "via", "pad"],
+        ids=["track", "pad"],
     )
     def test_a_loop_is_cut_where_its_net_touches_it_and_smoothed_round_a_pad(
         self,
         connect: Connector,
-        log: list[str],
         held_by: list[kbt.BoardItem],
         at: Point2,
     ) -> None:
         loop = triangle_loop()
-        vias = [v for v in held_by if isinstance(v, kbt.Via)]
         board = connect.to(
             CommitBoard(
-                selection=[*loop, *vias],
+                selection=list(loop),
                 tracks=[*loop, *(t for t in held_by if isinstance(t, kbt.Track))],
-                vias=vias,
                 pads=[
                     kipy_pad("pad", "GND", *IN_TRIANGLE),
                     *(p for p in held_by if isinstance(p, kbt.Pad)),
@@ -1689,11 +1693,33 @@ class TestLoopsAndDots:
         path = created_path(board)
         assert path.is_closed
         assert at in path.coords[:]
-        pad = pad_box(*IN_TRIANGLE)
-        assert shapely.Polygon(path.coords).contains(pad)
-        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
-        assert path.length < sum(segment(t).length for t in loop)
-        # Extractions before the via is judged fixed leave the loop out.
+        assert_round_the_pad(path, loop)
+
+    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        loop = triangle_loop()
+        via = kipy_via("v", "SIG", 9, 0)
+        board = connect.to(
+            CommitBoard(
+                selection=[*loop, via],
+                tracks=list(loop),
+                vias=[via],
+                pads=[kipy_pad("pad", "GND", *IN_TRIANGLE)],
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "v"]
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert at != (nm(9), nm(0))
+        path = created_path(board)
+        assert path.is_closed
+        assert (at[0] / NM_PER_MM, at[1] / NM_PER_MM) in path.coords[:]
+        assert_round_the_pad(path, loop)
+        # The first extraction already cuts the loop at the via.
         assert not any("Leaving out" in line for line in log)
 
     def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
@@ -1938,6 +1964,24 @@ class TestLoopsAndDots:
         assert not {"a", "b", "c"} & set(board.deleted)
         (stays,) = [line for line in log if "Via V" in line and "a, b, c" in line]
         assert stays.startswith("DEBUG") and "stays fixed" in stays
+
+    def test_a_via_a_held_loop_runs_through_stays_naming_the_loop_once(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        loop = triangle_loop()
+        via = kipy_via("v", "SIG", 9, 0)
+        board = connect.to(
+            CommitBoard(selection=[*loop, via], tracks=list(loop), vias=[via])
+        )
+
+        run()
+
+        assert created_vias(board) == []
+        (stays,) = [line for line in log if "Via v" in line]
+        assert stays.startswith("DEBUG")
+        assert stays.rstrip().endswith(
+            "stays fixed: the closed loop a, b, c it ends is held as drawn"
+        )
 
     def test_routes_off_a_held_loop_still_meet_it_where_it_was_drawn(
         self, connect: Connector
@@ -2495,6 +2539,29 @@ def created_vias(board: CommitBoard) -> list[kbt.Via]:
     return [i for i in board.created if isinstance(i, kbt.Via)]
 
 
+THROUGH = (5.0, 6.0)
+"""Where the route of `through_via_board` turns at its via."""
+
+
+def through_via_board(
+    down: kbt.Track | None = None, unselected: kbt.Track | None = None
+) -> CommitBoard:
+    """SIG on F.Cu from (0, 0), bent, through a selected via at `THROUGH`
+    to (10, 0), with `down` selected and `unselected` on the board too."""
+    route = [
+        kipy_track("a", "SIG", (0, 0), (1, 3), width=WIDTH),
+        kipy_track("b", "SIG", (1, 3), THROUGH, width=WIDTH),
+        kipy_track("c", "SIG", THROUGH, (10, 0), width=WIDTH),
+        *([down] if down else []),
+    ]
+    via = kipy_via("v", "SIG", *THROUGH)
+    return CommitBoard(
+        selection=[*route, via],
+        tracks=[*route, *([unselected] if unselected else [])],
+        vias=[via],
+    )
+
+
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestMovingVias:
     def test_moves_the_via_with_its_chains_in_one_commit(
@@ -2565,6 +2632,57 @@ class TestMovingVias:
         assert at[1] < nm(1)
         assert at in ends(created_on(board, BL.BL_F_Cu))
         assert at in ends(created_on(board, BL.BL_In1_Cu))
+
+    @pytest.mark.parametrize("flags", [(), ("--fixed-vias",)], ids=["", "fixed"])
+    def test_a_via_a_chain_runs_through_moves_carrying_both_sides(
+        self, connect: Connector, log: list[str], flags: tuple[str, ...]
+    ) -> None:
+        # With --fixed-vias too: the via carries the ends of the chain cut
+        # at it, so it is no stitching via.
+        board = connect.to(through_via_board())
+
+        run(*flags)
+
+        assert not any("stays fixed" in line for line in log)
+        assert sorted(board.deleted) == ["a", "b", "c", "v"]
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        # Straightened, the route pulls the via down to its far ends' line.
+        assert at[1] < nm(1)
+        on_front = created_on(board, BL.BL_F_Cu)
+        assert [(p.x, p.y) for t in on_front for p in (t.start, t.end)].count(at) == 2
+
+    def test_a_via_a_chain_runs_through_carries_a_track_of_another_layer(
+        self, connect: Connector
+    ) -> None:
+        down = kipy_track("d", "SIG", THROUGH, (5, 12), width=WIDTH, layer=BL.BL_B_Cu)
+        board = connect.to(through_via_board(down))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "d", "v"]
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert math.dist(at, (nm(THROUGH[0]), nm(THROUGH[1]))) > nm(1)
+        on_front = created_on(board, BL.BL_F_Cu)
+        assert [(p.x, p.y) for t in on_front for p in (t.start, t.end)].count(at) == 2
+        assert at in ends(created_on(board, BL.BL_B_Cu))
+
+    def test_a_via_a_chain_runs_through_stays_with_another_track_on_it(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        stub = kipy_track("s", "SIG", THROUGH, (5, 12), width=WIDTH)
+        board = connect.to(through_via_board(unselected=stub))
+
+        run()
+
+        assert created_vias(board) == []
+        # Not cut at the via that stays, the route is one chain, replaced
+        # whole, and keeps a vertex on the via.
+        assert sorted(board.deleted) == ["a", "b", "c"]
+        assert (nm(THROUGH[0]), nm(THROUGH[1])) in ends(created_on(board, BL.BL_F_Cu))
+        (stays,) = [line for line in log if "Via v" in line and "stays fixed" in line]
+        assert stays.startswith("DEBUG") and "track s on F.Cu" in stays
 
     def test_a_stitching_via_the_chain_crowds_moves_in_the_same_commit(
         self, connect: Connector, log: list[str]
@@ -3690,21 +3808,41 @@ PAIR_SECOND_TRACK = 5.0
 PAIR_WIDER = 0.25
 
 
-def with_via_at_the_fan_out(board: CommitBoard) -> CommitBoard:
-    """`board` with a via where track USB_D+ fans out, joining it to a
-    selected track on B.Cu."""
+PAIR_FAN_N = (PAIR_FAN[0], -PAIR_FAN[1])
+"""Where track N starts."""
+PAIR_END = (13.0, 3.0 + PAIR_HALF_PITCH)
+"""Where track P ends, at the end of the pair's coupled section."""
+BUMP = 0.6
+"""mm, how far a bumped pair track leaves its partner."""
+ONWARD = 3.0
+"""How far, mm, the track on B.Cu at a via runs on along x."""
+CUT_SHORT = 10.0
+"""x, mm, short of `PAIR_END`, where a track of the pair is cut to end its
+partner uncoupled; the coupled straight before it stays long enough to
+pair."""
+
+
+def with_via(
+    board: CommitBoard,
+    net: str = USB[0],
+    at: Point2 = PAIR_FAN,
+    onward: float = -ONWARD,
+    via_id: str = "v",
+) -> CommitBoard:
+    """`board` with a via of `net` at `at`, joining the pair's track there to
+    a selected track on B.Cu that runs on by `onward` along x."""
     down = kipy_track(
-        "down",
-        "USB_D+",
-        PAIR_FAN,
-        (-4.0, PAIR_FAN[1]),
+        f"down_{via_id}",
+        net,
+        at,
+        (at[0] + onward, at[1]),
         width=PAIR_WIDTH,
         layer=BL.BL_B_Cu,
     )
-    via = kipy_via("v", "USB_D+", *PAIR_FAN)
+    via = kipy_via(via_id, net, *at)
     board.selection = [*board.selection, down, via]
     board.tracks = [*board.tracks, down]
-    board.vias = [via]
+    board.vias = [*board.vias, via]
     return board
 
 
@@ -3989,20 +4127,198 @@ class TestPairs:
         (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
         assert "0.150" in warning and "0.200" in warning
 
-    def test_via_on_a_pair_track_stays_fixed(
+    def test_via_where_a_coupled_section_ends_stays_fixed(
         self, connect: Connector, log: list[str]
     ) -> None:
-        board = connect.to(off_grid(with_via_at_the_fan_out(pair_board())))
+        board = connect.to(off_grid(with_via(pair_board(), at=PAIR_END, onward=ONWARD)))
 
         run()
 
         assert created_vias(board) == []
         assert "v" not in board.deleted
-        (warning,) = [w for w in log if "Via v" in w]
-        x, y = PAIR_FAN[0] - GRID_ORIGIN[0], PAIR_FAN[1] - GRID_ORIGIN[1]
-        assert f"Via v at ({x:.3f}, {y:.3f}) stays fixed" in warning
-        assert "differential pair USB_D+ and USB_D- on F.Cu ends at it" in warning
+        (line,) = [w for w in log if "Via v" in w]
+        x, y = PAIR_END[0] - GRID_ORIGIN[0], PAIR_END[1] - GRID_ORIGIN[1]
+        assert f"Via v at ({x:.3f}, {y:.3f}) stays fixed" in line
+        assert (
+            "a coupled section of differential pair USB_D+ and USB_D- on F.Cu "
+            "ends at it"
+        ) in line
         assert all(by_net(board).values())
+
+    def test_a_section_reaching_a_via_only_in_the_final_chains_holds_it(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = with_via(pair_board(), at=PAIR_END, onward=ONWARD)
+        # Nothing ends at it and no zone reaches it, so it stays, and the
+        # chains are extracted again with it pinning.
+        stray = kipy_via("s", "GND", 0.0, -FAR)
+        dot = kipy_track("dot", "GND", (FAR, FAR), (FAR, FAR), width=PAIR_WIDTH)
+        board.selection = [*board.selection, stray, dot]
+        board.vias = [*board.vias, stray]
+        board.tracks = [*board.tracks, dot]
+        connect.to(board)
+        real: Callable[..., list[Chain]] = pipeline._extract_chains  # pyright: ignore[reportPrivateUsage]
+        calls: list[None] = []
+
+        def first_uncoupled_at_the_end(*args: object, **kwargs: object) -> list[Chain]:
+            chains = real(*args, **kwargs)
+            calls.append(None)
+            if len(calls) > 1:
+                return chains
+            # Track N ends short of track P's via here, so P ends uncoupled.
+            return [
+                replace(c, points=tuple((min(x, CUT_SHORT), y) for x, y in c.points))
+                if c.net == USB[1]
+                else c
+                for c in chains
+            ]
+
+        monkeypatch.setattr(pipeline, "_extract_chains", first_uncoupled_at_the_end)
+
+        run()
+
+        assert "v" not in board.deleted
+        (line,) = [w for w in log if "Via v" in w]
+        assert "a coupled section of differential pair" in line
+        assert all(by_net(board).values())
+        # Said once, for the chains the run settles on.
+        assert len([w for w in log if "Leaving out" in w]) == 1
+
+    def test_vias_at_the_fan_outs_move_with_them(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = with_via(pair_board())
+        connect.to(with_via(board, USB[1], PAIR_FAN_N, via_id="w"))
+
+        run()
+
+        assert not any("stays fixed" in line for line in log)
+        assert {"v", "w", "down_v", "down_w"} <= set(board.deleted)
+        moved = {v.net.name: (v.position.x, v.position.y) for v in created_vias(board)}
+        assert moved.keys() == set(USB)
+        assert moved[USB[0]] != (nm(PAIR_FAN[0]), nm(PAIR_FAN[1]))
+        assert moved[USB[1]] != (nm(PAIR_FAN_N[0]), nm(PAIR_FAN_N[1]))
+        for net, centre in moved.items():
+            for layer in (BL.BL_F_Cu, BL.BL_B_Cu):
+                on_net = [t for t in created_on(board, layer) if t.net.name == net]
+                assert centre in ends(on_net)
+        front = {
+            net: [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == net]
+            for net in USB
+        }
+        # The section meets its fan-outs where it did.
+        for net, side in zip(USB, (1.0, -1.0), strict=True):
+            assert (0, nm(side * PAIR_HALF_PITCH)) in ends(front[net])
+        gaps = coupled_gaps(*([segment(t) for t in front[net]] for net in USB))
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+
+    def test_a_via_that_would_cut_a_pair_track_off_its_pairing_stays(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # USB_D+ bumps away from USB_D- between two coupled stretches, with a
+        # via on the bump's top: cut there, USB_D- pairs with one piece and
+        # the other runs coupled with it unpaired.
+        h = PAIR_HALF_PITCH
+        mitre = math.tan(math.pi / 8) * h
+        top = (4.0, h + BUMP)
+        tracks: list[kbt.Track] = []
+        for net, side, prefix in zip(USB, (1.0, -1.0), ("p", "n"), strict=True):
+            bump = [(3.5, h), top, (4.5, h)] if side > 0 else []
+            points = [
+                (PAIR_FAN[0], side * PAIR_FAN[1]),
+                (0.0, side * h),
+                *bump,
+                (5.0 - side * mitre, side * h),
+                (8.0 - side * mitre, 3.0 + side * h),
+                (13.0, 3.0 + side * h),
+            ]
+            tracks += [
+                kipy_track(f"{prefix}{k}", net, a, b, width=PAIR_WIDTH)
+                for k, (a, b) in enumerate(itertools.pairwise(points))
+            ]
+        via = kipy_via("v", USB[0], *top, diameter=0.3, drill=0.15)
+        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        board = connect.to(
+            CommitBoard(
+                selection=[*tracks, via],
+                tracks=list(tracks),
+                vias=[via],
+                netclasses={USB[0]: usb, USB[1]: usb},
+            )
+        )
+
+        run()
+
+        assert created_vias(board) == []
+        assert "v" not in board.deleted
+        (stays,) = [line for line in log if "Via v" in line]
+        assert stays.startswith("DEBUG") and "stays fixed" in stays
+        assert "runs coupled with" in stays
+        assert not any("pairs with another chain" in line for line in log)
+        p, n = by_net(board).values()
+        for stretch in (box(COUPLED_FROM, -FAR, 3.0, FAR), box(6.0, -FAR, FAR, FAR)):
+            a, b = (
+                np.array(linemerge(lines).intersection(stretch).coords)
+                for lines in (p, n)
+            )
+            gaps = gap_range(a, b, PAIR_WIDTH)
+            assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+
+    @pytest.mark.parametrize("held", [True, False], ids=["held", "free"])
+    def test_vias_a_pair_runs_through_are_judged_on_the_pairing_that_runs(
+        self,
+        connect: Connector,
+        log: list[str],
+        held: bool,
+    ) -> None:
+        # Cut at both vias, the fan-out of USB_D+ pairs with nothing; whole
+        # where a via stays, it pairs.
+        h = PAIR_HALF_PITCH
+        m = math.tan(math.pi / 8) * h
+        mid = (PAIR_FAN[0] / 2, (PAIR_FAN[1] + h) / 2)
+        tracks: list[kbt.Track] = []
+        for net, side, prefix in zip(USB, (1.0, -1.0), ("p", "n"), strict=True):
+            points = [
+                (PAIR_FAN[0], side * PAIR_FAN[1]),
+                *([mid] if side > 0 else []),
+                (0.0, side * h),
+                (5.0 - side * m, side * h),
+                (8.0 - side * m, 3.0 + side * h),
+                (13.0, 3.0 + side * h),
+            ]
+            tracks += [
+                kipy_track(f"{prefix}{k}", net, a, b, width=PAIR_WIDTH)
+                for k, (a, b) in enumerate(itertools.pairwise(points))
+            ]
+        vias = [
+            kipy_via("v1", "USB_D+", *mid, diameter=0.3, drill=0.15),
+            kipy_via("v2", "USB_D+", 0.0, h, diameter=0.3, drill=0.15),
+        ]
+        stub = kipy_track("stub", "USB_D+", (0.0, h), (0.0, 3.0), width=PAIR_WIDTH)
+        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        board = connect.to(
+            CommitBoard(
+                selection=[*tracks, *vias],
+                tracks=[*tracks, *([stub] if held else [])],
+                vias=vias,
+                netclasses={"USB_D+": usb, "USB_D-": usb},
+            )
+        )
+
+        run()
+
+        assert not any("ERROR" in line for line in log)
+        # V2 stays, held by the stub or at the section's end once the
+        # fan-out is whole there; v1 moves with the fan-out.
+        (moved,) = created_vias(board)
+        assert "v1" in board.deleted and "v2" not in board.deleted
+        at = (moved.position.x, moved.position.y)
+        assert at != (nm(mid[0]), nm(mid[1]))
+        plus = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
+        assert [(p.x, p.y) for t in plus for p in (t.start, t.end)].count(at) == 2
+        (stays,) = [line for line in log if "Via v2" in line]
+        reason = "track stub" if held else "a coupled section of differential pair"
+        assert reason in stays
 
     @pytest.mark.parametrize("unpaired", ["far", "wide"])
     def test_via_on_a_chain_that_does_not_pair_may_move(
@@ -4024,7 +4340,7 @@ class TestPairs:
             for t in board.tracks
         ]
         board.selection = list(board.tracks)
-        connect.to(with_via_at_the_fan_out(board))
+        connect.to(with_via(board))
 
         run("--dry-run")
 

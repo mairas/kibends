@@ -5,6 +5,9 @@ Two selected chains on one layer whose nets KiCad pairs by name form a pair
 where they run coupled (`pairs.find_pair`). The optimizer sees a pair as its
 coupled sections, each a block of its own (`pair_blocks`), and its uncoupled
 pieces, each an ordinary chain; the other selected chains stay as they are.
+A moving via at a paired chain's end carries the piece that owns that end;
+where a section itself reaches the end, no piece owns it, and the via stays
+fixed (`ChainPair.coupled_ends`).
 After the run, the pieces and the sections' tracks join back into one
 polyline per selected chain, which the commit takes like any other chain.
 """
@@ -44,6 +47,16 @@ class ChainPair:
     """Indices of the pair's two chains among the selected ones."""
     pair: Pair
 
+    def coupled_ends(self) -> frozenset[ChainEnd]:
+        """The ends of its chains at which a coupled section itself ends,
+        with no uncoupled piece between."""
+        return frozenset(
+            ChainEnd(k, last)
+            for k, pieces in zip((self.a, self.b), self.pair.uncoupled(), strict=True)
+            for last, piece in ((False, pieces[0]), (True, pieces[-1]))
+            if piece.start == piece.end
+        )
+
 
 def find_pairs(
     chains: Sequence[Chain], chord_tolerance: float, *, frame: UserFrame
@@ -63,9 +76,14 @@ def find_pairs(
     return found
 
 
-def pairs_among(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPair]:
-    """The pairs `find_pairs` finds, without its warnings."""
-    return _pair_up(chains, chord_tolerance).found
+def pairs_and_partners_taken(
+    chains: Sequence[Chain], chord_tolerance: float
+) -> tuple[list[ChainPair], list[tuple[int, int]]]:
+    """What `find_pairs` finds, without its warnings: the pairs, and the
+    partners taken (`_partners_taken`), a list of (alone, partner) chain
+    indices."""
+    found, taken, _, skipped = _pair_up(chains, chord_tolerance)
+    return found, _partners_taken(chains, skipped, taken, chord_tolerance)
 
 
 class _Pairing(NamedTuple):
@@ -114,20 +132,35 @@ def _warn_partners_taken(
 ) -> None:
     """Warn about each chain of `skipped` left unpaired that runs coupled
     with a chain of its pair net that pairs with another chain."""
-    warned: set[int] = set()
-    for k, m in skipped:
-        if (k in taken) == (m in taken):
-            continue
-        alone, partner = (m, k) if k in taken else (k, m)
+    for alone, partner in _partners_taken(chains, skipped, taken, chord_tolerance):
         a, b = chains[alone], chains[partner]
-        if alone in warned or not runs_coupled(a, b, chord_tolerance):
-            continue
-        warned.add(alone)
         logger.warning(
             f"{a.net} on {a.layer} from {frame.point(a.points[0])} runs coupled with "
             f"{b.net}, which pairs with another chain of {a.net}; smoothing it "
             "on its own"
         )
+
+
+def _partners_taken(
+    chains: Sequence[Chain],
+    skipped: Sequence[tuple[int, int]],
+    taken: Collection[int],
+    chord_tolerance: float,
+) -> list[tuple[int, int]]:
+    """The partners taken, as a list of (alone, partner) chain indices:
+    `alone` is a chain of `skipped` left unpaired, and `partner` the first
+    chain of its pair net it runs coupled with that pairs with another
+    chain. Each `alone` appears once."""
+    alone: dict[int, int] = {}
+    for k, m in skipped:
+        if (k in taken) == (m in taken):
+            continue
+        lone, partner = (m, k) if k in taken else (k, m)
+        a, b = chains[lone], chains[partner]
+        if lone in alone or not runs_coupled(a, b, chord_tolerance):
+            continue
+        alone[lone] = partner
+    return list(alone.items())
 
 
 SectionField = Callable[[str, ChainCentreline, ChainCentreline, float], ObstacleField]
@@ -252,12 +285,17 @@ class Layout:
         return whole
 
     def ends(self, ends: Sequence[ChainEnd]) -> tuple[ChainEnd, ...]:
-        """Chain ends of the selected chains as ends of the optimizer's."""
+        """Chain ends of the selected chains as ends of the optimizer's: a
+        paired chain's end as the end of the uncoupled piece that owns it.
+        Raises where a coupled section reaches the end, as no optimizer
+        chain owns it then (`ChainPair.coupled_ends`)."""
         moved: list[ChainEnd] = []
         for end in ends:
             slot = self.slots[end.chain]
             if slot is None:
-                raise ValueError("a moving via joins a chain of a differential pair")
+                slot = self.stretches[end.chain][-1 if end.last else 0].piece
+            if slot is None:
+                raise ValueError("a moving via joins a coupled section's end")
             moved.append(end._replace(chain=slot))
         return tuple(moved)
 

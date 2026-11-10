@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import cast
 
 import kipy.board
@@ -31,12 +32,16 @@ from kibends.vias import (
     PairKind,
     StaticVia,
     carried_copper,
+    chain_cuts,
+    may_move,
     movable_vias,
     pair_kind,
     pairs_with,
 )
 
 VIA = (4.0, 4.0)
+CORNER = (4.0, 0.0)
+"""Where `front` turns."""
 
 
 def front() -> list[kbt.Track]:
@@ -76,7 +81,8 @@ def judge(
     zones: Sequence[kbt.Zone] = (),
     frame: UserFrame = BOARD_FRAME,
 ) -> tuple[list[MovableVia], list[Chain]]:
-    """The selection's chains and movable vias, read as a run reads them."""
+    """The selection's chains and movable vias, read as a run reads them
+    before it knows which vias move: cut at every selected via that may."""
     fake = cast(
         kipy.board.Board,
         FakeBoard(
@@ -90,7 +96,10 @@ def judge(
     chosen = read_selection(fake)
     replaced = {s.id for s in chosen.segments if not s.locked}
     layers = {s.layer for s in chosen.segments if not s.locked}
-    bare = extract_chains(chosen.segments, lambda layer, net: (), frame=BOARD_FRAME)
+    cuts = chain_cuts([v for v in chosen.vias if may_move(v)])
+    bare = extract_chains(
+        chosen.segments, lambda layer, net: (), frame=BOARD_FRAME, cuts=cuts
+    )
     whole = BoardSnapshot.read(
         fake, layers, chosen.vias, carried=carried_copper(chosen.vias, bare)
     )
@@ -99,11 +108,16 @@ def judge(
         chosen.segments,
         lambda layer, net: snapshots[layer].same_net_copper(net),
         frame=BOARD_FRAME,
+        cuts=cuts,
     )
     movable = movable_vias(
         chosen.vias, whole.via_contacts, chains, frame=frame, zones=whole.via_zones
     )
     return movable, chains
+
+
+def pinned_points(chain: Chain) -> list[tuple[float, float]]:
+    return [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
 
 
 def warnings(log: list[str]) -> list[str]:
@@ -437,7 +451,64 @@ class TestMovableVias:
         (warning,) = warnings(log)
         assert "only one selected track ends at it" in warning
 
-    def test_via_a_selected_chain_passes_stays_fixed(self, log: list[str]) -> None:
+    def test_via_a_selected_chain_passes_moves_carrying_both_sides(
+        self, log: list[str]
+    ) -> None:
+        v = kipy_via("v", "SIG", *CORNER)
+
+        movable, chains = judge([*front(), v], front(), [v])
+
+        (via,) = movable
+        assert via.ends == (ChainEnd(chain=0, last=True), ChainEnd(chain=1, last=False))
+        assert [c.points[-1] for c in chains[:1]] == [CORNER]
+        assert chains[1].points[0] == CORNER
+        assert all(c.pinned[0] and c.pinned[-1] for c in chains)
+        assert warnings(log) == []
+
+    def test_via_a_chain_passes_carries_a_track_of_another_layer_too(
+        self, log: list[str]
+    ) -> None:
+        v = kipy_via("v", "SIG", *CORNER)
+        down = kipy_track("g", "SIG", CORNER, (0, 4), layer=BL.BL_B_Cu)
+
+        movable, chains = judge([*front(), down, v], [*front(), down], [v])
+
+        (via,) = movable
+        assert [(chains[e.chain].layer, e.last) for e in via.ends] == [
+            ("B.Cu", True),
+            ("F.Cu", True),
+            ("F.Cu", False),
+        ]
+        assert warnings(log) == []
+
+    @pytest.mark.parametrize("locked", [False, True], ids=["unselected", "locked"])
+    def test_a_chain_through_a_via_that_may_not_move_stays_whole(
+        self, log: list[str], locked: bool
+    ) -> None:
+        v = kipy_via("v", "SIG", *CORNER, locked=locked)
+
+        movable, chains = judge([*front(), *([v] if locked else [])], front(), [v])
+
+        assert movable == []
+        (chain,) = chains
+        assert CORNER in pinned_points(chain)
+        assert len(warnings(log)) == int(locked)
+
+    def test_an_unselected_track_ending_at_a_via_a_chain_passes_holds_it(
+        self, log: list[str]
+    ) -> None:
+        v = kipy_via("v", "SIG", *CORNER)
+        stub = kipy_track("s", "SIG", CORNER, (8, 0))
+
+        movable, _ = judge([*front(), v], [*front(), stub], [v])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert warning.rstrip().endswith("stays fixed: track s on F.Cu connects to it")
+
+    def test_via_a_selected_chain_passes_without_a_vertex_at_its_centre_stays(
+        self, log: list[str]
+    ) -> None:
         v = kipy_via("v", "SIG", 2, 0)
 
         movable, _ = judge([*front(), v], front(), [v])
@@ -457,8 +528,7 @@ class TestMovableVias:
 
         assert movable == []
         (chain,) = chains
-        pinned = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
-        assert pinned == [(0, 0), VIA]
+        assert pinned_points(chain) == [(0, 0), VIA]
         assert [chain.points[i] for i, _ in chain.slides] == [pytest.approx((2, 0))]
         assert len(warnings(log)) == int(selected)
 
@@ -799,6 +869,19 @@ GROUND = frozenset({"GND", "AGND"})
 
 def via_on(net: str, span: tuple[str, str] = ("F.Cu", "B.Cu")) -> Via:
     return Via(net, net, (0.0, 0.0), 0.6, 0.3, span)
+
+
+def test_a_via_cuts_only_its_own_net_on_the_layers_it_spans() -> None:
+    blind_via = replace(via_on("SIG", ("F.Cu", "In1.Cu")), position=CORNER)
+    other_net = replace(via_on("GND"), position=VIA)
+
+    cuts = chain_cuts([blind_via, other_net])
+
+    assert cuts("F.Cu", "SIG") == [CORNER]
+    assert cuts("In1.Cu", "SIG") == [CORNER]
+    assert cuts("B.Cu", "SIG") == []
+    assert cuts("F.Cu", "GND") == [VIA]
+    assert cuts("F.Cu", "OTHER") == []
 
 
 @pytest.mark.parametrize(

@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 from distance_fields import FreeSpace
@@ -7,7 +9,12 @@ from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.pair_layout import ChainPair, find_pairs, lay_out
+from kibends.pair_layout import (
+    ChainPair,
+    find_pairs,
+    lay_out,
+    pairs_and_partners_taken,
+)
 from kibends.simplify import DEFAULT_CHORD_TOLERANCE
 from kibends.vias import ChainEnd
 
@@ -102,6 +109,21 @@ def test_a_chain_pairs_only_once_and_its_other_partner_warns(log: list[str]) -> 
     (warning,) = [line for line in log if line.startswith("WARNING")]
     assert f"USB_D+ on F.Cu from (-1.000, {3 * HALF_PITCH - 1.0:.3f})" in warning
     assert "pairs with another chain of USB_D+" in warning
+
+
+@pytest.mark.parametrize(
+    ("other", "taken"), [(beyond, [(2, 1)]), (far, [])], ids=["coupled", "far"]
+)
+def test_partners_taken_name_the_chain_left_alone_and_its_partner(
+    log: list[str], other: Callable[[str], Chain], taken: list[tuple[int, int]]
+) -> None:
+    chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), other("USB_D+")]
+
+    found, partners_taken = pairs_and_partners_taken(chains, CHORD)
+
+    assert [(p.a, p.b) for p in found] == [(0, 1)]
+    assert partners_taken == taken
+    assert not any(line.startswith("WARNING") for line in log)
 
 
 def test_coupled_chains_of_nets_that_do_not_pair_do_not_warn(
@@ -272,6 +294,63 @@ def test_layout_moves_via_ends_to_the_chains_new_places() -> None:
     layout = lay_out(whole, pairs, free)
 
     assert layout.ends((ChainEnd(2, True),)) == (ChainEnd(0, True),)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_layout_moves_a_fan_out_end_to_its_piece(reverse: bool) -> None:
+    b = fanned("USB_D-", 1)
+    chains = [fanned("USB_D+", -1), reversed_chain(b) if reverse else b, far("GND")]
+    pairs, whole = laid_out(chains)
+
+    layout = lay_out(whole, pairs, free)
+
+    # GND is input 0, then the one-edge fan-outs of D+ and of D-, in order.
+    ends = (ChainEnd(0, False), ChainEnd(0, True), ChainEnd(1, False))
+    moved = (ChainEnd(1, False), ChainEnd(2, True), ChainEnd(3, False))
+    assert layout.ends(ends) == moved
+    for (k, last), (i, _) in zip(ends, moved, strict=True):
+        end = -1 if last else 0
+        np.testing.assert_array_equal(
+            layout.inputs[i].centreline.points[end], whole[k].centreline.points[end]
+        )
+
+
+def test_layout_carries_a_fan_out_and_an_unpaired_chain_together() -> None:
+    chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), far("USB_D+")]
+    pairs, whole = laid_out(chains)
+
+    layout = lay_out(whole, pairs, free)
+
+    assert layout.ends((ChainEnd(0, False), ChainEnd(2, True))) == (
+        ChainEnd(1, False),
+        ChainEnd(0, True),
+    )
+
+
+def coupled_to_the_end(net: str, side: float) -> Chain:
+    """Fanned out at its start, coupled from x = 1 to its end at x = 9."""
+    return chain(
+        net, (0.0, side * FAN), (1.0, side * HALF_PITCH), (9.0, side * HALF_PITCH)
+    )
+
+
+def test_a_pair_names_the_chain_ends_its_sections_reach() -> None:
+    chains = [coupled_to_the_end("USB_D+", -1), fanned("USB_D-", 1)]
+    pairs, _ = laid_out(chains)
+
+    (pair,) = pairs
+
+    assert pair.coupled_ends() == {ChainEnd(0, True)}
+
+
+def test_layout_refuses_an_end_a_section_reaches() -> None:
+    chains = [coupled_to_the_end("USB_D+", -1), fanned("USB_D-", 1)]
+    pairs, whole = laid_out(chains)
+
+    layout = lay_out(whole, pairs, free)
+
+    with pytest.raises(ValueError, match="coupled section"):
+        layout.ends((ChainEnd(0, True),))
 
 
 def test_layout_without_pairs_is_the_chains() -> None:

@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 from itertools import pairwise
 
 import pytest
@@ -981,6 +982,16 @@ class TestLoops:
         assert not any(loop.pinned)
         assert stub.pinned == (False, True)
 
+    def test_a_cut_on_the_loop_opens_it_there_with_both_ends_pinned(self) -> None:
+        def cuts(_layer: str, _net: str) -> list[tuple[float, float]]:
+            return [(10.0, 10.0)]
+
+        (chain,) = extract_chains(square_loop(), frame=BOARD_FRAME, cuts=cuts)
+
+        assert chain.points[0] == chain.points[-1] == (10, 10)
+        assert chain.pinned == (True, False, False, False, True)
+        assert chain.slides == ()
+
     def test_a_loop_nothing_touches_is_left_out_beside_other_chains(self) -> None:
         segments = [*square_loop(), seg("other", (20, 0), (30, 0))]
 
@@ -1009,6 +1020,69 @@ def test_extract_chain_gives_a_branch_in_the_frame() -> None:
         ChainError, match=r"branch at \(-5\.000, -20\.000\) mm: a, tee meet"
     ):
         extract_chain(segments, frame=GRID_FRAME)
+
+
+def cut_at(
+    point: tuple[float, float], layer: str = LAYER, net: str = NET
+) -> Callable[[str, str], list[tuple[float, float]]]:
+    """Cuts at `point` for `net` on `layer` alone."""
+
+    def cuts(on: str, of: str) -> list[tuple[float, float]]:
+        return [point] if (on, of) == (layer, net) else []
+
+    return cuts
+
+
+class TestCuts:
+    """A cut, a selected via that may move, ends the chains through it."""
+
+    def test_a_cut_at_a_vertex_ends_both_sides_there_pinned(self) -> None:
+        a, bc = extract_chains(l_z_segments(), frame=BOARD_FRAME, cuts=cut_at((10, 0)))
+
+        assert_points(a, [(0, 0), (10, 0)])
+        assert_points(bc, [(10, 0), (10, 5), (20, 5)])
+        assert a.pinned == (True, True)
+        assert bc.pinned == (True, False, True)
+        assert a.slides == bc.slides == ()
+
+    def test_a_cut_away_from_every_vertex_leaves_the_chain_whole(self) -> None:
+        (chain,) = extract_chains(
+            l_z_segments(), frame=BOARD_FRAME, cuts=cut_at((5, 0))
+        )
+
+        assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
+
+    @pytest.mark.parametrize(
+        ("layer", "net"), [("B.Cu", NET), (LAYER, "OTHER")], ids=["layer", "net"]
+    )
+    def test_a_cut_of_another_layer_or_net_leaves_the_chain_whole(
+        self, layer: str, net: str
+    ) -> None:
+        (chain,) = extract_chains(
+            l_z_segments(), frame=BOARD_FRAME, cuts=cut_at((10, 0), layer, net)
+        )
+
+        assert len(chain.points) == 4
+
+    def test_a_loop_cut_at_two_points_is_two_pieces_pinned_at_both(self) -> None:
+        def cuts(_layer: str, _net: str) -> list[tuple[float, float]]:
+            return [(10.0, 0.0), (0.0, 10.0)]
+
+        chains = extract_chains(square_loop(), frame=BOARD_FRAME, cuts=cuts)
+
+        assert len(chains) == 2
+        for chain in chains:
+            assert {chain.points[0], chain.points[-1]} == {(10, 0), (0, 10)}
+            assert chain.pinned[0] and chain.pinned[-1]
+            assert not any(chain.pinned[1:-1])
+        assert sorted(i for c in chains for i in c.segment_ids) == list("abcd")
+
+    def test_a_cut_at_a_junction_leaves_its_branches_loose(self) -> None:
+        a, bc, d = extract_chains(
+            tee_segments(), frame=BOARD_FRAME, cuts=cut_at((10, 0))
+        )
+
+        assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (False, False, False)
 
 
 def tee_segments() -> list[Segment]:

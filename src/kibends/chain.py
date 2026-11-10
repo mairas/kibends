@@ -25,10 +25,13 @@ past the track it crosses, its end beyond that track's copper, is not
 joined and may come off it without a warning; the README tells users to
 end stubs on the track or check the ratsnest.
 
-A route through a via is one chain per layer. The copper of a selected via
-that may move does not pin, so that it does not tether the chains it
-carries; `vias` then decides which do move, and `run` extracts the chains
-again with the fixed ones' copper pinning.
+A route through a via is one chain per layer. A selected via that may move
+cuts the chains with a vertex on its centre into chains that end there,
+pinned, and its copper does not pin, so that it does not tether the chains
+it carries; `vias` then decides which do move, and `run` extracts the
+chains again with the fixed ones whole and their copper pinning. A chain
+that passes a via with no vertex on its centre is not cut there, and holds
+it fixed.
 
 Units: segment endpoints and widths are integer nanometres, as KiCad stores
 them, so that endpoint matching and deduplication are exact. Same-net copper
@@ -165,6 +168,7 @@ def extract_chains(
     ),
     *,
     frame: UserFrame,
+    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
 ) -> list[Chain]:
     """Split `segments` into chains, one per connected piece, or raise when
     none is unlocked or has length.
@@ -187,7 +191,10 @@ def extract_chains(
     net's chain on one layer pins another where its end's copper reaches the
     other's. Where they overlap or cross away from their ends, nothing pins
     either: copper of one net does not interact, and the run may move them
-    apart.
+    apart. `cuts(layer, net)` gives the points, in mm, at which to end
+    chains, the centres of vias that may move or that move: the pieces are
+    also split at each one that is a vertex, into chains that end there,
+    pinned, as at any chain end, unless it is a junction.
     Locked segments stay out of every chain, with a warning, and pin the
     chains they touch on their layer.
 
@@ -196,7 +203,7 @@ def extract_chains(
     (x, y). Messages give positions in `frame`.
     """
     kept, locked = split_locked(segments)
-    return split_chains(kept, locked, same_net_copper, frame=frame)
+    return split_chains(kept, locked, same_net_copper, frame=frame, cuts=cuts)
 
 
 def split_locked(
@@ -219,6 +226,7 @@ def split_chains(
     *,
     frame: UserFrame,
     left_out: Callable[[str], None] = logger.debug,
+    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
 ) -> list[Chain]:
     """`extract_chains` for segments `split_locked` has already split,
     giving `left_out` a line on each piece that forms no chain."""
@@ -239,14 +247,18 @@ def split_chains(
             for width, of_width in _group(of_net, lambda s: s.width).items()
         }
         all_edges = [e for _, edges, _ in by_width.values() for e in edges]
+        adjacency = _adjacency(all_edges, ())
         junctions = {
             p
-            for p, segs in _adjacency(all_edges, ()).items()
+            for p, segs in adjacency.items()
             if len(segs) > MAX_CHAIN_DEGREE or _width_change(p, segs)
         }
+        # Exact float equality is nanometre equality: see `Contact.anchor`.
+        cut_mm = set(cuts(layer, net))
+        cut_vertices = {p for p in adjacency if _mm(p) in cut_mm} - junctions
         pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
-            of_width_pieces = _split(_adjacency(edges, dots), junctions)
+            of_width_pieces = _split(_adjacency(edges, dots), junctions | cut_vertices)
             by_edge = {
                 frozenset((s.start, s.end)): k
                 for k, piece in enumerate(of_width_pieces)
@@ -305,6 +317,7 @@ def split_chains(
                     segment_ids=piece_ids,
                     frame=frame,
                     junctions=junctions,
+                    cut_vertices=cut_vertices,
                     moved_from=moved_from,
                     left_out=left_out,
                 )
@@ -486,11 +499,13 @@ def _chain(
     segment_ids: Sequence[str],
     frame: UserFrame,
     junctions: Collection[NmPoint],
+    cut_vertices: Collection[NmPoint],
     moved_from: Mapping[Point2, Sequence[Point2]],
     left_out: Callable[[str], None],
 ) -> Chain | None:
     """The chain of one piece, or None, said to `left_out`, for a piece the
-    run leaves out."""
+    run leaves out. The piece ends at its `cut_vertices` as at any other
+    end."""
     ids = ", ".join(segment_ids)
     if not any(adjacency.values()):
         left_out(
@@ -499,10 +514,11 @@ def _chain(
         )
         return None
     half_width = width / NM_PER_MM / 2
-    walk = _walk(adjacency, junctions)
-    # A loop off a junction is cut there; any other is cut where its net
-    # touches it, once that is known.
-    closed = walk[0] == walk[-1] and walk[0] not in junctions
+    ends_at = {*junctions, *cut_vertices}
+    walk = _walk(adjacency, ends_at)
+    # A loop off a junction or through a cut is cut there; any other is cut
+    # where its net touches it, once that is known.
+    closed = walk[0] == walk[-1] and walk[0] not in ends_at
     walked = [_mm(p) for p in walk]
     loose_ends = [_mm(p) for p in (walk[0], walk[-1]) if p in junctions]
     loose = {p: moved_from.get(p, ()) for p in loose_ends}
@@ -877,8 +893,8 @@ def _describe(piece: set[NmPoint], adjacency: Adjacency, frame: UserFrame) -> st
 
 def _walk(adjacency: Adjacency, junctions: Collection[NmPoint]) -> list[NmPoint]:
     """The piece's points in order from its smaller end. A loop, which has
-    none, starts and ends at its junction, or else at its smallest point,
-    and goes first toward the smaller of that point's neighbours."""
+    none, starts and ends at its junction or cut, or else at its smallest
+    point, and goes first toward the smaller of that point's neighbours."""
     ends = [p for p, segs in adjacency.items() if len(segs) == 1]
     start = min(ends or adjacency.keys() & junctions or adjacency)
     current = start

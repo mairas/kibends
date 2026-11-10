@@ -7,10 +7,13 @@ meet it or none does and a zone of its net reaches it: a stitching via,
 which carries no chain and moves only where other copper crowds it.
 Through, blind, buried and micro vias move alike, each on the layers of its
 span: copper on a layer it does not reach neither moves with it nor holds
-it (`carried_ends`, `snapshot.Via.reaches`). A
-via that moves stays inside the zones of its net whose region reaches its
-ring, taken together on each layer where one does (`zone_unions`): its
-centre stays inside the region of one of them by that zone's margin
+it (`carried_ends`, `snapshot.Via.reaches`). A chain that runs through a
+via that may move, with a vertex on its centre, is cut there into two
+chains that end at it (`chain_cuts`), which it then carries; one that
+passes it with no vertex there is other copper touching it. A via that
+moves stays inside the zones of its net whose region reaches its ring,
+taken together on each layer where one does (`zone_unions`): its centre
+stays inside the region of one of them by that zone's margin
 (`ViaZone.margin`), or inside the union of their regions by the largest of
 their margins, so that the next refill reconnects it through one of them.
 One whose centre does not start so, and may be connected only now, stays
@@ -36,7 +39,7 @@ has them repel each other.
 import enum
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
@@ -46,7 +49,7 @@ from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
 from kibends.bursts import INSIDE_TOLERANCE
-from kibends.chain import Chain
+from kibends.chain import Chain, Point2
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment
@@ -178,6 +181,17 @@ def pairs_with(via: Via, ground: bool, other: StaticVia) -> bool:
 def may_move(via: Via) -> bool:
     """Whether `via` may move: it is unlocked."""
     return not via.locked
+
+
+def chain_cuts(vias: Sequence[Via]) -> Callable[[str, str], list[Point2]]:
+    """Where `vias` cut the chains of a layer and net (`split_chains`): at
+    the centre of each of them of that net that reaches that layer, so that a
+    chain with a vertex there ends at it, for it to carry."""
+
+    def cuts(layer: str, net: str) -> list[Point2]:
+        return [v.position for v in vias if v.net == net and v.reaches(layer)]
+
+    return cuts
 
 
 def carried_ends(via: Via, chains: Sequence[Chain]) -> tuple[ChainEnd, ...]:
