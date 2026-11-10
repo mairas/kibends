@@ -21,6 +21,7 @@ from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
 from kibends.bursts import (
+    FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
     Crossings,
@@ -41,6 +42,7 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
+    ChainCentreline,
     build_via_obstacles,
     own_net_stops,
     split_via_obstacles,
@@ -752,6 +754,184 @@ def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
     gap = to_polyline(via.position, result.chains[2].polyline)
     assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
     assert via.rejected_edges > 0
+
+
+PUSHING_DOWN = Disc(5.0, 3.9, 1.0)
+"""Static copper whose clearance the detour's via starts 0.1 mm deep in,
+from above, so that it pushes the via toward the pinned chain."""
+
+
+def test_a_via_starting_inside_one_obstacle_is_checked_against_the_others() -> None:
+    scenario = over_short_pinned()
+    (given,) = scenario.vias
+    params = replace(scenario.params, clearance_weight=0.1)
+    shorter = replace(COARSE, burst_maxiter=15)
+
+    result = optimize_chains(
+        scenario.chains, params, shorter, [replace(given, field=PUSHING_DOWN)]
+    )
+
+    (via,) = result.vias
+    gap = to_polyline(via.position, result.chains[2].polyline)
+    assert via.position != scenarios.DETOUR_VIA
+    assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
+    assert via.rejected_edges > 0
+
+
+INSIDE_PINNED = 0.3
+"""How deep the via starts inside the clearance of the chain pinned above
+it, mm."""
+INTO_WALL = 0.1
+"""How far the sideways move takes the via into the wall's clearance, mm;
+less than INSIDE_PINNED."""
+
+
+def beside_a_wall_under_pinned() -> ViasScenario:
+    """The detour's via INSIDE_PINNED inside the clearance of a pinned chain
+    of another net running along x above it, and a wall of static copper
+    left of it that it starts clear of."""
+    x, y = scenarios.DETOUR_VIA
+    scenario = over_short_pinned()
+    inner = scenario.chains[2]
+    level = y + VIA_TO_CHAIN - INSIDE_PINNED
+    points = inner.centreline.points.copy()
+    points[:, 1] = level
+    wall = Box(x - 0.1 - 5.0, y, 5.0, 50.0)
+    (given,) = scenario.vias
+    return replace(
+        scenario,
+        chains=(
+            *scenario.chains[:2],
+            replace(inner, centreline=replace(inner.centreline, points=points)),
+        ),
+        vias=(replace(given, field=wall),),
+    )
+
+
+SIDEWAYS = (scenarios.DETOUR_VIA[0] - 0.1 - INTO_WALL, scenarios.DETOUR_VIA[1])
+"""Into the wall's clearance, as deep inside the pinned chain's as before."""
+
+
+def test_a_burst_moves_back_a_via_newly_inside_one_obstacle_while_inside_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revert, start = first_revert(monkeypatch, beside_a_wall_under_pinned())
+    candidate = start.copy()
+    candidate[-2:] = SIDEWAYS
+
+    crossings = revert(candidate)
+
+    assert crossings > 0
+    assert np.array_equal(candidate[-2:], start[-2:])
+
+
+def test_the_guard_refuses_a_via_newly_inside_one_obstacle_while_inside_another() -> (
+    None
+):
+    scenario = beside_a_wall_under_pinned()
+    (placed,) = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+    )
+    problem = placed.problem
+
+    moved = [np.array(SIDEWAYS)]
+
+    assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
+
+
+def stitching_inside(chain: ChainInput) -> ViasScenario:
+    """A via that carries no chain at the detour's via, and `chain`, of
+    another net, running along x INSIDE_PINNED inside its clearance."""
+    return ViasScenario(
+        "stitching-inside",
+        (chain,),
+        (
+            ViaInput(
+                scenarios.through_via("s", "N", scenarios.DETOUR_VIA),
+                (),
+                FreeSpace(),
+                scenarios.PAIR_CLEARANCE,
+            ),
+        ),
+    )
+
+
+INSIDE_LEVEL = scenarios.DETOUR_VIA[1] + VIA_TO_CHAIN - INSIDE_PINNED
+
+
+def reverted_by(
+    monkeypatch: pytest.MonkeyPatch, revert: Revert, candidate: FloatArray
+) -> BoolArray:
+    """What `revert` moves back of `candidate`."""
+    masks: list[BoolArray] = []
+    real = optimize_module.revert_until_clear
+
+    def spying(
+        candidate: FloatArray, start: FloatArray, crossings: Crossings
+    ) -> tuple[BoolArray, int]:
+        reverted, count = real(candidate, start, crossings)
+        masks.append(reverted)
+        return reverted, count
+
+    monkeypatch.setattr(optimize_module, "revert_until_clear", spying)
+    revert(candidate)
+    (reverted,) = masks
+    return reverted
+
+
+def test_a_via_whose_ring_a_pinned_edge_newly_enters_moves_back(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # Sliding along the chain leaves the via no deeper inside it, so only
+    # the chain's edges newly entering its ring find the move.
+    count = 25
+    points = np.column_stack(
+        [np.linspace(2.0, 8.0, count), np.full(count, INSIDE_LEVEL)]
+    )
+    pinned = ChainInput(
+        ChainCentreline(
+            "inner", "P", scenarios.PAIR_WIDTH, scenarios.PAIR_CLEARANCE, points
+        ),
+        "In1.Cu",
+        np.ones(count, dtype=bool),
+        FreeSpace(),
+    )
+    revert, start = first_revert(monkeypatch, stitching_inside(pinned))
+    candidate = start.copy()
+    candidate[-2:] += (0.5, 0.0)
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted[-2:].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # The chain's edges near the via start inside its ring, so only the
+    # via's distance to the chain finds the move.
+    chain = selected(
+        "P",
+        "P",
+        FreeSpace(),
+        (0.0, INSIDE_LEVEL),
+        (10.0, INSIDE_LEVEL),
+        layer="In1.Cu",
+    )
+    revert, start = first_revert(monkeypatch, stitching_inside(chain))
+    candidate = start.copy()
+    vertices = candidate[:-2].reshape(-1, 2)
+    near = np.abs(vertices[:, 0] - scenarios.DETOUR_VIA[0]) < COARSE.spacing
+    assert near.any()
+    vertices[near, 1] -= INSIDE_PINNED / 2
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted[:-2].reshape(-1, 2)[near].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
 
 
 # The chain wraps the via and pushes it up as it does. Each held to half

@@ -56,6 +56,8 @@ from kibends.obstacles import (
     HOLE_TO_HOLE,
     ChainField,
     CompositeField,
+    complex_points,
+    pairs_inside,
     via_via_inflation,
     zones_on,
 )
@@ -64,7 +66,7 @@ from kibends.pair_blocks import PairBlock, pair_block
 from kibends.polylines import measure, violations
 from kibends.seen import SKIN_LEAST, NeighbourList, Pieces, Seen, Track, Viewer
 from kibends.snapshot import ViaZone
-from kibends.via_moves import MovingVias
+from kibends.via_moves import FreeDistances, MovingVias
 from kibends.vias import ViaInput
 
 Scenario = ChainsScenario | PairsScenario | ViasScenario
@@ -498,19 +500,42 @@ def _reference_distances(
     problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
     polylines: Sequence[FloatArray],
     positions: Sequence[FloatArray],
-) -> list[float]:
-    """`_Problem.via_distances` with a field of each via's own view of the
-    copper of other nets."""
-    return [
-        min(
-            point_distance(problem.vias[k].given.copper, positions[k]),
-            point_distance(
-                _reference_view(problem, k, polylines, positions, other_nets=True)[0],
-                positions[k],
-            ),
-        )
+) -> tuple[list[float], dict[tuple[int, int], float]]:
+    """`_Problem.via_distances` however far, each via's to its static copper
+    and, by (via, obstacle), to each member and via of another net, with a
+    field of each of those alone from the via's own view."""
+    static = [
+        point_distance(problem.vias[k].given.copper, positions[k])
         for k in range(len(problem.vias))
     ]
+    seen: dict[tuple[int, int], float] = {}
+    for k, via in enumerate(problem.vias):
+        _, a, b, owner = _reference_view(
+            problem, k, polylines, positions, other_nets=True
+        )
+        inflations = np.array(
+            [via.rings[j] if j >= 0 else via.apart[u] for j, u in owner]
+        )
+        obstacles = np.array(
+            [j if j >= 0 else len(problem.bodies) + u for j, u in owner],
+            dtype=np.intp,
+        )
+        for obstacle in np.unique(obstacles):
+            alone = obstacles == obstacle
+            field = ChainField(a[alone], b[alone], inflations[alone], obstacles[alone])
+            seen[k, int(obstacle)] = point_distance(field, positions[k])
+    return static, seen
+
+
+def _free_by_obstacle(
+    free: FreeDistances,
+) -> tuple[list[float], dict[tuple[int, int], float]]:
+    """`free` as `_reference_distances` gives it."""
+    pairs = free.by_obstacle
+    return [float(d) for d in free.static], {
+        (int(k), int(o)): float(d)
+        for k, o, d in zip(pairs.via, pairs.obstacle, pairs.distance, strict=True)
+    }
 
 
 def _reference_vias(
@@ -610,9 +635,17 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 problem.via_energy(polylines, positions),
                 _reference_vias(problem, polylines, positions),
             )
+            static, by_obstacle = _free_by_obstacle(
+                problem.via_distances(polylines, positions, math.inf)
+            )
+            expected_static, expected_seen = _reference_distances(
+                problem, polylines, positions
+            )
+            np.testing.assert_allclose(static, expected_static, rtol=0, atol=0)
+            assert by_obstacle.keys() == expected_seen.keys()
             np.testing.assert_allclose(
-                problem.via_distances(polylines, positions),
-                _reference_distances(problem, polylines, positions),
+                [by_obstacle[key] for key in expected_seen],
+                list(expected_seen.values()),
                 rtol=1e-12,
                 atol=1e-12,
             )
@@ -647,6 +680,44 @@ def _reference_fields(
             )
         )
     return fields
+
+
+def _reference_entered(
+    problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+    polylines: Sequence[FloatArray],
+    flat: FloatArray,
+) -> list[set[tuple[int, int]]]:
+    """Per member, the (edge, vertex) pairs of each of its edges and the
+    first vertex of each of its own pieces that the edge enters, judged
+    for every edge and piece."""
+    entered: list[set[tuple[int, int]]] = []
+    for (part, _), points in zip(
+        _reference_parts(problem, polylines), polylines, strict=True
+    ):
+        a, b = flat[part.vertex], flat[part.vertex + 1]
+        starts = complex_points(a + part.start[:, None] * (b - a))
+        along = complex_points(a + part.end[:, None] * (b - a)) - starts
+        ca, cb = complex_points(points[:-1]), complex_points(points[1:])
+        edge = np.repeat(np.arange(len(ca)), len(starts))
+        piece = np.tile(np.arange(len(starts)), len(ca))
+        inside = pairs_inside(
+            ca[edge],
+            (cb - ca)[edge],
+            starts[piece],
+            along[piece],
+            part.inflation[piece],
+            0.0,
+        )
+        entered.append(
+            set(
+                zip(
+                    edge[inside].tolist(),
+                    part.vertex[piece[inside]].tolist(),
+                    strict=True,
+                )
+            )
+        )
+    return entered
 
 
 @pytest.mark.parametrize("make", SCENARIOS, ids=IDS)
@@ -689,10 +760,15 @@ def test_the_checks_are_those_each_members_own_field_gives(
                 field.segments_clear(points[:-1], points[1:])
                 for field, points in zip(fields, polylines, strict=True)
             ]
-            for got, expected in zip(
-                seen.segments_clear(polylines, flat), clear, strict=True
+            for got, expected, entered in zip(
+                seen.segments_clear(polylines, flat),
+                clear,
+                _reference_entered(problem, polylines, flat),
+                strict=True,
             ):
-                np.testing.assert_array_equal(got, expected)
+                np.testing.assert_array_equal(got.clear, expected)
+                pairs = zip(got.edge.tolist(), got.vertex.tolist(), strict=True)
+                assert set(pairs) == entered
             assert problem.edges_across(polylines, positions, seen) == [
                 int(np.count_nonzero(~c)) for c in clear
             ]
@@ -1018,8 +1094,15 @@ def test_the_free_distance_of_zoned_vias_is_their_own_fields(
         for jitter in (0.0, JITTER):
             x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
             polylines, positions = layout.unflatten(x)
+            static, seen = _free_by_obstacle(
+                problem.via_distances(polylines, positions, math.inf)
+            )
+            nearest = [
+                min([d, *(s for (k, _), s in seen.items() if k == via)])
+                for via, d in enumerate(static)
+            ]
             np.testing.assert_allclose(
-                problem.via_distances(polylines, positions),
+                nearest,
                 [
                     _reference_free_distance(problem, k, polylines, positions)
                     for k in range(len(problem.vias))

@@ -5,11 +5,16 @@ from typing import cast
 import numpy as np
 import pytest
 import scenarios
-from distance_fields import FloatArray
+from distance_fields import BoolArray, FloatArray
 from scipy.optimize import OptimizeResult
 
 import kibends.bursts as bursts_module
-from kibends.bursts import DEFAULT_SETTINGS, run_burst
+from kibends.bursts import (
+    DEFAULT_SETTINGS,
+    FALLBACK_WARNING,
+    revert_until_clear,
+    run_burst,
+)
 from kibends.energy import total_energy
 from kibends.polylines import resample
 
@@ -93,3 +98,22 @@ def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
     run_burst(squared, np.array([1.0, 2.0]), nothing_crosses, settings)
 
     assert (seen["ftol"], seen["gtol"]) == (1e-8, 1e-6)
+
+
+@pytest.mark.fallback
+def test_crossings_naming_nothing_to_move_back_move_all_back_and_warn(
+    log: list[str],
+) -> None:
+    start = np.zeros(4)
+    candidate = np.ones(4)
+    stuck = np.zeros(4, dtype=bool)
+
+    def crossing_until_back(x: FloatArray) -> tuple[int, BoolArray]:
+        return int(x.any()), stuck
+
+    reverted, count = revert_until_clear(candidate, start, crossing_until_back)
+
+    assert count == 1
+    assert reverted.all()
+    assert np.array_equal(candidate, start)
+    assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
