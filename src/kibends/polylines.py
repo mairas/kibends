@@ -67,11 +67,19 @@ def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> 
     distance, _ = field.signed_distance(points)
     inside = distance < -INSIDE_TOLERANCE
     ends_clear = ~inside[:-1] & ~inside[1:]
-    cuts = np.count_nonzero(
-        ~field.segments_clear(
-            points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
-        )
+    cut = np.zeros(len(ends_clear), dtype=bool)
+    cut[ends_clear] = ~field.segments_clear(
+        points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
     )
+    return count_violations(inside, cut, anchors)
+
+
+def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
+    """`violations` of a polyline whose vertices `inside` lie in the
+    clearance and whose edges `cut` enter it, each by more than
+    INSIDE_TOLERANCE; only the cut edges with both ends clear count."""
+    ends_clear = ~inside[:-1] & ~inside[1:]
+    cuts = np.count_nonzero(cut & ends_clear)
     run_starts = inside & ~np.concatenate(([False], inside[:-1]))
     run = np.cumsum(run_starts)
     loose_runs = np.count_nonzero(run_starts & ~np.isin(run, run[inside & anchors]))
@@ -112,16 +120,43 @@ def measure(
     polyline resampled at `spacing` with every vertex kept, so a sharp corner
     reports a radius below the spacing however long its edges are.
     """
-    edges = np.diff(polyline, axis=0)
-    lengths = np.linalg.norm(edges, axis=1)
+    distance, _ = field.signed_distance(clearance_points(polyline, spacing))
+    return measured(polyline, distance, spacing)
+
+
+def measured(
+    polyline: FloatArray, distance: FloatArray, spacing: float
+) -> PolylineStats:
+    """`measure` with the signed distance at each of the polyline's
+    `clearance_points` given."""
+    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
     return PolylineStats(
         length=float(lengths.sum()),
         segment_count=len(polyline) - 1,
         tightest_bend_radius=_tightest_bend_radius(
             resample(polyline, np.ones(len(polyline), dtype=bool), spacing)[0]
         ),
-        **_clearance(polyline, lengths, field, spacing / MEASURE_SAMPLES_PER_SPACING),
+        **_clearance(lengths, distance, spacing),
     )
+
+
+def clearance_points(polyline: FloatArray, spacing: float) -> FloatArray:
+    """Where `measure` takes the clearance: along each edge in even steps of
+    at most spacing / MEASURE_SAMPLES_PER_SPACING, both its ends included."""
+    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    points = [
+        start + np.linspace(0.0, 1.0, count + 1)[:, None] * (end - start)
+        for start, end, count in zip(
+            polyline[:-1], polyline[1:], _sample_counts(lengths, spacing), strict=True
+        )
+    ]
+    return np.concatenate(points)
+
+
+def _sample_counts(lengths: FloatArray, spacing: float) -> IntArray:
+    """How many steps `clearance_points` takes along each edge."""
+    step = spacing / MEASURE_SAMPLES_PER_SPACING
+    return np.maximum(1, np.ceil(lengths / step).astype(int))
 
 
 def _tightest_bend_radius(points: FloatArray) -> float:
@@ -138,20 +173,13 @@ def _tightest_bend_radius(points: FloatArray) -> float:
 
 
 def _clearance(
-    polyline: FloatArray, lengths: FloatArray, field: DistanceField, step: float
+    lengths: FloatArray, distance: FloatArray, spacing: float
 ) -> dict[str, float]:
-    counts = np.maximum(1, np.ceil(lengths / step).astype(int))
-    distances: list[FloatArray] = []
     weights: list[FloatArray] = []
-    for start, end, count, length in zip(
-        polyline[:-1], polyline[1:], counts, lengths, strict=True
-    ):
-        t = np.linspace(0.0, 1.0, count + 1)
-        distances.append(field.signed_distance(start + t[:, None] * (end - start))[0])
+    for count, length in zip(_sample_counts(lengths, spacing), lengths, strict=True):
         edge_weights = np.full(count + 1, length / count)
         edge_weights[[0, -1]] /= 2
         weights.append(edge_weights)
-    distance = np.concatenate(distances)
     weight = np.concatenate(weights)
     total = weight.sum()
     mean = float(distance @ weight / total) if total > 0.0 else float(distance.mean())
