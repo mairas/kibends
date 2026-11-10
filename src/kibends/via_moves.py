@@ -6,13 +6,11 @@ variable of its problem and carries the chain ends it joins at their
 offsets from it.
 
 On a zone's layers a moving via keeps the zone's clearance from the
-chains and vias moving with it. A via that starts inside its clearance
-stays, and is then seen as an unselected via (`MovingVias.distances`,
-`MovingVias.standing`).
+chains and vias moving with it.
 """
 
 import math
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -73,18 +71,17 @@ class MovingVias:
         self.vias = tuple(vias)
         self.hole_clearance = hole_clearance
         self.hole_to_hole = hole_to_hole
-        starts = self.starting_positions()
         self.ends = [
             tuple(
                 _End(
                     end.chain,
                     -1 if end.last else 0,
                     chains[end.chain].centreline.points[-1 if end.last else 0]
-                    - starts[k],
+                    - np.array(via.via.position, dtype=float),
                 )
                 for end in via.ends
             )
-            for k, via in enumerate(self.vias)
+            for via in self.vias
         ]
         self._zones_by_id = {v.via.id: v.zones for v in self.vias}
         clearances = {c.centreline.net: c.centreline.clearance for c in chains}
@@ -102,23 +99,6 @@ class MovingVias:
             [v for v, near in enumerate(self._chains_near) if i in near]
             for i in range(len(chains))
         ]
-
-    def standing(self, still: Collection[int]) -> MovingVias:
-        """These vias with those in `still`, which stay where they are, as
-        unselected vias: without the zones they would keep the clearance of
-        if they moved: standing still, they connect as they do now."""
-        return MovingVias(
-            self.chains,
-            [
-                replace(v, zones=()) if k in still else v
-                for k, v in enumerate(self.vias)
-            ],
-            self.hole_clearance,
-            self.hole_to_hole,
-        )
-
-    def starting_positions(self) -> list[FloatArray]:
-        return [np.array(v.via.position, dtype=float) for v in self.vias]
 
     def at(self, v: int, positions: Positions) -> Via:
         x, y = positions[v]
@@ -143,10 +123,10 @@ class MovingVias:
             zones=self._zones_by_id,
         )
 
-    def apart(self, v: int, u: int, *, own_zones_only: bool = False) -> float | None:
+    def apart(self, v: int, u: int) -> float | None:
         """The distance via v's centre keeps from via u's; None if no rule
         applies. It is the same as u's from v's, the larger of both vias'
-        zone distances, unless `own_zones_only` counts v's zones alone."""
+        zone distances."""
         return via_via_inflation(
             self.vias[v].via,
             self.vias[u].via,
@@ -154,7 +134,7 @@ class MovingVias:
             hole_clearance=self.hole_clearance,
             hole_to_hole=self.hole_to_hole,
             zones=self.vias[v].zones,
-            other_zones=() if own_zones_only else self.vias[u].zones,
+            other_zones=self.vias[u].zones,
         )
 
     def rings(self, v: int) -> dict[int, float]:
@@ -175,31 +155,6 @@ class MovingVias:
             rings[i] = ring
         return rings
 
-    def distances(
-        self, positions: Positions, polylines: Sequence[FloatArray]
-    ) -> list[float]:
-        """Each via's free distance (`free_distances`) with the chains near
-        it at `polylines` and the other vias at `positions`, by its own zones
-        alone: two vias keep the larger of their zone distances, so when a
-        via starts inside the other's, the other starts inside it too,
-        stays, and is seen without its zones (`standing`)."""
-        count = len(self.vias)
-        apart = [
-            {
-                u: d
-                for u in range(count)
-                if u != v and (d := self.apart(v, u, own_zones_only=True)) is not None
-            }
-            for v in range(count)
-        ]
-        sight = ViaSight(
-            range(count),
-            [self.rings(v) for v in range(count)],
-            apart,
-            len(self.chains),
-        )
-        return free_distances(self.vias, sight, polylines, positions)
-
 
 def free_distances(
     vias: Sequence[ViaInput],
@@ -207,11 +162,11 @@ def free_distances(
     polylines: Sequence[FloatArray],
     positions: Positions,
 ) -> list[float]:
-    """The free distance of each via `sight` looks from, in order: to its
-    static copper and stops (`ViaInput.limits`), and to what `sight` finds
-    of the chains or members at `polylines` and the vias at `positions`."""
+    """The free distance of each via, in order: to its static copper
+    (`ViaInput.copper`), and to what `sight` finds of the chains or members
+    at `polylines` and the vias at `positions`."""
     cross = sight.nearest(polylines, positions, math.inf).distance
     return [
-        min(point_distance(vias[k].limits, positions[k]), float(d))
-        for k, d in zip(map(int, sight.looking), cross, strict=True)
+        min(point_distance(vias[k].copper, positions[k]), float(d))
+        for k, d in enumerate(cross)
     ]

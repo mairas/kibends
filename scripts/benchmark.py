@@ -32,8 +32,8 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings; width-change is skipped for a tree without it,
-  whose neck-down is another geometry.
+  at default settings; width-change and starts-inside are each skipped for
+  a tree without them (an older tree's neck-down is another geometry).
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Three go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
@@ -413,7 +413,11 @@ def scenario_cases() -> dict[str, Case]:
         "channel-1": single(lambda: scenarios.channel(1.0)),
         "topology": single(scenarios.topology),
         "pad-row": single(scenarios.pad_row),
-        "frozen": single(scenarios.frozen),
+        **(
+            {"starts-inside": single(scenarios.starts_inside)}
+            if hasattr(scenarios, "starts_inside")
+            else {}
+        ),
         "detour": single(scenarios.detour),
         "narrow-gap": single(scenarios.narrow_gap),
         "channel-pair": several(scenarios.channel_pair),
@@ -483,6 +487,8 @@ def scenarios_table() -> None:
         f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
         f"| {total.step:.2f} | |"
     )
+    if not hasattr(scenarios, "starts_inside"):
+        print("starts-inside: skipped, the tree has no scenarios.starts_inside")
 
 
 CROSSED = {

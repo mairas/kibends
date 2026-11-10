@@ -86,7 +86,6 @@ from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
 from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
-    FrozenVertex,
     PairResult,
     PolylineStats,
     RunResult,
@@ -165,7 +164,8 @@ class ChainReport:
     width: float
     """mm."""
     description: str
-    """How warnings and other chains' frozen vertices name this chain."""
+    """The chain as the optimizer's and simplification's log lines name it
+    (`ChainCentreline.description`)."""
     tracks: int
     """Selected tracks it replaces, counting a track split at a junction in
     each chain that has a part of it."""
@@ -173,7 +173,6 @@ class ChainReport:
     after: PolylineStats
     """Of the simplified result, or of the selection when unchanged, with the
     other chains at their simplified results."""
-    frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
     changed: bool
     """False when the result equals the selected tracks and the chain shares
@@ -189,9 +188,6 @@ class ViaReport:
     start: Point2
     end: Point2
     """On KiCad's 1 nm grid, mm."""
-    frozen: bool
-    """It started inside its clearance or a rule area keeping out vias and
-    was left in place."""
     rejected_edges: int
 
     @property
@@ -217,8 +213,6 @@ class PairReport:
     """Coupled sections left as they are: same-net copper touches them
     between their ends, their routing bends too tightly, or the copper
     around them kept them from rounding a corner (`Hold`)."""
-    frozen: tuple[FrozenVertex, ...]
-    """Of the coupled sections' centrelines."""
     rejected_edges: int
 
 
@@ -302,7 +296,6 @@ class _WholeResult:
 
     polyline: FloatArray
     before: PolylineStats
-    frozen: tuple[FrozenVertex, ...]
     rejected_edges: int
 
 
@@ -925,9 +918,7 @@ def _simplify(
     results = [
         *run.chains,
         *(
-            ChainResult(
-                r.centreline, r.fixed, 0, (), r.before, no_contacts(r.centreline)
-            )
+            ChainResult(r.centreline, r.fixed, 0, r.before, no_contacts(r.centreline))
             for r in run.pairs
         ),
     ]
@@ -955,11 +946,7 @@ def _via_reports(
     reports: list[ViaReport] = []
     for m, result in zip(movable, run.vias, strict=True):
         (end,) = snapped_points(np.array([result.position]))
-        reports.append(
-            ViaReport(
-                m.via.id, m.via.position, end, result.frozen, result.rejected_edges
-            )
-        )
+        reports.append(ViaReport(m.via.id, m.via.position, end, result.rejected_edges))
     return tuple(reports)
 
 
@@ -973,9 +960,7 @@ def _with_vias(
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(
-        inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE
-    ).standing({k for k, r in enumerate(vias) if r.frozen})
+    moving = MovingVias(inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE)
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
@@ -1005,9 +990,7 @@ def _whole_results(
     for k, slot in enumerate(layout.slots):
         if slot is not None:
             r = run.chains[slot]
-            results.append(
-                _WholeResult(r.polyline, r.before, r.frozen, r.rejected_edges)
-            )
+            results.append(_WholeResult(r.polyline, r.before, r.rejected_edges))
             continue
         pieces = [
             run.chains[s.piece] for s in layout.stretches[k] if s.piece is not None
@@ -1020,7 +1003,6 @@ def _whole_results(
             _WholeResult(
                 unsimplified[k],
                 measure(originals[k], field, DEFAULT_SETTINGS.spacing),
-                tuple(v for p in pieces for v in p.frozen),
                 sum(p.rejected_edges for p in pieces),
             )
         )
@@ -1054,7 +1036,6 @@ def _pair_reports(
                 skew_after=abs(after[0].length - after[1].length),
                 sections=len(sections),
                 held=sum(r.block.held for r in ours),
-                frozen=tuple(v for r in ours for v in r.frozen),
                 rejected_edges=sum(r.rejected_edges for r in ours),
             )
         )
@@ -1107,7 +1088,6 @@ def _chain_reports(
                 tracks=len(chain.segment_ids),
                 before=result.before,
                 after=measure(after, field, DEFAULT_SETTINGS.spacing),
-                frozen=result.frozen,
                 rejected_edges=result.rejected_edges,
                 changed=changed,
             )
@@ -1151,7 +1131,6 @@ def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> 
                 original=given.centreline.points,
                 optimised=unsimplified,
                 simplified=polyline,
-                frozen=r.frozen,
                 vias=[
                     (v.start, v.end)
                     for m, v in zip(read.movable, outcome.via_reports, strict=True)

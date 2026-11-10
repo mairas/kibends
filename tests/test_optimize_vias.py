@@ -1,12 +1,13 @@
 # pyright: reportPrivateUsage=false
 """Moving vias through `optimize.optimize_chains`: carried chain ends,
-stitching vias, zone containment and frozen vias.
+stitching vias, zone containment and vias that start inside their
+clearance.
 
 The problem's energy and gradient with moving vias are checked against a
 reference built via by via (`reference_via_energy`)."""
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -90,7 +91,6 @@ class TestDetour:
         x, y = via.position
 
         assert detour.termination is Termination.CONVERGED
-        assert not via.frozen
         assert y == pytest.approx(0.0, abs=0.1)
         assert route_length(detour) == pytest.approx(10.0, abs=0.01)
         assert x == pytest.approx(5.0, abs=0.5)
@@ -184,12 +184,104 @@ def plane(bottom: float) -> ViaZone:
 MARGIN = plane(0).margin
 
 
+def squeezed(field: ObstacleField, bottom: float) -> ViasScenario:
+    """The detour route with its via in `plane(bottom)` and `field` its
+    static field."""
+    via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
+    return ViasScenario(
+        "via-squeezed",
+        scenarios.route("N", scenarios.DETOUR_VIA),
+        (replace(scenarios.joining(via, 0, field), zones=(plane(bottom),)),),
+    )
+
+
+WALL_DEPTH = 0.1
+"""How far the via starts inside a wall's clearance, mm."""
+ZONE_SLACK = 0.05
+"""How far inside its zone's margin the via starts, mm."""
+
+
+SLACK_STRAIGHT = 10.01
+"""The slack chain's length once straight, at most, mm."""
+
+
+def test_a_via_pushed_out_of_a_clearance_stays_inside_its_zone() -> None:
+    # The wall above the zone's edge pushes the via toward that edge.
+    edge = scenarios.DETOUR_VIA[1] - ZONE_SLACK
+    wall = Box(5.0, scenarios.DETOUR_VIA[1] - WALL_DEPTH + 5.0, 20.0, 5.0)
+
+    scenario = squeezed(wall, edge - MARGIN)
+    # A slack chain of another net in the same problem, far from the via:
+    # moving the via back, not refusing the whole burst, lets it straighten.
+    slack = selected("P", "P", FreeSpace(), (0.0, -5.0), (5.0, -3.0), (10.0, -5.0))
+
+    result = run(replace(scenario, chains=(*scenario.chains, slack)))
+
+    (via,) = result.vias
+    assert via.position[1] >= edge - INSIDE_TOLERANCE
+    assert length(result.chains[-1].polyline) < SLACK_STRAIGHT
+
+
+WALL_GAP = 0.02
+"""How far the via starts clear of the wall's clearance, mm."""
+
+
+def test_a_via_pushed_out_of_its_own_net_s_stop_keeps_clear_of_a_wall() -> None:
+    # The stop below pushes the via up toward the wall of another net.
+    x, y = scenarios.DETOUR_VIA
+    wall = Box(x, y - WALL_GAP - 5.0, 20.0, 5.0)
+    stop = Box(x, y - WALL_DEPTH + 5.0, 20.0, 5.0)
+    via = scenarios.through_via("v", "N", scenarios.DETOUR_VIA)
+    scenario = ViasScenario(
+        "via-stopped",
+        scenarios.route("N", scenarios.DETOUR_VIA),
+        (replace(scenarios.joining(via, 0, wall), own_net=stop),),
+    )
+
+    result = run(scenario)
+
+    (moved,) = result.vias
+    at = np.array([moved.position])
+    assert float(wall.signed_distance(at)[0][0]) >= -INSIDE_TOLERANCE
+
+
+GUARD_STEP = 0.02
+"""How far the guard test moves the via, mm."""
+
+
+@pytest.mark.parametrize(
+    ("step", "taken"),
+    [
+        ((-GUARD_STEP, 0.0), False),
+        ((GUARD_STEP, 0.0), True),
+        ((0.0, -GUARD_STEP), False),
+        ((0.0, GUARD_STEP), True),
+    ],
+    ids=["deeper-in-field", "shallower-in-field", "deeper-in-stops", "shallower"],
+)
+def test_the_guard_takes_a_via_starting_inside_only_shallower(
+    step: tuple[float, float], taken: bool
+) -> None:
+    # Inside a wall left of it, deeper than it is outside its zone below it:
+    # moving along x changes only the one, along y only the other.
+    x, y = scenarios.DETOUR_VIA
+    wall = Box(x + WALL_DEPTH - 50.0, y, 50.0, 50.0)
+    scenario = squeezed(wall, y + ZONE_SLACK - MARGIN)
+    (placed,) = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+    )
+    problem = placed.problem
+
+    moved = [problem.positions[0] + np.array(step)]
+
+    assert problem.guard(problem.points, problem.masks, moved) is taken
+
+
 class TestInsideAZone:
     def test_the_via_moves_within_the_region(self) -> None:
         result = run(in_zone(-1.0))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position[1] == pytest.approx(0.0, abs=0.1)
 
     def test_a_pull_toward_the_region_s_edge_is_held_at_it(self) -> None:
@@ -198,7 +290,6 @@ class TestInsideAZone:
         result = run(in_zone(bottom))
 
         (via,) = result.vias
-        assert not via.frozen
         # The clearance hinge, which starts `standoff` from the margin, holds
         # it against the pull of the route.
         edge = bottom + MARGIN
@@ -212,7 +303,6 @@ class TestInsideAZone:
         result = run(in_zone(1.5, big))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position[1] == pytest.approx(0.0, abs=0.1)
 
     def test_the_via_crosses_the_seam_of_zones_meeting_edge_to_edge(self) -> None:
@@ -223,7 +313,6 @@ class TestInsideAZone:
         result = run(in_zone(1.5, below))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position[1] == pytest.approx(0.0, abs=0.1)
 
     def test_a_pull_toward_the_union_s_edge_is_held_at_it(self) -> None:
@@ -233,17 +322,21 @@ class TestInsideAZone:
         result = run(in_zone(bottom, inner))
 
         (via,) = result.vias
-        assert not via.frozen
         edge = bottom + MARGIN
         assert edge - INSIDE_TOLERANCE <= via.position[1]
         assert via.position[1] <= edge + scenarios.PARAMS.standoff
 
-    def test_a_via_whose_centre_starts_shallower_than_the_margin_stays(self) -> None:
-        result = run(in_zone(scenarios.DETOUR_VIA[1] - MARGIN / 2))
+    def test_a_via_whose_centre_starts_shallower_than_the_margin_moves_in(
+        self,
+    ) -> None:
+        bottom = scenarios.DETOUR_VIA[1] - MARGIN / 2
+
+        result = run(in_zone(bottom))
 
         (via,) = result.vias
-        assert via.frozen
-        assert via.position == scenarios.DETOUR_VIA
+        edge = bottom + MARGIN
+        assert edge - INSIDE_TOLERANCE <= via.position[1]
+        assert via.position[1] <= edge + scenarios.PARAMS.standoff
 
 
 def layer(name: str, via_keepouts: tuple[BaseGeometry, ...] = ()) -> LayerSnapshot:
@@ -282,7 +375,6 @@ class TestViaKeepout:
         result = run(below_keepout(top))
 
         (via,) = result.vias
-        assert not via.frozen
         # Held where its ring meets the keepout: the clearance hinge, which
         # starts `standoff` from that edge, holds it against the pull of the
         # route.
@@ -290,12 +382,15 @@ class TestViaKeepout:
         assert edge - INSIDE_TOLERANCE <= via.position[1]
         assert via.position[1] <= edge + scenarios.PARAMS.standoff
 
-    def test_a_via_starting_inside_one_stays(self) -> None:
-        result = run(below_keepout(scenarios.DETOUR_VIA[1] + 0.1))
+    def test_a_via_starting_inside_one_ends_outside_it(self) -> None:
+        top = scenarios.DETOUR_VIA[1] + 0.1
+
+        result = run(below_keepout(top))
 
         (via,) = result.vias
-        assert via.frozen
-        assert via.position == scenarios.DETOUR_VIA
+        edge = top + scenarios.VIA_DIAMETER / 2
+        assert edge - INSIDE_TOLERANCE <= via.position[1]
+        assert via.position[1] <= edge + scenarios.PARAMS.standoff
 
 
 def test_a_move_cutting_an_edge_across_a_corner_is_undone() -> None:
@@ -480,12 +575,9 @@ class TestZoneClearanceToMembers:
         assert math.dist(a, b) >= expected - INSIDE_TOLERANCE
         assert math.dist(a, b) < expected + 0.1
 
-    def test_a_via_inside_another_s_zone_distance_holds_only_that_one(
-        self,
-    ) -> None:
+    def test_two_vias_inside_one_s_zone_distance_move_apart(self) -> None:
         # 0.85 mm apart: more than the netclass distance, less than the
-        # zoned via's. The zoned via stays, as an unselected via, and the
-        # other is free to go.
+        # zoned via's.
         lower = (5.0, -2.0)
         upper = (5.0, -2.0 + 0.85)
         level = scenarios.PAIR_LEVEL
@@ -501,12 +593,15 @@ class TestZoneClearanceToMembers:
             ),
         )
 
-        result = run(zoned(scenario, 0, "In1.Cu"))
+        given = zoned(scenario, 0, "In1.Cu")
 
-        a, b = result.vias
-        assert a.frozen and a.position == lower
-        assert not b.frozen
-        assert b.position[1] > upper[1] + 0.5
+        result = run(given)
+
+        a, b = (v.position for v in result.vias)
+        assert a != lower
+        apart = moving_vias(given).apart(0, 1)
+        assert apart is not None and apart > math.dist(lower, upper)
+        assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
 
     def test_two_vias_keep_the_larger_of_their_distances_both_ways(self) -> None:
         vias = moving_vias(zoned(scenarios.via_pair(), 0, "In1.Cu"))
@@ -606,24 +701,25 @@ def test_chains_straighten_under_a_via_that_stays(field: ObstacleField) -> None:
     assert route_length(result) == pytest.approx(10.0, abs=0.01)
 
 
-def buried() -> ViasScenario:
-    """The detour route with its via starting deep in its clearance."""
+BURIED_IN = Disc(5.0, 3.5, 1.0)
+"""Static copper whose clearance the detour's via starts 0.5 mm deep in."""
+
+
+def test_a_via_starting_deep_in_its_clearance_moves_out_with_its_ends() -> None:
     scenario = scenarios.via_detour()
-    (via,) = scenario.vias
-    return replace(scenario, vias=(replace(via, field=Disc(5.0, 3.0, 1.0)),))
+    (given,) = scenario.vias
 
-
-def test_a_via_starting_deep_in_its_clearance_stays() -> None:
-    result = run(buried())
+    result = run(replace(scenario, vias=(replace(given, field=BURIED_IN),)))
 
     (via,) = result.vias
     top, bottom = (c.polyline for c in result.chains)
-    assert via.frozen
-    assert via.position == scenarios.DETOUR_VIA
-    assert tuple(top[-1]) == tuple(bottom[0]) == scenarios.DETOUR_VIA
+    assert math.dist(via.position, (BURIED_IN.cx, BURIED_IN.cy)) >= (
+        BURIED_IN.radius - INSIDE_TOLERANCE
+    )
+    assert tuple(top[-1]) == tuple(bottom[0]) == via.position
 
 
-def test_a_junction_at_a_via_that_stays_stays_on_it() -> None:
+def test_a_junction_at_a_via_starting_inside_its_clearance_moves_with_it() -> None:
     at = (5.0, 3.0)
 
     def loose(chain: ChainInput, end: int) -> ChainInput:
@@ -641,15 +737,17 @@ def test_a_junction_at_a_via_that_stays_stays_on_it() -> None:
     via = ViaInput(
         scenarios.through_via("v", "N", at),
         (*ends, ChainEnd(3, False)),
-        Disc(*at, 1.0),
+        BURIED_IN,
         scenarios.PAIR_CLEARANCE,
     )
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE, [via])
 
-    assert result.vias[0].frozen
-    a, b, c, _ = (chain.polyline for chain in result.chains)
-    assert tuple(a[-1]) == tuple(b[0]) == tuple(c[0]) == at
+    (moved,) = result.vias
+    assert moved.position != at
+    a, b, c, d = (chain.polyline for chain in result.chains)
+    assert tuple(a[-1]) == tuple(b[0]) == tuple(c[0]) == tuple(d[0])
+    assert tuple(d[0]) == moved.position
 
 
 def static_vias() -> tuple[StaticVia, ...]:
@@ -669,13 +767,8 @@ def static_vias() -> tuple[StaticVia, ...]:
     )
 
 
-@pytest.mark.parametrize(
-    ("scenario", "kept"), [(scenarios.via_detour, {"g", "b"}), (buried, set[str]())]
-)
-def test_a_problem_keeps_the_static_vias_its_moving_vias_meet(
-    scenario: Callable[[], ViasScenario], kept: set[str]
-) -> None:
-    given = scenario()
+def test_a_problem_keeps_the_static_vias_its_moving_vias_meet() -> None:
+    given = scenarios.via_detour()
 
     placed = optimize_module._problems(
         given.chains,
@@ -687,11 +780,9 @@ def test_a_problem_keeps_the_static_vias_its_moving_vias_meet(
         static_vias(),
     )
 
-    # A via that stays is its problems' own, standing still, and meets none.
     vias = [v for p in placed for v in p.problem.vias]
     assert {v.given.via.id for v in vias} == {"v"}
-    assert all(v.frozen == (scenario is buried) for v in vias)
-    assert {s.via.id for p in placed for s in p.problem.static_vias} == kept
+    assert {s.via.id for p in placed for s in p.problem.static_vias} == {"g", "b"}
 
 
 def test_static_vias_it_does_not_pair_with_leave_the_result_as_it_is() -> None:
@@ -709,10 +800,22 @@ def test_static_vias_it_does_not_pair_with_leave_the_result_as_it_is() -> None:
 
 
 def test_layers_without_a_moving_via_stay_independent() -> None:
-    scenario = buried()
+    # A buried stitching via ties In1.Cu and In2.Cu, which no chain is on.
+    buried_via = replace(
+        scenarios.through_via("s", "G", (5.0, 6.0)),
+        kind=ViaKind.BURIED,
+        span=("In1.Cu", "In2.Cu"),
+    )
+    stitching = ViaInput(buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE)
+    scenario = replace(scenarios.via_detour(), vias=(stitching,))
     params = scenario.params
 
     result = run(scenario)
+
+    placed = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), params, COARSE, None
+    )
+    assert sorted(len(p.problem.vias) for p in placed) == [0, 0, 1]
 
     for chain, given in zip(result.chains, scenario.chains, strict=True):
         alone = optimize_chains([given], params, COARSE)
@@ -940,9 +1043,9 @@ class TestGradient:
     def test_with_vias_that_repel_stop_or_stand_still_and_a_zone_edge(
         self, seed: int
     ) -> None:
-        # A G via frozen inside the track's clearance; a moving G via at the
-        # edge of its zone, near the frozen one and an unselected G via; and
-        # a moving H via within range of it and of the track.
+        # A G via starting inside the track's clearance; a G via at the edge
+        # of its zone, near that one and an unselected G via; and an H via
+        # within range of it and of the track.
         start = 0.9
         scenario = stitched(start, top=start + STITCH_MARGIN + 0.005)
         (moving,) = scenario.vias
@@ -950,7 +1053,7 @@ class TestGradient:
         still = scenarios.through_via("u", "G", beside)
         layers = [replace(layer(name), vias=(still,)) for name in moving.via.span]
         low = (STITCH_X, scenarios.VIA_TO_CHAIN / 2)
-        frozen = replace(moving, via=scenarios.through_via("f", "G", low))
+        inside = replace(moving, via=scenarios.through_via("f", "G", low))
         plane = {name: box(0, -5, 10, 10) for name in moving.via.span}
         other = ViaInput(
             scenarios.through_via("h", "H", (STITCH_X + 1.0, 1.3)),
@@ -960,7 +1063,7 @@ class TestGradient:
             (ViaZone("h-plane", plane, 0.2, 0.0),),
         )
         vias = (
-            frozen,
+            inside,
             replace(moving, own_net=own_net_stops(layers, moving.via)),
             other,
         )
@@ -1127,7 +1230,6 @@ class TestStitchingVia:
         result = run(stitched(start, top=top))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
         # The zone's edge only stops it, so the track's push takes it there.
         edge = top - STITCH_MARGIN
@@ -1142,7 +1244,6 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + STITCH_MARGIN + 0.3))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
 
     def test_two_of_one_net_within_range_of_each_other_stay(self) -> None:
@@ -1151,7 +1252,6 @@ class TestStitchingVia:
 
         result = run(stitched(low, high, top=high + 3.0))
 
-        assert [v.frozen for v in result.vias] == [False, False]
         assert result.vias[0].position == pytest.approx((STITCH_X, low), abs=1e-6)
         assert result.vias[1].position == pytest.approx((STITCH_X, high), abs=1e-6)
 
@@ -1163,7 +1263,6 @@ class TestStitchingVia:
 
         result = run(stitched(low, high, top=high + 3.0, nets=("G", "H")))
 
-        assert [v.frozen for v in result.vias] == [False, False]
         apart = result.vias[1].position[1] - result.vias[0].position[1]
         assert apart > high - low + 0.1
 
@@ -1187,7 +1286,6 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + 2.0, nets=("S",)))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
 
     def test_one_with_nothing_in_range_stays(self) -> None:
@@ -1196,17 +1294,15 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + 2.0))
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
 
-    def test_one_starting_inside_its_clearance_stays_as_unselected(self) -> None:
+    def test_one_starting_inside_its_clearance_backs_out_of_it(self) -> None:
         start = scenarios.VIA_TO_CHAIN / 2
 
         result = run(stitched(start, top=1.3))
 
         (via,) = result.vias
-        assert via.frozen
-        assert via.position == (STITCH_X, start)
+        assert via.position[1] >= scenarios.VIA_TO_CHAIN - INSIDE_TOLERANCE
 
 
 def reference_via_energy(
@@ -1225,8 +1321,8 @@ def reference_via_energy(
         problem.via_repel.nearest(polylines, positions, problem.reach),
         problem.via_stop.nearest(polylines, positions, problem.reach),
     )
-    for n, k in enumerate(problem.free_vias):
-        given = problem.vias[k].given
+    for k, via in enumerate(problem.vias):
+        given = via.given
         at = positions[k]
         for static, near, integrand in (
             (given.field, sights[0], problem.integrand),
@@ -1236,20 +1332,20 @@ def reference_via_energy(
             if static is not None:
                 d, g = static.signed_distance(at[None], problem.reach)
                 distance, direction = float(d[0]), g[0]
-            nearer = float(near.distance[n]) < distance
+            nearer = float(near.distance[k]) < distance
             if nearer:
-                distance, direction = float(near.distance[n]), near.gradient[n]
+                distance, direction = float(near.distance[k]), near.gradient[k]
             term, slope = integrand(np.array([distance]))
             value += given.via.diameter * float(term[0])
             push = given.via.diameter * slope[0] * direction
             via_gradients[k] += push
             if not nearer:
                 continue
-            j, first = int(near.member[n]), int(near.vertex[n])
+            j, first = int(near.member[k]), int(near.vertex[k])
             if j < 0:
                 via_gradients[first] -= push
                 continue
-            start, along = near.starts[n], near.ends[n] - near.starts[n]
+            start, along = near.starts[k], near.ends[k] - near.starts[k]
             squared = float(along @ along)
             t = float(np.clip((at - start) @ along / squared, 0, 1)) if squared else 0
             gradients[j][first] -= (1 - t) * push
@@ -1257,10 +1353,10 @@ def reference_via_energy(
     return value, gradients, via_gradients
 
 
-FROZEN_X = STITCH_X + 2.5
-FROZEN_X_ABOVE = 1.2
-"""The height of the G via above the frozen one, nearer to it than to the
-chain below."""
+INSIDE_X = STITCH_X + 2.5
+INSIDE_X_ABOVE = 1.2
+"""The height of the G via above the one starting inside the chain's
+clearance, nearer to it than to the chain below."""
 
 
 def stitched_grid() -> ViasScenario:
@@ -1268,18 +1364,18 @@ def stitched_grid() -> ViasScenario:
     a pinned chain of net T above its zone, close enough to stop and repel
     each other and to meet their zone's edge, the bottom row seeing the
     chain below and the top row the chain above; an unselected G via
-    standing still among them; and, first of all, an H via frozen inside the
-    lower chain's clearance, nearer than that chain to a G via above it."""
+    standing still among them; and, first of all, an H via starting inside
+    the lower chain's clearance, nearer than that chain to a G via above it."""
     heights = [0.9 + 0.55 * row for row in range(4)]
     top = heights[-1] + STITCH_MARGIN + 0.005
-    scenario = stitched(*heights, FROZEN_X_ABOVE, top=top)
+    scenario = stitched(*heights, INSIDE_X_ABOVE, top=top)
     still = scenarios.through_via("u", "G", (STITCH_X + HOLES_APART + 0.005, 0.9))
-    frozen = scenarios.through_via("f", "H", (FROZEN_X, 0.2))
-    vias = [ViaInput(frozen, (), FreeSpace(), scenarios.PAIR_CLEARANCE)]
+    inside = scenarios.through_via("f", "H", (INSIDE_X, 0.2))
+    vias = [ViaInput(inside, (), FreeSpace(), scenarios.PAIR_CLEARANCE)]
     for k, given in enumerate(scenario.vias):
         x = STITCH_X + (0.6 if k % 2 else 0.0)
-        if given.via.position[1] == FROZEN_X_ABOVE:
-            x = FROZEN_X
+        if given.via.position[1] == INSIDE_X_ABOVE:
+            x = INSIDE_X
         net = "H" if k == 2 else "G"
         via = replace(given.via, net=net, position=(x, given.via.position[1]))
         layers = [replace(layer(name), vias=(still,)) for name in via.span]
@@ -1321,7 +1417,7 @@ class TestViaEnergy:
         placed = optimize_module._problems(
             scenario.chains, [], moving_vias(scenario), params, COARSE, None
         )
-        problems = [p.problem for p in placed if p.problem.free_vias]
+        problems = [p.problem for p in placed if p.problem.vias]
         assert problems
         rng = np.random.default_rng(7)
         for problem in problems:
@@ -1361,7 +1457,7 @@ def reference_pair_energy(
     attraction = attraction_integrand(params)
     gradient = np.zeros((len(problem.vias), 2))
     value = 0.0
-    for k in problem.free_vias:
+    for k in range(len(problem.vias)):
         given = problem.vias[k].given
         others: list[tuple[int | None, FloatArray, StaticVia, float]] = [
             (u, positions[u], static_of(v.given), problem.vias[k].apart[u])
@@ -1468,9 +1564,9 @@ def grounded_grid() -> ViasScenario:
     return replace(scenario, vias=vias, params=RETURN_PARAMS)
 
 
-def frozen_ground() -> ViasScenario:
+def inside_ground() -> ViasScenario:
     """`returned` with a GND via that starts deep inside the via's
-    clearance, and stays."""
+    clearance."""
     return returned(grounded("f", (5.3, 3.0)), grounded("g", (5.0, 4.2)))
 
 
@@ -1488,7 +1584,7 @@ PAIR_ENERGY_SCENARIOS = {
     "far-return": far_return,
     "far-spread": far_spread,
     "zoned": lambda: zoned(returned(grounded("g", (5.0, 4.2))), 0, "In1.Cu"),
-    "frozen": frozen_ground,
+    "starts-inside": inside_ground,
     "grid": grounded_grid,
 }
 
@@ -1510,7 +1606,7 @@ class TestPairEnergy:
             None,
             GROUND_STATIC,
         )
-        problems = [p.problem for p in placed if p.problem.free_vias]
+        problems = [p.problem for p in placed if p.problem.vias]
         assert problems
         rng = np.random.default_rng(5)
         for problem in problems:
@@ -1613,7 +1709,6 @@ class TestReturnVia:
             s.via.id: s.via.position for s in static
         }
         for v, given in zip(result.vias, moving, strict=True):
-            assert not v.frozen
             ends[given.via.id] = v.position
         distance = math.dist(ends["s"], ends["g"])
         assert distance == pytest.approx(NEUTRAL, abs=SETTLED)
@@ -1673,7 +1768,6 @@ class TestReturnVia:
         )
 
         (via,) = result.vias
-        assert not via.frozen
         assert via.position[1] < scenarios.DETOUR_VIA[1] - 1.0
         distance = math.dist(via.position, under.via.position)
         assert distance > scenarios.VIA_TO_VIA + RETURN_PARAMS.standoff
@@ -1698,28 +1792,6 @@ class TestReturnVia:
         assert result.termination is Termination.CONVERGED
         assert edge - RETURN_PARAMS.standoff <= via.position[1]
         assert via.position[1] <= edge + INSIDE_TOLERANCE
-
-    def test_which_vias_start_frozen_is_unchanged(self) -> None:
-        paired = frozen_ground()
-        plain = replace(
-            paired,
-            vias=tuple(replace(v, ground=False) for v in paired.vias),
-            params=STITCH_PARAMS,
-        )
-
-        frozen = [
-            [
-                v.frozen
-                for p in optimize_module._problems(
-                    s.chains, [], moving_vias(s), s.params, COARSE, None, GROUND_STATIC
-                )
-                for v in p.problem.vias
-            ]
-            for s in (paired, plain)
-        ]
-
-        assert frozen[0] == frozen[1]
-        assert frozen[0].count(True) == 2
 
 
 GROUND_RINGS = scenarios.VIA_TO_VIA
@@ -1751,7 +1823,6 @@ class TestGroundVias:
 
         result = ground_run([stitching("a", "GND", low), stitching("b", "GND", high)])
 
-        assert [v.frozen for v in result.vias] == [False, False]
         a, b = (v.position for v in result.vias)
         assert math.dist(a, b) > GROUND_RINGS
 
@@ -1816,7 +1887,6 @@ class TestGroundVias:
 
         result = ground_run([stitching("g", "GND", (0.0, 2.0 + start)), agnd])
 
-        assert [v.frozen for v in result.vias] == [False, False]
         a, b = (v.position for v in result.vias)
         assert math.dist(a, b) > start
 
@@ -1839,7 +1909,6 @@ class TestGroundVias:
         )
 
         (moved,) = result.vias
-        assert not moved.frozen
         assert moved.position[1] < scenarios.DETOUR_VIA[1] - 1.0
         distance = math.dist(moved.position, under.via.position)
         assert distance >= scenarios.VIA_TO_VIA - INSIDE_TOLERANCE

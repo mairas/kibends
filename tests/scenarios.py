@@ -108,14 +108,14 @@ def pad_row() -> Scenario:
     )
 
 
-FROZEN_DISC = Disc(5.0, 0.0, 1.0)
-FROZEN_VERTEX = (5.0, -0.5)
+INSIDE_DISC = Disc(5.0, 0.0, 1.0)
+INSIDE_VERTEX = (5.0, -0.5)
 
 
-def frozen() -> Scenario:
+def starts_inside() -> Scenario:
     """Path with a kink to pull out and a vertex deep inside a disc."""
-    polyline, fixed = chain((0.0, -2.0), (2.5, -4.0), FROZEN_VERTEX, (10.0, -2.0))
-    return Scenario("frozen", polyline, fixed, FROZEN_DISC)
+    polyline, fixed = chain((0.0, -2.0), (2.5, -4.0), INSIDE_VERTEX, (10.0, -2.0))
+    return Scenario("starts-inside", polyline, fixed, INSIDE_DISC)
 
 
 DETOUR_HALF_WIDTH = ENVELOPE

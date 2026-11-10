@@ -13,6 +13,7 @@ either: the states here have no such point. A grid of routes whose vias
 stand in line has them at the start, where a member's end lies midway
 between the vias above and below it."""
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
@@ -20,7 +21,7 @@ import numpy as np
 import pytest
 import scenarios
 from distance_fields import FloatArray, FreeSpace
-from reference_fields import chain_obstacles_for_via, via_obstacles_for_via
+from reference_fields import chain_obstacles_for_via
 from scenarios import ChainsScenario, PairsScenario, ViasScenario, selected
 from shapely.geometry import box
 
@@ -30,7 +31,6 @@ from kibends.energy import (
     BoolArray,
     EnergyParams,
     IntArray,
-    ObstacleField,
     bend_radius_energy,
     edge_integral,
     obstacle_integrand,
@@ -44,7 +44,7 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     ChainField,
-    CompositeField,
+    via_via_inflation,
     zones_on,
 )
 from kibends.optimize import LIST_SKIN
@@ -377,12 +377,14 @@ def _reference_view(
     positions: Sequence[FloatArray],
     *,
     unpaired: bool = False,
+    other_nets: bool = False,
 ) -> tuple[ChainField, FloatArray, FloatArray, list[tuple[int, int]]]:
     """What via k sees of the members and the other vias, as a field of its
     own, its edges' starts and ends, and each edge's member and first
     vertex, or -1 and the via; `unpaired` leaves out the vias that only stop
     it, of its net, and those the pairwise term takes instead, of other
-    nets where either is a ground via."""
+    nets where either is a ground via; `other_nets` leaves out only the
+    vias of its net."""
     via = problem.vias[k]
     starts = [np.empty((0, 2))]
     ends = [np.empty((0, 2))]
@@ -405,6 +407,8 @@ def _reference_view(
             other.via.net == via.given.via.net or other.ground or via.given.ground
         ):
             continue
+        if other_nets and other.via.net == via.given.via.net:
+            continue
         starts.append(positions[u][None])
         ends.append(positions[u][None])
         inflations.append(np.array([apart]))
@@ -418,19 +422,17 @@ def _reference_distances(
     polylines: Sequence[FloatArray],
     positions: Sequence[FloatArray],
 ) -> list[float]:
-    """`_Problem.via_distances` with a field of each via's own view."""
+    """`_Problem.via_distances` with a field of each via's own view of the
+    copper of other nets."""
     return [
         min(
-            float(
-                problem.vias[k].given.field.signed_distance(positions[k][None])[0][0]
-            ),
-            float(
-                _reference_view(problem, k, polylines, positions)[0].signed_distance(
-                    positions[k][None]
-                )[0][0]
+            point_distance(problem.vias[k].given.copper, positions[k]),
+            point_distance(
+                _reference_view(problem, k, polylines, positions, other_nets=True)[0],
+                positions[k],
             ),
         )
-        for k in problem.free_vias
+        for k in range(len(problem.vias))
     ]
 
 
@@ -443,7 +445,7 @@ def _reference_vias(
     gradients = [np.zeros_like(points) for points in polylines]
     via_gradients = np.zeros((len(problem.vias), 2))
     value = 0.0
-    for k in problem.free_vias:
+    for k in range(len(problem.vias)):
         via = problem.vias[k]
         at = positions[k][None]
         static, static_direction = via.given.field.signed_distance(at, problem.reach)
@@ -540,7 +542,7 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
 def test_the_neighbour_field_is_what_seen_parts_sees(
     make: Callable[[], Scenario],
 ) -> None:
-    """What frozen detection and the best-state guard judge against
+    """What the best-state guard and the starting statistics judge against
     (`_Problem.neighbour`) is what the energy and the edge check
     see of the other members (`seen_parts`): the same distances, at each
     member's own points and around them, at the start and moved, a
@@ -584,55 +586,6 @@ def test_the_neighbour_field_is_what_seen_parts_sees(
                 np.testing.assert_allclose(got, expected, rtol=1e-9, atol=1e-9)
 
 
-def _reference_free_distance(
-    vias: MovingVias,
-    v: int,
-    positions: Sequence[FloatArray],
-    polylines: Sequence[FloatArray],
-) -> float:
-    """Via v's free distance as the frozen judgement takes it, from fields
-    of its own: its limits, the chains of other nets on each layer it spans
-    with its zones there, and the other vias by its own zones alone."""
-    given = vias.vias[v]
-    via = given.via
-    fields: list[ObstacleField] = [given.limits]
-    for layer in dict.fromkeys(chain.layer for chain in vias.chains):
-        near = [
-            replace(chain.centreline, points=points)
-            for chain, points in zip(vias.chains, polylines, strict=True)
-            if chain.layer == layer
-            and via.reaches(layer)
-            and chain.centreline.net != via.net
-        ]
-        fields.append(
-            chain_obstacles_for_via(
-                via,
-                near,
-                vias.clearance_of,
-                hole_clearance=vias.hole_clearance,
-                zones=zones_on(given.zones, [layer]),
-            )
-        )
-    others = via_obstacles_for_via(
-        via,
-        [vias.at(u, positions) for u in range(len(vias.vias)) if u != v],
-        vias.clearance_of,
-        hole_clearance=vias.hole_clearance,
-        hole_to_hole=vias.hole_to_hole,
-        zones=given.zones,
-    )
-    if others is not None:
-        fields.append(others)
-    return point_distance(CompositeField(fields), positions[v])
-
-
-VIA_SCENARIOS = [
-    (make, name)
-    for make, name in zip(SCENARIOS, IDS, strict=True)
-    if name.startswith("via_")
-]
-
-
 ZONE_CLEARANCE = 0.4
 """Wider than the scenarios' netclass clearance, so that a zone's clearance
 sets how far its via keeps from other-net copper, mm."""
@@ -654,7 +607,7 @@ def _plane(layer: str, min_width: float = 0.2) -> ViaZone:
     return ViaZone(f"plane {layer}", {layer: PLANE}, min_width, ZONE_CLEARANCE)
 
 
-ZONED_VIA_SCENARIOS: list[tuple[Callable[[], Scenario], str]] = [
+ZONED_VIA_SCENARIOS: list[tuple[Callable[[], ViasScenario], str]] = [
     (
         lambda: _zoned(scenarios.via_beside_chain(), lambda _: (_plane("In1.Cu"),)),
         "via_beside_chain_zoned_on_its_layer",
@@ -679,39 +632,84 @@ ZONED_VIA_SCENARIOS: list[tuple[Callable[[], Scenario], str]] = [
 ]
 
 
+def _reference_free_distance(
+    problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+    k: int,
+    polylines: Sequence[FloatArray],
+    positions: Sequence[FloatArray],
+) -> float:
+    """Via k's free distance from fields of its own: its static copper, the
+    members of other nets on each layer it spans with its zones there, and
+    the vias of other nets at the larger of both vias' zone distances."""
+    given = problem.vias[k].given
+    via = given.via
+    clearances = {b.centreline.net: b.centreline.clearance for b in problem.bodies}
+    clearances |= {v.given.via.net: v.given.clearance for v in problem.vias}
+    clearance_of = clearances.__getitem__
+    distance = point_distance(given.copper, positions[k])
+    for layer in dict.fromkeys(body.layer for body in problem.bodies):
+        near = [
+            replace(body.centreline, points=points)
+            for body, points in zip(problem.bodies, polylines, strict=True)
+            if body.layer == layer
+            and via.reaches(layer)
+            and body.centreline.net != via.net
+        ]
+        if near:
+            field = chain_obstacles_for_via(
+                via,
+                near,
+                clearance_of,
+                hole_clearance=HOLE_CLEARANCE,
+                zones=zones_on(given.zones, [layer]),
+            )
+            distance = min(distance, point_distance(field, positions[k]))
+    for u, other in enumerate(problem.vias):
+        kept = (
+            None
+            if other.given.via.net == via.net
+            else via_via_inflation(
+                via,
+                other.given.via,
+                clearance_of,
+                hole_clearance=HOLE_CLEARANCE,
+                hole_to_hole=HOLE_TO_HOLE,
+                zones=given.zones,
+                other_zones=other.given.zones,
+            )
+        )
+        if kept is not None:
+            distance = min(distance, math.dist(positions[k], positions[u]) - kept)
+    return distance
+
+
 @pytest.mark.parametrize(
     "make",
-    [make for make, _ in (*VIA_SCENARIOS, *ZONED_VIA_SCENARIOS)],
-    ids=[n for _, n in (*VIA_SCENARIOS, *ZONED_VIA_SCENARIOS)],
+    [make for make, _ in ZONED_VIA_SCENARIOS],
+    ids=[name for _, name in ZONED_VIA_SCENARIOS],
 )
-def test_the_free_distance_judging_vias_frozen_is_their_own_fields(
-    make: Callable[[], Scenario],
+def test_the_free_distance_of_zoned_vias_is_their_own_fields(
+    make: Callable[[], ViasScenario],
 ) -> None:
-    """The free distance `_problems` freezes vias by (`MovingVias.distances`)
-    is what a field of each via's own view gives, at the start and moved,
-    with each via's zones on the layers they lie on, and by its own zones
-    alone against another via."""
+    """The free distance the guard judges vias by (`_Problem.via_distances`)
+    is what fields of each via's own view give, at the start and moved, with
+    each via's zones on the layers they lie on and the larger of two vias'
+    zone distances between them."""
     scenario = make()
-    assert isinstance(scenario, ViasScenario)
-    vias = MovingVias(
-        list(scenario.chains), list(scenario.vias), HOLE_CLEARANCE, HOLE_TO_HOLE
-    )
     rng = np.random.default_rng(0)
-    originals = [chain.centreline.points for chain in vias.chains]
-    for jitter in (0.0, JITTER):
-        positions = [
-            at + jitter * rng.uniform(-1.0, 1.0, 2) for at in vias.starting_positions()
-        ]
-        polylines = [
-            points + jitter * rng.uniform(-1.0, 1.0, points.shape)
-            for points in originals
-        ]
-        np.testing.assert_allclose(
-            vias.distances(positions, polylines),
-            [
-                _reference_free_distance(vias, v, positions, polylines)
-                for v in range(len(vias.vias))
-            ],
-            rtol=1e-12,
-            atol=1e-12,
-        )
+    problems = _problems(scenario, scenario.params)
+    assert problems
+    for problem in problems:
+        layout = problem.layout(problem.points)
+        for jitter in (0.0, JITTER):
+            x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
+            polylines, positions = layout.unflatten(x)
+            np.testing.assert_allclose(
+                problem.via_distances(polylines, positions),
+                [
+                    _reference_free_distance(problem, k, polylines, positions)
+                    for k in range(len(problem.vias))
+                ],
+                rtol=1e-12,
+                atol=1e-12,
+            )

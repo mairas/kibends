@@ -24,7 +24,7 @@ so the refill reconnects it wherever the other copper ends up.
 With ground nets, the vias standing still that a moving via pairs with,
 ground with regular or of two ground nets (`vias.pairs_with`), leave its
 field and are built apart, each as the field would count it
-(`split_via_obstacles`): `vias.ViaInput.limits` takes them back in, so
+(`split_via_obstacles`): `vias.ViaInput.copper` takes them back in, so
 the distances it gives are the unsplit field's, and the optimizer's
 pairwise term (`via_pairs`) gives their energy.
 """

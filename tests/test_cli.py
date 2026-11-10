@@ -67,7 +67,7 @@ from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
-from kibends.results import FrozenVertex, PolylineStats, RunResult, Termination
+from kibends.results import PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 from kibends.vias import StaticVia, ViaInput
 
@@ -565,7 +565,6 @@ class TestSmooth:
         assert len(report.chains) == 3
         for c in report.chains:
             assert c.after.min_clearance >= -NM_ROUNDING
-            assert c.frozen == ()
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_stub_crossing_the_route_past_its_copper_is_left_behind(
@@ -1124,7 +1123,6 @@ class TestSeveralChains:
             ("SIG", "F.Cu", WIDTH, 2),
             ("SIG2", "F.Cu", WIDTH, 2),
         ]
-        assert all(c.frozen == () for c in report.chains)
         assert capsys.readouterr().out.count("Optimizer: ") == 1
 
     def test_dry_run_reports_both_and_commits_nothing(
@@ -1210,12 +1208,12 @@ class TestSeveralChains:
     # iteration cap. Measured: 3.
     SETTLED_PRESSED = 20
 
-    def test_frozen_warning_names_the_other_chain(
+    def test_chains_starting_inside_each_other_s_clearance_commit_unwarned(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
-        connect.to(off_grid(two_l_board(inner=across)))
+        board = connect.to(off_grid(two_l_board(inner=across)))
         results: list[RunResult] = []
         optimize = at(COARSE)
 
@@ -1225,17 +1223,19 @@ class TestSeveralChains:
 
         monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
-        run("--dry-run")
+        run()
 
         # The chains pressed into each other's clearance settle.
         (result,) = results
         assert result.termination is Termination.CONVERGED
         assert result.iterations <= self.SETTLED_PRESSED
-        # (4, 0) and (4.3, -1) relative to the grid origin.
-        frozen = [line for line in log if "Left the vertex at (3.000, -2.000)" in line]
-        assert len(frozen) == 1
-        assert frozen[0].startswith("WARNING")
-        assert "selected chain SIG2 on F.Cu from (3.300, -3.000)" in frozen[0]
+        # Only the board's missing outline warns.
+        assert not [
+            line
+            for line in log
+            if line.startswith("WARNING") and "Edge.Cuts" not in line
+        ]
+        assert "push_commit" in board.calls
 
     def test_run_function_reports_each_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -1261,7 +1261,6 @@ class TestSeveralChains:
             assert c.changed
             assert c.after.length < c.before.length
             assert c.after.min_clearance >= -NM_ROUNDING
-            assert c.frozen == ()
         assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
@@ -1693,7 +1692,6 @@ class TestSeveralLayers:
         ]
         for c in report.chains[1:]:
             assert c.after.min_clearance >= -NM_ROUNDING
-            assert c.frozen == ()
 
     def test_chains_crossing_on_two_layers_smooth_as_if_alone(
         self, connect: Connector
@@ -1738,6 +1736,11 @@ def detour_back() -> list[kbt.Track]:
         kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=BL.BL_B_Cu),
         kipy_track("f", "SIG", (8, 4), (8, 0), width=WIDTH, layer=BL.BL_B_Cu),
     ]
+
+
+INSIDE_PAD = (4.0, 4.65)
+"""An other-net pad whose edge is 0.1 mm from the ring of the via at VIA,
+inside its 0.2 mm clearance."""
 
 
 def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
@@ -2053,13 +2056,12 @@ class TestMovingVias:
         assert kept > 0.25 / 2 + 0.2 + 0.3  # the netclass spacing
         assert kept - INSIDE_TOLERANCE - NM_ROUNDING <= gap < kept + 0.1
 
-    def test_a_via_starting_inside_the_zone_clearance_stays_as_unselected(
-        self, connect: Connector, log: list[str]
+    def test_a_via_starting_inside_the_zone_clearance_moves_out_of_it(
+        self, connect: Connector
     ) -> None:
         # The selected OTHER route bends 0.625 mm from the via, at the
         # netclass spacing and inside the plane's 0.5 mm zone clearance plus
-        # margin. The via stays, connected as it is, and the route sees it as
-        # an unselected via.
+        # margin.
         board = moving_via_board()
         bend = (VIA[0], VIA[1] + 0.3 + 0.2 + 0.25 / 2)
         route = [
@@ -2078,12 +2080,15 @@ class TestMovingVias:
 
         run()
 
-        assert not [
-            line for line in log if line.startswith("WARNING") and "in place" in line
-        ]
         assert board.calls == COMMIT_CALLS
-        assert created_vias(board) == [] and "v" not in board.deleted
-        assert {"o1", "o2"} <= set(board.deleted)
+        assert {"v", "o1", "o2"} <= set(board.deleted)
+        (via,) = created_vias(board)
+        centre = Point(via.position.x / 1e6, via.position.y / 1e6)
+        gap = unary_union(
+            [segment(t) for t in created_on(board, BL.BL_In1_Cu)]
+        ).distance(centre)
+        kept = 0.25 / 2 + 0.5 + 0.25 / 2 + KICAD_MAX_ERROR
+        assert gap >= kept - INSIDE_TOLERANCE - NM_ROUNDING
 
     def test_a_via_at_the_edge_of_a_zone_stays_naming_the_zone(
         self, connect: Connector, log: list[str]
@@ -2114,7 +2119,6 @@ class TestMovingVias:
             "Via v at (4.000, 4.000) stays fixed: "
             "it sits at the edge of zone edge on In1.Cu"
         )
-        assert "Left via" not in "".join(log)
 
     def test_copper_touching_only_a_carried_end_holds_the_via_and_the_end(
         self, connect: Connector, log: list[str]
@@ -2184,7 +2188,7 @@ class TestMovingVias:
             assert chain.after.segment_count == 1
             assert chain.after.min_clearance >= -NM_ROUNDING
 
-    def test_a_frozen_via_stays_while_its_chains_change(
+    def test_a_via_starting_inside_its_clearance_moves_out_of_it(
         self,
         connect: Connector,
         log: list[str],
@@ -2193,18 +2197,21 @@ class TestMovingVias:
         # The pad's edge is 0.1 mm from the via's ring, inside its clearance,
         # and clear of both chains.
         board = off_grid(moving_via_board())
-        board.pads = [kipy_pad("p", "GND", 4.0, 4.65, layers=(BL.BL_F_Cu,))]
+        board.pads = [kipy_pad("p", "GND", *INSIDE_PAD, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
         run()
 
         assert "push_commit" in board.calls
-        assert sorted(board.deleted) == ["a", "b", "e", "f"]
-        assert created_vias(board) == []
-        assert "DEBUG Left via v at (3.000, 2.000) in place" in "".join(log)
+        assert sorted(board.deleted) == ["a", "b", "e", "f", "v"]
+        assert len(created_vias(board)) == 1
         (report,) = reports
         (via,) = report.vias
-        assert (via.id, via.start, via.frozen, via.moved) == ("v", VIA, True, False)
+        assert (via.id, via.start, via.moved) == ("v", VIA, True)
+        x, y, h = *INSIDE_PAD, PAD_HALF_SIZE
+        pad = box(x - h, y - h, x + h, y + h)
+        ring = pad.distance(Point(via.end)) - VIA_DIAMETER / 2
+        assert ring >= CLEARANCE - INSIDE_TOLERANCE - NM_ROUNDING
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
@@ -2509,24 +2516,23 @@ class TestViaClasses:
         assert "w" in via_ids(given.field)
         assert via_ids(given.static_vias) == {"g"}
 
-    def test_a_selected_via_that_starts_frozen_is_no_static_via(
-        self, connect: Connector, optimized: Optimized, log: list[str]
+    def test_a_selected_via_starting_inside_its_clearance_is_no_static_via(
+        self, connect: Connector, optimized: Optimized
     ) -> None:
-        # As in `test_a_frozen_via_stays_while_its_chains_change`, with the
-        # route and its via of GND.
+        # As in `test_a_via_starting_inside_its_clearance_moves_out_of_it`,
+        # with the route and its via of GND.
         route = on_net([*l_chain(), *detour_back()], "GND")
         via = kipy_via("v", "GND", *VIA)
         board = CommitBoard(
             selection=[*route, via],
             tracks=list(route),
             vias=[via, kipy_via("u", "GND", 6, 6)],
-            pads=[kipy_pad("p", "P", 4.0, 4.65, layers=(BL.BL_F_Cu,))],
+            pads=[kipy_pad("p", "P", *INSIDE_PAD, layers=(BL.BL_F_Cu,))],
         )
         connect.to(board)
 
         run("--dry-run")
 
-        assert "DEBUG Left via v at (4.000, 4.000) in place" in "".join(log)
         assert classes(optimized.vias) == {"v": True}
         assert classes(optimized.static_vias) == {"u": True}
 
@@ -2765,10 +2771,8 @@ def test_a_via_in_a_plane_moves_within_its_region_and_commits(
 
 def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
-    chain = pipeline.ChainReport(
-        "SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, (), 2, True
-    )
-    via = pipeline.ViaReport("v", VIA, (4.0, 1.0), frozen=False, rejected_edges=3)
+    chain = pipeline.ChainReport("SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, 2, True)
+    via = pipeline.ViaReport("v", VIA, (4.0, 1.0), rejected_edges=3)
     report = pipeline.OptimizerReport(
         (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, (), BOARD_FRAME
     )
@@ -2780,13 +2784,12 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     )
 
 
-def test_outcome_and_warnings_count_rejected_moves_and_frozen() -> None:
+def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
     problem = "the chains and vias on F.Cu and B.Cu"
     stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
     chain = pipeline.ChainReport(
-        "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, (), 1, True
+        "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, 1, True
     )
-    frozen = FrozenVertex((1.0, 2.0), -0.05)
     pair = pipeline.PairReport(
         nets=("USB_D+", "USB_D-"),
         layer="F.Cu",
@@ -2796,7 +2799,6 @@ def test_outcome_and_warnings_count_rejected_moves_and_frozen() -> None:
         skew_after=0.1,
         sections=1,
         held=0,
-        frozen=(frozen,),
         rejected_edges=3,
     )
     report = pipeline.OptimizerReport(
@@ -2811,14 +2813,12 @@ def test_outcome_and_warnings_count_rejected_moves_and_frozen() -> None:
     )
 
     outcome = cli.format_outcome(report)
-    warnings = cli.report_warnings(report)
 
     assert outcome == (
         "Optimizer: converged after 7 iterations in 0.0 s, 4 rejected edge moves"
     )
-    # The frozen vertex at (1, 2) relative to the frame's origin.
-    assert any("(0.500, -1.000)" in w and "0.050 mm inside" in w for w in warnings)
-    assert not any(problem in w for w in warnings)
+    # Abnormal bursts are logged at debug only.
+    assert cli.report_warnings(report) == []
 
 
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
@@ -3778,8 +3778,8 @@ def test_a_section_routed_too_tightly_is_held(
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_a_chain_beside_a_pair_at_clearance_does_not_freeze_it(
-    connect: Connector, log: list[str]
+def test_a_chain_beside_a_pair_at_clearance_lets_both_smooth(
+    connect: Connector,
 ) -> None:
     first = np.array(BUS_CENTRE)
     apart = PAIR_WIDTH + PAIR_GAP / 2 + CLEARANCE + PAIR_WIDTH / 2 + BUS_MARGIN
@@ -3803,7 +3803,6 @@ def test_a_chain_beside_a_pair_at_clearance_does_not_freeze_it(
 
     run()
 
-    assert not any("inside" in line for line in log)
     assert all(len(lines) > len(BUS_CENTRE) - 1 for lines in by_net(board).values())
 
 

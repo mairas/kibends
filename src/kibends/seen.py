@@ -346,23 +346,24 @@ class ViaSight:
 
     def __init__(
         self,
-        looking: Sequence[int],
         rings: Sequence[Mapping[int, float]],
         apart: Sequence[Mapping[int, float]],
         members: int,
     ) -> None:
-        """The vias `looking`, by their index, each seeing the members its
-        `rings` names and the vias its `apart` names, at those distances."""
-        self.looking = np.array(looking, dtype=np.intp)
-        self.rings = np.full((len(looking), members), np.nan)
-        self.apart = np.full((len(looking), len(rings)), np.nan)
-        for n, k in enumerate(looking):
-            for j, ring in rings[k].items():
-                self.rings[n, j] = ring
-            for u, distance in apart[k].items():
-                self.apart[n, u] = distance
+        """Each via, by its index, seeing the members its `rings` names and
+        the vias its `apart` names, at those distances."""
+        self.rings = np.full((len(rings), members), np.nan)
+        self.apart = np.full((len(rings), len(rings)), np.nan)
+        for k, (seen, kept) in enumerate(zip(rings, apart, strict=True)):
+            for j, ring in seen.items():
+                self.rings[k, j] = ring
+            for u, distance in kept.items():
+                self.apart[k, u] = distance
         self.within = np.array(
-            [max([0.0, *rings[k].values(), *apart[k].values()]) for k in looking]
+            [
+                max([0.0, *seen.values(), *kept.values()])
+                for seen, kept in zip(rings, apart, strict=True)
+            ]
         )
         """Each via's largest inflation."""
         self.seen = np.flatnonzero(~np.isnan(self.rings).all(axis=0))
@@ -374,9 +375,9 @@ class ViaSight:
         positions: Sequence[FloatArray],
         reach: float,
     ) -> ViaNearest:
-        """What answers each via of `looking`, in order, with the members at
-        `polylines` and the vias at `positions`, as `ChainField.nearest`
-        with `reach` gives it over the via's own view."""
+        """What answers each via, in order, with the members at `polylines`
+        and the vias at `positions`, as `ChainField.nearest` with `reach`
+        gives it over the via's own view."""
         at = np.array(positions, dtype=float).reshape(-1, 2)
         lengths = np.array([len(points) for points in polylines], dtype=np.intp)
         firsts = np.cumsum(lengths) - lengths
@@ -389,7 +390,7 @@ class ViaSight:
         b = np.concatenate([flat[first + 1], at])
         member = np.concatenate([owner, np.full(len(at), -1, dtype=np.intp)])
         vertex = np.concatenate([vertex, np.arange(len(at), dtype=np.intp)])
-        queries = at[self.looking]
+        queries = at
         limit = reach + self.within
         point, edge = near_segments(
             a, b, queries, float(limit.max(initial=0.0)) + _ROUND_OFF

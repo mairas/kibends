@@ -55,8 +55,8 @@ def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> 
 
     Each corner cut, an edge with both ends clear that passes through an
     obstacle, counts once, and so does each run of consecutive vertices
-    inside the clearance that holds no anchor. A run that holds a frozen
-    vertex or a pin in the clearance cannot move away and is not counted.
+    inside the clearance that holds no anchor. A run that holds an anchor
+    in the clearance cannot move away and is not counted.
     A run is consecutive in the chain, so inside vertices in two touching
     or overlapping obstacles form one. The count says nothing about how deep
     a violation goes, and an edge from any run to a clear vertex adds nothing

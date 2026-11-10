@@ -392,18 +392,69 @@ def test_pins_and_ends_stay_where_they_are() -> None:
     assert np.all(result.chains[0].polyline == PIN, axis=1).sum() == 1
 
 
-def test_vertices_inside_a_neighbours_clearance_are_frozen_and_named() -> None:
-    result = run(scenarios.crowded())
+def kept_vertices(polyline: FloatArray, vertices: FloatArray) -> int:
+    """How many of `vertices` `polyline` still has exactly."""
+    return sum(bool(np.all(polyline == v, axis=1).any()) for v in vertices)
+
+
+def test_vertices_inside_a_neighbours_clearance_move_out() -> None:
+    scenario = scenarios.crowded()
+
+    result = run(scenario)
 
     a, b = result.chains
-    assert [(v.position, v.neighbours) for v in a.frozen] == [
-        (scenarios.CROWDED_VERTEX, ("B",))
+    assert kept_vertices(a.polyline, np.array([scenarios.CROWDED_VERTEX])) == 0
+    assert (
+        kept_vertices(b.polyline, np.array([scenarios.CROWDED_NEIGHBOUR_VERTEX])) == 0
+    )
+    for stats in after(scenario.chains, result, scenario.params):
+        assert stats.min_clearance >= -INSIDE_TOLERANCE
+
+
+TIGHT_WIDTH = 0.25
+TIGHT_CLEARANCE = 0.2
+TIGHT_PITCH = 0.43
+"""0.02 mm closer than the tracks' width and clearance ask, mm."""
+FAN_PITCH = 0.8
+"""How far apart the tracks' pinned ends lie, clear of each other, mm."""
+
+
+def tight_bus() -> list[ChainInput]:
+    """Four tracks of as many nets, in free space, fanning in from their ends
+    to run 5 mm side by side TIGHT_PITCH apart."""
+    return [
+        ChainInput(
+            ChainCentreline(
+                f"S{i}",
+                f"S{i}",
+                TIGHT_WIDTH,
+                TIGHT_CLEARANCE,
+                scenarios.path(
+                    (0.0, FAN_PITCH * i),
+                    (3.0, TIGHT_PITCH * i),
+                    (8.0, TIGHT_PITCH * i),
+                    (11.0, FAN_PITCH * i),
+                ),
+            ),
+            "F.Cu",
+            scenarios.endpoints_fixed(np.zeros(4)),
+            FreeSpace(),
+        )
+        for i in range(4)
     ]
-    assert [(v.position, v.neighbours) for v in b.frozen] == [
-        (scenarios.CROWDED_NEIGHBOUR_VERTEX, ("A",))
-    ]
-    assert np.all(a.polyline == scenarios.CROWDED_VERTEX, axis=1).sum() == 1
-    assert np.all(b.polyline == scenarios.CROWDED_NEIGHBOUR_VERTEX, axis=1).sum() == 1
+
+
+def test_a_bus_tighter_than_its_clearance_spreads_out() -> None:
+    chains = tight_bus()
+
+    result = optimize_chains(chains, scenarios.PARAMS, COARSE)
+
+    for chain, given, stats in zip(
+        result.chains, chains, after(chains, result, scenarios.PARAMS), strict=True
+    ):
+        assert stats.min_clearance >= -INSIDE_TOLERANCE
+        corners = given.centreline.points[1:-1]
+        assert kept_vertices(chain.polyline, corners) == 0
 
 
 def on_layer(chain: ChainInput, layer: str) -> ChainInput:
@@ -954,7 +1005,6 @@ def test_chains_of_one_net_touching_mid_chain_do_not_repel() -> None:
         min_clearances([bar, stub], result, scenarios.PARAMS),
         strict=True,
     ):
-        assert chain.frozen == ()
         assert clearance >= -INSIDE_TOLERANCE
         assert length(chain.polyline) < chain.before.length
     assert np.all(result.chains[0].polyline == TOUCH, axis=1).sum() == 1

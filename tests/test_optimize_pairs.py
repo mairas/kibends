@@ -361,7 +361,6 @@ class TestPairOverPad:
             pair.centreline,
             pair.fixed,
             0,
-            (),
             pair.before,
             no_contacts(pair.centreline),
         )
@@ -569,8 +568,6 @@ class TestTwoCoupledSections:
     def test_fan_outs_and_sections_do_not_repel_where_they_touch(
         self, split: RunResult
     ) -> None:
-        for result in (*split.chains, *split.pairs):
-            assert result.frozen == ()
         for chain in split.chains:
             assert length(chain.polyline) < chain.before.length
 
@@ -829,12 +826,16 @@ def test_a_section_routed_too_tightly_stays_as_it_is() -> None:
     assert pair.bend is not None and pair.bend.too_tight
 
 
+INSIDE_DEPTH = 0.02
+"""How far the chain starts inside the section's clearance, mm."""
+
+
 def test_a_chain_starting_inside_a_section_s_clearance_moves_clear_of_it() -> None:
     section = scenarios.coupled(FreeSpace(), (0.0, 0.0), (5.0, 0.0))
     half_extent = pair_block(section, COARSE.spacing).facing.centreline.width / 2
-    # The chain runs 2δ inside the clearance of the section's nearer track,
+    # The chain runs inside the clearance of the section's nearer track,
     # pinned there at both ends.
-    y = half_extent + PAIR_CLEARANCE + PAIR_WIDTH / 2 - 2 * COARSE.frozen_depth
+    y = half_extent + PAIR_CLEARANCE + PAIR_WIDTH / 2 - INSIDE_DEPTH
     chain = selected("C", "C", FreeSpace(), (0.0, y), (5.0, y))
 
     result = optimize_chains([chain], scenarios.PARAMS, COARSE, pairs=(section,))

@@ -34,7 +34,6 @@ def plot_scenario(scenario: scenarios.Scenario, output: Path) -> Path:
         original=scenario.polyline,
         optimised=result.polyline,
         simplified=simplified,
-        frozen=result.frozen,
         title=f"{scenario.name}: {result.termination.value}, "
         f"{result.iterations} iterations\n"
         f"length {result.before.length:.3f} → {after.length:.3f} mm, "

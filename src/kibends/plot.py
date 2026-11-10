@@ -14,7 +14,6 @@ from matplotlib.figure import Figure
 
 from kibends.chain import Point2
 from kibends.energy import DistanceField, FloatArray
-from kibends.results import FrozenVertex
 
 MARGIN = 2.0
 """mm of board drawn around the chain."""
@@ -33,7 +32,6 @@ class Panel:
     original: FloatArray
     optimised: FloatArray
     simplified: FloatArray
-    frozen: Sequence[FrozenVertex]
     title: str
     vias: Sequence[tuple[Point2, Point2]] = ()
     """The start and end of each moving via the chain ends at."""
@@ -93,14 +91,6 @@ def _draw(axes: Axes, panel: Panel, low: FloatArray, high: FloatArray) -> None:
         markersize=3,
         label="result vertices",
     )
-    if panel.frozen:
-        axes.plot(
-            *np.array([v.position for v in panel.frozen]).T,
-            "x",
-            color="#000000",
-            markersize=8,
-            label="frozen vertices",
-        )
     for k, (start, end) in enumerate(panel.vias):
         axes.plot(
             *start,
