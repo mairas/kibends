@@ -295,7 +295,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_SETTINGS.stall_tolerance,
         metavar="MM",
         help="A problem also settles when its energy, in mm of track length, "
-        "improves by less than this over --stall-window of its bursts "
+        "improves by less than this over --stall-window of its bursts, or by "
+        "less than this once more for each of its moving vias while its "
+        "tracks shorten by less than this "
         f"(default: {DEFAULT_SETTINGS.stall_tolerance:g})",
     )
     smooth_parser.add_argument(

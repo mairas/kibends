@@ -357,11 +357,17 @@ that therefore spreads, and its vias move into gaps in it, as far as the
 zones they connect to let them. Ground vias of two ground nets keep their
 clearance and repel each other as other copper does.
 
-A selected grid of ground stitching vias that moving signal vias pass
-through can take up to about seven times as many iterations to settle as
-with `--attraction 0`, as the vias creep toward their balance, and the
-chains on their layers wait for them, since moving vias tie those layers
-into one problem.
+A selected grid of ground stitching vias that signal routes pass through
+moves out of their way, and the chains on their layers wait for it, since
+moving vias tie those layers into one problem. On synthetic two-layer
+planes the routes ended up to a fifth shorter than with the stitching vias
+left unselected, and the runs took about twice as long with 29 and 41
+moving vias, five times as long with 47, and did not settle within 150 s,
+against 10 s, with 197, as the vias spread and the routes kept
+shortening. Once the routes stop shortening, the vias may still creep
+toward their balance by tens of micrometres a burst for little gain, so a
+problem's stall check then allows one more `--stall-tolerance` for each of
+its moving vias.
 
 `--attraction 0` turns the pull and the ground vias' push off together:
 ground nets are not looked for, `--ground-nets` is ignored, and vias of one
@@ -381,7 +387,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration and one burst more for each. |
 | `--settled-change MM` | 0.001 | A problem settles when a burst moves none of its tracks or vias by this much. Raising it alone saves little time and can leave visibly different tracks. |
-| `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts. Raising it saves little time and lets some tracks end slightly longer. |
+| `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts; with moving vias, also when it improves by less than this once more for each of them while its tracks shorten by less than this. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
 | `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
 | `--burst-iterations N` | 50 | L-BFGS-B iterations per burst. Each burst resamples the tracks and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |

@@ -154,7 +154,9 @@ When it stops
 -------------
 A problem settles when its burst moves nothing by `settled_change` and
 moves nothing back but a section's own parts, when its lowest energy
-stalls over `stall_window` bursts, or after MAX_ABNORMAL_BURSTS abnormal
+stalls over `stall_window` bursts, by a tolerance that grows with its
+moving vias once its tracks have stopped shortening (`stalled`), or after
+MAX_ABNORMAL_BURSTS abnormal
 bursts in a row. The run converges when every problem has settled, none
 of them on abnormal bursts, and otherwise stops at the iteration cap or
 after the first burst that ends past the time limit, counted from the
@@ -272,11 +274,34 @@ def optimize(
     )
 
 
-def stalled(lowest_energies: list[float], settings: OptimizerSettings) -> bool:
-    if len(lowest_energies) <= settings.stall_window:
+def stalled(
+    lowest_energies: Sequence[float],
+    lengths: Sequence[float],
+    settings: OptimizerSettings,
+    vias: int = 0,
+) -> bool:
+    """Whether a problem's lowest energy fell by no more than
+    `stall_tolerance` over `stall_window` bursts, or, with moving `vias`,
+    by no more than one more tolerance for each of them while its tracks'
+    summed `lengths` fell by no more than one tolerance.
+
+    Moving vias that repel each other, such as a selected grid of stitching
+    vias, settle on a shallow energy: once they have made way for the
+    routes they creep on by tens of micrometres a burst while the energy
+    keeps falling toward a lower minimum by about a micrometre a burst, and
+    one tolerance for the whole problem waits for that to end. The
+    allowance trades that small real gain away, but only once the tracks
+    have stopped shortening, so that it does not stop routes that still
+    get shorter as the vias spread. Measured in
+    https://github.com/mairas/kibends/issues/138."""
+    window, tolerance = settings.stall_window, settings.stall_tolerance
+    if len(lowest_energies) <= window:
         return False
-    earlier = lowest_energies[-1 - settings.stall_window]
-    return earlier - lowest_energies[-1] <= settings.stall_tolerance
+    gain = lowest_energies[-1 - window] - lowest_energies[-1]
+    if gain <= tolerance:
+        return True
+    shortened = lengths[-1 - window] - lengths[-1]
+    return gain <= tolerance * (1 + vias) and shortened <= tolerance
 
 
 # How far, mm, the points of a member and the pieces it sees may move before
@@ -331,8 +356,10 @@ def optimize_chains(
     `settled_change` and moved nothing back but for a section's parts that
     came too close to each other, or when the lowest energy its bursts
     reached fell by less than `stall_tolerance` over `stall_window` bursts,
-    whether or not the guard took them as its best state, or after
-    MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
+    or with moving vias by less than one more tolerance for each of them
+    while the tracks shortened by less than one (`stalled`), whether or not
+    the guard took them as its best state, or after MAX_ABNORMAL_BURSTS
+    abnormal bursts in a row; the run converges when
     every problem has, and gives up (`Termination.GAVE_UP`) if some problem
     settled on abnormal bursts. A run that gave up on some problem and
     whose best states sum to no less energy than its inputs, not where it
@@ -943,6 +970,7 @@ class _Problem:
         self.best_contact_of = list(self.contact_of)
         self.best_positions = list(self.positions)
         self.lowest = [self.energy]
+        self.lengths = [self.length()]
         self.rejected_edges = [0] * count
         self.too_close = [0] * count
         self.via_rejected = [0] * len(vias)
@@ -1339,6 +1367,7 @@ class _Problem:
             self.best_positions = list(self.positions)
             self.best_energy = self.energy
         self.lowest.append(min(self.lowest[-1], self.energy))
+        self.lengths.append(self.length())
         if burst.abnormal:
             self.abnormal_bursts += 1
             self.abnormal_streak += 1
@@ -1361,7 +1390,7 @@ class _Problem:
             not burst.abnormal
             and (
                 (not cut_short and change < settings.settled_change)
-                or stalled(self.lowest, settings)
+                or stalled(self.lowest, self.lengths, settings, len(self.vias))
             )
         )
         rest = time.perf_counter() - began - burst.evaluating

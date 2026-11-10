@@ -639,15 +639,30 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
 class TestStalled:
     # Binary-exact values, so the boundary comparison is not a rounding test.
     SETTINGS = OptimizerSettings(stall_tolerance=0.5, stall_window=3)
+    STILL = (3.0, 3.0, 3.0, 3.0)
+    """Track lengths that do not change."""
 
     def test_needs_a_full_window_of_history(self) -> None:
-        assert not optimize_module.stalled([5.0, 5.0, 5.0], self.SETTINGS)
+        assert not optimize_module.stalled([5.0, 5.0, 5.0], self.STILL, self.SETTINGS)
 
     def test_improvement_of_exactly_the_tolerance_is_a_stall(self) -> None:
-        assert optimize_module.stalled([5.0, 4.75, 4.625, 4.5], self.SETTINGS)
+        lowest = [5.0, 4.75, 4.625, 4.5]
+        assert optimize_module.stalled(lowest, self.STILL, self.SETTINGS)
 
     def test_larger_improvement_over_the_window_keeps_going(self) -> None:
-        assert not optimize_module.stalled([5.0, 4.75, 4.625, 4.25], self.SETTINGS)
+        lowest = [5.0, 4.75, 4.625, 4.25]
+        assert not optimize_module.stalled(lowest, self.STILL, self.SETTINGS)
+
+    def test_each_moving_via_adds_a_tolerance(self) -> None:
+        # 1.0 over the window: two tolerances, so one moving via stalls.
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        assert not optimize_module.stalled(lowest, self.STILL, self.SETTINGS)
+        assert optimize_module.stalled(lowest, self.STILL, self.SETTINGS, vias=1)
+
+    def test_shortening_tracks_keep_a_via_problem_going(self) -> None:
+        lowest = [5.0, 4.5, 4.25, 4.0]
+        shortening = [3.0, 2.75, 2.5, 2.25]
+        assert not optimize_module.stalled(lowest, shortening, self.SETTINGS, vias=1)
 
 
 class ReachIgnored:

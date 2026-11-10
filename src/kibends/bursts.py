@@ -49,7 +49,9 @@ class OptimizerSettings:
     https://github.com/mairas/kibends/issues/28."""
     stall_tolerance: float = 1e-3
     """A problem settles when its best energy improved by less than this
-    over `stall_window` of its bursts. The energy is in mm of track length,
+    over `stall_window` of its bursts, or with moving vias by less than
+    this once more for each of them while its tracks shortened by less
+    than this (`optimize.stalled`). The energy is in mm of track length,
     so this is 1 µm of length: in flat stretches the shapes keep wandering
     by tens of µm while the energy creeps down by far less."""
     stall_window: int = 3
