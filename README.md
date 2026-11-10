@@ -118,8 +118,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    any layer), it sits at the edge of a zone's region (closer to it than
    that margin, so moving might lose a connection it has now), only one
    selected track ends at it, or none does and no zone of its net reaches
-   it. A moving via that starts closer to other
-   copper than its clearance stays where it is too, connected as it is, and other chains keep only the netclass clearance from it. Teardrops are ignored:
+   it. A moving via that starts closer to other copper than its clearance
+   moves out of it like any other (see below). Teardrops are ignored:
    KiCad reapplies them on the next refill. Selected pads and
    other items are ignored; arc tracks are refused.
    A box selection catches tracks on every visible layer, and all of them
@@ -141,9 +141,10 @@ nor hold each other back, and may come
 close, overlap or cross, as may a chain and a via of its net, and a chain
 and the static copper of its net. Only selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
-out vias on those layers, and the chains it joins move with it. A selected
-via that starts inside its clearance or inside such a rule area stays where
-it is. Vias of one net, moving or not, keep only the hole-to-hole distance
+out vias on those layers, and the chains it joins move with it. A moving
+via that starts inside its clearance or inside such a rule area moves out
+of it where there is room, and never ends deeper inside than it started.
+Vias of one net, moving or not, keep only the hole-to-hole distance
 from a moving via, their rings free to overlap. Vias of one net that is
 not a ground net do not repel each other, so a grid of selected stitching
 vias of such a net keeps its spacing, as does a selected one beside an
@@ -221,9 +222,11 @@ junction of branching tracks. An end whose copper reaches another selected
 track of its net stays where it is too, since that track keeps it there. The tracks of a differential pair keep the
 vertex inside it where it is.
 
-A vertex that starts inside another item's clearance stays where it is,
-with a warning. When that item is another selected chain, the warning names
-it, and a re-run after that chain has moved may free the vertex.
+A vertex that starts inside another item's clearance moves like any other,
+and the clearance pushes it out where there is room, another selected
+chain moving aside too if it must. Where there is none, as in a channel
+narrower than the track's clearance asks, the result has no more clearance
+violations than the selection had, and KiCad's DRC reports what remains.
 
 ### Differential pairs
 
