@@ -1283,10 +1283,6 @@ def test_chains_straightened_in_one_burst_are_kept() -> None:
 STITCH_X = 5.0
 STITCH_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
 STITCH_ZONE_LAYERS = ("F.Cu", "B.Cu")
-EDGE_SEEN_NEARER = SMOOTH_WIDTH * math.log(len(STITCH_ZONE_LAYERS))
-"""How much nearer than it is the energy sees the edge of `stitched`'s
-zone, mm: one region per layer, equally near (`energy.smooth_minimum`), so
-a via pressed against it settles that much farther back."""
 
 
 def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScenario:
@@ -1356,7 +1352,7 @@ class TestStitchingVia:
         assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
         # The zone's edge only stops it, so the track's push takes it there.
         edge = top - STITCH_MARGIN
-        assert edge - STITCH_PARAMS.standoff - EDGE_SEEN_NEARER <= via.position[1]
+        assert edge - STITCH_PARAMS.standoff <= via.position[1]
         assert via.position[1] <= edge + INSIDE_TOLERANCE
 
     def test_one_near_its_zone_s_edge_with_nothing_else_in_range_stays(
@@ -1399,10 +1395,10 @@ class TestStitchingVia:
         assert high[1] <= top - STITCH_MARGIN + INSIDE_TOLERANCE
         apart = math.dist(low, high)
         assert apart >= HOLES_APART - INSIDE_TOLERANCE
-        # The upper via's stops, its zone's region on each layer and the
-        # lower via, are about equally near it: the energy sees them up to
-        # τ·ln 3 nearer (`energy.smooth_minimum`).
-        seen_nearer = SMOOTH_WIDTH * math.log(len(STITCH_ZONE_LAYERS) + 1)
+        # The upper via's two stops, its zone's region, one on both layers,
+        # and the lower via, are about equally near it: the energy sees them
+        # up to τ·ln 2 nearer (`energy.smooth_minimum`).
+        seen_nearer = SMOOTH_WIDTH * math.log(2)
         assert apart <= HOLES_APART + STITCH_PARAMS.standoff + seen_nearer
         assert low[1] > 0.9 + 0.1
 
@@ -1921,7 +1917,7 @@ class TestReturnVia:
 
         (via,) = result.vias
         assert result.termination is Termination.CONVERGED
-        assert edge - RETURN_PARAMS.standoff - EDGE_SEEN_NEARER <= via.position[1]
+        assert edge - RETURN_PARAMS.standoff <= via.position[1]
         assert via.position[1] <= edge + INSIDE_TOLERANCE
 
 

@@ -14,8 +14,9 @@ distance to the nearest inflated obstacle, which every clearance
 judgement takes. `smooth_distance` is what the energy takes: the smooth
 minimum over the field's obstacles (`energy.smooth_minimum`), each
 obstacle's own distance the exact one to the nearest of its parts. What
-one obstacle is depends on the field: in `Obstacles`, each item and the
-board edge; in `ChainField`, the edges its caller
+one obstacle is depends on the field: in `Obstacles`, the items of one
+geometry, every connected run of centrelines of one inflation that meet
+end to end, and the board edge (`_obstacle_ids`); in `ChainField`, the edges its caller
 groups, a chain or a via (`chains_field`); in `CompositeField`, each
 field's own.
 
@@ -161,8 +162,10 @@ class Obstacles:
         self._tree = STRtree(self._geometries)
         self._max_inflation = float(self._inflations.max(initial=0.0))
         self._deep: dict[float, BaseGeometry] = {}
-        self._obstacle = np.arange(len(self.items), dtype=np.intp)
-        self._edge_obstacle = len(self.items)
+        self._obstacle = _obstacle_ids(self.items)
+        obstacles = int(self._obstacle.max(initial=-1)) + 1
+        self._shared = obstacles < len(self.items)
+        self._edge_obstacle = obstacles
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -182,12 +185,18 @@ class Obstacles:
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         """`signed_distance` as the energy takes it: the smooth minimum over
-        the items and the board edge, each an obstacle of its own."""
+        the obstacles (`_obstacle_ids`)."""
         coords = np.asarray(points, dtype=float).reshape(-1, 2)
         point, obstacle, distance, gradient = self._candidates(
             coords, smooth_reach(reach), SMOOTH_REACH
         )
-        # Each candidate is an obstacle and a run of its own in any order.
+        if self._shared:
+            # Unshared, each candidate is an obstacle and a run of its own
+            # in any order.
+            tiebreak = np.arange(len(point), dtype=np.intp)
+            order = obstacle_order(point, obstacle, tiebreak)
+            point, obstacle = point[order], obstacle[order]
+            distance, gradient = distance[order], gradient[order]
         best, smooth, share = _nearest_then_smooth(
             point, obstacle, distance, len(coords)
         )
@@ -373,6 +382,41 @@ class CompositeField:
         for field in self.fields:
             clear &= field.segments_clear(starts, ends, tolerance)
         return clear
+
+
+def _obstacle_ids(items: Sequence[Obstacle]) -> IntArray:
+    """Each item's obstacle, numbered from 0. Items of one geometry are one
+    obstacle: a pad or keepout on each of the layers a via spans, a via's
+    ring and its hole. So are centrelines of one inflation that meet end to
+    end, as the segments of a track do, so that its joints and bends add
+    nothing; the joining is transitive, so a connected run of them is one
+    obstacle however it branches.
+
+    Centrelines of two inflations stay two obstacles where they meet, as
+    at a width change, and so does a centreline whose end lands on the
+    middle of another, a T-junction: opposite its stem a point reads up to
+    τ·ln 2 nearer than it is."""
+    parent = list(range(len(items)))
+
+    def root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    first: dict[bytes | tuple[tuple[float, ...], float], int] = {}
+    for k, item in enumerate(items):
+        geometry, inflation = item.geometry, item.inflation
+        keys: list[bytes | tuple[tuple[float, ...], float]] = [geometry.wkb]
+        if isinstance(geometry, LineString) and not geometry.is_empty:
+            ends = geometry.coords
+            keys += [(tuple(ends[0]), inflation), (tuple(ends[-1]), inflation)]
+        for key in keys:
+            parent[root(k)] = root(first.setdefault(key, k))
+    ids: dict[int, int] = {}
+    return np.array(
+        [ids.setdefault(root(k), len(ids)) for k in range(len(items))], dtype=np.intp
+    ).reshape(-1)
 
 
 _NO_CANDIDATES = (
@@ -1459,7 +1503,9 @@ def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
     via's to keep instead, at the copper's current place
     (`_zone_inflation`).
     """
-    parts = [Obstacles((), union.centres) for union in zone_unions(zones).values()]
+    # A region the same on several layers is one obstacle, not one per layer.
+    regions = {u.centres.wkb: u.centres for u in zone_unions(zones).values()}
+    parts = [Obstacles((), region) for region in regions.values()]
     return CompositeField(parts) if parts else None
 
 

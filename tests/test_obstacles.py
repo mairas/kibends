@@ -25,6 +25,7 @@ from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
 from kibends.energy import (
+    SMOOTH_WIDTH,
     DistanceField,
     EnergyParams,
     FloatArray,
@@ -41,7 +42,9 @@ from kibends.obstacles import (
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
+    containment,
 )
+from kibends.snapshot import ViaZone
 
 LAYER = "F.Cu"
 NET = "SIG"
@@ -945,3 +948,106 @@ class TestCompositeField:
         )
 
         assert clear.tolist() == [False, False, True]
+
+
+TWO_LAYERS = ("F.Cu", "B.Cu")
+NEAR_PAD = np.array([[1.3, 0.0], [0.0, 1.45]])
+"""Points beside `ON_EVERY_LAYER`, nearer one side of it than the other."""
+ON_EVERY_LAYER = box(-1.0, -1.0, 1.0, 1.0)
+
+
+def test_one_geometry_on_several_layers_is_one_obstacle() -> None:
+    """A pad on two layers, kept from by two amounts, as a via's field
+    holds a through-hole pad: the smooth distance is the exact one, not
+    the pad's seen tau*ln 2 nearer."""
+    field = Obstacles(
+        [Obstacle(f"pad on {layer}", ON_EVERY_LAYER, 0.2) for layer in TWO_LAYERS]
+        + [Obstacle("hole", ON_EVERY_LAYER, 0.1)]
+    )
+
+    smooth, toward = field.smooth_distance(NEAR_PAD, 1.0)
+
+    exact, exact_toward = field.signed_distance(NEAR_PAD)
+    np.testing.assert_allclose(smooth, exact, atol=NM_TOLERANCE)
+    np.testing.assert_allclose(toward, exact_toward, atol=NM_TOLERANCE)
+
+
+def test_a_zone_region_on_several_layers_is_one_obstacle() -> None:
+    """A via's zone with the same region on two layers: the outside of it
+    is seen once, at its exact distance."""
+    region = box(-5.0, -5.0, 5.0, 5.0)
+    zone = ViaZone("plane", dict.fromkeys(TWO_LAYERS, region), 0.2, 0.0)
+    field = containment([zone])
+    assert field is not None
+    at = np.array([[4.0, 0.0]])
+
+    smooth, _ = field.smooth_distance(at, 1.0)
+
+    assert smooth[0] == pytest.approx(field.signed_distance(at)[0][0], abs=NM_TOLERANCE)
+
+
+TRACK_INFLATION = 0.35
+BESIDE_JOINT = np.column_stack([np.linspace(4.9, 5.1, 9), np.full(9, 0.45)])
+"""Points beside the joint at (5, 0) of `split_track`, some as near to
+either segment."""
+OUTSIDE_BEND = np.column_stack(
+    [
+        5.0 + 0.45 * np.cos(angles := np.linspace(-1.87, -0.49, 9)),
+        0.45 * np.sin(angles),
+    ]
+)
+"""Points around the outside of the bend at (5, 0) of `bent_track`."""
+
+
+def _track(*corners: tuple[float, float]) -> list[Obstacle]:
+    """A static track through `corners`, one item per segment, as a board
+    gives its segments."""
+    return [
+        Obstacle(f"track segment {k}", LineString([a, b]), TRACK_INFLATION)
+        for k, (a, b) in enumerate(pairwise(corners))
+    ]
+
+
+def test_a_track_of_two_segments_is_as_near_beside_its_joint_as_one() -> None:
+    """The segments of a track meet end to end and are one obstacle: beside
+    the joint the smooth distance is the one-segment track's, not tau*ln 2
+    nearer."""
+    split = Obstacles(_track((0.0, 0.0), (5.0, 0.0), (10.0, 0.0)))
+    whole = Obstacles(_track((0.0, 0.0), (10.0, 0.0)))
+
+    smooth, toward = split.smooth_distance(BESIDE_JOINT, 1.0)
+
+    expected, expected_toward = whole.smooth_distance(BESIDE_JOINT, 1.0)
+    np.testing.assert_allclose(smooth, expected, atol=NM_TOLERANCE)
+    np.testing.assert_allclose(toward, expected_toward, atol=NM_TOLERANCE)
+
+
+def test_a_bent_track_is_at_its_exact_distance_outside_its_bend() -> None:
+    """Outside a bend of a track, where both segments are as near, the
+    smooth distance is the exact one."""
+    bent = Obstacles(_track((0.0, 0.0), (5.0, 0.0), (10.0, 5.0)))
+
+    smooth, toward = bent.smooth_distance(OUTSIDE_BEND, 1.0)
+
+    exact, exact_toward = bent.signed_distance(OUTSIDE_BEND)
+    np.testing.assert_allclose(smooth, exact, atol=NM_TOLERANCE)
+    np.testing.assert_allclose(toward, exact_toward, atol=NM_TOLERANCE)
+
+
+def test_tracks_of_two_inflations_meeting_end_to_end_are_two_obstacles() -> None:
+    """A width change, a track meeting one of another inflation end to
+    end: two obstacles, each kept from by its own amount."""
+    narrow_inflation, wide_inflation, height = 0.3, 0.4, 0.55
+    narrow = Obstacle("narrow", LineString([(0.0, 0.0), (5.0, 0.0)]), narrow_inflation)
+    wide = Obstacle("wide", LineString([(5.0, 0.0), (10.0, 0.0)]), wide_inflation)
+    field = Obstacles([narrow, wide])
+    # Above the narrow one, as near to the wide one's end.
+    apart = math.sqrt((height - narrow_inflation + wide_inflation) ** 2 - height**2)
+    at = np.array([[5.0 - apart, height]])
+
+    smooth, _ = field.smooth_distance(at, 1.0)
+
+    exact = field.signed_distance(at)[0][0]
+    assert smooth[0] == pytest.approx(
+        exact - SMOOTH_WIDTH * math.log(2), abs=NM_TOLERANCE
+    )
