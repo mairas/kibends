@@ -182,10 +182,11 @@ def selected(
     field: ObstacleField,
     *vertices: tuple[float, float],
     layer: str = "F.Cu",
+    width: float = PAIR_WIDTH,
 ) -> ChainInput:
     polyline, fixed = chain(*vertices)
     return ChainInput(
-        ChainCentreline(description, net, PAIR_WIDTH, PAIR_CLEARANCE, polyline),
+        ChainCentreline(description, net, width, PAIR_CLEARANCE, polyline),
         layer,
         fixed,
         field,
@@ -309,18 +310,23 @@ def hooks() -> ChainsScenario:
     )
 
 
-JUNCTION = (10.0, 0.0)
+WIDE = 0.5
+NARROW = 0.25
+NARROWS_AT = (12.0, 4.0)
+WIDTH_CHANGE_END = (20.0, 4.0)
 
 
-def neck_down() -> ChainsScenario:
-    """Two chains of one net meeting end to end, each bowed on its own side."""
+def width_change() -> ChainsScenario:
+    """A WIDE route narrowing to NARROW at a corner, the two chains meeting
+    end to end at NARROWS_AT, which nothing holds."""
     free = FreeSpace()
+    wide = selected("wide", "N", free, (0.0, 0.0), (8.0, 0.0), NARROWS_AT, width=WIDE)
+    narrow = selected("narrow", "N", free, NARROWS_AT, WIDTH_CHANGE_END, width=NARROW)
+    wide_fixed, narrow_fixed = wide.fixed.copy(), narrow.fixed.copy()
+    wide_fixed[-1] = narrow_fixed[0] = False
     return ChainsScenario(
-        "neck-down",
-        (
-            selected("A", "N", free, (0.0, 0.0), (5.0, 2.0), JUNCTION),
-            selected("B", "N", free, JUNCTION, (15.0, 2.0), (20.0, 0.0)),
-        ),
+        "width-change",
+        (replace(wide, fixed=wide_fixed), replace(narrow, fixed=narrow_fixed)),
     )
 
 

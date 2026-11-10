@@ -32,7 +32,8 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings.
+  at default settings; width-change is skipped for a tree without it,
+  whose neck-down is another geometry.
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Three go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
@@ -423,7 +424,12 @@ def scenario_cases() -> dict[str, Case]:
         "drape": several(scenarios.drape),
         "squeeze": several(scenarios.squeeze),
         "hooks": several(scenarios.hooks),
-        "neck-down": several(scenarios.neck_down),
+        # An older tree's neck-down holds its corner, so it is no stand-in.
+        **(
+            {"width-change": several(scenarios.width_change)}
+            if hasattr(scenarios, "width_change")
+            else {}
+        ),
         "centreline-over-pad": several(scenarios.centreline_over_pad),
         "via-detour": several(scenarios.via_detour),
         "via-on-one-layer": several(scenarios.via_on_one_layer),
@@ -459,6 +465,8 @@ def length(points: FloatArray) -> float:
 
 
 def scenarios_table() -> None:
+    if not hasattr(scenarios, "width_change"):
+        print("scenarios: width-change skipped, the tree has no width_change")
     print(HEADER)
     total = Count()
     wall = cpu = setup = outside = 0.0
