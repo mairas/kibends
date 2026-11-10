@@ -22,7 +22,12 @@ PairIntegrand = Callable[[FloatArray, FloatArray], tuple[FloatArray, FloatArray]
 
 DEFAULT_ATTRACTION_RANGE = 3.0
 """Centre distance at which a ground via and a regular one stop attracting
-each other, mm."""
+each other, mm. Beyond the 1.8 mm over which two 0.6 mm ground vias of one
+net with 0.2 mm clearance push each other at the default range, so that
+one pushed out by its neighbours is still drawn back, and far enough that
+a pair keeping up to 1.5 mm between centres still has a neutral distance;
+2.5 mm and 4 mm move that distance by 0.02 mm, and stitching grids took
+about as many iterations to settle at ranges from 2 mm to 3 mm."""
 
 # 1 nm, KiCad's coordinate resolution: shorter edges are treated as degenerate.
 MIN_EDGE_LENGTH = 1e-6

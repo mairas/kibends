@@ -2509,8 +2509,9 @@ class TestViaClasses:
     def test_by_default_the_pull_is_weaker_than_the_push_at_a_small_limit(
         self,
     ) -> None:
-        # Two 0.4 mm vias with 0.1 mm clearance; a quarter of the push is
-        # left for the pull of farther vias.
+        # The rings and clearance of two 0.4 mm vias with 0.1 mm clearance,
+        # which a drill only widens; the pull stays below three quarters of
+        # the push, leaving at least a quarter for the pull of farther vias.
         limit = np.array([0.5])
         params = cli.smooth_options(cli.parse_args(["smooth"])).params
 

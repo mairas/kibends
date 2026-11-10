@@ -54,10 +54,15 @@ from kibends.snapshot import SelectionError
 
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
-# Provisional: its pull at a via's smallest limit distance stays well below
-# the repulsion's push there, and a typical via pair, 0.6 mm vias with
-# 0.2 mm clearance, settles about 1.6 mm apart, near kistitch's 1.5 mm
-# return-via distance.
+# Its pull at 0.55 mm, the limit distance of two 0.4 mm vias with a 0.2 mm
+# drill and 0.1 mm clearance at the default hole clearance, is 0.53 of the
+# repulsion's push there, and at 0.5 mm, their rings and clearance alone,
+# 0.65, leaving the rest for farther vias' pull; such a pair settles
+# 1.25 mm apart. A pair of 0.6 mm vias with 0.2 mm clearance settles
+# 1.58 mm apart, near kistitch's 1.5 mm return-via distance; the weight
+# barely moves that, since the push's falloff sets it, and a weaker one did
+# not let stitching grids settle in fewer iterations, as scripts/benchmark.py
+# measured on stitching grids that routes cross.
 DEFAULT_ATTRACTION = 0.25
 # Not user-facing: the clearance hinge only shapes the approach to the
 # clearance boundary, which the burst's edge check keeps edges from newly
