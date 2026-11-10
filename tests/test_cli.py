@@ -60,7 +60,7 @@ from kibends.bursts import (
     OptimizerSettings,
     Revert,
 )
-from kibends.chain import NM_PER_MM
+from kibends.chain import NM_PER_MM, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import (
     EnergyParams,
@@ -967,32 +967,14 @@ class TestErrors:
         assert "no tracks that can be modified" in exit_message(log)
         assert board.calls == []
 
-    # A selected via that may move makes the run extract the chains once
-    # without pins first, to find the copper the via carries.
-    @pytest.mark.parametrize("with_via", [False, True], ids=["tracks", "via"])
-    def test_selection_that_is_no_chain(
-        self, connect: Connector, log: list[str], with_via: bool
+    def test_selection_of_only_zero_length_tracks(
+        self, connect: Connector, log: list[str]
     ) -> None:
-        tracks = [
-            kipy_track("a", "SIG", (0, 0), (9, 0)),
-            kipy_track("b", "SIG", (9, 0), (9, 3)),
-            kipy_track("c", "SIG", (9, 3), (0, 0)),
-        ]
-        vias = [kipy_via("v", "SIG", 9, 0)] if with_via else []
-        board = CommitBoard(
-            selection=[*tracks, *vias],
-            tracks=list(tracks),
-            vias=vias,
-            grid_origin=GRID_ORIGIN,
-        )
-        connect.to(board)
+        dots = [kipy_track("a", "SIG", (1, 1), (1, 1))]
+        board = connect.to(CommitBoard(selection=list(dots), tracks=list(dots)))
 
-        message = exit_message(log)
-
-        assert "selected tracks form a closed loop through (-1.000, -2.000) mm" in (
-            message
-        )
-        assert "ChainError" not in message
+        assert "no tracks of non-zero length" in exit_message(log)
+        assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_refused_create_exits_with_the_reason(
@@ -1622,6 +1604,507 @@ def test_an_equally_spaced_bus_gives_up(
 
     (outcome,) = capsys.readouterr().out.splitlines()
     assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} ")
+
+
+def triangle_loop(net: str = "SIG") -> list[kbt.Track]:
+    """A closed triangle through (0, 0), (9, 0) and (9, 3)."""
+    return [
+        kipy_track("a", net, (0, 0), (9, 0), width=WIDTH),
+        kipy_track("b", net, (9, 0), (9, 3), width=WIDTH),
+        kipy_track("c", net, (9, 3), (0, 0), width=WIDTH),
+    ]
+
+
+IN_TRIANGLE = (7.75, 1.25)
+"""Near the centre of the circle inside `triangle_loop`, 1.26 mm across."""
+
+
+def off_junction_route() -> list[kbt.Track]:
+    """A bent route that ends at `triangle_loop`'s corner (0, 0), so that
+    the loop hangs off a junction there."""
+    return [
+        kipy_track("r1", "SIG", (-5, 0), (-2, -1), width=WIDTH),
+        kipy_track("r2", "SIG", (-2, -1), (0, 0), width=WIDTH),
+    ]
+
+
+SHRINK_LIMIT = 6
+"""Bursts after which `off_junction_route` and `triangle_loop`, unheld,
+have shrunk the loop and not yet converged, under COARSE: unlimited, the
+first run takes 8."""
+
+TRIANGLE_PADS = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
+"""Pads of SIG on three corners of a square loop."""
+
+
+def pad_box(x: float, y: float) -> BaseGeometry:
+    h = PAD_HALF_SIZE
+    return box(x - h, y - h, x + h, y + h)
+
+
+def created_path(board: CommitBoard) -> LineString:
+    """The created tracks merged into one line, which they must form."""
+    merged = linemerge([segment(t) for t in cast(list[kbt.Track], board.created)])
+    assert isinstance(merged, LineString)
+    return merged
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestLoopsAndDots:
+    # A selected via that may move makes the run extract the chains once
+    # without pins first, to find the copper the via carries.
+    @pytest.mark.parametrize(
+        ("held_by", "at"),
+        [
+            ([kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)], (0.0, 0.0)),
+            ([kipy_via("v", "SIG", 9, 0)], (9.0, 0.0)),
+            ([kipy_pad("corner", "SIG", 0, 0)], (0.0, 0.0)),
+        ],
+        ids=["track", "via", "pad"],
+    )
+    def test_a_loop_is_cut_where_its_net_touches_it_and_smoothed_round_a_pad(
+        self,
+        connect: Connector,
+        log: list[str],
+        held_by: list[kbt.BoardItem],
+        at: Point2,
+    ) -> None:
+        loop = triangle_loop()
+        vias = [v for v in held_by if isinstance(v, kbt.Via)]
+        board = connect.to(
+            CommitBoard(
+                selection=[*loop, *vias],
+                tracks=[*loop, *(t for t in held_by if isinstance(t, kbt.Track))],
+                vias=vias,
+                pads=[
+                    kipy_pad("pad", "GND", *IN_TRIANGLE),
+                    *(p for p in held_by if isinstance(p, kbt.Pad)),
+                ],
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c"]
+        path = created_path(board)
+        assert path.is_closed
+        assert at in path.coords[:]
+        pad = pad_box(*IN_TRIANGLE)
+        assert shapely.Polygon(path.coords).contains(pad)
+        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+        assert path.length < sum(segment(t).length for t in loop)
+        # Extractions before the via is judged fixed leave the loop out.
+        assert not any("Leaving out" in line for line in log)
+
+    def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
+        tracks = [
+            kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+            kipy_track("b", "SIG", (5, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 0), (7, 2), width=WIDTH),
+            kipy_track("d", "SIG", (7, 2), (5, 4), width=WIDTH),
+            kipy_track("e", "SIG", (5, 4), (3, 2), width=WIDTH),
+            kipy_track("f", "SIG", (3, 2), (5, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                pads=[kipy_pad("pad", "GND", 5, 2)],
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "d", "e", "f"]
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        (junction,) = [p for p, n in degree.items() if n == 4]
+        assert {p for p, n in degree.items() if n == 1} == {
+            (nm(0), nm(0)),
+            (nm(10), nm(0)),
+        }
+        assert set(degree.values()) == {1, 2, 4}
+        # The loop round the pad pulls the junction off the straight route.
+        assert junction[1] > nm(0.1)
+
+    # Unlimited, the loop shrinks for 10 bursts; stopped at 3, it is still
+    # part way.
+    @pytest.mark.parametrize("limit", [(), ("--time-limit=3",)], ids=["free", "3"])
+    def test_a_loop_nothing_holds_open_is_left_as_drawn(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        limit: tuple[str, ...],
+    ) -> None:
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
+        loop = triangle_loop()
+        touch = kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)
+        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, touch]))
+
+        run(*limit)
+
+        assert board.deleted == []
+        assert "begin_commit" not in board.calls
+        (held,) = [line for line in log if "holds it open" in line]
+        assert held.startswith("DEBUG") and "a, b, c" in held
+        assert not any("shrinks to no area" in line for line in log)
+
+    def test_a_loop_through_three_pads_of_its_net_settles_into_their_triangle(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (10, 10), width=WIDTH),
+            kipy_track("c", "SIG", (10, 10), (0, 10), width=WIDTH),
+            kipy_track("d", "SIG", (0, 10), (0, 0), width=WIDTH),
+        ]
+        pads = [kipy_pad(f"p{k}", "SIG", *at) for k, at in enumerate(TRIANGLE_PADS)]
+        board = connect.to(
+            CommitBoard(selection=list(loop), tracks=list(loop), pads=pads)
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "d"]
+        corners = {(nm(x), nm(y)) for x, y in TRIANGLE_PADS}
+        created = cast(list[kbt.Track], board.created)
+        assert {(p.x, p.y) for t in created for p in (t.start, t.end)} == corners
+        assert len(created) == len(corners)
+
+    def test_a_loop_touched_at_two_points_that_would_fold_flat_is_left_as_drawn(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (10, 4), width=WIDTH),
+            kipy_track("c", "SIG", (10, 4), (0, 4), width=WIDTH),
+            kipy_track("d", "SIG", (0, 4), (0, 0), width=WIDTH),
+        ]
+        touches = [
+            kipy_track("t1", "SIG", (-3, 0), (0, 0), width=WIDTH),
+            kipy_track("t2", "SIG", (13, 4), (10, 4), width=WIDTH),
+        ]
+        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, *touches]))
+
+        run()
+
+        assert board.deleted == []
+        assert "begin_commit" not in board.calls
+
+    def test_a_loop_shrinking_off_a_junction_holds_it_for_the_other_branches(
+        self, connect: Connector
+    ) -> None:
+        tracks = [*off_junction_route(), *triangle_loop()]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["r1", "r2"]
+        assert created_path(board).coords[:] in (
+            [(-5.0, 0.0), (0.0, 0.0)],
+            [(0.0, 0.0), (-5.0, 0.0)],
+        )
+
+    def test_a_loop_that_shrinks_all_the_same_is_held_from_where_the_run_was(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        log: list[str],
+    ) -> None:
+        # Taken for a loop held open, the loop off the route's junction
+        # shrinks in the first run instead.
+
+        def none_collapsing(_read: object, _options: object) -> list[int]:
+            return []
+
+        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        clock = BurstClock(monkeypatch)
+        monkeypatch.setattr(pipeline, "monotonic", clock)
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+        starts: list[RunResult | None] = []
+
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
+            starts.append(cast(RunResult | None, kwargs["start"]))
+            result = replace(real(*args, **kwargs), abnormal=(("a burst", 1),))
+            if not runs:
+                result = replace(result, gave_up=(("a problem", 3),))
+            runs.append(result)
+            return result
+
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+        tracks = [*off_junction_route(), *triangle_loop()]
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--dry-run", f"--time-limit={SHRINK_LIMIT}")
+
+        first, second = runs
+        assert starts[0] is None
+        resumed = starts[1]
+        assert resumed is not None
+        # The route goes on from where the first run left it, its end back
+        # on the junction as drawn; the loop starts over as drawn, held.
+        route, loop = resumed.chains
+        assert np.array_equal(route.polyline[:-1], first.chains[0].polyline[:-1])
+        assert tuple(route.polyline[-1]) == (0.0, 0.0) and route.fixed[-1]
+        assert loop.fixed.all()
+        assert loop.polyline.tolist() == [[0, 0], [9, 0], [9, 3], [0, 0]]
+        # Resumed, the second run completes one outer iteration, then stops
+        # at the first burst of the next.
+        assert second.iterations <= 2
+        assert clock.bursts <= SHRINK_LIMIT + 2
+        (report,) = reports
+        assert report.iterations == first.iterations + second.iterations
+        assert report.elapsed == clock.bursts
+        assert report.abnormal == (("a burst", 2),)
+        # The give-up the first run logged counts in, once.
+        assert sum("Gave up on a problem" in line for line in log) == 1
+        assert sum("INFO Optimizing" in line for line in log) == 1
+        assert log.count("INFO Setting up the optimizer\n") == 1
+        assert "INFO Setting up the optimizer again, with held loops\n" in log
+
+    def test_a_give_up_before_a_loop_is_held_stays_the_outcome(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        def none_collapsing(_read: object, _options: object) -> list[int]:
+            return []
+
+        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+
+        def giving_up_first(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            if not runs:
+                result = replace(result, gave_up=(("a problem", 3),))
+            runs.append(result)
+            return result
+
+        monkeypatch.setattr(pipeline, "optimize_chains", giving_up_first)
+        tracks = [*off_junction_route(), *triangle_loop()]
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--dry-run")
+
+        _, second = runs
+        assert second.termination is Termination.CONVERGED
+        (report,) = reports
+        assert report.termination is Termination.GAVE_UP
+
+    @pytest.mark.parametrize("backstop", [False, True], ids=["before", "backstop"])
+    def test_a_via_a_held_loop_ends_at_stays(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        backstop: bool,
+    ) -> None:
+        if backstop:
+
+            def none_collapsing(_read: object, _options: object) -> list[int]:
+                return []
+
+            monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        route = [
+            kipy_track("f", "SIG", (-6, -6), (0, 0), width=WIDTH),
+            kipy_track("r", "SIG", (0, 0), (6, -6), width=WIDTH, layer=BL.BL_B_Cu),
+        ]
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (3, 0), width=WIDTH),
+            kipy_track("b", "SIG", (3, 0), (3, 2), width=WIDTH),
+            kipy_track("c", "SIG", (3, 2), (0, 0), width=WIDTH),
+        ]
+        via = kipy_via("V", "SIG", 0, 0)
+        board = connect.to(
+            CommitBoard(
+                selection=[*route, *loop, via],
+                tracks=[*route, *loop],
+                vias=[via],
+                pads=[kipy_pad("p", "SIG", -6, -6), kipy_pad("q", "SIG", 6, -6)],
+            )
+        )
+
+        run()
+
+        assert created_vias(board) == []
+        assert not {"a", "b", "c"} & set(board.deleted)
+        (stays,) = [line for line in log if "Via V" in line and "a, b, c" in line]
+        assert stays.startswith("DEBUG") and "stays fixed" in stays
+
+    def test_routes_off_a_held_loop_still_meet_it_where_it_was_drawn(
+        self, connect: Connector
+    ) -> None:
+        # Alone, the two routes' ends would meet anywhere on the line between
+        # their far ends.
+        other = [
+            kipy_track("s1", "SIG", (0, -5), (-1, -2), width=WIDTH),
+            kipy_track("s2", "SIG", (-1, -2), (0, 0), width=WIDTH),
+        ]
+        tracks = [*off_junction_route(), *other, *triangle_loop()]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["r1", "r2", "s1", "s2"]
+        created = cast(list[kbt.Track], board.created)
+        ends_there = [p for t in created for p in (t.start, t.end) if p.x == p.y == 0]
+        assert len(ends_there) == 2
+
+    @pytest.mark.parametrize("touched", [False, True], ids=["alone", "touched"])
+    def test_a_loop_closed_by_an_arc_is_smoothed_or_left_whole(
+        self, connect: Connector, touched: bool
+    ) -> None:
+        # The arc bulges below (0, 0)-(9, 0), round the pad of GND.
+        arc = kipy_arc("arc", "SIG", (0, 0), (4.5, 3), (9, 0), width=WIDTH)
+        back = kipy_track("back", "SIG", (9, 0), (0, 0), width=WIDTH)
+        touch = kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)
+        board = connect.to(
+            CommitBoard(
+                selection=[arc, back],
+                tracks=[arc, back, *([touch] if touched else [])],
+                pads=[kipy_pad("pad", "GND", 4.5, 1.5)],
+            )
+        )
+
+        run()
+
+        if not touched:
+            assert board.deleted == []
+            return
+        assert sorted(board.deleted) == ["arc", "back"]
+        path = created_path(board)
+        assert path.is_closed and (0.0, 0.0) in path.coords[:]
+        pad = pad_box(4.5, 1.5)
+        assert shapely.Polygon(path.coords).contains(pad)
+        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+
+    def test_a_loop_nothing_touches_stays_and_holds_the_others_clear(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("l1", "SIG2", (1.6, 1.2), (2.4, 1.2), width=WIDTH),
+            kipy_track("l2", "SIG2", (2.4, 1.2), (2.4, 2.0), width=WIDTH),
+            kipy_track("l3", "SIG2", (2.4, 2.0), (1.6, 2.0), width=WIDTH),
+            kipy_track("l4", "SIG2", (1.6, 2.0), (1.6, 1.2), width=WIDTH),
+        ]
+        tracks = [*l_chain(), *loop]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        created = cast(list[kbt.Track], board.created)
+        assert {t.net.name for t in created} == {"SIG"}
+        required = CLEARANCE + WIDTH
+        assert all(
+            segment(t).distance(segment(other)) >= required - NM_ROUNDING
+            for t in created
+            for other in loop
+        )
+        assert len(created) > 1
+
+    def test_a_zero_length_track_beside_a_chain_stays(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (8, 8), (8, 8), width=WIDTH)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        (left_out,) = [line for line in log if "Leaving out" in line]
+        assert left_out.startswith("DEBUG") and "dot" in left_out
+
+    def test_a_zero_length_track_on_a_chain_goes_with_it(
+        self, connect: Connector
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (4, 0), (4, 0), width=WIDTH)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "dot"]
+
+    def test_a_dot_of_another_width_left_out_pins_the_chain_it_lies_on(
+        self, connect: Connector
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (2, 0), (2, 0), width=0.4)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        assert (nm(2), nm(0)) in ends(cast(list[kbt.Track], board.created))
+
+    @pytest.mark.parametrize("with_via", [False, True], ids=["alone", "via"])
+    def test_a_selection_of_only_an_untouched_loop_has_nothing_to_do(
+        self, connect: Connector, log: list[str], with_via: bool
+    ) -> None:
+        loop = triangle_loop()
+        vias = [kipy_via("v", "SIG", 20, 20)] if with_via else []
+        board = connect.to(
+            CommitBoard(selection=[*loop, *vias], tracks=list(loop), vias=vias)
+        )
+
+        run()
+
+        assert board.calls == []
+        assert any("INFO Nothing to do" in line for line in log)
+        (left_out,) = [line for line in log if "Leaving out" in line]
+        assert left_out.startswith("DEBUG") and "a, b, c" in left_out
+
+    def test_a_moving_via_carries_its_own_chain_after_a_loop_is_left_out(
+        self, connect: Connector
+    ) -> None:
+        # The square loop, which crosses B and which nothing of SIG touches
+        # at an end, stays as copper and pins B, which then sorts after A.
+        tracks = [
+            kipy_track("A", "SIG", (0, 0), (5, 5), width=WIDTH),
+            kipy_track("B", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("D", "SIG", (0, 0), (0, 5), width=WIDTH),
+            kipy_track("E", "SIG", (5, 5), (9, 9), width=WIDTH, layer=BL.BL_B_Cu),
+            kipy_track("l1", "SIG", (2, -1), (4, -1), width=WIDTH),
+            kipy_track("l2", "SIG", (4, -1), (4, 1), width=WIDTH),
+            kipy_track("l3", "SIG", (4, 1), (2, 1), width=WIDTH),
+            kipy_track("l4", "SIG", (2, 1), (2, -1), width=WIDTH),
+        ]
+        via = kipy_via("V", "SIG", 5, 5)
+        board = connect.to(
+            CommitBoard(
+                selection=[*tracks, via],
+                tracks=list(tracks),
+                vias=[via],
+                pads=[kipy_pad("g", "GND", 5.6, 4.4)],
+            )
+        )
+
+        run()
+
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert at != (nm(5), nm(5))
+        created = cast(list[kbt.Track], board.created[:-1])
+        assert at in ends(created_on(board, BL.BL_F_Cu))
+        assert at in ends(created_on(board, BL.BL_B_Cu))
+        assert (nm(10), nm(0)) in ends(created)
+        assert not {"l1", "l2", "l3", "l4"} & set(board.deleted)
 
 
 VIA = (4.0, 4.0)
