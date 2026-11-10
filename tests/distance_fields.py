@@ -1,4 +1,8 @@
-"""Analytic DistanceField and ObstacleField implementations for tests."""
+"""Analytic DistanceField and ObstacleField implementations for tests.
+
+Each shape is one obstacle, but `Walls`, two, so their smooth distance
+(`DistanceField.smooth_distance`) is their exact one, and that of `Walls`
+and `Union` the smooth minimum over theirs."""
 
 import math
 from collections.abc import Sequence
@@ -6,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from kibends.energy import BoolArray, FloatArray
+from kibends.energy import BoolArray, FloatArray, combine_fields
 
 FAR = 1e3
 """Distance reported by FreeSpace, beyond any falloff range used in tests, mm."""
@@ -31,6 +35,11 @@ class FreeSpace:
     ) -> tuple[FloatArray, FloatArray]:
         return np.full(len(points), FAR), np.zeros_like(points)
 
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        return self.signed_distance(points, reach)
+
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
     ) -> BoolArray:
@@ -51,6 +60,11 @@ class Disc:
         safe = np.where(norm > 0.0, norm, 1.0)
         direction = np.where(norm[:, None] > 0.0, offset / safe[:, None], [1.0, 0.0])
         return norm - self.radius, direction
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        return self.signed_distance(points, reach)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -94,6 +108,11 @@ class Box:
         distance = np.where(is_outside, outside_norm, np.max(q, axis=1))
         gradient = np.where(is_outside[:, None], outside_grad, inside_grad)
         return distance - self.corner_radius, gradient
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        return self.signed_distance(points, reach)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -169,6 +188,15 @@ class Walls:
         gradient = np.stack([np.zeros_like(y), toward_centre], axis=1)
         return self.half_gap - np.abs(y), gradient
 
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        """The smooth minimum over the two walls, each an obstacle."""
+        y = points[:, 1]
+        smooth, (below, above) = combine_fields(self.half_gap + y, self.half_gap - y)
+        gradient = np.stack([np.zeros_like(y), below - above], axis=1)
+        return smooth, gradient
+
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
     ) -> BoolArray:
@@ -184,6 +212,12 @@ class MisleadingWalls(Walls):
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         distance, gradient = super().signed_distance(points)
+        return distance, -gradient
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        distance, gradient = super().smooth_distance(points)
         return distance, -gradient
 
 
@@ -202,6 +236,18 @@ class Union:
         nearest = np.argmin(distances, axis=0)
         rows = np.arange(len(points))
         return distances[nearest, rows], gradients[nearest, rows]
+
+    def smooth_distance(
+        self, points: FloatArray, reach: float = math.inf
+    ) -> tuple[FloatArray, FloatArray]:
+        """The smooth minimum over the shapes' smooth distances."""
+        results = [shape.smooth_distance(points) for shape in self.shapes]
+        smooth, shares = combine_fields(*(distance for distance, _ in results))
+        gradient = sum(
+            (s[:, None] * g for s, (_, g) in zip(shares, results, strict=True)),
+            start=np.zeros_like(points),
+        )
+        return smooth, gradient
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0

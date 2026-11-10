@@ -165,7 +165,7 @@ def free_distances(
     """The free distance of each via, in order: to its static copper
     (`ViaInput.copper`), and to what `sight` finds of the chains or members
     at `polylines` and the vias at `positions`."""
-    cross = sight.nearest(polylines, positions, math.inf).distance
+    cross = sight.distances(polylines, positions, math.inf)
     return [
         min(point_distance(vias[k].copper, positions[k]), float(d))
         for k, d in enumerate(cross)

@@ -1572,7 +1572,7 @@ Z_BUS_CLEARANCE = 0.2
 
 def z_bus_board() -> CommitBoard:
     """The bus of issue 106: Z-shaped tracks at equal pitch, each centred
-    between its neighbours, whose bursts end abnormally on the tie."""
+    between its neighbours."""
     tracks: list[kbt.Track] = []
     for i in range(Z_BUS_TRACKS):
         y = i * Z_BUS_PITCH
@@ -1594,16 +1594,35 @@ def z_bus_board() -> CommitBoard:
     )
 
 
-@pytest.mark.usefixtures("coarse_optimizer")
-def test_an_equally_spaced_bus_gives_up(
-    connect: Connector, capsys: pytest.CaptureFixture[str]
+Z_BUS_SPACING = 5.0
+"""Vertex spacing for the bus, mm: coarse, so that the run converges
+within a second, and still several vertices to each of its edges, which
+the nearest neighbour alone left on the tie: there every problem gave
+up."""
+
+
+def test_an_equally_spaced_bus_converges(
+    connect: Connector,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    reports: list[pipeline.RunReport],
 ) -> None:
+    """The energy is differentiable at the tie, so no problem gives up and
+    every track of the bus shortens."""
+    monkeypatch.setattr(
+        pipeline, "optimize_chains", at(replace(COARSE, spacing=Z_BUS_SPACING))
+    )
     connect.to(z_bus_board())
 
     run("--dry-run")
 
     (outcome,) = capsys.readouterr().out.splitlines()
-    assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} ")
+    assert outcome.startswith(f"Optimizer: {Termination.CONVERGED.value} ")
+    (report,) = reports
+    assert len(report.chains) == Z_BUS_TRACKS
+    for chain in report.chains:
+        assert chain.changed
+        assert chain.after.length < chain.before.length
 
 
 def triangle_loop(net: str = "SIG") -> list[kbt.Track]:

@@ -79,4 +79,10 @@ def via_obstacles_for_via(
     if not centres:
         return None
     at = np.array(centres, dtype=float)
-    return ChainField(at, at, np.array(inflations, dtype=float))
+    # Each via is an obstacle of its own.
+    return ChainField(
+        at,
+        at,
+        np.array(inflations, dtype=float),
+        np.arange(len(centres), dtype=np.intp),
+    )

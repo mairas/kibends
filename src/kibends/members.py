@@ -9,12 +9,15 @@ gives what each member sees of the others on its layer, by the rule
 rule by net and kind, and as exceptions only a section's view of its own
 nets' tracks and the vias, so that it grows with the members, not with
 pairs of them. `members_energy` sums each member's energy in its static
-field plus what it sees of the others, and gives its gradient at every
-vertex and via centre: where a member's obstacle term pulls on another's
-edge, the gradient reaches that edge's ends, and through a section's
-offset its centreline (`PairBlock.offset_pullback`). `layer_energy` is its
-form for one layer without vias, and `pull_answers` takes a via's push
-back to what answers it.
+field plus what it sees of the others, the distance its obstacle term
+takes the smooth minimum over both (`energy.smooth_minimum`), each track
+and each via an obstacle, and gives its gradient at every vertex and via
+centre: where a member's obstacle term pulls on another's edge, each
+obstacle's share of the gradient reaches the ends of its edge nearest the
+point, and through a section's offset its centreline
+(`PairBlock.offset_pullback`). `layer_energy` is its form for one layer
+without vias, and `pull_answers` takes a via's push back to what answers
+it, by the same shares.
 """
 
 import math
@@ -29,6 +32,7 @@ from kibends.energy import (
     IntArray,
     arc_lengths,
     bend_radius_energy,
+    combine_fields,
     edge_integral,
     obstacle_integrand,
     obstacle_reach,
@@ -38,7 +42,7 @@ from kibends.energy import (
 from kibends.neighbours import ChainInput, obstacle_spans
 from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.pair_blocks import PairBlock
-from kibends.seen import NeighbourList, Pieces, Seen, Track, ViaNearest, Viewer
+from kibends.seen import NeighbourList, Pieces, Seen, Track, ViaSmooth, Viewer
 
 Member = ChainInput | PairBlock
 """What a problem optimises: a chain, or a coupled section as its
@@ -96,16 +100,27 @@ def members_energy(
     gradients: list[FloatArray] = []
     value = 0.0
     every_query = [quadrature_points(points, k) for points in polylines]
-    nearest = seen.nearest(every_query, flat, reach, listed)
+    answers = seen.smooth_answers(every_query, flat, reach, listed)
+    statics = [
+        body_of(member).field.smooth_distance(queries, reach)
+        for member, queries in zip(members, every_query, strict=True)
+    ]
+    # Every member's points at once, one after another.
+    bounds = np.cumsum([0, *(len(queries) for queries in every_query)])
+    distance, (static_share, seen_share) = combine_fields(
+        np.concatenate([np.empty(0), *(d for d, _ in statics)]),
+        np.concatenate([np.empty(0), *(near.distance for near in answers)]),
+    )
+    direction = static_share[:, None] * np.concatenate(
+        [np.empty((0, 2)), *(g for _, g in statics)]
+    ) + seen_share[:, None] * np.concatenate(
+        [np.empty((0, 2)), *(near.gradient for near in answers)]
+    )
+    slopes = np.empty(len(distance))
     for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
-        queries = every_query[i]
-        static, static_direction = body_of(member).field.signed_distance(queries, reach)
-        near = nearest[i]
-        nearer = near.distance < static
-        distance = np.where(nearer, near.distance, static)
-        direction = np.where(nearer[:, None], near.gradient, static_direction)
-        obstacle, obstacle_gradient, slopes = edge_integral(
-            points, distance, direction, integrand, k
+        mine = slice(bounds[i], bounds[i + 1])
+        obstacle, obstacle_gradient, slopes[mine] = edge_integral(
+            points, distance[mine], direction[mine], integrand, k
         )
         shape, shape_gradient = shape_energy(points, masks[i], short_edge)
         value += shape + obstacle
@@ -117,15 +132,28 @@ def members_energy(
             value += bend
             gradient += bend_gradient
         gradients.append(gradient)
-        pulled = np.flatnonzero(nearer & (slopes != 0.0))
-        if len(pulled):
-            piece = near.edge[pulled]
-            start = seen.vertex[piece]
-            along = _parameters(queries[pulled], *seen.segments(piece, flat))
-            t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
-            push = slopes[pulled, None] * near.gradient[pulled]
-            np.add.at(at_shown, start, -push * (1 - t)[:, None])
-            np.add.at(at_shown, start + 1, -push * t[:, None])
+    point = np.concatenate(
+        [
+            np.empty(0, dtype=np.intp),
+            *(near.point + bounds[i] for i, near in enumerate(answers)),
+        ]
+    )
+    pull = (slopes * seen_share)[point] * np.concatenate(
+        [np.empty(0), *(near.share for near in answers)]
+    )
+    pulled = np.flatnonzero(pull != 0.0)
+    if len(pulled):
+        piece = np.concatenate(
+            [np.empty(0, dtype=np.intp), *(near.edge for near in answers)]
+        )[pulled]
+        toward = np.concatenate([np.empty((0, 2)), *(n.direction for n in answers)])
+        start = seen.vertex[piece]
+        at = np.concatenate([np.empty((0, 2)), *every_query])[point[pulled]]
+        along = _parameters(at, *seen.segments(piece, flat))
+        t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
+        push = pull[pulled, None] * toward[pulled]
+        np.add.at(at_shown, start, -push * (1 - t)[:, None])
+        np.add.at(at_shown, start + 1, -push * t[:, None])
     first = 0
     for member, points, gradient, parts in zip(
         members, polylines, gradients, lines, strict=True
@@ -313,25 +341,23 @@ def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> Flo
 
 
 def pull_answers(
-    near: ViaNearest,
-    nearer: BoolArray,
+    near: ViaSmooth,
+    slope: FloatArray,
     at: FloatArray,
-    push: FloatArray,
     gradients: list[FloatArray],
     via_gradients: FloatArray,
 ) -> None:
-    """Subtract each via's `push` from what `near` found answering it, where
-    that is `nearer` than its static copper: the other via, or the ends of a
-    member's edge in proportion to where along it the via's centre at `at`
-    is nearest."""
-    answered = np.flatnonzero(nearer)
-    member, vertex = near.member[answered], near.vertex[answered]
-    on_via = member < 0
-    np.subtract.at(via_gradients, vertex[on_via], push[answered[on_via]])
-    for j in np.unique(member[~on_via]):
-        edge = answered[member == j]
+    """Take from what `near` found answering each via its share of the
+    via's push, its unit gradient times the via's `slope`: from the other
+    via, or from the ends of a member's edge in proportion to where along it
+    the via's centre at `at` is nearest."""
+    push = (slope[near.point] * near.share)[:, None] * near.direction
+    on_via = near.member < 0
+    np.subtract.at(via_gradients, near.vertex[on_via], push[on_via])
+    for j in np.unique(near.member[~on_via]):
+        edge = np.flatnonzero(near.member == j)
         first = near.vertex[edge]
-        t = _parameters(at[edge], near.starts[edge], near.ends[edge])[:, None]
+        t = _parameters(at[near.point[edge]], near.starts[edge], near.ends[edge])
         gradient = gradients[int(j)]
-        np.subtract.at(gradient, first, (1 - t) * push[edge])
-        np.subtract.at(gradient, first + 1, t * push[edge])
+        np.subtract.at(gradient, first, (1 - t)[:, None] * push[edge])
+        np.subtract.at(gradient, first + 1, t[:, None] * push[edge])

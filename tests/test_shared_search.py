@@ -8,11 +8,11 @@ moving vias see of each other fails it; only the distances, the vias'
 rings and a section's leave-out near its fan-outs (`kept_spans`, which
 test_neighbours checks) come from the code under test.
 
-Where two pieces answer a point at exactly the same distance, which one
-does depends on the order a tree lists them in, so the gradient may go to
-either: the states here have no such point. A grid of routes whose vias
-stand in line has them at the start, where a member's end lies midway
-between the vias above and below it."""
+The energy takes the smooth minimum over obstacles, so two obstacles
+equally near a point share its gradient whatever order a tree lists them
+in. Within one obstacle, where two of its pieces answer a point at exactly
+the same distance, which one does depends on that order, so the gradient
+may go to either: the states here have no such point."""
 
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -42,6 +42,7 @@ from kibends.energy import (
     EnergyParams,
     IntArray,
     bend_radius_energy,
+    combine_fields,
     edge_integral,
     obstacle_integrand,
     obstacle_reach,
@@ -105,13 +106,14 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     lambda: scenarios.via_detour_over(FreeSpace()),
     lambda: scenarios.via_slack(FreeSpace()),
     lambda: scenarios.via_grid(3, 3),
+    lambda: scenarios.via_grid(3, 3, via_every=1),
     lambda: _detour_among_ground_vias(),
     lambda: _one_per_layer(),
     lambda: _stitching_alone(),
     lambda: _mixed_netclasses(),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-14]),
+    *(make.__name__ for make in SCENARIOS[:-15]),
     "pair_tent_over_its_own_net",
     "pair_tent_over_another_net",
     "pair_tent_fanning_out",
@@ -122,6 +124,7 @@ IDS = [
     "via_detour_over",
     "via_slack",
     "via_grid",
+    "via_grid_with_a_via_at_every_vertex",
     "via_detour_among_ground_vias",
     "one_per_layer",
     "stitching_alone",
@@ -284,19 +287,21 @@ def _covered(
 def _reference_parts(
     problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
     polylines: Sequence[FloatArray],
-) -> list[Pieces]:
+) -> list[tuple[Pieces, IntArray]]:
     """What each member sees, as copper of one net does not interact: every
     track of another net on its layer, inflated by both half widths and the
     larger clearance, and every via spanning its layer of another net,
     inflated by its ring. A chain sees each track whole; a section sees as
     its centreline of the pair's outer extent, and leaves a track of either
-    of its nets out near where it touches it (`kept_spans`)."""
+    of its nets out near where it touches it (`kept_spans`). With them, each
+    piece's obstacle: each track shown, a section's two apart, and each via
+    is one."""
     members = problem.members
     lines = [shown(m, p) for m, p in zip(members, polylines, strict=True)]
     lengths = [len(points) for parts in lines for _, points in parts]
     firsts = np.cumsum([0, *lengths])
     vias_from = int(firsts[-1])
-    parts: list[Pieces] = []
+    parts: list[tuple[Pieces, IntArray]] = []
     for i, member in enumerate(members):
         own = member.facing if isinstance(member, PairBlock) else member
         nets: Mapping[str, ChainInput] = (
@@ -307,6 +312,7 @@ def _reference_parts(
         start = [np.empty(0)]
         end = [np.empty(0)]
         inflation = [np.empty(0)]
+        obstacle = [np.empty(0, dtype=np.intp)]
         track = 0
         for j, tracks in enumerate(lines):
             for other, points in tracks:
@@ -333,6 +339,7 @@ def _reference_parts(
                     inflation.append(
                         np.full(len(edge), (me.width + them.width) / 2 + margin)
                     )
+                    obstacle.append(np.full(len(edge), track, dtype=np.intp))
                 track += 1
         body = problem.bodies[i]
         for k, via in enumerate(problem.vias):
@@ -342,12 +349,16 @@ def _reference_parts(
                 start.append(np.zeros(1))
                 end.append(np.ones(1))
                 inflation.append(np.array([via.rings[i]]))
+                obstacle.append(np.array([len(lengths) + k], dtype=np.intp))
         parts.append(
-            Pieces(
-                np.concatenate(vertex),
-                np.concatenate(start),
-                np.concatenate(end),
-                np.concatenate(inflation),
+            (
+                Pieces(
+                    np.concatenate(vertex),
+                    np.concatenate(start),
+                    np.concatenate(end),
+                    np.concatenate(inflation),
+                ),
+                np.concatenate(obstacle),
             )
         )
     return parts
@@ -359,10 +370,11 @@ def _reference_members(
     masks: Sequence[BoolArray],
     params: EnergyParams,
     short_edge: float,
-    seen: Sequence[Pieces],
+    seen: Sequence[tuple[Pieces, IntArray]],
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
-    """`members_energy` with a field of each member's own pieces."""
+    """`members_energy` with a field of each member's own pieces, the
+    smooth minimum taken over them and the static field together."""
     reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge
@@ -379,15 +391,19 @@ def _reference_members(
     for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
         body = member.chain if isinstance(member, PairBlock) else member
         queries = quadrature_points(points, k)
-        static, static_direction = body.field.signed_distance(queries, reach)
-        part = seen[i]
+        static, static_direction = body.field.smooth_distance(queries, reach)
+        part, obstacles = seen[i]
         a, b = flat[part.vertex], flat[part.vertex + 1]
         starts = a + part.start[:, None] * (b - a)
         ends = a + part.end[:, None] * (b - a)
-        near = ChainField(starts, ends, part.inflation).nearest(queries, reach)
-        nearer = near.distance < static
-        distance = np.where(nearer, near.distance, static)
-        direction = np.where(nearer[:, None], near.gradient, static_direction)
+        near = ChainField(starts, ends, part.inflation, obstacles).smooth_answers(
+            queries, reach
+        )
+        distance, (static_share, seen_share) = combine_fields(static, near.distance)
+        direction = (
+            static_share[:, None] * static_direction
+            + seen_share[:, None] * near.gradient
+        )
         obstacle, obstacle_gradient, slopes = edge_integral(
             points, distance, direction, integrand, k
         )
@@ -401,12 +417,12 @@ def _reference_members(
             value += bend
             gradient += bend_gradient
         gradients.append(gradient)
-        pulled = np.flatnonzero(nearer & (slopes != 0.0))
-        edge = near.edge[pulled]
+        point = near.point
+        edge = near.edge
         start = part.vertex[edge]
-        along = _parameters(queries[pulled], starts[edge], ends[edge])
+        along = _parameters(queries[point], starts[edge], ends[edge])
         t = part.start[edge] + along * (part.end[edge] - part.start[edge])
-        push = slopes[pulled, None] * near.gradient[pulled]
+        push = (slopes * seen_share)[point, None] * near.share[:, None] * near.direction
         np.add.at(at_shown, start, -push * (1 - t)[:, None])
         np.add.at(at_shown, start + 1, -push * t[:, None])
     first = 0
@@ -436,11 +452,11 @@ def _reference_view(
     other_nets: bool = False,
 ) -> tuple[ChainField, FloatArray, FloatArray, list[tuple[int, int]]]:
     """What via k sees of the members and the other vias, as a field of its
-    own, its edges' starts and ends, and each edge's member and first
-    vertex, or -1 and the via; `unpaired` leaves out the vias that only stop
-    it, of its net, and those the pairwise term takes instead, of other
-    nets where either is a ground via; `other_nets` leaves out only the
-    vias of its net."""
+    own, each member and each via an obstacle, its edges' starts and ends,
+    and each edge's member and first vertex, or -1 and the via; `unpaired`
+    leaves out the vias that only stop it, of its net, and those the
+    pairwise term takes instead, of other nets where either is a ground
+    via; `other_nets` leaves out only the vias of its net."""
     via = problem.vias[k]
     starts = [np.empty((0, 2))]
     ends = [np.empty((0, 2))]
@@ -470,7 +486,10 @@ def _reference_view(
         inflations.append(np.array([apart]))
         owner.append((-1, u))
     a, b = np.concatenate(starts), np.concatenate(ends)
-    return ChainField(a, b, np.concatenate(inflations)), a, b, owner
+    obstacles = np.array(
+        [j if j >= 0 else len(problem.bodies) + u for j, u in owner], dtype=np.intp
+    ).reshape(-1)
+    return ChainField(a, b, np.concatenate(inflations), obstacles), a, b, owner
 
 
 def _reference_distances(
@@ -497,35 +516,38 @@ def _reference_vias(
     polylines: Sequence[FloatArray],
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
-    """`_Problem.via_energy` with a field of each via's own view."""
+    """`_Problem.via_energy` with a field of each via's own view, its
+    repelling term alone, the smooth minimum taken over it and the via's
+    static field together. The scenarios' vias have no stops."""
     gradients = [np.zeros_like(points) for points in polylines]
     via_gradients = np.zeros((len(problem.vias), 2))
     value = 0.0
     for k in range(len(problem.vias)):
         via = problem.vias[k]
+        assert via.given.stops is None
         at = positions[k][None]
-        static, static_direction = via.given.field.signed_distance(at, problem.reach)
+        static, static_direction = via.given.field.smooth_distance(at, problem.reach)
         field, a, b, owner = _reference_view(
             problem, k, polylines, positions, unpaired=True
         )
-        near = field.nearest(at, problem.reach)
-        nearer = bool(near.distance[0] < static[0])
-        distance = near.distance if nearer else static
-        direction = near.gradient[0] if nearer else static_direction[0]
+        near = field.smooth_answers(at, problem.reach)
+        distance, (static_share, seen_share) = combine_fields(static, near.distance)
+        direction = (
+            static_share[0] * static_direction[0] + seen_share[0] * (near.gradient[0])
+        )
         term, slope = problem.integrand(distance)
+        weight = via.given.via.diameter * slope[0]
         value += via.given.via.diameter * float(term[0])
-        push = via.given.via.diameter * slope[0] * direction
-        via_gradients[k] += push
-        if not nearer:
-            continue
-        e = int(near.edge[0])
-        j, first = owner[e]
-        if j < 0:
-            via_gradients[first] -= push
-            continue
-        t = _parameters(at, a[e : e + 1], b[e : e + 1])[0]
-        gradients[j][first] -= (1 - t) * push
-        gradients[j][first + 1] -= t * push
+        via_gradients[k] += weight * direction
+        for e, share, toward in zip(near.edge, near.share, near.direction, strict=True):
+            push = weight * seen_share[0] * share * toward
+            j, first = owner[int(e)]
+            if j < 0:
+                via_gradients[first] -= push
+                continue
+            t = _parameters(at, a[e : e + 1], b[e : e + 1])[0]
+            gradients[j][first] -= (1 - t) * push
+            gradients[j][first + 1] -= t * push
     return value, gradients, via_gradients
 
 
@@ -594,6 +616,16 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
             )
 
 
+def _exact_field(
+    starts: FloatArray, ends: FloatArray, inflations: FloatArray
+) -> ChainField:
+    """Edges as a field for exact distances alone, which do not depend on
+    what the obstacles are: each edge one."""
+    return ChainField(
+        starts, ends, inflations, np.arange(len(inflations), dtype=np.intp)
+    )
+
+
 def _reference_fields(
     problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
     polylines: Sequence[FloatArray],
@@ -603,10 +635,10 @@ def _reference_fields(
     own pieces."""
     flat = shown_flat(problem.members, polylines, positions)
     fields: list[ChainField] = []
-    for part in _reference_parts(problem, polylines):
+    for part, _ in _reference_parts(problem, polylines):
         a, b = flat[part.vertex], flat[part.vertex + 1]
         fields.append(
-            ChainField(
+            _exact_field(
                 a + part.start[:, None] * (b - a),
                 a + part.end[:, None] * (b - a),
                 part.inflation,
@@ -755,7 +787,7 @@ def test_the_exact_distance_looks_only_at_what_each_member_sees(
     assert looked[0] <= PAIRS_PER_POINT * points
     for chain, distance in zip(chains, got, strict=True):
         others = [c for c in chains if c.centreline.net != chain.centreline.net]
-        field = ChainField(
+        field = _exact_field(
             np.concatenate([c.centreline.points[:-1] for c in others]),
             np.concatenate([c.centreline.points[1:] for c in others]),
             np.full(sum(len(c.centreline.points) - 1 for c in others), PAIR_INFLATION),
@@ -802,12 +834,12 @@ def test_the_exact_distance_finds_exceptions_beyond_the_first_search() -> None:
     seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [via, stretch])
     queries = [np.array([[30.0, 0.0]]), np.array([[9.0, 20.0]])]
     fields = [
-        ChainField(
+        _exact_field(
             flat[[2, 4]],
             flat[[3, 5]],
             np.array([NUMBERED_INFLATION, EXCEPTION_RING]),
         ),
-        ChainField(
+        _exact_field(
             flat[[0, 2]] + np.array([[0.0, 0.0], [2.5, 0.0]]),
             np.array([[5.0, 0.0], [5.0, 8.0]]),
             np.array([NUMBERED_INFLATION, SPAN_INFLATION]),
@@ -853,7 +885,7 @@ def test_the_exact_distance_asks_every_net_a_chain_sees() -> None:
     ):
         left_out = {viewer.net, *viewer.exempt}
         shown = [k for k, t in enumerate(tracks) if t.net not in left_out]
-        field = ChainField(
+        field = _exact_field(
             flat[[2 * k for k in shown]],
             flat[[2 * k + 1 for k in shown]],
             np.full(len(shown), NUMBERED_INFLATION),

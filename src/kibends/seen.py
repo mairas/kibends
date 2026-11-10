@@ -9,21 +9,23 @@ are pieces of edges, each inflated by its own amount (`Pieces`): a coupled
 section sees the tracks of its own two nets only in the stretches it keeps
 clear of, and a member sees the vias near it with their rings.
 
-Every question about what the members see, the piece nearest a point for
-the energy, how far a point lies from the nearest for the checks, or
-whether a segment enters one, is answered for all members of a layer with
-one tree over the edges they see: each pair of a point and an edge stands
-for the pieces of that edge the point's member sees, by the rule or its
-exceptions. The pairs within reach are those a tree over the member's own
-pieces would find, measured the same way, so the answers are the same as a
-field of each member's own pieces gives. A distance wanted however far is
-found beyond that tree from fields that hold only what a member sees
-(`Seen.distances`), so that many edges a member does not see, such as its
-own net's, cost nothing.
+Every question about what the members see, the smooth distance from a
+point for the energy, each track and each via an obstacle
+(`energy.smooth_minimum`), how far a point lies from the nearest piece
+for the checks, or whether a segment enters one, is answered for all
+members of a layer with one tree over the edges they see: each pair of a
+point and an edge stands for the pieces of that edge the point's member
+sees, by the rule or its exceptions. The pairs within reach are those a
+tree over the member's own pieces would find, measured the same way, so
+the answers are the same as a field of each member's own pieces gives. A
+distance wanted however far is found beyond that tree from fields that
+hold only what a member sees (`Seen.distances`), so that many edges a
+member does not see, such as its own net's, cost nothing.
 
 A moving via sees whole members and the other vias (`ViaSight`): one tree
 over their edges and centres answers every via, each pair inflated by the
-distance its via keeps from that member or via.
+distance its via keeps from that member or via, each member and each via
+an obstacle of the smooth distance.
 """
 
 import itertools
@@ -35,16 +37,18 @@ from typing import NamedTuple
 
 import numpy as np
 
-from kibends.energy import BoolArray, FloatArray, IntArray
+from kibends.energy import BoolArray, FloatArray, IntArray, smooth_reach
 from kibends.obstacles import (
     ChainField,
     ComplexArray,
-    NearestEdge,
+    SmoothAnswer,
     candidate_pairs,
     complex_points,
     near_segments,
     nearest_of_pairs,
+    obstacle_order,
     pairs_inside,
+    smooth_of_pairs,
 )
 
 
@@ -145,9 +149,12 @@ class Seen:
         )
         net = np.full(size, -1, dtype=np.intp)
         kind = np.full(size, -1, dtype=np.intp)
-        for t in tracks:
+        # A vertex of no track is a via's first, an obstacle of its own.
+        obstacle = len(tracks) + np.arange(size, dtype=np.intp)
+        for k, t in enumerate(tracks):
             net[t.first : t.first + t.vertices - 1] = t.net
             kind[t.first : t.first + t.vertices - 1] = t.kind
+            obstacle[t.first : t.first + t.vertices] = k
         self.within: FloatArray = np.zeros(len(viewers))
         """Each member's largest inflation."""
         vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
@@ -231,6 +238,9 @@ class Seen:
         """Each piece's edge's first vertex, numbered as `Track.first`."""
         self.start: FloatArray = np.concatenate(start)
         self.end: FloatArray = np.concatenate(end)
+        self.obstacle: IntArray = obstacle[self.vertex]
+        """Each piece's obstacle for the smooth minimum: its track, or its
+        via."""
 
     def segments(
         self, pieces: IntArray, flat: FloatArray
@@ -244,44 +254,52 @@ class Seen:
             a + self.end[pieces, None] * along,
         )
 
-    def nearest(
+    def smooth_answers(
         self,
         queries: Sequence[FloatArray],
         flat: FloatArray,
         reach: float,
         listed: NeighbourList | None = None,
-    ) -> list[NearestEdge]:
-        """Per member, the piece it sees nearest each of its `queries`, as
-        `ChainField.nearest` with `reach` gives it over the member's own
-        pieces at `flat`; the edge of each answer is the piece's index.
-        With `listed`, each layer looks only at the pairs it lists."""
-        answers: list[NearestEdge | None] = [None] * len(self.within)
+    ) -> list[SmoothAnswer]:
+        """Per member, the smooth distance from each of its `queries` to
+        the pieces it sees, each track and each via an obstacle, and what
+        answers it, as `ChainField.smooth_answers` with `reach` gives it over the
+        member's own pieces at `flat`; each answer's point is by its place
+        among the member's queries and its edge is the piece's index. With
+        `listed`, each layer looks only at the pairs it lists."""
+        answers: list[SmoothAnswer | None] = [None] * len(self.within)
         for n, layer in enumerate(self.layers):
             points, owner, bounds = _gathered(queries, layer.members)
-            limit = reach + self.within[layer.members]
+            limit = self._smooth_limit(layer, reach)
             if listed is None:
-                point, piece, inflation = self._pairs(
-                    layer, points, owner, flat, float(limit.max())
+                point, piece, inflation = self._in_obstacle_order(
+                    self._pairs(layer, points, owner, flat, float(limit.max()))
                 )
             else:
                 point, piece, inflation = listed.pairs(n, points, owner, flat)
             starts, along = self._shapes(layer, flat, piece)
-            found = nearest_of_pairs(
+            found = smooth_of_pairs(
                 complex_points(points),
                 point,
                 starts,
                 along,
                 inflation,
                 limit[owner[point]],
+                self.obstacle[piece],
             )
-            answered = found.edge >= 0
-            edge = np.full(len(points), -1, dtype=np.intp)
-            edge[answered] = piece[found.edge[answered]]
+            # The answers come in the order of their points, so each
+            # member's are one stretch.
+            at, edge = found.point, piece[found.edge]
+            share, direction = found.share, found.direction
             for i, (first, last) in zip(layer.members, bounds, strict=True):
-                answers[i] = NearestEdge(
+                low, high = np.searchsorted(at, [first, last])
+                answers[i] = SmoothAnswer(
                     found.distance[first:last],
                     found.gradient[first:last],
-                    edge[first:last],
+                    at[low:high] - first,
+                    edge[low:high],
+                    share[low:high],
+                    direction[low:high],
                 )
         return _complete(answers)
 
@@ -358,8 +376,13 @@ class Seen:
             kinds = layer.viewer_kind[owner[asking]]
             for kind in np.unique(kinds):
                 at = asking[kinds == kind]
+                # Only exact distances are asked of it, which obstacles do
+                # not change.
                 field = ChainField(
-                    a[edges], b[edges], self.table[kind, layer.kind[edges]]
+                    a[edges],
+                    b[edges],
+                    self.table[kind, layer.kind[edges]],
+                    np.arange(len(edges), dtype=np.intp),
                 )
                 d = field.signed_distance(points[at])[0]
                 distance[at] = np.minimum(distance[at], d)
@@ -393,7 +416,9 @@ class Seen:
             at = np.flatnonzero(owner == m)
             if not len(at):
                 continue
-            field = ChainField(c, d, layer.inflation[low:high])
+            field = ChainField(
+                c, d, layer.inflation[low:high], np.arange(high - low, dtype=np.intp)
+            )
             distance[at] = np.minimum(
                 distance[at], field.signed_distance(points[at])[0]
             )
@@ -445,12 +470,12 @@ class Seen:
     ) -> Pairs:
         """The (point, piece) pairs of layer n, with its members' quadrature
         points `points`, each of the member `owner` gives by its place on the
-        layer, that `nearest` with `reach` can answer a point with once the
+        layer, that `smooth_answers` with `reach` can answer a point with once the
         distance from each point to each piece has changed by at most
         `slack`, mm (`obstacles.candidate_pairs`), and each pair's
         inflation."""
         layer = self.layers[n]
-        within = reach + self.within[layer.members]
+        within = self._smooth_limit(layer, reach)
         point, piece, inflation = self._pairs(
             layer, points, owner, flat, float(within.max()) + slack
         )
@@ -464,7 +489,20 @@ class Seen:
             within[owner[point]],
             slack,
         )
-        return Pairs(point[keep], piece[keep], inflation[keep])
+        return self._in_obstacle_order(Pairs(point[keep], piece[keep], inflation[keep]))
+
+    def _smooth_limit(self, layer: SeenLayer, reach: float) -> FloatArray:
+        """How far from a point of each member of `layer` the smooth search
+        with `reach` looks at what the member sees, its largest inflation
+        included: the same for the search and the neighbour list, so that
+        both give the same answers."""
+        return smooth_reach(reach) + self.within[layer.members]
+
+    def _in_obstacle_order(self, pairs: Pairs) -> Pairs:
+        """`pairs` in the order `smooth_of_pairs` takes them, searched or
+        listed alike."""
+        order = obstacle_order(pairs.point, self.obstacle[pairs.piece], pairs.piece)
+        return Pairs(pairs.point[order], pairs.piece[order], pairs.inflation[order])
 
     def _shapes(
         self, layer: SeenLayer, flat: FloatArray, pieces: IntArray
@@ -623,19 +661,6 @@ def _moved(points: FloatArray, start: FloatArray) -> float:
     return math.sqrt(float(np.max(np.einsum("ij,ij->i", delta, delta))))
 
 
-class ViaNearest(NamedTuple):
-    """What answers each moving via: its distance and unit gradient, and
-    the member and its edge's first vertex, or -1 and the via, that answers
-    it, and where that edge starts and ends."""
-
-    distance: FloatArray
-    gradient: FloatArray
-    member: IntArray
-    vertex: IntArray
-    starts: FloatArray
-    ends: FloatArray
-
-
 class ViaSight:
     """What each moving via sees, for its energy and its free distance:
     every edge of the members it names, and the other vias it names as edges
@@ -667,15 +692,72 @@ class ViaSight:
         self.seen = np.flatnonzero(~np.isnan(self.rings).all(axis=0))
         """The members some via sees."""
 
-    def nearest(
+    def distances(
         self,
         polylines: Sequence[FloatArray],
         positions: Sequence[FloatArray],
         reach: float,
-    ) -> ViaNearest:
-        """What answers each via, in order, with the members at `polylines`
-        and the vias at `positions`, as `ChainField.nearest` with `reach`
-        gives it over the via's own view."""
+    ) -> FloatArray:
+        """Each via's exact distance, in order, to the nearest of what it
+        sees, with the members at `polylines` and the vias at `positions`,
+        as `ChainField.signed_distance` with `reach` gives it over the via's
+        own view."""
+        view = self._view(polylines, positions, reach)
+        starts = complex_points(view.a[view.edge])
+        return nearest_of_pairs(
+            complex_points(view.at),
+            view.point,
+            starts,
+            complex_points(view.b[view.edge]) - starts,
+            view.inflation,
+            view.limit[view.point],
+        ).distance
+
+    def smooth_answers(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        reach: float,
+    ) -> ViaSmooth:
+        """Each via's smooth distance, in order, to what it sees, each
+        member and each via an obstacle, and what answers it, as
+        `ChainField.smooth_answers` with `reach` gives it over the via's own view."""
+        view = self._view(polylines, positions, smooth_reach(reach))
+        member = view.member[view.edge]
+        obstacle = np.where(
+            member >= 0, member, len(polylines) + view.vertex[view.edge]
+        )
+        order = obstacle_order(view.point, obstacle, view.edge)
+        point, edge = view.point[order], view.edge[order]
+        starts = complex_points(view.a[edge])
+        found = smooth_of_pairs(
+            complex_points(view.at),
+            point,
+            starts,
+            complex_points(view.b[edge]) - starts,
+            view.inflation[order],
+            view.limit[point],
+            obstacle[order],
+        )
+        e = edge[found.edge]
+        return ViaSmooth(
+            found.distance,
+            found.gradient,
+            found.point,
+            view.member[e],
+            view.vertex[e],
+            view.a[e],
+            view.b[e],
+            found.share,
+            found.direction,
+        )
+
+    def _view(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        reach: float,
+    ) -> _ViaView:
         at = np.array(positions, dtype=float).reshape(-1, 2)
         lengths = np.array([len(points) for points in polylines], dtype=np.intp)
         firsts = np.cumsum(lengths) - lengths
@@ -688,34 +770,48 @@ class ViaSight:
         b = np.concatenate([flat[first + 1], at])
         member = np.concatenate([owner, np.full(len(at), -1, dtype=np.intp)])
         vertex = np.concatenate([vertex, np.arange(len(at), dtype=np.intp)])
-        queries = at
         limit = reach + self.within
-        point, edge = near_segments(
-            a, b, queries, float(limit.max(initial=0.0)) + _ROUND_OFF
-        )
+        radius = float(limit.max(initial=0.0)) + _ROUND_OFF
+        point, edge = near_segments(a, b, at, radius)
         of_member = member[edge] >= 0
         inflation = np.empty(len(edge))
         inflation[of_member] = self.rings[point[of_member], member[edge[of_member]]]
         inflation[~of_member] = self.apart[point[~of_member], vertex[edge[~of_member]]]
         keep = ~np.isnan(inflation)
-        point, edge, inflation = point[keep], edge[keep], inflation[keep]
-        starts = complex_points(a[edge])
-        found = nearest_of_pairs(
-            complex_points(queries),
-            point,
-            starts,
-            complex_points(b[edge]) - starts,
-            inflation,
-            limit[point],
+        return _ViaView(
+            at, a, b, member, vertex, point[keep], edge[keep], inflation[keep], limit
         )
-        answered = found.edge >= 0
-        e = np.full(len(queries), -1, dtype=np.intp)
-        e[answered] = edge[found.edge[answered]]
-        return ViaNearest(
-            found.distance,
-            found.gradient,
-            np.where(e >= 0, member[e], -1),
-            np.where(e >= 0, vertex[e], -1),
-            a[e],
-            b[e],
-        )
+
+
+class _ViaView(NamedTuple):
+    """What the vias see: every edge some via may see, from a along to b,
+    each a member's edge by its first vertex or a via, and the (via, edge)
+    pairs within `limit` of each via that it sees, and their inflations."""
+
+    at: FloatArray
+    a: FloatArray
+    b: FloatArray
+    member: IntArray
+    vertex: IntArray
+    point: IntArray
+    edge: IntArray
+    inflation: FloatArray
+    limit: FloatArray
+
+
+class ViaSmooth(NamedTuple):
+    """Each moving via's smooth distance and its gradient, and what answers
+    it: per member or via that has a share, the via it answers (`point`, as
+    in `obstacles.SmoothAnswer`), the member and its edge's first vertex, or
+    -1 and the via, where that edge starts and ends, its share and its unit
+    gradient."""
+
+    distance: FloatArray
+    gradient: FloatArray
+    point: IntArray
+    member: IntArray
+    vertex: IntArray
+    starts: FloatArray
+    ends: FloatArray
+    share: FloatArray
+    direction: FloatArray

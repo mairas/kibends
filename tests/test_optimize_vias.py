@@ -29,8 +29,10 @@ from kibends.bursts import (
     Revert,
 )
 from kibends.energy import (
+    SMOOTH_WIDTH,
     ObstacleField,
     attraction_integrand,
+    combine_fields,
     obstacle_integrand,
     obstacle_reach,
     repulsion_integrand,
@@ -1066,6 +1068,28 @@ class TestGradient:
             numeric = (objective(up)[0] - objective(down)[0]) / (2 * step)
             assert gradient[c] == pytest.approx(numeric, rel=1e-4, abs=1e-6)
 
+    def test_with_a_via_at_every_vertex_of_a_grid(self) -> None:
+        """Issue 100's grid, at its start, where a chain's vertex beside a
+        via can lie as near to the vias on either side of it: the slope
+        along random directions is the gradient's, which checks every
+        element at once."""
+        scenario = scenarios.via_grid(3, 3, via_every=1)
+        params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
+        vias = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
+        (placed,) = optimize_module._problems(
+            scenario.chains, [], vias, params, COARSE, None
+        )
+        layout = placed.problem.layout(placed.problem.points)
+        objective = placed.problem.objective(layout)
+        x = layout.x0
+        _, gradient = objective(x)
+        step = 1e-7
+        for direction in np.random.default_rng(0).normal(size=(3, len(x))):
+            numeric = (
+                objective(x + step * direction)[0] - objective(x - step * direction)[0]
+            ) / (2 * step)
+            assert gradient @ direction == pytest.approx(numeric, rel=1e-4, abs=1e-6)
+
     @pytest.mark.parametrize("seed", [0, 1])
     def test_with_a_chain_near_the_via(self, seed: int) -> None:
         # Close enough for the via and the chain to repel each other.
@@ -1258,6 +1282,11 @@ def test_chains_straightened_in_one_burst_are_kept() -> None:
 
 STITCH_X = 5.0
 STITCH_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
+STITCH_ZONE_LAYERS = ("F.Cu", "B.Cu")
+EDGE_SEEN_NEARER = SMOOTH_WIDTH * math.log(len(STITCH_ZONE_LAYERS))
+"""How much nearer than it is the energy sees the edge of `stitched`'s
+zone, mm: one region per layer, equally near (`energy.smooth_minimum`), so
+a via pressed against it settles that much farther back."""
 
 
 def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScenario:
@@ -1265,7 +1294,7 @@ def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScena
     so that it cannot bow away, and a stitching via at each of `heights`
     above it, of net G or the net `nets` gives in turn, inside a zone of its
     net on F.Cu and B.Cu whose region ends at y = `top`."""
-    regions = {layer: box(0, -5, 10, top) for layer in ("F.Cu", "B.Cu")}
+    regions = {layer: box(0, -5, 10, top) for layer in STITCH_ZONE_LAYERS}
     zone = ViaZone("plane", regions, 0.2, 0.0)
     vertices = [(float(x), 0.0) for x in np.linspace(0.0, 10.0, 41)]
     chain = selected("S", "S", FreeSpace(), *vertices)
@@ -1327,7 +1356,7 @@ class TestStitchingVia:
         assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
         # The zone's edge only stops it, so the track's push takes it there.
         edge = top - STITCH_MARGIN
-        assert edge - STITCH_PARAMS.standoff <= via.position[1]
+        assert edge - STITCH_PARAMS.standoff - EDGE_SEEN_NEARER <= via.position[1]
         assert via.position[1] <= edge + INSIDE_TOLERANCE
 
     def test_one_near_its_zone_s_edge_with_nothing_else_in_range_stays(
@@ -1370,7 +1399,11 @@ class TestStitchingVia:
         assert high[1] <= top - STITCH_MARGIN + INSIDE_TOLERANCE
         apart = math.dist(low, high)
         assert apart >= HOLES_APART - INSIDE_TOLERANCE
-        assert apart <= HOLES_APART + STITCH_PARAMS.standoff
+        # The upper via's stops, its zone's region on each layer and the
+        # lower via, are about equally near it: the energy sees them up to
+        # τ·ln 3 nearer (`energy.smooth_minimum`).
+        seen_nearer = SMOOTH_WIDTH * math.log(len(STITCH_ZONE_LAYERS) + 1)
+        assert apart <= HOLES_APART + STITCH_PARAMS.standoff + seen_nearer
         assert low[1] > 0.9 + 0.1
 
     def test_one_beside_a_track_of_its_net_stays(self) -> None:
@@ -1405,15 +1438,15 @@ def reference_via_energy(
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
     """The moving vias' own terms built via by via: the full integrand for
-    the nearest of what stands still and repels the via and what
-    `via_repel` finds, and the hinge alone for the nearest of its stops and
-    what `via_stop` finds."""
+    the smooth minimum over what stands still and repels the via and what
+    `via_repel` finds, and the hinge alone for that over its stops and
+    what `via_stop` finds, each answer pulled by its share."""
     gradients = [np.zeros_like(points) for points in polylines]
     via_gradients = np.zeros((len(problem.vias), 2))
     value = 0.0
     sights = (
-        problem.via_repel.nearest(polylines, positions, problem.reach),
-        problem.via_stop.nearest(polylines, positions, problem.reach),
+        problem.via_repel.smooth_answers(polylines, positions, problem.reach),
+        problem.via_stop.smooth_answers(polylines, positions, problem.reach),
     )
     for k, via in enumerate(problem.vias):
         given = via.given
@@ -1422,28 +1455,32 @@ def reference_via_energy(
             (given.field, sights[0], problem.integrand),
             (given.stops, sights[1], problem.limit),
         ):
-            distance, direction = math.inf, np.zeros(2)
+            d, g = np.array([math.inf]), np.zeros((1, 2))
             if static is not None:
-                d, g = static.signed_distance(at[None], problem.reach)
-                distance, direction = float(d[0]), g[0]
-            nearer = float(near.distance[k]) < distance
-            if nearer:
-                distance, direction = float(near.distance[k]), near.gradient[k]
-            term, slope = integrand(np.array([distance]))
+                d, g = static.smooth_distance(at[None], problem.reach)
+            distance, (static_share, seen_share) = combine_fields(
+                d, near.distance[k : k + 1]
+            )
+            direction = static_share[0] * g[0] + seen_share[0] * near.gradient[k]
+            term, slope = integrand(distance)
             value += given.via.diameter * float(term[0])
-            push = given.via.diameter * slope[0] * direction
-            via_gradients[k] += push
-            if not nearer:
-                continue
-            j, first = int(near.member[k]), int(near.vertex[k])
-            if j < 0:
-                via_gradients[first] -= push
-                continue
-            start, along = near.starts[k], near.ends[k] - near.starts[k]
-            squared = float(along @ along)
-            t = float(np.clip((at - start) @ along / squared, 0, 1)) if squared else 0
-            gradients[j][first] -= (1 - t) * push
-            gradients[j][first + 1] -= t * push
+            weight = given.via.diameter * slope[0]
+            via_gradients[k] += weight * direction
+            for n in np.flatnonzero(near.point == k).tolist():
+                push = weight * seen_share[0] * near.share[n] * near.direction[n]
+                j, first = int(near.member[n]), int(near.vertex[n])
+                if j < 0:
+                    via_gradients[first] -= push
+                    continue
+                start, along = near.starts[n], near.ends[n] - near.starts[n]
+                squared = float(along @ along)
+                t = (
+                    float(np.clip((at - start) @ along / squared, 0, 1))
+                    if squared
+                    else 0
+                )
+                gradients[j][first] -= (1 - t) * push
+                gradients[j][first + 1] -= t * push
     return value, gradients, via_gradients
 
 
@@ -1884,7 +1921,7 @@ class TestReturnVia:
 
         (via,) = result.vias
         assert result.termination is Termination.CONVERGED
-        assert edge - RETURN_PARAMS.standoff <= via.position[1]
+        assert edge - RETURN_PARAMS.standoff - EDGE_SEEN_NEARER <= via.position[1]
         assert via.position[1] <= edge + INSIDE_TOLERANCE
 
 
