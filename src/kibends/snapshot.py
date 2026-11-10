@@ -35,7 +35,7 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -151,7 +151,7 @@ class Via:
         other_low, other_high = other._range
         return low <= other_high and other_low <= high
 
-    @property
+    @cached_property
     def _range(self) -> tuple[int, int]:
         start, end = (layer_from_canonical_name(s) for s in self.span)
         return min(start, end), max(start, end)
