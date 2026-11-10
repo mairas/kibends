@@ -18,6 +18,16 @@ BoolArray = NDArray[np.bool_]
 IntArray = NDArray[np.intp]
 TermValue = tuple[float, FloatArray]
 Integrand = Callable[[FloatArray], tuple[FloatArray, FloatArray]]
+PairIntegrand = Callable[[FloatArray, FloatArray], tuple[FloatArray, FloatArray]]
+
+DEFAULT_ATTRACTION_RANGE = 3.0
+"""Centre distance at which a ground via and a regular one stop attracting
+each other, mm. Beyond the 1.8 mm over which two 0.6 mm ground vias of one
+net with 0.2 mm clearance push each other at the default range, so that
+one pushed out by its neighbours is still drawn back, and far enough that
+a pair keeping up to 1.5 mm between centres still has a neutral distance;
+2.5 mm and 4 mm move that distance by 0.02 mm, and stitching grids took
+about as many iterations to settle at ranges from 2 mm to 3 mm."""
 
 # 1 nm, KiCad's coordinate resolution: shorter edges are treated as degenerate.
 MIN_EDGE_LENGTH = 1e-6
@@ -69,6 +79,11 @@ class EnergyParams:
     """Distance from the clearance boundary at which the hinge starts, mm."""
     points_per_edge: int
     """Interior quadrature points per edge, in addition to its endpoints."""
+    attraction: float = 0.0
+    """Weight of a ground via and a regular one pulling together; 0 turns
+    it off (`attraction_integrand`)."""
+    attraction_range: float = DEFAULT_ATTRACTION_RANGE
+    """Centre distance at which that pull reaches 0, mm."""
 
 
 def edge_bend_radii(
@@ -228,6 +243,40 @@ def hinge_integrand(params: EnergyParams) -> Integrand:
         return params.clearance_weight * value, params.clearance_weight * slope
 
     return limit
+
+
+def repulsion_integrand(params: EnergyParams) -> Integrand:
+    """The repulsion of `obstacle_integrand` alone, weighted: for what pushes
+    away without being a wall."""
+    falloff = _falloff(params.falloff_range)
+
+    def repulsion(distance: FloatArray) -> tuple[FloatArray, FloatArray]:
+        value, slope = falloff(distance)
+        return params.repulsion * value, params.repulsion * slope
+
+    return repulsion
+
+
+def attraction_integrand(params: EnergyParams) -> PairIntegrand:
+    """The pull of two vias on each other, and its slope, at centre distances
+    r with limit distances r_min: the shifted-force
+    -w·(1/r - 1/R) - w·(r - R)/R² of weight w = `attraction` and range R =
+    `attraction_range`, which has zero value and slope at R and is 0
+    beyond, continued linearly below r_min, so that it stays finite and
+    leaves the clearance hinge the wall there."""
+    weight, cutoff = params.attraction, params.attraction_range
+
+    def attraction(
+        distance: FloatArray, limit: FloatArray
+    ) -> tuple[FloatArray, FloatArray]:
+        if not weight:
+            return np.zeros_like(distance), np.zeros_like(distance)
+        at = np.minimum(np.maximum(distance, limit), cutoff)
+        slope = weight * (1 / at**2 - 1 / cutoff**2)
+        value = -weight * (1 / at - 1 / cutoff) - weight * (at - cutoff) / cutoff**2
+        return value + slope * (distance - at), slope
+
+    return attraction
 
 
 def obstacle_reach(params: EnergyParams) -> float:

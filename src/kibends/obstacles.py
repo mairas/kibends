@@ -20,6 +20,13 @@ within its net, hole-to-hole and pad overlap (`own_net_stops`). On a
 zone's layers the via also keeps the zone's clearance and margin from
 other-net copper where that exceeds the netclass rule (`_zone_inflation`),
 so the refill reconnects it wherever the other copper ends up.
+
+With ground nets, the vias standing still that a moving via pairs with,
+ground with regular or of two ground nets (`vias.pairs_with`), leave its
+field and are built apart, each as the field would count it
+(`split_via_obstacles`): `vias.ViaInput.limits` takes them back in, so
+the distances it gives are the unsplit field's, and the optimizer's
+pairwise term (`via_pairs`) gives their energy.
 """
 
 import itertools
@@ -800,14 +807,7 @@ def _copper_items(
         )
         for t in snapshot.tracks
     ]
-    candidates += [
-        (
-            f"via {v.id}",
-            Point(v.position),
-            keeper_of(v).copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
-        )
-        for v in vias
-    ]
+    candidates += _via_rings(snapshot, vias, keeper_of)
     candidates += [
         (
             g.description,
@@ -818,6 +818,21 @@ def _copper_items(
     ]
     candidates += [("track keepout", k, keeper.radius) for k in snapshot.track_keepouts]
     return [Obstacle(d, g, i) for d, g, i in candidates if i is not None]
+
+
+def _via_rings(
+    snapshot: LayerSnapshot, vias: Iterable[Via], keeper_of: Callable[[Via], _Keeper]
+) -> list[tuple[str, BaseGeometry, float | None]]:
+    """The rings of `vias`, each kept from by the keeper `keeper_of` gives,
+    at the clearances `snapshot` gives their nets."""
+    return [
+        (
+            f"via {v.id}",
+            Point(v.position),
+            keeper_of(v).copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
+        )
+        for v in vias
+    ]
 
 
 def _hole_items(
@@ -965,33 +980,63 @@ def build_via_obstacles(
     at their current positions, are left out; so is the copper of zones,
     which KiCad refills.
     """
-    spanned = [s for s in layers if via.reaches(s.layer)]
-    if not spanned:
-        raise ValueError(f"no layer that via {via.id} spans was given")
-    left_out = {via.id, *moving}
-    keeper = _via_keeper(
-        via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole
+    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
+    return _via_field(found, via, found.others, edge_clearance, zones)
+
+
+def split_via_obstacles(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    split: Callable[[Via], bool],
+    *,
+    moving: Collection[str] = frozenset(),
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+    zones: Sequence[ViaZone] = (),
+) -> tuple[ObstacleField, Obstacles | None]:
+    """`build_via_obstacles` without the vias of other nets that `split`
+    picks, and those vias as obstacles to `via`, each as the field would
+    count it, or None if it picks none; both from one reading of the
+    layers."""
+    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
+    picked = [v for v in found.others if split(v)]
+    kept = [v for v in found.others if not split(v)]
+    field = _via_field(found, via, kept, edge_clearance, zones)
+    if not picked:
+        return field, None
+    rings = _via_rings(found.spanned[0], picked, found.via_keeper(zones))
+    return field, Obstacles(
+        [
+            *(Obstacle(d, g, i) for d, g, i in rings if i is not None),
+            *_hole_items((), picked, found.keeper),
+        ]
     )
-    others = {
-        v.id: v
-        for s in spanned
-        for v in s.vias
-        if v.id not in left_out and v.net != via.net
-    }.values()
+
+
+def _via_field(
+    found: _ViaSurroundings,
+    via: Via,
+    others: Sequence[Via],
+    edge_clearance: float,
+    zones: Sequence[ViaZone],
+) -> ObstacleField:
+    """`build_via_obstacles` of `via` in `found`, with only `others` of the
+    vias of other nets there."""
+    spanned, keeper = found.spanned, found.keeper
     drilled = [p for p in spanned[0].pads if not _plated_of(p, via)]
 
     def on(layers: Iterable[str]) -> _Keeper:
         return replace(keeper, zones=zones_on(zones, layers))
-
-    def via_keeper(other: Via) -> _Keeper:
-        return on(s.layer for s in spanned if other.reaches(s.layer))
 
     # The via spans every layer here, so another via's ring counts once, as
     # do pads' holes, which are the same on every layer.
     items = [
         # The copper items include track keepouts, which hold the via back as
         # well, since the chain ends it joins sit at its centre.
-        *_copper_items(spanned[0], on([spanned[0].layer]), others, via_keeper),
+        *_copper_items(
+            spanned[0], on([spanned[0].layer]), others, found.via_keeper(zones)
+        ),
         *(o for s in spanned[1:] for o in _copper_items(s, on([s.layer]), ())),
         *_hole_items(drilled, others, keeper),
         *(
@@ -1004,6 +1049,50 @@ def build_via_obstacles(
     if outline is None:
         return Obstacles(items)
     return Obstacles(items, outline, edge_clearance + keeper.radius)
+
+
+@dataclass(frozen=True)
+class _ViaSurroundings:
+    """The layers a moving via spans, its keeper, and the other-net vias
+    there that stand still."""
+
+    spanned: Sequence[LayerSnapshot]
+    keeper: _Keeper
+    others: Sequence[Via]
+
+    @classmethod
+    def of(
+        cls,
+        layers: Sequence[LayerSnapshot],
+        via: Via,
+        moving: Collection[str],
+        hole_clearance: float,
+        hole_to_hole: float,
+    ) -> _ViaSurroundings:
+        spanned = [s for s in layers if via.reaches(s.layer)]
+        if not spanned:
+            raise ValueError(f"no layer that via {via.id} spans was given")
+        left_out = {via.id, *moving}
+        keeper = _via_keeper(
+            via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole
+        )
+        others = {
+            v.id: v
+            for s in spanned
+            for v in s.vias
+            if v.id not in left_out and v.net != via.net
+        }
+        return cls(spanned, keeper, tuple(others.values()))
+
+    def via_keeper(self, zones: Sequence[ViaZone]) -> Callable[[Via], _Keeper]:
+        """The keeper of another via's ring: with `zones` on the layers both
+        span."""
+
+        def of(other: Via) -> _Keeper:
+            layers = (s.layer for s in self.spanned if other.reaches(s.layer))
+            return replace(self.keeper, zones=zones_on(zones, layers))
+
+        return of
 
 
 def own_net_stops(

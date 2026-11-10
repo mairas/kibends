@@ -52,6 +52,7 @@ from kibends.pair_blocks import PairBlock, pair_block
 from kibends.seen import NeighbourList, SeenParts
 from kibends.snapshot import ViaZone
 from kibends.via_moves import MovingVias
+from kibends.vias import ViaInput
 
 Scenario = ChainsScenario | PairsScenario | ViasScenario
 
@@ -92,9 +93,10 @@ SCENARIOS: list[Callable[[], Scenario]] = [
     lambda: scenarios.via_detour_over(FreeSpace()),
     lambda: scenarios.via_slack(FreeSpace()),
     lambda: scenarios.via_grid(3, 3),
+    lambda: _detour_among_ground_vias(),
 ]
 IDS = [
-    *(make.__name__ for make in SCENARIOS[:-10]),
+    *(make.__name__ for make in SCENARIOS[:-11]),
     "pair_tent_over_its_own_net",
     "pair_tent_over_another_net",
     "pair_tent_fanning_out",
@@ -105,7 +107,36 @@ IDS = [
     "via_detour_over",
     "via_slack",
     "via_grid",
+    "via_detour_among_ground_vias",
 ]
+
+
+def _detour_among_ground_vias() -> ViasScenario:
+    """`scenarios.via_detour` with two GND vias, an AGND via and a regular
+    via of another net moving near its via and each other, so that ground
+    and regular vias, ground vias of one net and of two nets, and two
+    regular vias meet."""
+    scenario = scenarios.via_detour()
+
+    def stitching(via_id: str, net: str, at: tuple[float, float]) -> ViaInput:
+        return ViaInput(
+            scenarios.through_via(via_id, net, at),
+            (),
+            FreeSpace(),
+            scenarios.PAIR_CLEARANCE,
+            ground=net.endswith("GND"),
+        )
+
+    return replace(
+        scenario,
+        vias=(
+            *scenario.vias,
+            stitching("g", "GND", (5.0, 4.0)),
+            stitching("h", "GND", (5.6, 4.3)),
+            stitching("a", "AGND", (6.0, 2.4)),
+            stitching("p", "P", (4.0, 2.5)),
+        ),
+    )
 
 
 def _pair_tent_over(net: str) -> PairsScenario:
@@ -344,10 +375,14 @@ def _reference_view(
     k: int,
     polylines: Sequence[FloatArray],
     positions: Sequence[FloatArray],
+    *,
+    unpaired: bool = False,
 ) -> tuple[ChainField, FloatArray, FloatArray, list[tuple[int, int]]]:
     """What via k sees of the members and the other vias, as a field of its
     own, its edges' starts and ends, and each edge's member and first
-    vertex, or -1 and the via."""
+    vertex, or -1 and the via; `unpaired` leaves out the vias that only stop
+    it, of its net, and those the pairwise term takes instead, of other
+    nets where either is a ground via."""
     via = problem.vias[k]
     starts = [np.empty((0, 2))]
     ends = [np.empty((0, 2))]
@@ -365,6 +400,11 @@ def _reference_view(
         inflations.append(np.full(len(points) - 1, ring))
         owner += [(j, e) for e in range(len(points) - 1)]
     for u, apart in via.apart.items():
+        other = problem.vias[u].given
+        if unpaired and (
+            other.via.net == via.given.via.net or other.ground or via.given.ground
+        ):
+            continue
         starts.append(positions[u][None])
         ends.append(positions[u][None])
         inflations.append(np.array([apart]))
@@ -407,7 +447,9 @@ def _reference_vias(
         via = problem.vias[k]
         at = positions[k][None]
         static, static_direction = via.given.field.signed_distance(at, problem.reach)
-        field, a, b, owner = _reference_view(problem, k, polylines, positions)
+        field, a, b, owner = _reference_view(
+            problem, k, polylines, positions, unpaired=True
+        )
         near = field.nearest(at, problem.reach)
         nearer = bool(near.distance[0] < static[0])
         distance = near.distance if nearer else static

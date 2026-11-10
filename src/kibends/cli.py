@@ -38,7 +38,7 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.coords import UserFrame
-from kibends.energy import EnergyParams
+from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
 from kibends.results import FrozenVertex, Termination
 from kibends.run import (
@@ -54,6 +54,16 @@ from kibends.snapshot import SelectionError
 
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
+# Its pull at 0.55 mm, the limit distance of two 0.4 mm vias with a 0.2 mm
+# drill and 0.1 mm clearance at the default hole clearance, is 0.53 of the
+# repulsion's push there, and at 0.5 mm, their rings and clearance alone,
+# 0.65, leaving the rest for farther vias' pull; such a pair settles
+# 1.25 mm apart. A pair of 0.6 mm vias with 0.2 mm clearance settles
+# 1.58 mm apart, near kistitch's 1.5 mm return-via distance; the weight
+# barely moves that, since the push's falloff sets it, and a weaker one did
+# not let stitching grids settle in fewer iterations, as scripts/benchmark.py
+# measured on stitching grids that routes cross.
+DEFAULT_ATTRACTION = 0.25
 # Not user-facing: the clearance hinge only shapes the approach to the
 # clearance boundary, which the burst's edge check keeps edges from newly
 # crossing.
@@ -253,6 +263,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"to zero (default: {DEFAULT_RANGE:g})",
     )
     smooth_parser.add_argument(
+        "--attraction",
+        type=_non_negative,
+        default=DEFAULT_ATTRACTION,
+        metavar="WEIGHT",
+        help="Weight of the pull between ground vias and other vias, so that "
+        "signal vias keep their return vias near. While it is above 0, ground "
+        "vias of one net also repel each other, with --repulsion and --range. "
+        f"0 turns off both (default: {DEFAULT_ATTRACTION:g})",
+    )
+    smooth_parser.add_argument(
+        "--attraction-range",
+        type=_positive,
+        default=DEFAULT_ATTRACTION_RANGE,
+        metavar="MM",
+        help="Centre distance at which that pull fades to zero "
+        f"(default: {DEFAULT_ATTRACTION_RANGE:g})",
+    )
+    smooth_parser.add_argument(
         "--edge-clearance",
         type=_non_negative,
         default=EDGE_CLEARANCE,
@@ -373,6 +401,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "selected tracks still move. Saves the time moving vias cost",
     )
     smooth_parser.add_argument(
+        "--ground-nets",
+        nargs="+",
+        default=(),
+        metavar="NET",
+        help="The ground nets, whose vias are return vias for the other nets' "
+        "vias; by default the nets with copper zones on at least two inner "
+        "layers, else GND if it has copper. Ignored with --attraction 0",
+    )
+    smooth_parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -390,6 +427,8 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
             clearance_weight=CLEARANCE_WEIGHT,
             standoff=STANDOFF,
             points_per_edge=POINTS_PER_EDGE,
+            attraction=args.attraction,
+            attraction_range=args.attraction_range,
         ),
         edge_clearance=args.edge_clearance,
         hole_clearance=args.hole_clearance,
@@ -398,6 +437,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
         fixed_vias=args.fixed_vias,
+        ground_nets=tuple(args.ground_nets),
         settings=replace(
             DEFAULT_SETTINGS,
             settled_change=args.settled_change,

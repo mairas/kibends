@@ -11,6 +11,7 @@ The repository is public. Never write host names, addresses or other details of 
 - `./run lint` runs `ruff check` and `ruff format --check`; `./run format` formats and applies ruff's fixes.
 - `./run typecheck` runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
 - `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing.
+- `./run bench` measures the optimizer's time, iterations and energy evaluations on stitched planes, the scenarios and return vias; `--tree DIR` measures another checkout.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
 
 Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests`.
@@ -26,7 +27,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 1. Read: `snapshot` reads the selection and the board once per run; nothing after it uses kipy until the commit.
 2. Extract: `chain` splits the selection into chains and pins them (contacts, junctions, stubs joining tracks); `vias` judges which selected vias move, stitching vias and zone containment included.
 3. Obstacles: `obstacles` builds each chain's and each moving via's static field, and the via's limits.
-4. Optimize: `optimize` minimises length plus repulsion with L-BFGS-B bursts (`bursts`), one problem per layer or per group of layers that moving vias tie together, and returns the types in `results`. `members`, `neighbours`, `seen` and `via_moves` give what the members see of each other and their energy; `polylines` measures, resamples and checks polylines; `contacts` keeps vertices on their contacts; `pairs`, `pair_layout` and `pair_blocks` handle differential pairs.
+4. Optimize: `optimize` minimises length plus repulsion with L-BFGS-B bursts (`bursts`), one problem per layer or per group of layers that moving vias tie together, and returns the types in `results`. `members`, `neighbours`, `seen` and `via_moves` give what the members see of each other and their energy; `via_pairs` gives the pairwise term between ground vias and other vias; `polylines` measures, resamples and checks polylines; `contacts` keeps vertices on their contacts; `pairs`, `pair_layout` and `pair_blocks` handle differential pairs.
 5. Simplify: `simplify` merges each result into few straight segments, rechecking clearance.
 6. Unchanged chains are left out of the commit (`run`).
 7. Commit: `commit` re-reads what it replaces, refuses if it changed, and replaces tracks and vias in one KiCad commit.

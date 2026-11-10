@@ -17,6 +17,13 @@ from outlines and priorities alone (`_zone_region`). Where such a via may
 go is `vias`' to decide (`ZoneUnion`, `zone_unions`). Thermal reliefs,
 island removal, hatched fills and minimum-width necks are not modelled.
 
+The same read records the copper layers each net's zones cover
+(`zone_layers`, rule areas left out) and the nets with zones, vias or pads
+(`copper_nets`). From these `BoardSnapshot.ground_nets` resolves the
+ground nets as kistitch does, with no further request: the nets given,
+else those with zones on at least two inner layers, else GND if it has
+copper, else none.
+
 The converters `_ring`, `_polygon`, `arc_points`, `circle_points`,
 `_pad_shapes`, `_clearance_override`, the Edge.Cuts outline helpers and the
 canonical layer naming are copied and trimmed from kistitch's snapshot.py
@@ -81,6 +88,11 @@ MIN_ARC_SEGMENTS = 4
 COLLINEAR_EPSILON = 1e-12
 
 
+OUTER_COPPER = frozenset({"F.Cu", "B.Cu"})
+MIN_GROUND_INNER_LAYERS = 2
+FALLBACK_GROUND = "GND"
+
+
 class SelectionError(ValueError):
     """The selection holds nothing kibends can smooth."""
 
@@ -139,8 +151,19 @@ class Via:
 
     def reaches(self, layer: str) -> bool:
         """Whether `layer` lies within the via's span."""
+        low, high = self._range
+        return low <= layer_from_canonical_name(layer) <= high
+
+    def shares_layer(self, other: Via) -> bool:
+        """Whether the spans of the two vias overlap."""
+        low, high = self._range
+        other_low, other_high = other._range
+        return low <= other_high and other_low <= high
+
+    @property
+    def _range(self) -> tuple[int, int]:
         start, end = (layer_from_canonical_name(s) for s in self.span)
-        return min(start, end) <= layer_from_canonical_name(layer) <= max(start, end)
+        return min(start, end), max(start, end)
 
 
 class Disc(NamedTuple):
@@ -252,6 +275,22 @@ def _shrunk(region: BaseGeometry, margin: float) -> BaseGeometry:
     return region.buffer(-margin)
 
 
+class GroundSource(enum.Enum):
+    """Where a run's ground nets come from (`BoardSnapshot.ground_nets`)."""
+
+    GIVEN = "given"
+    INNER_ZONES = "inner zones"
+    """Nets with copper zones on at least two inner layers."""
+    FALLBACK = "fallback"
+    """No net has those; the net named GND, which has copper."""
+    NONE = "none"
+
+
+class GroundNets(NamedTuple):
+    nets: frozenset[str]
+    source: GroundSource
+
+
 @dataclass(frozen=True)
 class Selection:
     segments: list[Segment]
@@ -361,6 +400,11 @@ class BoardSnapshot:
     """By via id, for the vias asked for: the copper zones of its net that
     may connect to it, with the regions it stays inside; empty when none
     does."""
+    zone_layers: Mapping[str, frozenset[str]]
+    """By net, the copper layers its copper zones lie on, rule areas left
+    out."""
+    copper_nets: frozenset[str]
+    """The nets with a copper zone, a via or a pad on the board."""
 
     @classmethod
     def read(
@@ -390,6 +434,7 @@ class BoardSnapshot:
         ]
         texts = _texts(board, footprints)
         zones = board.get_zones()
+        zone_layers = _zone_layers(zones)
         default_clearance = _default_clearance(board)
         shapeless = _read_pads(kipy_pads, footprints)
         pads_by_layer: dict[str, tuple[Pad, ...]] = {}
@@ -456,7 +501,30 @@ class BoardSnapshot:
                 enabled,
             ),
             via_zones=_via_zones(zones, selected_vias),
+            zone_layers=zone_layers,
+            copper_nets=frozenset(
+                {*zone_layers, *(v.net for v in vias), *(p.net for p in shapeless)}
+            )
+            - {""},
         )
+
+    def ground_nets(self, given: Collection[str] = ()) -> GroundNets:
+        """The nets `given`, else those with copper zones on at least two
+        inner layers, a power plane's net included, else GND if it has
+        copper, else none; from what the read holds, without a request.
+        As kistitch's `returnvia` resolves them."""
+        if given:
+            return GroundNets(frozenset(given), GroundSource.GIVEN)
+        inner = frozenset(
+            net
+            for net, layers in self.zone_layers.items()
+            if len(layers - OUTER_COPPER) >= MIN_GROUND_INNER_LAYERS
+        )
+        if inner:
+            return GroundNets(inner, GroundSource.INNER_ZONES)
+        if FALLBACK_GROUND in self.copper_nets:
+            return GroundNets(frozenset({FALLBACK_GROUND}), GroundSource.FALLBACK)
+        return GroundNets(frozenset(), GroundSource.NONE)
 
     def slice(self, layer: str, replaced_ids: Collection[str]) -> LayerSnapshot:
         """`layer` and everything crossing it, less the tracks being replaced."""
@@ -1036,6 +1104,17 @@ def _via_zones(
                 )
         found[via.id] = tuple(connected)
     return found
+
+
+def _zone_layers(zones: Iterable[kbt.Zone]) -> dict[str, frozenset[str]]:
+    """By net, the copper layers its copper zones lie on."""
+    found: dict[str, set[str]] = defaultdict(set)
+    for z in zones:
+        if z.type == ZoneType.ZT_COPPER and z.net is not None and z.net.name:
+            found[z.net.name].update(
+                canonical_name(L) for L in z.layers if is_copper_layer(L)
+            )
+    return {net: frozenset(layers) for net, layers in found.items()}
 
 
 def _zone_region(zones: Sequence[kbt.Zone], zone: kbt.Zone, layer: str) -> BaseGeometry:

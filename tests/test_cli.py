@@ -19,6 +19,7 @@ import shapely
 from conftest import (
     COMMIT_CALLS,
     PAD_HALF_SIZE,
+    RETURN_VIAS_APART,
     BurstClock,
     CommitBoard,
     FakeKiCad,
@@ -31,7 +32,10 @@ from conftest import (
     kipy_via,
     kipy_zone,
     netclass,
+    neutral_distance,
     nm,
+    return_via_board,
+    via_ids,
 )
 from distance_fields import FreeSpace
 from kipy.errors import ApiError
@@ -53,7 +57,12 @@ from kibends.bursts import (
 )
 from kibends.chain import NM_PER_MM
 from kibends.coords import BOARD_FRAME, UserFrame
-from kibends.energy import EnergyParams, FloatArray
+from kibends.energy import (
+    EnergyParams,
+    FloatArray,
+    attraction_integrand,
+    repulsion_integrand,
+)
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
@@ -61,6 +70,7 @@ from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
 from kibends.results import FrozenVertex, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
+from kibends.vias import StaticVia, ViaInput
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -115,6 +125,11 @@ COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 KEPT = 1e-3
 """mm a chain's length may rise by between runs, as repulsion trades it."""
+# The runs of `return_via_board` here end 0.0005 to 0.004 mm from it; the
+# rest is platform slack.
+RETURN_SETTLED = 0.02
+"""How near its neutral distance a SIG via and its return via settle under
+COARSE, mm."""
 
 
 def path_length(points: FloatArray) -> float:
@@ -581,6 +596,8 @@ class TestSmooth:
             run(
                 "--repulsion=2",
                 "--range=0.4",
+                "--attraction=0.4",
+                "--attraction-range=2.5",
                 "--edge-clearance=0.5",
                 "--hole-clearance=0.1",
                 "--time-limit=30",
@@ -588,6 +605,7 @@ class TestSmooth:
 
         params = cast(EnergyParams, seen["params"])
         assert (params.repulsion, params.falloff_range) == (2.0, 0.4)
+        assert (params.attraction, params.attraction_range) == (0.4, 2.5)
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
         assert cast(OptimizerSettings, seen["settings"]).time_limit == 30.0
 
@@ -1751,11 +1769,20 @@ class TestMovingVias:
         assert via.position.y / 1e6 < PUSHED_STITCHING[1] - 0.05
 
     @pytest.mark.parametrize("still", ["unselected", "locked"])
-    def test_a_via_of_its_net_that_stands_still_does_not_push_it(
-        self, connect: Connector, log: list[str], still: str
+    @pytest.mark.parametrize(
+        ("args", "pushed"), [(("--attraction=0",), False), ((), True)]
+    )
+    def test_a_ground_via_of_its_net_that_stands_still_pushes_it_with_attraction(
+        self,
+        connect: Connector,
+        log: list[str],
+        still: str,
+        args: tuple[str, ...],
+        pushed: bool,
     ) -> None:
         # Within range of the stitching via, beyond their touching distance;
-        # nothing else is in range.
+        # nothing else is in range. Without attraction, vias of one net only
+        # keep hole-to-hole; with it, ground vias of one net also repel.
         start = (2.0, 3.0)
         straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
         stitching = kipy_via("s", "GND", *start)
@@ -1778,10 +1805,16 @@ class TestMovingVias:
             )
         )
 
-        run()
+        run(*args)
 
-        assert board.calls == []
-        assert "Nothing to do" in "".join(log)
+        if not pushed:
+            assert board.calls == []
+            assert "Nothing to do" in "".join(log)
+            return
+        assert board.calls == COMMIT_CALLS
+        (via,) = board.created
+        assert isinstance(via, kbt.Via)
+        assert via.position.x / 1e6 < start[0] - 0.1
 
     def test_a_dry_run_moving_only_a_stitching_via_commits_nothing(
         self, connect: Connector, log: list[str]
@@ -2250,6 +2283,281 @@ ZONE_MARGIN = ZONE_MIN_WIDTH / 2 + KICAD_MAX_ERROR
 ZONE_REGION_TOP = 8 + 0.2
 """The top of the SIG zone's region: its outline less the higher-priority
 OTHER zone over y < 8, grown by the zones' 0.2 mm clearance."""
+
+
+INNER_PLANES = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu]
+
+
+def ground_lines(log: Sequence[str]) -> list[str]:
+    return [line.rstrip() for line in log if "round net" in line]
+
+
+class TestGroundNets:
+    def test_names_those_with_zones_on_two_inner_layers(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = moving_via_board()
+        board.enabled_layers = INNER_PLANES
+        planes = [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        board.zones = [kipy_copper_zone("p", "RET", kipy_rect(20, 20, 30, 30), planes)]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert ground_lines(log) == [
+            "INFO Ground net RET: zones on at least two inner layers"
+        ]
+
+    def test_falls_back_on_gnd_with_copper(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pushed_stitching_board())
+
+        run("--dry-run")
+
+        assert ground_lines(log) == [
+            "INFO Ground net GND: no net has zones on at least two inner layers"
+        ]
+
+    def test_with_none_says_so_and_the_run_goes_on(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = connect.to(moving_via_board())
+
+        run()
+
+        assert ground_lines(log) == [
+            "INFO No ground nets: no net has zones on at least two inner layers and "
+            "GND has no zones, vias or pads"
+        ]
+        assert board.calls == COMMIT_CALLS
+
+    def test_given_ones_override_and_one_without_copper_warns(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(pushed_stitching_board())
+
+        run("--dry-run", "--ground-nets", "PGND", "GND")
+
+        assert ground_lines(log) == [
+            "WARNING Ground net PGND has no zones, vias or pads on the board; "
+            "check --ground-nets",
+            "INFO Ground nets GND and PGND, as given",
+        ]
+
+    @pytest.mark.parametrize(
+        ("board", "args"),
+        [(straight_board, ()), (pushed_stitching_board, ("--fixed-vias",))],
+    )
+    def test_are_not_named_without_a_via_that_may_move(
+        self,
+        connect: Connector,
+        log: list[str],
+        board: Callable[[], CommitBoard],
+        args: tuple[str, ...],
+    ) -> None:
+        connect.to(board())
+
+        run("--dry-run", "--ground-nets", "PGND", *args)
+
+        assert ground_lines(log) == []
+
+    @pytest.mark.parametrize(
+        ("args", "expected"), [((), ()), (("--ground-nets", "A", "B"), ("A", "B"))]
+    )
+    def test_the_option_reaches_the_run(
+        self, args: tuple[str, ...], expected: tuple[str, ...]
+    ) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+
+        assert options.ground_nets == expected
+
+
+@dataclass
+class Optimized:
+    """What `run_smooth` gave `optimize_chains` on its last call."""
+
+    vias: Sequence[ViaInput] = ()
+    static_vias: Sequence[StaticVia] = ()
+
+
+@pytest.fixture
+def optimized(monkeypatch: pytest.MonkeyPatch) -> Optimized:
+    seen = Optimized()
+    real = at(COARSE)
+
+    def spy(*args: object, **kwargs: object) -> RunResult:
+        seen.vias = cast(Sequence[ViaInput], kwargs["vias"])
+        seen.static_vias = cast(Sequence[StaticVia], kwargs["static_vias"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "optimize_chains", spy)
+    return seen
+
+
+def classes(vias: Sequence[ViaInput | StaticVia]) -> dict[str, bool]:
+    return {v.via.id: v.ground for v in vias}
+
+
+def on_net(tracks: Sequence[kbt.Track], net: str) -> list[kbt.Track]:
+    for t in tracks:
+        t.net = kbt.Net(name=net)
+    return list(tracks)
+
+
+class TestViaClasses:
+    def test_board_vias_that_stand_still_are_static_with_their_class(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("w", "PWR", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert classes(optimized.vias) == {"v": False}
+        assert classes(optimized.static_vias) == {"g": True, "w": False}
+        (given,) = optimized.vias
+        assert "g" not in via_ids(given.field)
+        assert "w" in via_ids(given.field)
+        assert via_ids(given.static_vias) == {"g"}
+
+    def test_a_selected_via_that_starts_frozen_is_no_static_via(
+        self, connect: Connector, optimized: Optimized, log: list[str]
+    ) -> None:
+        # As in `test_a_frozen_via_stays_while_its_chains_change`, with the
+        # route and its via of GND.
+        route = on_net([*l_chain(), *detour_back()], "GND")
+        via = kipy_via("v", "GND", *VIA)
+        board = CommitBoard(
+            selection=[*route, via],
+            tracks=list(route),
+            vias=[via, kipy_via("u", "GND", 6, 6)],
+            pads=[kipy_pad("p", "P", 4.0, 4.65, layers=(BL.BL_F_Cu,))],
+        )
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert "DEBUG Left via v at (4.000, 4.000) in place" in "".join(log)
+        assert classes(optimized.vias) == {"v": True}
+        assert classes(optimized.static_vias) == {"u": True}
+
+    def test_a_via_held_by_fixed_vias_is_static(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        stitching = kipy_via("s", "GND", 12.0, 3.0)
+        board.vias.append(stitching)
+        board.selection.append(stitching)
+        plane = kipy_rect(-2, -3, 16, 10)
+        board.zones = [
+            kipy_copper_zone("plane", "GND", plane, [BL.BL_F_Cu, BL.BL_B_Cu])
+        ]
+        connect.to(board)
+
+        run("--dry-run", "--fixed-vias")
+
+        assert classes(optimized.vias) == {"v": False}
+        assert classes(optimized.static_vias) == {"s": True}
+
+    def test_given_ground_nets_set_the_classes(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("r", "RET", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run", "--ground-nets", "SIG", "RET")
+
+        assert classes(optimized.vias) == {"v": True}
+        assert classes(optimized.static_vias) == {"g": False, "r": True}
+
+    def test_without_ground_nets_nothing_is_static_or_split(
+        self, connect: Connector, optimized: Optimized
+    ) -> None:
+        board = moving_via_board()
+        board.vias.append(kipy_via("w", "PWR", 1, 6))
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert optimized.static_vias == ()
+        (given,) = optimized.vias
+        assert (given.ground, given.static_vias) == (False, None)
+
+    def test_without_attraction_ground_nets_are_neither_found_nor_used(
+        self, connect: Connector, optimized: Optimized, log: list[str]
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("w", "PWR", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run", "--attraction=0", "--ground-nets", "SIG")
+
+        assert ground_lines(log) == []
+        assert optimized.static_vias == ()
+        (given,) = optimized.vias
+        assert (given.ground, given.static_vias) == (False, None)
+
+    def test_attraction_is_on_by_default(self) -> None:
+        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+
+        assert params.attraction > 0.0
+        assert params.attraction_range > 0.0
+
+    def test_by_default_the_pull_is_weaker_than_the_push_at_a_small_limit(
+        self,
+    ) -> None:
+        # The rings and clearance of two 0.4 mm vias with 0.1 mm clearance,
+        # which a drill only widens; the pull stays below three quarters of
+        # the push, leaving at least a quarter for the pull of farther vias.
+        limit = np.array([0.5])
+        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+
+        _, pull = attraction_integrand(params)(limit, limit)
+        _, push = repulsion_integrand(params)(np.zeros(1))
+
+        assert pull[0] < 0.75 * -push[0]
+
+    @pytest.mark.parametrize(
+        ("ground", "stitching"),
+        [((5.0, 1.5), False), ((6.06, 1.06), False), ((5.0, 2.5), True)],
+        ids=["across", "diagonal", "stitching"],
+    )
+    def test_a_return_via_settles_at_the_neutral_distance_with_chains_as_short(
+        self,
+        connect: Connector,
+        coarse_optimizer: None,
+        reports: list[pipeline.RunReport],
+        ground: tuple[float, float],
+        stitching: bool,
+    ) -> None:
+        # An unselected GND via 1.5 mm across the route from the via or
+        # diagonally beside it, or a stitching via 2.5 mm across it, which
+        # moves too.
+        lengths: list[float] = []
+        for args in ((), ("--attraction=0",)):
+            connect.to(return_via_board(ground, stitching=stitching))
+            run("--dry-run", *args)
+            lengths.append(sum(c.after.length for c in reports[-1].chains))
+
+        pulled, alone = lengths
+        assert pulled <= alone + KEPT
+        ends = {v.id: v.end for v in reports[0].vias}
+        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+        neutral = neutral_distance(params, RETURN_VIAS_APART)
+        distance = math.dist(ends["v"], ends.get("g", ground))
+        assert distance == pytest.approx(neutral, abs=RETURN_SETTLED)
+
+    @pytest.mark.parametrize(
+        "args", [("--attraction=-0.1",), ("--attraction-range=0",)]
+    )
+    def test_a_negative_weight_or_an_empty_range_is_refused(
+        self, args: tuple[str, ...]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            cli.parse_args(["smooth", *args])
 
 
 def plane_board() -> CommitBoard:

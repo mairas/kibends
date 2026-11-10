@@ -11,6 +11,7 @@ from typing import cast
 
 import kipy.board
 import kipy.board_types as kbt
+import numpy as np
 import pytest
 from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
@@ -35,9 +36,17 @@ from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
 from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
+from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
 from kibends.chain import NM_PER_MM
+from kibends.energy import (
+    EnergyParams,
+    ObstacleField,
+    attraction_integrand,
+    obstacle_integrand,
+)
+from kibends.obstacles import Obstacles
 from kibends.snapshot import BoardSnapshot, LayerSnapshot
 
 PAD_HALF_SIZE = 0.25
@@ -670,3 +679,61 @@ class FakeKiCad:
 
     def get_board(self) -> FakeBoard:
         return self.board
+
+
+def via_ids(field: ObstacleField | None) -> set[str]:
+    """The vias whose rings `field` holds."""
+    assert isinstance(field, Obstacles)
+    return {
+        o.description.removeprefix("via ")
+        for o in field.items
+        if o.description.startswith("via ")
+    }
+
+
+RETURN_SIGNAL_VIA = (5.0, 0.0)
+"""Where `return_via_board`'s SIG via sits: on the straight line between its
+route's ends."""
+RETURN_VIAS_APART = 0.8
+"""The centre distance `return_via_board`'s two vias keep: their 0.6 mm
+rings and the 0.2 mm clearance, mm."""
+
+
+def return_via_board(ground: tuple[float, float], *, stitching: bool) -> CommitBoard:
+    """A SIG route from (0, 0) to (10, 0), kinked on F.Cu and on B.Cu,
+    through the selected SIG via at `RETURN_SIGNAL_VIA`, and a GND via at
+    `ground`: unselected, or a selected stitching via in a GND plane on the
+    inner layers."""
+    route = [
+        kipy_track("a", "SIG", (0, 0), (2.5, -1.0)),
+        kipy_track("b", "SIG", (2.5, -1.0), RETURN_SIGNAL_VIA),
+        kipy_track("c", "SIG", RETURN_SIGNAL_VIA, (7.5, 1.0), layer=BL.BL_B_Cu),
+        kipy_track("d", "SIG", (7.5, 1.0), (10, 0), layer=BL.BL_B_Cu),
+    ]
+    signal = kipy_via("v", "SIG", *RETURN_SIGNAL_VIA)
+    return_via = kipy_via("g", "GND", *ground)
+    plane = kipy_copper_zone(
+        "plane", "GND", kipy_rect(-2, -6, 12, 6), [BL.BL_In1_Cu, BL.BL_In2_Cu]
+    )
+    return CommitBoard(
+        selection=[*route, signal, *([return_via] if stitching else [])],
+        tracks=list(route),
+        vias=[signal, return_via],
+        zones=[plane] if stitching else [],
+        enabled_layers=[BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu],
+    )
+
+
+def neutral_distance(params: EnergyParams, apart: float) -> float:
+    """The centre distance at which a ground via and a regular one that
+    keep `apart` stop pushing or pulling each other: where the slopes of
+    their obstacle term and attraction cancel."""
+    obstacle = obstacle_integrand(params)
+    attraction = attraction_integrand(params)
+
+    def slope(r: float) -> float:
+        push = obstacle(np.array([r - apart]))[1]
+        pull = attraction(np.array([r]), np.array([apart]))[1]
+        return float(push[0] + pull[0])
+
+    return float(brentq(slope, apart + params.standoff, apart + params.falloff_range))

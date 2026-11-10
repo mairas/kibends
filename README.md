@@ -74,14 +74,16 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    it, and no other copper touches it or those chain ends on any layer,
    except a zone of its net. A selected stitching via, an unlocked through
    via that no selected track ends at and no copper but a zone of its net
-   touches, moves too: it has no length to shorten, so it stays where it
-   is unless copper within `--range` of its clearance crowds it (a selected
-   track cutting a corner, a via of another net, a pad or other static
-   copper of another net), and then backs off until the pushes balance or
-   nothing is in range. Copper of its own net does not push it, and the
-   edge of its zone, the holes of its net's vias and pads and its net's
-   pads only stop it. One that no zone of its net reaches stays where it
-   is. A via in a plane stays inside the zones of its net on each layer
+   touches, moves too: it has no length to shorten, so only the copper
+   around it moves it. Copper within `--range` of its clearance pushes it
+   (a selected track cutting a corner, a via of another net, a pad or other
+   static copper of another net), and it backs off until the pushes balance
+   or nothing is in range. A ground via and a via of any other net within
+   `--attraction-range` also pull each other, and ground vias of one net
+   push each other apart (see [Return vias](#return-vias)). Other copper
+   of its own net does not push it, and the edge of its zone, the holes of
+   its net's vias and pads and its net's pads only stop it. One that no
+   zone of its net reaches stays where it is. A via in a plane stays inside the zones of its net on each layer
    where a zone's region reaches its ring, so that the next refill
    connects it again. kibends never reads a zone's fill, which may be out of date with
    the outlines or the copper; it works from outlines and priorities alone.
@@ -129,17 +131,20 @@ kibends smooth                              # then commit
 
 The chains are optimised together, so neighbouring chains make room for
 each other: chains of different nets keep their clearance to each other and
-repel each other like other copper. Copper of one net does not interact at
-all: chains of one net neither repel nor hold each other back, and may come
+repel each other like other copper. Copper of one net does not interact,
+but for the vias of a ground net (below): chains of one net neither repel
+nor hold each other back, and may come
 close, overlap or cross, as may a chain and a via of its net, and a chain
 and the static copper of its net. Only selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A selected
 via that starts inside its clearance or inside such a rule area stays where
 it is. Vias of one net, moving or not, keep only the hole-to-hole distance
-from a moving via, their rings free to overlap, and do not repel it, so a
-grid of selected stitching vias keeps its spacing, as does a selected one
-beside an unselected one; a moving via does not repel from the edge of a
+from a moving via, their rings free to overlap. Vias of one net that is
+not a ground net do not repel each other, so a grid of selected stitching
+vias of such a net keeps its spacing, as does a selected one beside an
+unselected one; vias of one ground net do (see
+[Return vias](#return-vias)). A moving via does not repel from the edge of a
 zone it stays inside either, which only stops it, while the board edge and
 other nets' copper still repel it. Tracks and copper shapes of the via's own
 net do not affect it, and its net's pads only stop it from overlapping them
@@ -279,12 +284,65 @@ is paired on each layer separately, and a via that joins a pair's track
 stays fixed. kibends does not route uncoupled fan-outs
 into coupling.
 
+### Return vias
+
+A via that changes layers needs a ground via near it for its return
+current. kibends draws ground vias and the other vias toward each other, so
+that a moving signal via keeps its return vias near and a moving stitching
+via stays near the signal vias it serves.
+
+The ground nets are those given with `--ground-nets`; without it, the nets
+with copper zones on at least two inner layers; without those, `GND` if it
+has zones, vias or pads; else there are none, and the run goes on without
+attraction. A power net poured on two inner layers counts as ground: name
+the ground nets with `--ground-nets` where that is wrong. When a selected
+via may move, one line names the ground nets and where they came from, and
+a net given with `--ground-nets` that has no copper gets a warning. A via
+on a ground net is a ground via; a via on any other net, power nets
+included, is a regular one. Every via takes part, selected or not, moving
+or not, but two vias interact only where they share a layer.
+
+A ground via and a regular via within `--attraction-range` of each other,
+centre to centre, pull each other, and the pulls of all such vias add up.
+Each still keeps its clearance from the other and is repelled by it as by
+other copper, and the push and the pull balance at a neutral distance. With
+the defaults, two 0.6 mm vias with 0.2 mm clearance settle about 1.6 mm
+apart, centre to centre, and two 0.4 mm vias with a 0.2 mm drill and
+0.1 mm clearance about 1.25 mm apart. At the clearance the push is the stronger, so the pull alone
+never brings a pair onto it; with `--repulsion 0` nothing pushes, and the
+pull brings a pair to its clearance unless something else, such as a via's
+tracks, holds it apart. A signal via whose route runs straight through it
+slides along the route toward its return via, which costs its tracks no
+length.
+
+Ground vias of one net push each other apart within `--range` beyond their
+rings and the clearance, so that stitching vias drawn toward a signal via
+spread around it instead of bunching up; the hole-to-hole distance stays
+their only limit. A selected grid of ground stitching vias closer than
+that therefore spreads, and its vias move into gaps in it, as far as the
+zones they connect to let them. Ground vias of two ground nets keep their
+clearance and repel each other as other copper does.
+
+A selected grid of ground stitching vias that moving signal vias pass
+through can take up to about five times as many iterations to settle as
+with `--attraction 0`, as the vias creep toward their balance, and the
+chains on their layers wait for them, since moving vias tie those layers
+into one problem. Leave the stitching vias out of the selection, lock
+them or pass `--fixed-vias` where they need not move.
+
+`--attraction 0` turns the pull and the ground vias' push off together:
+ground nets are not looked for, `--ground-nets` is ignored, and vias of one
+ground net leave each other alone, as vias of any other net do.
+
 ### Options
 
 | Option | Default | Effect |
 |---|---|---|
 | `--repulsion WEIGHT` | 0.5 | Weight of keeping away from other copper, relative to length. 0 disables it, so the track pulls tight against obstacles at exactly the clearance. |
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
+| `--attraction WEIGHT` | 0.25 | Weight of ground vias and regular vias pulling each other, relative to length (see [Return vias](#return-vias)). More weight moves the vias farther toward each other against the copper around them, though the neutral distance of a pair barely changes. 0 turns the pull and the push between vias of one ground net off, and `--ground-nets` is then ignored. |
+| `--attraction-range MM` | 3.0 | Centre distance at which the pull between a ground via and a regular via fades to zero. |
+| `--ground-nets NET ...` | detected | The ground nets, instead of the nets with copper zones on at least two inner layers, or `GND`. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |

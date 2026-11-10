@@ -18,8 +18,19 @@ via starting inside its clearance. Every other selected via stays fixed,
 with a debug line naming the reason, and holds the chains it touches like
 an unselected via: a chain vertex on its centre stays there, and a chain
 with none there keeps a vertex inside it.
+
+Every via is a ground via, on one of the run's ground nets, or a regular
+one, on any other net (`ViaInput.ground`, `StaticVia`). One rule,
+`pair_kind`, says how two vias whose spans overlap interact in the
+optimizer's pairwise term (`via_pairs`). A ground via and a regular one, or
+two ground vias of different ground nets, are a pair of two nets
+(`pairs_with`); the vias standing still that a moving via so pairs with
+are held apart from its field (`ViaInput.static_vias`). Ground vias of one
+net stay in its stops, which keep hole-to-hole, and the pairwise term also
+has them repel each other.
 """
 
+import enum
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -88,6 +99,13 @@ class ViaInput:
     """What of its net stands still and only stops it, as `own_net_stops`
     gives it: the holes of its net's vias and plated pads, and its net's
     pads."""
+    ground: bool = False
+    """Whether it is on a ground net."""
+    static_vias: ObstacleField | None = None
+    """The vias standing still that it pairs with (`pairs_with`), split out of
+    `field` as `static_via_obstacles` gives them: they limit where it may
+    go, and the optimizer's pairwise term (`via_pairs`) gives their
+    energy."""
 
     @cached_property
     def stops(self) -> ObstacleField | None:
@@ -99,10 +117,59 @@ class ViaInput:
 
     @cached_property
     def limits(self) -> ObstacleField:
-        """Everything that stands still and limits where it may go: `field`
-        and `stops`."""
-        stops = self.stops
-        return self.field if stops is None else CompositeField([self.field, stops])
+        """Everything that stands still and limits where it may go: `field`,
+        `static_vias` and `stops`, as `field` unsplit with `stops`."""
+        parts = [f for f in (self.static_vias, self.stops) if f is not None]
+        return CompositeField([self.field, *parts]) if parts else self.field
+
+
+class StaticVia(NamedTuple):
+    """A via of the board that is none of a run's moving vias, standing
+    still, and its class."""
+
+    via: Via
+    ground: bool
+    """Whether it is on a ground net."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
+
+
+class PairKind(enum.IntEnum):
+    """How two vias interact in the optimizer's pairwise term
+    (`via_pairs`)."""
+
+    RETURN = 0
+    """A ground via and a regular one: attraction and the full obstacle
+    term."""
+    GROUNDS = 1
+    """Ground vias of two ground nets: the full obstacle term."""
+    SPREAD = 2
+    """Ground vias of one ground net: the repulsion alone, beyond their
+    rings and clearance."""
+
+
+def pair_kind(
+    via: Via, ground: bool, other: Via, other_ground: bool
+) -> PairKind | None:
+    """How `via` and `other`, each a ground via or not, interact in the
+    pairwise term; None if they do not."""
+    if not via.shares_layer(other):
+        return None
+    if via.net == other.net:
+        return PairKind.SPREAD if ground else None
+    if ground and other_ground:
+        return PairKind.GROUNDS
+    if ground or other_ground:
+        return PairKind.RETURN
+    return None
+
+
+def pairs_with(via: Via, ground: bool, other: StaticVia) -> bool:
+    """Whether `via`, a ground via or not, pairs with `other`, standing
+    still, as two vias of other nets (`pair_kind`): the pairwise term then
+    gives their whole obstacle term, so `other` leaves `via`'s field."""
+    kind = pair_kind(via, ground, other.via, other.ground)
+    return kind is not None and kind is not PairKind.SPREAD
 
 
 def may_move(via: Via) -> bool:
