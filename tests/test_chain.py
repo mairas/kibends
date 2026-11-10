@@ -144,11 +144,12 @@ class TestDedupe:
 
         assert sorted(chain.segment_ids) == ["a", "b", "c", "dot", "dup"]
 
-    def test_zero_length_segment_away_from_chain_is_a_separate_piece(self) -> None:
+    def test_zero_length_segment_away_from_chain_is_left_out(self) -> None:
         segments = [*l_z_segments(), seg("stray", (50, 50), (50, 50))]
 
-        with pytest.raises(ChainError, match=r"separate pieces.*\(50\.000, 50\.000\)"):
-            extract_chain(segments, frame=BOARD_FRAME)
+        chain = extract_chain(segments, frame=BOARD_FRAME)
+
+        assert sorted(chain.segment_ids) == ["a", "b", "c"]
 
     def test_only_zero_length_segments_is_an_error(self) -> None:
         with pytest.raises(ChainError, match="no tracks"):
@@ -601,16 +602,6 @@ class TestTopologyErrors:
         with pytest.raises(ChainError, match="no tracks"):
             extract_chain([], frame=BOARD_FRAME)
 
-    def test_loop_is_an_error_saying_the_chain_is_closed(self) -> None:
-        segments = [
-            seg("a", (0, 0), (10, 0)),
-            seg("b", (10, 0), (10, 10)),
-            seg("c", (10, 10), (0, 0)),
-        ]
-
-        with pytest.raises(ChainError, match="closed"):
-            extract_chain(segments, frame=BOARD_FRAME)
-
     def test_branch_is_an_error_naming_the_branch_point(self) -> None:
         segments = [*l_z_segments(), seg("d", (10, 0), (15, -5))]
 
@@ -829,17 +820,26 @@ class TestSeveralChains:
         assert gnd.segment_ids == ("d",)
         assert sorted(sig.segment_ids) == ["a", "b", "c"]
 
-    def test_net_with_only_a_zero_length_track_is_refused(self) -> None:
+    def test_net_with_only_a_zero_length_track_leaves_it_out(self) -> None:
         segments = [seg("a", (0, 0), (10, 0)), seg("z", (50, 50), (50, 50), net="G")]
 
-        with pytest.raises(ChainError, match=r"z.*\(50\.000, 50\.000\)"):
-            extract_chains(segments, frame=BOARD_FRAME)
+        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
 
-    def test_isolated_zero_length_track_is_refused(self) -> None:
+        assert chain.segment_ids == ("a",)
+
+    def test_isolated_zero_length_track_is_left_out(self) -> None:
         segments = [*l_z_segments(), seg("stray", (50, 50), (50, 50))]
 
-        with pytest.raises(ChainError, match=r"stray.*\(50\.000, 50\.000\)"):
-            extract_chains(segments, frame=BOARD_FRAME)
+        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert sorted(chain.segment_ids) == ["a", "b", "c"]
+
+    def test_a_dot_of_another_width_on_a_chain_end_is_left_out(self) -> None:
+        segments = [*l_z_segments(), seg("dot", (0, 0), (0, 0), width=2 * WIDTH_NM)]
+
+        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert sorted(chain.segment_ids) == ["a", "b", "c"]
 
     def test_two_layers_joined_at_a_via_give_a_chain_on_each(self) -> None:
         segments = [
@@ -891,28 +891,106 @@ class TestSeveralChains:
 GRID_FRAME = UserFrame((10.0, 20.0))
 
 
-@pytest.mark.parametrize(
-    ("segments", "message"),
-    [
-        (
-            [
-                seg("a", (0, 0), (10, 0)),
-                seg("b", (10, 0), (10, 10)),
-                seg("c", (10, 10), (0, 0)),
-            ],
-            r"closed loop through \(-10\.000, -20\.000\) mm",
-        ),
-        (
-            [seg("a", (0, 0), (10, 0)), seg("z", (50, 50), (50, 50), net="G")],
-            r"at \(40\.000, 30\.000\) mm",
-        ),
-    ],
-)
-def test_errors_give_positions_in_the_frame(
-    segments: list[Segment], message: str
-) -> None:
-    with pytest.raises(ChainError, match=message):
-        extract_chains(segments, frame=GRID_FRAME)
+def square_loop() -> list[Segment]:
+    """A closed square, 10 mm a side, from (0, 0) to (10, 10)."""
+    return [
+        seg("a", (0, 0), (10, 0)),
+        seg("b", (10, 0), (10, 10)),
+        seg("c", (10, 10), (0, 10)),
+        seg("d", (0, 10), (0, 0)),
+    ]
+
+
+def test_left_out_tracks_are_logged_at_debug_in_the_frame(log: list[str]) -> None:
+    segments = [*square_loop(), seg("z", (50, 50), (50, 50), net="G")]
+
+    assert extract_chains(segments, frame=GRID_FRAME) == []
+
+    assert [line.split(" ")[0] for line in log] == ["DEBUG", "DEBUG"]
+    assert any("a, b, c, d" in line and "(-10.000, -20.000) mm" in line for line in log)
+    assert any("z" in line and "(40.000, 30.000) mm" in line for line in log)
+
+
+class TestLoops:
+    """A closed loop is cut where copper of its net touches it, and left
+    out where none does."""
+
+    def test_a_pad_on_a_corner_cuts_the_loop_there(self) -> None:
+        pad = contact(box(9.5, -0.5, 10.5, 0.5))
+
+        chain = extract_chain(square_loop(), [pad], frame=BOARD_FRAME)
+
+        assert chain.points[0] == chain.points[-1] == (10, 0)
+        assert chain.pinned == (True, False, False, False, True)
+        assert sorted(chain.points[1:-1]) == [(0, 0), (0, 10), (10, 10)]
+        assert sorted(chain.segment_ids) == ["a", "b", "c", "d"]
+        assert chain.slides == ()
+
+    def test_a_loop_touched_at_two_points_is_cut_at_one_and_pinned_at_the_other(
+        self,
+    ) -> None:
+        tees = [
+            SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM),
+            SameNetTrack(LineString([(5, 13), (5, 10)]), WIDTH_MM),
+        ]
+
+        chain = extract_chain(square_loop(), tees, frame=BOARD_FRAME)
+
+        assert chain.points[0] == chain.points[-1]
+        assert chain.pinned[0] and chain.pinned[-1]
+        assert sorted(set(pinned_points(chain))) == [(5, 0), (5, 10)]
+        assert len(pinned_points(chain)) == 3
+        assert len(chain.points) == 7
+
+    def test_a_pad_the_loop_passes_pins_the_vertex_it_keeps_there(self) -> None:
+        pad = contact(box(4, -1, 6, 1))
+
+        chain = extract_chain(square_loop(), [pad], frame=BOARD_FRAME)
+
+        assert chain.points[0] == chain.points[-1]
+        assert chain.points[0] == pytest.approx((5, 0), abs=PIN_TOLERANCE_MM)
+        assert pinned_points(chain) == [chain.points[0]] * 2
+        assert chain.slides == ()
+
+    def test_a_pad_off_its_anchor_on_the_first_corner_keeps_a_sliding_vertex(
+        self,
+    ) -> None:
+        # The walk starts at (0, 0), inside the pad, and the loop is cut at
+        # the track instead.
+        pad = box(-0.5, -0.5, 0.5, 0.5)
+        tee = SameNetTrack(LineString([(5, 13), (5, 10)]), WIDTH_MM)
+
+        chain = extract_chain(
+            square_loop(), [contact(pad, anchor=(0.2, 0.2)), tee], frame=BOARD_FRAME
+        )
+
+        assert chain.points[0] == chain.points[-1] == (5, 10)
+        assert pinned_points(chain) == [(5, 10), (5, 10)]
+        (slide,) = chain.slides
+        index, region = slide
+        assert region.equals(pad.buffer(-CONTACT_MARGIN_MM))
+        assert Point(chain.points[index]).within(region)
+        assert (0, 0) in chain.points
+
+    def test_a_loop_off_a_junction_is_cut_there_and_ends_loose(self) -> None:
+        segments = [*square_loop(), seg("stub", (10, 0), (15, -5))]
+
+        loop, stub = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert loop.points[0] == loop.points[-1] == (10, 0)
+        assert not any(loop.pinned)
+        assert stub.pinned == (False, True)
+
+    def test_a_loop_nothing_touches_is_left_out_beside_other_chains(self) -> None:
+        segments = [*square_loop(), seg("other", (20, 0), (30, 0))]
+
+        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert chain.segment_ids == ("other",)
+
+    def test_a_loop_nothing_touches_is_no_chain(self) -> None:
+        with pytest.raises(ChainError, match="loop"):
+            extract_chain(square_loop(), frame=BOARD_FRAME)
 
 
 def test_extract_chain_gives_separate_pieces_in_the_frame() -> None:

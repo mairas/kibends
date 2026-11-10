@@ -11,6 +11,13 @@ chains that end there, loose unless copper pins them; an end that reaches
 into another selected track may join it there (`_join_mid_track_ends`,
 `_may_join`). Pins never change a chain's order or its ends.
 
+A closed loop is cut where its net touches it, into a chain whose two ends
+share the cut: at the junction it hangs off, else at a point other copper
+pins, else at the vertex that keeps a pad or via it passes, which is then
+pinned (`_cut_loop`). A loop nothing of its net touches, and zero-length
+tracks that touch no selected track of their width, form no chain; the run
+leaves them on the board as unselected copper.
+
 Where selected chains of one net overlap or cross away from their ends,
 nothing pins either: copper of one net does not interact, so a run may move
 them apart even where that overlap was their only connection. A stub drawn
@@ -65,7 +72,7 @@ NO_PIECE = -1
 
 
 class ChainError(ValueError):
-    """The selection cannot be split into open, unbranched chains."""
+    """The selection holds no chain, or `extract_chain`'s tracks are not one."""
 
 
 @dataclass(frozen=True)
@@ -126,9 +133,10 @@ class Chain:
     """An ordered polyline in mm that replaces the segments in `segment_ids`.
 
     `pinned[i]` tells whether `points[i]` must stay where it is: the two
-    endpoints and every point where same-net copper touches the chain.
-    `slides` lists, by index, the vertices that keep a `Contact` instead:
-    each may move anywhere inside its region, and is not pinned.
+    endpoints and every point where same-net copper touches the chain; a
+    cut loop's two ends are one point. `slides` lists, by index, the
+    vertices that keep a `Contact` instead: each may move anywhere inside
+    its region, and is not pinned.
     `segment_ids` includes duplicate and zero-length segments, which the
     chain also replaces. A track split where another ends inside it is in
     the `segment_ids` of every chain that has a part of it
@@ -158,13 +166,17 @@ def extract_chains(
     *,
     frame: UserFrame,
 ) -> list[Chain]:
-    """Split `segments` into open chains, one per connected piece, or raise.
+    """Split `segments` into chains, one per connected piece, or raise when
+    none is unlocked or has length.
 
     Selected segments are grouped by layer, net and width, and each group is
-    split into connected pieces. Two widths that overlap along a span stay a
-    chain each, held where the end of one reaches the other. A point where
-    three or more selected tracks of one net on one layer end, or tracks of
-    more than one width that do not leave it the same way, is a junction: the
+    split into connected pieces. A closed loop is cut where its net touches
+    it; one nothing of its net touches, and zero-length segments that touch
+    no other of their width, form no chain and are logged at debug. Two
+    widths that overlap along a span stay a chain each, held where the end
+    of one reaches the other. A point where three or more selected tracks of
+    one net on one layer end, or tracks of more than one width that do not
+    leave it the same way, is a junction: the
     pieces are split there into chains that end at it, loose, unless other
     copper pins any of them there, which pins them all. A stub whose end
     reaches the copper of another track inside it meets it at a junction:
@@ -181,7 +193,7 @@ def extract_chains(
 
     Chains are ordered by net, then by layer, then by first point, then by
     width, then by their points; each starts at its end with the smaller
-    (x, y). Errors give positions in `frame`.
+    (x, y). Messages give positions in `frame`.
     """
     kept, locked = split_locked(segments)
     return split_chains(kept, locked, same_net_copper, frame=frame)
@@ -206,8 +218,10 @@ def split_chains(
     same_net_copper: Callable[[str, str], Iterable[SameNetCopper]],
     *,
     frame: UserFrame,
+    left_out: Callable[[str], None] = logger.debug,
 ) -> list[Chain]:
-    """`extract_chains` for segments `split_locked` has already split."""
+    """`extract_chains` for segments `split_locked` has already split,
+    giving `left_out` a line on each piece that forms no chain."""
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
     if all(s.start == s.end for s in kept):
@@ -277,20 +291,25 @@ def split_chains(
         ]
         bodies = _CopperIndex([t for _, t in tracks], [k for k, _ in tracks])
         net_chains = [
-            _chain(
-                adjacency,
-                copper,
-                bodies,
-                piece=k,
-                width=width,
-                layer=layer,
-                net=net,
-                segment_ids=piece_ids,
-                frame=frame,
-                junctions=junctions,
-                moved_from=moved_from,
-            )
+            chain
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
+            if (
+                chain := _chain(
+                    adjacency,
+                    copper,
+                    bodies,
+                    piece=k,
+                    width=width,
+                    layer=layer,
+                    net=net,
+                    segment_ids=piece_ids,
+                    frame=frame,
+                    junctions=junctions,
+                    moved_from=moved_from,
+                    left_out=left_out,
+                )
+            )
+            is not None
         ]
         chains += _pin_junctions_whole(net_chains, {_mm(p) for p in junctions})
     return sorted(
@@ -378,7 +397,8 @@ def extract_chain(
     *,
     frame: UserFrame,
 ) -> Chain:
-    """Build the one open chain that `segments` form, or raise `ChainError`.
+    """Build the one chain that `segments` form, or raise `ChainError`; a
+    zero-length segment off it is left out, as `extract_chains` does.
 
     `same_net_copper` holds the copper of the chain's net on its layer: pad,
     via and copper shape outlines (polygons) and unselected tracks. A track
@@ -398,13 +418,16 @@ def extract_chain(
         joined, _ = _join_mid_track_ends(
             kept, _fixed_copper(copper, locked, layer, net)
         )
-        edges, dots = _unique_edges(joined)
+        edges, _ = _unique_edges(joined)
         if edges:
             _check_degrees(_adjacency(edges, ()), frame)
             _check_one_piece(
-                _adjacency(edges, dots), _locked_on(locked, layer, net), frame
+                _adjacency(edges, ()), _locked_on(locked, layer, net), frame
             )
-    (chain,) = split_chains(kept, locked, lambda _layer, _net: copper, frame=frame)
+    chains = split_chains(kept, locked, lambda _layer, _net: copper, frame=frame)
+    if not chains:
+        raise ChainError("selected tracks form a closed loop that nothing touches")
+    (chain,) = chains
     return chain
 
 
@@ -464,16 +487,22 @@ def _chain(
     frame: UserFrame,
     junctions: Collection[NmPoint],
     moved_from: Mapping[Point2, Sequence[Point2]],
-) -> Chain:
+    left_out: Callable[[str], None],
+) -> Chain | None:
+    """The chain of one piece, or None, said to `left_out`, for a piece the
+    run leaves out."""
+    ids = ", ".join(segment_ids)
     if not any(adjacency.values()):
-        raise ChainError(
-            f"selected zero-length tracks {', '.join(segment_ids)} at "
-            f"{_fmt(min(adjacency), frame)} touch no other selected track of "
-            "their width"
+        left_out(
+            f"Leaving out zero-length tracks {ids} at {_fmt(min(adjacency), frame)}: "
+            "they touch no other selected track of their width"
         )
-    _check_open(adjacency, frame)
+        return None
     half_width = width / NM_PER_MM / 2
-    walk = _walk(adjacency)
+    walk = _walk(adjacency, junctions)
+    # A loop off a junction is cut there; any other is cut where its net
+    # touches it, once that is known.
+    closed = walk[0] == walk[-1] and walk[0] not in junctions
     walked = [_mm(p) for p in walk]
     loose_ends = [_mm(p) for p in (walk[0], walk[-1]) if p in junctions]
     loose = {p: moved_from.get(p, ()) for p in loose_ends}
@@ -488,8 +517,19 @@ def _chain(
         )
     }
     near = copper.near(reached, half_width, piece)
-    slides = _slides(walked, near, half_width, loose, {*loose, *held})
-    points, pinned, within = _pin_touches(walked, slides, half_width, loose)
+    slides = _slides(walked, near, half_width, loose, {*loose, *held}, closed=closed)
+    points, pinned, within = _pin_touches(
+        walked, slides, half_width, loose, closed=closed
+    )
+    if closed:
+        cut = _cut_loop(points, pinned, within)
+        if cut is None:
+            left_out(
+                f"Leaving out the closed loop {ids} through "
+                f"{_fmt(min(adjacency), frame)}: no copper of its net touches it"
+            )
+            return None
+        points, pinned, within = cut
     return Chain(
         points=tuple(points),
         pinned=tuple(pinned),
@@ -835,24 +875,53 @@ def _describe(piece: set[NmPoint], adjacency: Adjacency, frame: UserFrame) -> st
     return " to ".join(_fmt(p, frame) for p in ends)
 
 
-def _check_open(adjacency: Adjacency, frame: UserFrame) -> None:
-    if all(len(segs) == MAX_CHAIN_DEGREE for segs in adjacency.values()):
-        raise ChainError(
-            "selected tracks form a closed loop through "
-            f"{_fmt(min(adjacency), frame)}; "
-            "the chain must have two ends"
-        )
-
-
-def _walk(adjacency: Adjacency) -> list[NmPoint]:
-    current = min(p for p, segs in adjacency.items() if len(segs) == 1)
+def _walk(adjacency: Adjacency, junctions: Collection[NmPoint]) -> list[NmPoint]:
+    """The piece's points in order from its smaller end. A loop, which has
+    none, starts and ends at its junction, or else at its smallest point,
+    and goes first toward the smaller of that point's neighbours."""
+    ends = [p for p, segs in adjacency.items() if len(segs) == 1]
+    start = min(ends or adjacency.keys() & junctions or adjacency)
+    current = start
     ordered = [current]
     came_by: Segment | None = None
     while onward := [s for s in adjacency[current] if s is not came_by]:
-        came_by = onward[0]
+        came_by = min(onward, key=lambda s: _other_end(s, current))
         current = _other_end(came_by, current)
         ordered.append(current)
+        if current == start:
+            break
     return ordered
+
+
+def _cut_loop(
+    points: Sequence[Point2],
+    pinned: Sequence[bool],
+    within: Sequence[BaseGeometry | None],
+) -> tuple[list[Point2], list[bool], list[BaseGeometry | None]] | None:
+    """A loop, whose first and last vertex are one, cut at its first pinned
+    vertex, or else at its first sliding one, which is then pinned; None
+    when it has neither.
+
+    The cut loop starts and ends at the cut and goes first toward the
+    smaller of its neighbours there."""
+    count = len(points) - 1
+    pins = [pinned[0] or pinned[-1], *pinned[1:count]]
+    regions = [None if pins[0] else _within_both(within[0], within[-1])]
+    regions += within[1:count]
+    cut = next((i for i, pin in enumerate(pins) if pin), None)
+    if cut is None:
+        cut = next((i for i, region in enumerate(regions) if region is not None), None)
+        if cut is None:
+            return None
+        pins[cut], regions[cut] = True, None
+    order = [*range(cut, count), *range(cut + 1)]
+    if points[order[1]] > points[order[-2]]:
+        order.reverse()
+    return (
+        [points[i] for i in order],
+        [pins[i] for i in order],
+        [regions[i] for i in order],
+    )
 
 
 class _Slides(NamedTuple):
@@ -873,6 +942,8 @@ def _slides(
     half_width: float,
     loose: Mapping[Point2, Collection[Point2]],
     held: Collection[Point2],
+    *,
+    closed: bool,
 ) -> _Slides:
     """Which vertex keeps each `Contact` in `near` that the chain touches.
 
@@ -883,8 +954,10 @@ def _slides(
     lies inside every contact that reaches it, within all of them. A contact
     that no sliding end keeps and that reaches no other end gets one vertex
     instead, at the middle of the longest stretch of the chain inside it.
-    Any other contact pins as other copper does.
+    Any other contact pins as other copper does. A `closed` loop, not yet
+    cut, has no ends.
     """
+    chain_ends = () if closed else (0, -1)
     pinning: list[tuple[SameNetCopper, bool]] = [
         (item, sel) for item, sel in near if not isinstance(item, Contact)
     ]
@@ -902,7 +975,7 @@ def _slides(
         for k, c in enumerate(contacts)
         if any(_reaches([c], a, half_width) for a in anchored)
     }
-    for end in (0, -1):
+    for end in chain_ends:
         p = points[end]
         reaching = [k for k, c in enumerate(contacts) if _reaches([c], p, half_width)]
         insides = [contacts[k].inside for k in reaching]
@@ -916,8 +989,8 @@ def _slides(
         ends[end] = shapely.intersection_all(insides)
         kept |= set(reaching)
     still = [
-        _reached_from(p, loose.get(p, ()))
-        for end, p in ((0, points[0]), (-1, points[-1]))
+        _reached_from(points[end], loose.get(points[end], ()))
+        for end in chain_ends
         if end not in ends
     ]
     line = LineString(points)
@@ -957,6 +1030,8 @@ def _pin_touches(
     slides: _Slides,
     half_width: float,
     loose: Mapping[Point2, Collection[Point2]],
+    *,
+    closed: bool,
 ) -> tuple[list[Point2], list[bool], list[BaseGeometry | None]]:
     """Insert and pin a vertex wherever the pinning copper of `slides`
     touches the chain, and insert or free the vertices that slide, each
@@ -965,7 +1040,8 @@ def _pin_touches(
     An end at a `loose` point, a junction, is pinned only by copper that
     is not a selected track, as those are the junction's branches, and
     reaches it or the line to any point the end moved from, its copper
-    before the move.
+    before the move. The ends of a `closed` loop, not yet cut, are pinned
+    only by copper.
     """
     items = [
         (
@@ -992,7 +1068,7 @@ def _pin_touches(
         _Station(
             along,
             p,
-            i in (0, last) and p not in still_loose and i not in ends,
+            i in (0, last) and not closed and p not in still_loose and i not in ends,
             original=True,
             within=ends.get(i),
         )
