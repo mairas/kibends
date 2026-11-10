@@ -3,7 +3,8 @@
 Smooths KiCad tracks. `kibends smooth` takes the chains of track segments
 selected in the PCB editor and replaces each with a short, smooth path of
 plain straight segments that keeps clearance to other copper, including the
-other selected chains. The result is not made of KiCad native arcs, so the
+other selected chains. Selected arc tracks are smoothed too, as straight
+pieces along the arc. The result is not made of KiCad native arcs, so the
 tracks stay editable.
 
 The new path minimises a weighted sum of two goals:
@@ -44,9 +45,14 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 1. Open the board in KiCad's PCB editor.
 2. Select the track segments to smooth, on any copper layers. Each
    connected piece of one net and one width on one layer is a chain: its
-   segments join end to end. Where three or more selected tracks of one net
-   meet at their ends, or tracks of two widths meet end to end, as where a
-   route narrows, the selection branches: it is split there into chains
+   segments join end to end. A selected arc track counts as straight
+   pieces along it, each turning at most 5°, and is replaced by straight
+   tracks like the rest of its chain. Only a chain the run leaves exactly
+   as drawn keeps its arc, which in practice is rare. A locked arc stays
+   an arc and holds the chains that end on it, as a locked track does.
+   Where three or more selected tracks of one net meet at their ends, or
+   tracks of two widths meet end to end, as where a route narrows, the
+   selection branches: it is split there into chains
    that end at the junction, the junction moves with them unless other
    copper of the net holds it, and the branches meet at one point again in
    the result. A track that ends in the middle of another, anywhere its
@@ -121,7 +127,7 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    it. A moving via that starts closer to other copper than its clearance
    moves out of it like any other (see below). Teardrops are ignored:
    KiCad reapplies them on the next refill. Selected pads and
-   other items are ignored; arc tracks are refused.
+   other items are ignored.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
    set non-active layers to Dim or Hide (Ctrl+H), which limits selection to

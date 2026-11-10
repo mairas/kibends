@@ -1,10 +1,11 @@
+import math
 from typing import cast
 
 import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
-from conftest import COMMIT_CALLS, CommitBoard, kipy_track, kipy_via, nm
+from conftest import COMMIT_CALLS, CommitBoard, kipy_arc, kipy_track, kipy_via, nm
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -14,7 +15,7 @@ from kibends import commit
 from kibends.chain import Chain, Segment, extract_chain
 from kibends.coords import BOARD_FRAME
 from kibends.energy import FloatArray
-from kibends.snapshot import segment_from_track, via_from_kipy
+from kibends.snapshot import read_selection, segment_from_track, via_from_kipy
 
 WIDTH = 0.3
 NEW_PATH = np.array([[0.0, 0.0], [2.0, 1.0], [4.0000004, 3.0], [5.0, 5.0]])
@@ -55,11 +56,8 @@ def run_commit(
     selected: list[Segment],
     polyline: FloatArray = NEW_PATH,
 ) -> None:
-    commit.commit_chain(
-        cast(kipy.board.Board, board),
-        chain,
-        selected,
-        polyline,
+    commit.commit_chains(
+        cast(kipy.board.Board, board), [(chain, polyline)], selected, ()
     )
 
 
@@ -123,6 +121,78 @@ class TestBoardChanged:
 
         with pytest.raises(commit.BoardChangedError, match="b"):
             run_commit(board, chain, selected)
+
+        assert board.calls == []
+
+
+ARC_MID = (5 + 5 * math.sqrt(0.5), 5 - 5 * math.sqrt(0.5))
+"""On the 90° arc from (5, 0) to (10, 5) around (5, 5)."""
+
+
+def arc_board() -> CommitBoard:
+    """A track "a" and a 90° arc "arc" after it, both selected."""
+    track = kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH)
+    arc = kipy_arc("arc", start=(5, 0), mid=ARC_MID, end=(10, 5), width=WIDTH)
+    return CommitBoard(selection=[track, arc], tracks=[track, arc])
+
+
+ARC_EDITS: dict[str, list[kbt.Track | kbt.ArcTrack]] = {
+    "mid point moved": [
+        kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+        kipy_arc(
+            "arc",
+            start=(5, 0),
+            mid=(ARC_MID[0] + 0.001, ARC_MID[1]),
+            end=(10, 5),
+            width=WIDTH,
+        ),
+    ],
+    "arc now a track": [
+        kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+        kipy_track("arc", "SIG", (5, 0), (10, 5), width=WIDTH),
+    ],
+    "track now an arc": [
+        kipy_arc("a", start=(0, 0), mid=(2.5, 0.5), end=(5, 0), width=WIDTH),
+        kipy_arc("arc", start=(5, 0), mid=ARC_MID, end=(10, 5), width=WIDTH),
+    ],
+    "arc deleted": [kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH)],
+}
+"""What the board holds at the commit instead of what `arc_board` selected."""
+
+
+def commit_selection(board: CommitBoard) -> None:
+    selection = read_selection(cast(kipy.board.Board, board))
+    chain = extract_chain(selection.segments, frame=BOARD_FRAME)
+    commit.commit_chains(
+        cast(kipy.board.Board, board),
+        [(chain, NEW_PATH)],
+        selection.segments,
+        selection.arcs,
+    )
+
+
+class TestArcs:
+    def test_arc_is_deleted_once_and_replaced_by_straight_tracks(self) -> None:
+        board = arc_board()
+
+        commit_selection(board)
+
+        assert board.calls == COMMIT_CALLS
+        assert sorted(board.deleted) == ["a", "arc"]
+        assert board.created and all(type(t) is kbt.Track for t in board.created)
+        created = cast(list[kbt.Track], board.created)
+        assert {(t.width, t.layer, t.net.name) for t in created} == {
+            (nm(WIDTH), BL.BL_F_Cu, "SIG")
+        }
+
+    @pytest.mark.parametrize("edit", ARC_EDITS)
+    def test_edited_arc_or_track_aborts_before_any_change(self, edit: str) -> None:
+        board = arc_board()
+        board.tracks = ARC_EDITS[edit]
+        changed = "a" if edit == "track now an arc" else "arc"
+
+        with pytest.raises(commit.BoardChangedError, match=f": {changed};"):
+            commit_selection(board)
 
         assert board.calls == []
 
@@ -215,7 +285,7 @@ def run_commit_chains(
     chains: list[tuple[Chain, FloatArray]],
     selected: list[Segment],
 ) -> None:
-    commit.commit_chains(cast(kipy.board.Board, board), chains, selected)
+    commit.commit_chains(cast(kipy.board.Board, board), chains, selected, ())
 
 
 class TestCommitChains:
@@ -325,7 +395,7 @@ def run_commit_vias(
     selected: list[Segment],
     vias: list[commit.ViaMove],
 ) -> None:
-    commit.commit_chains(cast(kipy.board.Board, board), chains, selected, vias)
+    commit.commit_chains(cast(kipy.board.Board, board), chains, selected, (), vias)
 
 
 class TestMovedVias:

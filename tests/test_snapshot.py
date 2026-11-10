@@ -2,6 +2,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from functools import partial
+from itertools import pairwise
 from typing import cast
 
 import kipy.board
@@ -46,6 +47,8 @@ from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment, extract_cha
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import (
     CONTACT_MARGIN,
+    MIN_ARC_SEGMENTS,
+    Arc,
     BoardSnapshot,
     Disc,
     GroundNets,
@@ -168,13 +171,67 @@ class TestReadSelection:
         )
         assert not [line for line in log if line.startswith("WARNING")]
 
-    def test_arc_track_is_an_error_naming_it(self) -> None:
+    def test_arc_becomes_segments_of_its_id_along_it(self) -> None:
         fake = FakeBoard(
-            selection=[kipy_track("a", "SIG", (0, 0), (1, 0)), kipy_arc("arc1")]
+            selection=[
+                kipy_track("a", "SIG", (-1, 0), (0, 0)),
+                kipy_arc(
+                    "arc",
+                    start=(0, 0),
+                    mid=(1, 1),
+                    end=(2, 0),
+                    width=0.3,
+                    layer=BL.BL_B_Cu,
+                    locked=True,
+                ),
+            ]
         )
 
-        with pytest.raises(SelectionError, match=r"arc.*arc1"):
-            read_selection(board(fake))
+        selection = read_selection(board(fake))
+
+        track, *pieces = selection.segments
+        assert track.id == "a"
+        assert {(s.id, s.width, s.layer, s.net, s.locked) for s in pieces} == {
+            ("arc", 300_000, "B.Cu", "SIG", True)
+        }
+        assert (pieces[0].start, pieces[-1].end) == ((0, 0), (2_000_000, 0))
+        assert all(p.end == q.start for p, q in pairwise(pieces))
+        # Rounding a point on the circle to whole nanometres moves it less
+        # than a nanometre off it.
+        assert all(
+            abs(math.hypot(x - 1_000_000, y) - 1_000_000) < 1
+            for s in pieces
+            for x, y in (s.start, s.end)
+        )
+        assert selection.arcs == (
+            Arc(
+                "arc",
+                (0, 0),
+                (1_000_000, 1_000_000),
+                (2_000_000, 0),
+                300_000,
+                "B.Cu",
+                "SIG",
+                locked=True,
+            ),
+        )
+
+    def test_small_half_circle_has_four_pieces_or_more_with_exact_ends(
+        self,
+    ) -> None:
+        fake = FakeBoard(
+            selection=[kipy_arc("arc", start=(5, 5), mid=(5.05, 5.05), end=(5.1, 5))]
+        )
+
+        pieces = read_selection(board(fake)).segments
+
+        assert len(pieces) >= MIN_ARC_SEGMENTS
+        assert (pieces[0].start, pieces[-1].end) == (
+            (5_000_000, 5_000_000),
+            (5_100_000, 5_000_000),
+        )
+        assert all(p.end == q.start and p.start != p.end for p, q in pairwise(pieces))
+        assert all(type(c) is int for s in pieces for c in (*s.start, *s.end))
 
     def test_vias_alone_are_a_selection(self) -> None:
         fake = FakeBoard(selection=[kipy_via("v", "SIG", 0, 0)])

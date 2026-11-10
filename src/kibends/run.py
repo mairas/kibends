@@ -15,7 +15,9 @@ the run leaves bent too tightly is held, and the optimizer runs again from
 the previous run's best state. A chain whose result equals its selected
 tracks, and that shares no split track with a changed chain, is left out of
 the commit; nothing is committed when every chain is unchanged and no via
-moved.
+moved. A selected arc thus stays an arc only in a chain left exactly as
+drawn; simplification merges its pieces and the optimizer shortens it, so
+it is nearly always replaced.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
@@ -94,6 +96,7 @@ from kibends.results import (
 from kibends.simplify import simplify_chains
 from kibends.snapshot import (
     FALLBACK_GROUND,
+    Arc,
     BoardSnapshot,
     Disc,
     GroundSource,
@@ -266,6 +269,8 @@ class _Read:
     ground_nets: frozenset[str]
     """Empty when no selected via may move or vias are not paired, as they
     are then not looked for."""
+    arcs: tuple[Arc, ...]
+    """The selected arcs, whose segments are among `selected`, as read."""
 
 
 @dataclass(frozen=True)
@@ -429,7 +434,7 @@ def _read(
     moving = {m.via.id for m in movable}
     if chained and moving != candidates:
         chains = _extract_chains(kept, locked, snapshots, moving, frame)
-    return _Read(selected, chains, snapshots, movable, frame, ground)
+    return _Read(selected, chains, snapshots, movable, frame, ground, selection.arcs)
 
 
 def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]:
@@ -679,7 +684,7 @@ def _commit(
         for m, r in zip(read.movable, outcome.via_reports, strict=True)
         if r.moved
     ]
-    commit_chains(board, changed, read.selected, moves)
+    commit_chains(board, changed, read.selected, read.arcs, moves)
     return report(committed=True)
 
 

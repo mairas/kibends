@@ -2,13 +2,14 @@
 KiCad as one undoable commit.
 
 The changed chains' tracks and the moved vias are re-read in one request,
-and the run refuses if any changed since it read them. After the push, the
-created items are added to the editor's selection (`_select`); KiCad
-deselects the deleted ones. The selection is outside the undo history, so
-the run stays one undo step, and since the commit has landed by then, a
-failure to select is logged at debug and the run reports committed. A dry
-run, or one with nothing to commit, never gets here and leaves the
-selection alone.
+and the run refuses if any changed since it read them; a selected arc,
+which the run smoothed as straight segments, is compared as the arc it was
+read as. Every created track is straight. After the push, the created
+items are added to the editor's selection (`_select`); KiCad deselects the
+deleted ones. The selection is outside the undo history, so the run stays
+one undo step, and since the commit has landed by then, a failure to
+select is logged at debug and the run reports committed. A dry run, or one
+with nothing to commit, never gets here and leaves the selection alone.
 
 `commit_label`, `create_checked` and `push_checked` are copied and
 trimmed from kistitch's commit.py (MIT, Copyright (c) 2025 Hat Labs Oy).
@@ -43,7 +44,13 @@ from loguru import logger
 
 from kibends.chain import NM_PER_MM, Chain, NmPoint, Point2, Segment
 from kibends.energy import FloatArray
-from kibends.snapshot import Via, segment_from_track, via_from_kipy
+from kibends.snapshot import (
+    Arc,
+    Via,
+    arc_from_kipy,
+    segment_from_track,
+    via_from_kipy,
+)
 
 COMMIT_PREFIX = "kibends"
 # Rounding to KiCad's grid may move a point of a straight path this far off it.
@@ -82,20 +89,11 @@ def commit_label(command: str) -> str:
     return f"{COMMIT_PREFIX} {command} {stamp}"
 
 
-def commit_chain(
-    board: kipy.board.Board,
-    chain: Chain,
-    selected: Sequence[Segment],
-    polyline: FloatArray,
-) -> None:
-    """Replace the chain's tracks with straight tracks along `polyline` (mm)."""
-    commit_chains(board, [(chain, polyline)], selected)
-
-
 def commit_chains(
     board: kipy.board.Board,
     chains: Sequence[tuple[Chain, FloatArray]],
     selected: Sequence[Segment],
+    arcs: Sequence[Arc],
     vias: Sequence[ViaMove] = (),
 ) -> None:
     """Replace each chain's tracks with straight tracks along its polyline
@@ -103,17 +101,19 @@ def commit_chains(
 
     All chains and vias go into one KiCad commit, so the run is one undo
     step, and each IPC step is one request for all of them. A via moves as
-    a copy at its new position that replaces it. The tracks and vias are
-    re-read first, so one edited since the selection was read aborts the
-    run instead of being overwritten. Zones are not refilled: a refill would
-    be a second undo step. Empty `chains` and `vias` raise ValueError, since
-    they would push an empty undo step.
+    a copy at its new position that replaces it. The tracks, the selected
+    `arcs` among them, and the vias are re-read first, so one edited since
+    the selection was read aborts the run instead of being overwritten.
+    Zones are not refilled: a refill would be a second undo step. Empty
+    `chains` and `vias` raise ValueError, since they would push an empty
+    undo step.
     """
     if not chains and not vias:
         raise ValueError("Nothing to commit")
-    # A track split at a junction belongs to each chain that meets there.
+    # A track split at a junction, or an arc, belongs to each chain that has
+    # a part of it, and is deleted once.
     track_ids = list(dict.fromkeys(i for chain, _ in chains for i in chain.segment_ids))
-    current, current_vias = _unchanged_items(board, track_ids, selected, vias)
+    current, current_vias = _unchanged_items(board, track_ids, selected, vias, arcs)
     new_items: list[Wrapper] = [
         track
         for chain, polyline in chains
@@ -170,20 +170,31 @@ def _unchanged_items(
     track_ids: Sequence[str],
     selected: Sequence[Segment],
     vias: Sequence[ViaMove],
-) -> tuple[dict[str, kbt.Track], dict[str, kbt.Via]]:
-    """The tracks `track_ids` and the vias of `vias` as KiCad has them now,
-    by id, in one request; raise if any changed."""
-    wanted = set(track_ids)
+    arcs: Sequence[Arc],
+) -> tuple[dict[str, kbt.Track | kbt.ArcTrack], dict[str, kbt.Via]]:
+    """The tracks and arcs `track_ids` and the vias of `vias` as KiCad has
+    them now, by id, in one request; raise if any changed. An arc is
+    compared as the arc it was read as, not as its segments."""
+    expected_arcs = {a.id: a for a in arcs}
+    # An arc's segments are not expected of a straight track, so a track
+    # re-read under an arc's id, or the reverse, counts as changed.
+    wanted = set(track_ids) - expected_arcs.keys()
     expected = {s.id: s for s in selected if s.id in wanted}
     ids = [*track_ids, *(m.via.id for m in vias)]
     items = board.get_items_by_id([KIID(value=i) for i in ids])
-    tracks = {i.id.value: i for i in items if isinstance(i, kbt.Track)}
+    tracks = {i.id.value: i for i in items if isinstance(i, (kbt.Track, kbt.ArcTrack))}
     found_vias = {i.id.value: i for i in items if isinstance(i, kbt.Via)}
-    changed = [
-        i
-        for i in track_ids
-        if i not in tracks or segment_from_track(tracks[i]) != expected[i]
-    ]
+
+    def unchanged(track_id: str) -> bool:
+        match tracks.get(track_id):
+            case kbt.ArcTrack() as arc:
+                return arc_from_kipy(arc) == expected_arcs.get(track_id)
+            case kbt.Track() as track:
+                return segment_from_track(track) == expected.get(track_id)
+            case _:
+                return False
+
+    changed = [i for i in track_ids if not unchanged(i)]
     changed += [
         m.via.id
         for m in vias
@@ -210,7 +221,7 @@ def _moved(via: kbt.Via, position: Point2) -> kbt.Via:
 
 
 def track_items(
-    polyline: FloatArray, width: float, model: kbt.Track
+    polyline: FloatArray, width: float, model: kbt.Track | kbt.ArcTrack
 ) -> list[kbt.Track]:
     """Straight tracks along `polyline`, on the layer and net of `model`."""
     tracks: list[kbt.Track] = []

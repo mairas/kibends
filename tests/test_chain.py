@@ -1,3 +1,4 @@
+import math
 from itertools import pairwise
 
 import pytest
@@ -15,6 +16,7 @@ from kibends.chain import (
     shared_track_groups,
 )
 from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.snapshot import Arc
 
 WIDTH_NM = 250_000
 LAYER = "F.Cu"
@@ -1393,3 +1395,82 @@ class TestWidthsOverlapping:
                 if pin
             }
             assert start in pins or end in pins
+
+
+ARC_CENTRE = (5.0, 3.0)
+ARC_RADIUS = 3.0
+ARC_MID = (
+    ARC_CENTRE[0] + ARC_RADIUS * math.sqrt(0.5),
+    ARC_CENTRE[1] - ARC_RADIUS * math.sqrt(0.5),
+)
+
+
+def quarter_arc(*, locked: bool = False) -> list[Segment]:
+    """The segments of a 90° arc from (5, 0) to (8, 3) through ARC_MID."""
+    return Arc(
+        "arc", nm(5, 0), nm(*ARC_MID), nm(8, 3), WIDTH_NM, LAYER, NET, locked
+    ).segments()
+
+
+class TestArcs:
+    """A selected arc is a track split into several edges of one id."""
+
+    def test_track_arc_track_is_one_chain(self) -> None:
+        segments = [seg("a", (0, 0), (5, 0)), *quarter_arc(), seg("c", (8, 3), (8, 8))]
+
+        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert sorted(chain.segment_ids) == ["a", "arc", "c"]
+        assert (chain.points[0], chain.points[-1]) == ((0, 0), (8, 8))
+        assert chain.pinned[0] and chain.pinned[-1] and not any(chain.pinned[1:-1])
+
+    def test_locked_arc_splits_and_pins_where_it_touches(self, log: list[str]) -> None:
+        segments = [
+            seg("a", (0, 0), (5, 0)),
+            *quarter_arc(locked=True),
+            seg("c", (8, 3), (8, 8)),
+        ]
+
+        first, second = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert_points(first, [(0, 0), (5, 0)])
+        assert_points(second, [(8, 3), (8, 8)])
+        assert first.pinned == second.pinned == (True, True)
+        (warning,) = [line for line in log if line.startswith("WARNING")]
+        assert warning.count("arc") == 1
+
+    def test_track_ending_mid_arc_joins_it_there(self) -> None:
+        # 2° past the vertex at ARC_MID, so partway along a 5° piece.
+        angle = math.radians(-45 + 2)
+        on_arc = (
+            ARC_CENTRE[0] + ARC_RADIUS * math.cos(angle),
+            ARC_CENTRE[1] + ARC_RADIUS * math.sin(angle),
+        )
+        arc = quarter_arc()
+        vertices = {
+            (x / NM_PER_MM, y / NM_PER_MM) for s in arc for x, y in (s.start, s.end)
+        }
+        segments = [
+            seg("a", (0, 0), (5, 0)),
+            *arc,
+            seg("c", (8, 3), (8, 8)),
+            Segment("tee", nm(10, -2), nm(*on_arc), WIDTH_NM, LAYER, NET),
+        ]
+
+        chains = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert sorted(sorted(c.segment_ids) for c in chains) == [
+            ["a", "arc"],
+            ["arc", "c"],
+            ["tee"],
+        ]
+        (tee,) = [c for c in chains if c.segment_ids == ("tee",)]
+        joint = tee.points[0] if tee.points[-1] == (10, -2) else tee.points[-1]
+        assert Point(joint).distance(Point(on_arc)) < WIDTH_MM / 2
+        assert joint not in vertices
+        assert all(joint in (c.points[0], c.points[-1]) for c in chains)
+        groups = shared_track_groups([c.segment_ids for c in chains])
+        arc_groups = {
+            g for g, c in zip(groups, chains, strict=True) if "arc" in c.segment_ids
+        }
+        assert len(arc_groups) == 1 and len(set(groups)) == 2
