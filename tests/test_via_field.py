@@ -26,7 +26,7 @@ from reference_fields import chain_obstacles_for_via, via_obstacles_for_via
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
-from kibends.energy import FloatArray, ObstacleField
+from kibends.energy import EnergyParams, FloatArray, ObstacleField
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
@@ -41,7 +41,8 @@ from kibends.obstacles import (
     via_chain_inflation,
 )
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
-from kibends.vias import ViaInput, pairs_with
+from kibends.via_pairs import ViaPairs
+from kibends.vias import StaticVia, ViaInput, pairs_with
 
 NET = "SIG"
 VIA_ID = "moving"
@@ -910,6 +911,7 @@ class TestMovingViasAsObstaclesToAVia:
 
 
 SPLIT_GROUND = frozenset({"GND", "AGND"})
+PAIR_PARAMS = EnergyParams(0.5, 1.0, 50.0, 0.02, 3, attraction=0.25)
 
 
 def split_board(net: str) -> FakeBoard:
@@ -1002,17 +1004,37 @@ class TestStaticViasSplit:
         )
 
     @pytest.mark.parametrize("net", ["SIG", "GND"])
-    def test_what_repels_it_is_the_unsplit_field(self, net: str) -> None:
-        whole, apart = split_inputs(net)
-        at = around()
+    def test_the_pair_term_keeps_the_split_field_s_distances(self, net: str) -> None:
+        snaps = slices(split_board(net), ("F.Cu", "In1.Cu", "B.Cu"))
+        _, apart = split_inputs(net)
+        via = apart.via
+        others = {v.id: v for s in snaps for v in s.vias}.values()
+        static = [
+            StaticVia(v, v.net in SPLIT_GROUND, snaps[0].clearance(v.net))
+            for v in others
+            if pairs_with(via.net, v.net, SPLIT_GROUND)
+        ]
+        pairs = ViaPairs(
+            [apart],
+            [0],
+            [{}],
+            static,
+            PAIR_PARAMS,
+            hole_clearance=HOLE_CLEARANCE,
+            hole_to_hole=HOLE_TO_HOLE,
+        )
+        at = np.array([via.position], dtype=float)
+        assert static
 
-        for reach in (0.5, math.inf):
-            distance, gradient = apart.repelling.signed_distance(at, reach)
-            expected, expected_gradient = whole.field.signed_distance(at, reach)
-            near = expected <= reach
-            np.testing.assert_array_equal(distance[near], expected[near])
-            np.testing.assert_array_equal(gradient[near], expected_gradient[near])
-            assert (distance[~near] > reach).all()
+        for s in static:
+            alone = static_via_obstacles(
+                snaps, via, lambda o, s=s: o.id == s.via.id, zones=apart.zones
+            )
+            assert alone is not None
+            distance, _ = alone.signed_distance(at)
+            kept = math.dist(via.position, s.via.position) - float(distance[0])
+            kept_by_pairs = pairs._kept(0, s)  # pyright: ignore[reportPrivateUsage]
+            assert kept_by_pairs == pytest.approx(kept, abs=NM_TOLERANCE)
 
     def test_without_a_pair_nothing_is_split(self) -> None:
         snaps = slices(split_board("SIG"))

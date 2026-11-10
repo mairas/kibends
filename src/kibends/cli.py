@@ -38,7 +38,7 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.coords import UserFrame
-from kibends.energy import EnergyParams
+from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
 from kibends.results import FrozenVertex, Termination
 from kibends.run import (
@@ -54,6 +54,11 @@ from kibends.snapshot import SelectionError
 
 DEFAULT_REPULSION = 0.5
 DEFAULT_RANGE = 1.0
+# Provisional: its pull at a via's smallest limit distance stays well below
+# the repulsion's push there, and a typical via pair, 0.6 mm vias with
+# 0.2 mm clearance, settles about 1.6 mm apart, near kistitch's 1.5 mm
+# return-via distance.
+DEFAULT_ATTRACTION = 0.25
 # Not user-facing: the clearance hinge only shapes the approach to the
 # clearance boundary, which the burst's edge check keeps edges from newly
 # crossing.
@@ -253,6 +258,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"to zero (default: {DEFAULT_RANGE:g})",
     )
     smooth_parser.add_argument(
+        "--attraction",
+        type=_non_negative,
+        default=DEFAULT_ATTRACTION,
+        metavar="WEIGHT",
+        help="Weight of the pull between ground vias and other vias, so that "
+        "signal vias keep their return vias near; 0 turns it off "
+        f"(default: {DEFAULT_ATTRACTION:g})",
+    )
+    smooth_parser.add_argument(
+        "--attraction-range",
+        type=_positive,
+        default=DEFAULT_ATTRACTION_RANGE,
+        metavar="MM",
+        help="Centre distance at which that pull fades to zero "
+        f"(default: {DEFAULT_ATTRACTION_RANGE:g})",
+    )
+    smooth_parser.add_argument(
         "--edge-clearance",
         type=_non_negative,
         default=EDGE_CLEARANCE,
@@ -379,7 +401,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="NET",
         help="The ground nets, whose vias are return vias for the other nets' "
         "vias; by default the nets with copper zones on at least two inner "
-        "layers, else GND if it has copper",
+        "layers, else GND if it has copper. Ignored with --attraction 0",
     )
     smooth_parser.add_argument(
         "--verbose",
@@ -399,6 +421,8 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
             clearance_weight=CLEARANCE_WEIGHT,
             standoff=STANDOFF,
             points_per_edge=POINTS_PER_EDGE,
+            attraction=args.attraction,
+            attraction_range=args.attraction_range,
         ),
         edge_clearance=args.edge_clearance,
         hole_clearance=args.hole_clearance,

@@ -54,7 +54,12 @@ from kibends.bursts import (
 )
 from kibends.chain import NM_PER_MM
 from kibends.coords import BOARD_FRAME, UserFrame
-from kibends.energy import EnergyParams, FloatArray
+from kibends.energy import (
+    EnergyParams,
+    FloatArray,
+    attraction_integrand,
+    repulsion_integrand,
+)
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
@@ -583,6 +588,8 @@ class TestSmooth:
             run(
                 "--repulsion=2",
                 "--range=0.4",
+                "--attraction=0.4",
+                "--attraction-range=2.5",
                 "--edge-clearance=0.5",
                 "--hole-clearance=0.1",
                 "--time-limit=30",
@@ -590,6 +597,7 @@ class TestSmooth:
 
         params = cast(EnergyParams, seen["params"])
         assert (params.repulsion, params.falloff_range) == (2.0, 0.4)
+        assert (params.attraction, params.attraction_range) == (0.4, 2.5)
         assert (seen["edge_clearance"], seen["hole_clearance"]) == (0.5, 0.1)
         assert cast(OptimizerSettings, seen["settings"]).time_limit == 30.0
 
@@ -2454,6 +2462,48 @@ class TestViaClasses:
         assert optimized.static_vias == ()
         (given,) = optimized.vias
         assert (given.ground, given.static_vias) == (False, None)
+
+    def test_without_attraction_ground_nets_are_neither_found_nor_used(
+        self, connect: Connector, optimized: Optimized, log: list[str]
+    ) -> None:
+        board = moving_via_board()
+        board.vias += [kipy_via("g", "GND", 6, 6), kipy_via("w", "PWR", 1, 6)]
+        connect.to(board)
+
+        run("--dry-run", "--attraction=0", "--ground-nets", "SIG")
+
+        assert ground_lines(log) == []
+        assert optimized.static_vias == ()
+        (given,) = optimized.vias
+        assert (given.ground, given.static_vias) == (False, None)
+
+    def test_attraction_is_on_by_default(self) -> None:
+        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+
+        assert params.attraction > 0.0
+        assert params.attraction_range > 0.0
+
+    def test_by_default_the_pull_is_weaker_than_the_push_at_a_small_limit(
+        self,
+    ) -> None:
+        # Two 0.4 mm vias with 0.1 mm clearance; a quarter of the push is
+        # left for the pull of farther vias.
+        limit = np.array([0.5])
+        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+
+        _, pull = attraction_integrand(params)(limit, limit)
+        _, push = repulsion_integrand(params)(np.zeros(1))
+
+        assert pull[0] < 0.75 * -push[0]
+
+    @pytest.mark.parametrize(
+        "args", [("--attraction=-0.1",), ("--attraction-range=0",)]
+    )
+    def test_a_negative_weight_or_an_empty_range_is_refused(
+        self, args: tuple[str, ...]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            cli.parse_args(["smooth", *args])
 
 
 def plane_board() -> CommitBoard:

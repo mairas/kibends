@@ -98,14 +98,9 @@ class ViaInput:
     """Whether it is on a ground net."""
     static_vias: ObstacleField | None = None
     """The vias standing still that it pairs with (`pairs_with`), split out of
-    `field` as `static_via_obstacles` gives them."""
-
-    @cached_property
-    def repelling(self) -> ObstacleField:
-        """What stands still and repels it: `field` and `static_vias`."""
-        if self.static_vias is None:
-            return self.field
-        return CompositeField([self.field, self.static_vias])
+    `field` as `static_via_obstacles` gives them: they limit where it may
+    go, and the optimizer's pairwise term (`via_pairs`) gives their
+    energy."""
 
     @cached_property
     def stops(self) -> ObstacleField | None:
@@ -130,6 +125,8 @@ class StaticVia(NamedTuple):
     via: Via
     ground: bool
     """Whether it is on a ground net."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
 
 
 def pairs_with(net: str, other: str, ground: Collection[str]) -> bool:

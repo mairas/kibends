@@ -7,8 +7,9 @@ it hands over; it prints nothing.
 selected via could have moved but stays fixed, extracts them again with
 that via's copper pinning. With `fixed_vias`, a via that carries no chain
 end is dropped from the candidates before the board is read. When a
-selected via may move, it finds the ground nets, logs them and classes
-every via by them. It then
+selected via may move and attraction is on, it finds the ground nets,
+logs them and classes every via by them; with attraction off nothing is
+classed, and the optimizer's energy is the one without ground vias. It then
 builds the fields, optimizes, simplifies and commits. A coupled section
 the run leaves bent too tightly is held, and the optimizer runs again from
 the previous run's best state. A chain whose result equals its selected
@@ -270,8 +271,8 @@ class _Read:
     frame: UserFrame
     """The frame warnings and descriptions give positions in."""
     ground_nets: frozenset[str]
-    """Empty when no selected via may move, as they are then not looked
-    for."""
+    """Empty when no selected via may move or vias are not paired, as they
+    are then not looked for."""
 
 
 @dataclass(frozen=True)
@@ -343,6 +344,7 @@ def run_smooth(
         read_user_frame(board),
         fixed_vias=options.fixed_vias,
         ground_nets=options.ground_nets,
+        paired=options.params.attraction > 0.0,
     )
     optimized = _optimize(read, options)
     outcome = _simplify_and_report(read, optimized, options)
@@ -371,11 +373,13 @@ def _read(
     *,
     fixed_vias: bool,
     ground_nets: Collection[str] = (),
+    paired: bool = True,
 ) -> _Read:
     """Read the selection and the copper it needs, split it into chains and
     judge which selected vias move, no stitching via with `fixed_vias`,
-    giving positions in `frame`. When a selected via may move, find the
-    ground nets, `ground_nets` if given, and name them."""
+    giving positions in `frame`. When a selected via may move and vias are
+    `paired`, find the ground nets, `ground_nets` if given, and name
+    them."""
     selection = read_selection(board)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
@@ -407,7 +411,7 @@ def _read(
         every_copper_layer=bool(may),
     )
     snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
-    ground = _ground_nets(whole, ground_nets) if may else frozenset[str]()
+    ground = _ground_nets(whole, ground_nets) if may and paired else frozenset[str]()
     # A moving via's copper must not hold the chains it carries where they
     # leave it.
     chains = _extract_chains(kept, locked, snapshots, candidates, frame)
@@ -862,8 +866,13 @@ def _static_vias(
     classes; none without `ground` nets."""
     if not ground:
         return ()
-    vias = {v.id: v for s in snapshots.values() for v in s.vias if v.id not in moving}
-    return tuple(StaticVia(v, v.net in ground) for v in vias.values())
+    vias = {
+        v.id: (v, s.clearance(v.net))
+        for s in snapshots.values()
+        for v in s.vias
+        if v.id not in moving
+    }
+    return tuple(StaticVia(v, v.net in ground, c) for v, c in vias.values())
 
 
 def _laid_out_vias(layout: Layout, via_inputs: Sequence[ViaInput]) -> list[ViaInput]:

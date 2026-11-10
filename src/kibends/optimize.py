@@ -50,9 +50,9 @@ ends of the chains it joins are not variables of their own: each is the
 via's centre plus its offset at the start, at every evaluation, so they keep
 their offsets exactly and their gradient goes to the via. Its own obstacle
 terms are its ring's, standing for a track as long as it is wide, against
-what stands still and repels it over every layer it spans
-(`ViaInput.repelling`), the members of other nets near
-it on those layers and the vias of other nets, with their gradient also at
+its static field over every layer it spans, the members of other nets near
+it on those layers and the vias of other nets it does not pair with (below),
+each the nearest of them, with their gradient also at
 the edge or via that answers it, and the clearance hinge alone, which limits
 without repelling, against the outside of its zones' regions and the
 fabrication rules that hold within its net: hole-to-hole from its net's
@@ -71,7 +71,12 @@ layers together.
 The board's vias that are none of the run's, each a ground via or a
 regular one (`vias.StaticVia`), reach `optimize_chains` as `static_vias`;
 a problem keeps those its moving vias share a layer with
-(`_Problem.static_vias`), and its energy does not use them.
+(`_Problem.static_vias`). A ground via and a regular one, and ground vias
+of two ground nets, interact through the pairwise term (`via_pairs`),
+summed over every such pair, moving or standing still, rather than the
+nearest only: they attract each other, the first, and keep clear of each
+other, both, at the distances the via's limits give. Without such a pair
+the problem's energy is the one without ground vias, term for term.
 
 How much of a chain of one of its nets a section leaves out near a fan-out
 depends on the angles both leave it at. A burst fixes it, as pieces of the
@@ -207,6 +212,7 @@ from kibends.results import (
 )
 from kibends.seen import NeighbourList, Seen, ViaSight
 from kibends.via_moves import MovingVias, free_distances
+from kibends.via_pairs import ViaPairs
 from kibends.vias import StaticVia, ViaInput
 
 # After this many abnormal L-BFGS-B ends in a row a problem counts as
@@ -546,6 +552,8 @@ def _problems(
             settings,
             resume,
             static_vias,
+            hole_clearance=vias.hole_clearance,
+            hole_to_hole=vias.hole_to_hole,
         )
         placed.append(_Placed(problem, on, sections, joined))
     return placed
@@ -842,6 +850,9 @@ class _Problem:
         settings: OptimizerSettings,
         resume: _Resume | None = None,
         static_vias: Sequence[StaticVia] = (),
+        *,
+        hole_clearance: float,
+        hole_to_hole: float,
     ) -> None:
         self.vias = list(vias)
         self.free_vias = [k for k, via in enumerate(vias) if not via.frozen]
@@ -850,6 +861,18 @@ class _Problem:
             for s in static_vias
             if any(s.via.shares_layer(vias[k].given.via) for k in self.free_vias)
         ]
+        pairs = ViaPairs(
+            [via.given for via in vias],
+            self.free_vias,
+            [via.apart for via in vias],
+            self.static_vias,
+            params,
+            hole_clearance=hole_clearance,
+            hole_to_hole=hole_to_hole,
+        )
+        self.pairs = None if pairs.empty else pairs
+        """The pairwise term (`via_pairs`); None without a pair, so that
+        the energy is the one without ground vias term for term."""
         self.via_diameters = np.array(
             [vias[k].given.via.diameter for k in self.free_vias], dtype=float
         )
@@ -867,17 +890,19 @@ class _Problem:
         self.rings = [via.rings for via in vias]
         apart = [via.apart for via in vias]
         self.via_sight = ViaSight(self.free_vias, self.rings, apart, count)
-        # Vias of one net only stop each other; the rest repel.
+        # Vias of one net only stop each other; the pairs of the pairwise
+        # term are summed apart from the nearest; the rest repel.
         own_net = [
             {u: d for u, d in a.items() if _one_net(vias[k], vias[u])}
             for k, a in enumerate(apart)
         ]
+        paired = pairs.paired
         self.via_repel = ViaSight(
             self.free_vias,
             self.rings,
             [
-                {u: d for u, d in a.items() if u not in own}
-                for a, own in zip(apart, own_net, strict=True)
+                {u: d for u, d in a.items() if u not in own and u not in pairs_of}
+                for a, own, pairs_of in zip(apart, own_net, paired, strict=True)
             ],
             count,
         )
@@ -900,7 +925,7 @@ class _Problem:
         self.integrand = obstacle_integrand(params)
         self.limit = hinge_integrand(params)
         self.via_parts = (
-            _ViaPart(lambda given: given.repelling, self.via_repel, self.integrand),
+            _ViaPart(lambda given: given.field, self.via_repel, self.integrand),
             _ViaPart(lambda given: given.stops, self.via_stop, self.limit),
         )
         self.originals = [body.centreline.points for body in self.bodies]
@@ -1133,8 +1158,9 @@ class _Problem:
         via, the gradient also pulls on it.
 
         Each via has two terms, each for the nearest of what it covers: the
-        full integrand for its static field and the members and vias of
-        other nets, and the clearance hinge alone for what only stops it, its
+        full integrand for its static field and the members and the vias of
+        other nets it does not pair with (`via_pairs` has those), and the
+        clearance hinge alone for what only stops it, its
         zones' regions and the vias of its net, moving or standing still."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
@@ -1215,6 +1241,10 @@ class _Problem:
         own, pulls, own_gradients = self.via_energy(polylines, positions)
         for g, pull in zip(gradients, pulls, strict=True):
             g += pull
+        if self.pairs is not None:
+            paired, paired_gradients = self.pairs.energy(positions)
+            own += paired
+            own_gradients += paired_gradients
         for i in self.sliding:
             points = polylines[i]
             stop, push = contact_stops(
