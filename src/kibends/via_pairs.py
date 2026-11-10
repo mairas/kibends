@@ -248,16 +248,16 @@ class ViaPairs:
         spans."""
         given = self.vias[k]
         clearances = {given.via.net: given.clearance, other.via.net: other.clearance}
-        zones = [z for z in given.zones if any(map(other.via.reaches, z.layers))]
         distance = via_via_inflation(
             given.via,
             other.via,
             clearances.__getitem__,
             hole_clearance=self.hole_clearance,
             hole_to_hole=self.hole_to_hole,
-            zones=zones,
+            zones=given.zones,
         )
-        # Vias of other nets always keep their copper clearance.
+        # Paired vias share a layer, where vias of other nets keep their
+        # copper clearance.
         assert distance is not None
         return distance
 

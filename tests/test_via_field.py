@@ -39,8 +39,15 @@ from kibends.obstacles import (
     own_net_stops,
     split_via_obstacles,
     via_chain_inflation,
+    via_via_inflation,
 )
-from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
+from kibends.snapshot import (
+    BoardSnapshot,
+    LayerSnapshot,
+    Via,
+    ViaZone,
+    via_from_kipy,
+)
 from kibends.via_pairs import ViaPairs
 from kibends.vias import StaticVia, ViaInput, pairs_with
 
@@ -852,6 +859,19 @@ class TestChainsAsObstaclesToAVia:
         assert via_chain_inflation(via, mine, lambda _: DEFAULT_CLEARANCE) is None
 
 
+def blind_via(
+    via_id: str,
+    net: str,
+    at: tuple[float, float],
+    span: tuple[BL.ValueType, BL.ValueType] = (BL.BL_F_Cu, BL.BL_In1_Cu),
+) -> Via:
+    """A via of the test's diameter and drill spanning `span`."""
+    kipy = kipy_via(
+        via_id, net, *at, DIAMETER, DRILL, via_type=ViaType.VT_BLIND, span=span
+    )
+    return via_from_kipy(kipy)
+
+
 class TestMovingViasAsObstaclesToAVia:
     def test_another_net_via_keeps_the_larger_of_every_rule(self) -> None:
         fake = FakeBoard(vias=[moving_via(), GND_VIA])
@@ -908,6 +928,49 @@ class TestMovingViasAsObstaclesToAVia:
         via = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
 
         assert via_obstacles_for_via(via, [via], lambda _: DEFAULT_CLEARANCE) is None
+
+    @pytest.mark.parametrize("net", ["GND", NET])
+    @pytest.mark.parametrize(
+        ("span", "shared"),
+        [((BL.BL_In2_Cu, BL.BL_B_Cu), False), ((BL.BL_In1_Cu, BL.BL_B_Cu), True)],
+    )
+    def test_a_blind_via_keeps_its_distance_only_where_the_spans_overlap(
+        self, net: str, span: tuple[BL.ValueType, BL.ValueType], shared: bool
+    ) -> None:
+        blind = blind_via(VIA_ID, NET, (0, 0))
+        other = blind_via("other", net, (3, 0), span)
+
+        inflation = via_via_inflation(
+            blind, other, lambda _: DEFAULT_CLEARANCE, hole_to_hole=1.0
+        )
+
+        if not shared:
+            assert inflation is None
+        elif net == NET:
+            assert inflation == pytest.approx(HOLE_RADIUS + 1.0 + HOLE_RADIUS)
+        else:
+            assert inflation == pytest.approx(
+                max(RADIUS + DEFAULT_CLEARANCE + RADIUS, 2 * HOLE_RADIUS + 1.0)
+            )
+
+    @pytest.mark.parametrize("own", [True, False])
+    def test_a_zone_counts_only_on_a_layer_both_vias_span(self, own: bool) -> None:
+        # The through via's zone on In2.Cu, which the blind one does not
+        # reach, as the zone of the via asked or of the other.
+        through = board_via(FakeBoard(vias=[moving_via()]), VIA_ID)
+        blind = blind_via("gnd", "GND", (3, 0))
+        zone = ViaZone("plane", {"In2.Cu": box(-5, -5, 5, 5)}, 0.2, 1.0)
+
+        def clearance(_: str) -> float:
+            return DEFAULT_CLEARANCE
+
+        inflation = (
+            via_via_inflation(through, blind, clearance, zones=(zone,))
+            if own
+            else via_via_inflation(blind, through, clearance, other_zones=(zone,))
+        )
+
+        assert inflation == pytest.approx(RADIUS + DEFAULT_CLEARANCE + RADIUS)
 
 
 SPLIT_GROUND = frozenset({"GND", "AGND"})

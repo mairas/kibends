@@ -535,6 +535,102 @@ class TestPair:
         assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
 
 
+REACHED = 0.01
+"""How close, mm, a via that nothing holds comes at COARSE settings to
+where its chains pull it, with ample room for round-off between machines."""
+
+
+def spanning(scenario: ViasScenario, *spans: tuple[str, str]) -> ViasScenario:
+    """`scenario`, whose via k joins chains 2k and 2k + 1, with via k
+    spanning `spans[k]` and those chains on its two layers."""
+    chains = list(scenario.chains)
+    vias: list[ViaInput] = []
+    for k, (given, span) in enumerate(zip(scenario.vias, spans, strict=True)):
+        for i, layer in zip((2 * k, 2 * k + 1), span, strict=True):
+            chains[i] = replace(chains[i], layer=layer)
+        via = replace(given.via, span=span)
+        vias.append(replace(given, via=via))
+    return replace(scenario, chains=tuple(chains), vias=tuple(vias))
+
+
+class TestBlindAndBuriedVias:
+    def test_two_that_share_no_layer_pass_each_other(self) -> None:
+        scenario = spanning(
+            scenarios.via_pair(), ("F.Cu", "In1.Cu"), ("In2.Cu", "B.Cu")
+        )
+
+        result = run(scenario)
+
+        a, b = (v.position for v in result.vias)
+        assert moving_vias(scenario).apart(0, 1) is None
+        assert math.dist(a, b) < scenarios.PAIR_LEVEL + REACHED
+        assert scenarios.PAIR_LEVEL + REACHED < scenarios.VIA_TO_VIA
+
+    @pytest.mark.parametrize("net", ["B", "A"])
+    def test_two_sharing_only_an_end_layer_keep_hole_to_hole(self, net: str) -> None:
+        # Of two nets the guard holds it as copper (`via_sight`), of one net
+        # as a stop (`via_stop`).
+        lower, upper = (5.0, -2.0), (5.0, scenarios.PAIR_LEVEL + 2.0)
+        level = scenarios.PAIR_LEVEL
+        pair = ViasScenario(
+            "via-pair",
+            (
+                *scenarios.route("A", lower),
+                *scenarios.route(net, upper, (0.0, level), (10.0, level)),
+            ),
+            (
+                scenarios.joining(scenarios.through_via("a", "A", lower), 0),
+                scenarios.joining(scenarios.through_via("b", net, upper), 2),
+            ),
+        )
+        scenario = spanning(pair, ("F.Cu", "In1.Cu"), ("In1.Cu", "B.Cu"))
+        hole_to_hole = 1.2
+
+        result = optimize_chains(
+            scenario.chains,
+            scenario.params,
+            COARSE,
+            scenario.vias,
+            hole_to_hole=hole_to_hole,
+        )
+
+        a, b = (v.position for v in result.vias)
+        apart = scenarios.VIA_DRILL + hole_to_hole
+        assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
+
+    def test_a_chain_on_a_layer_it_does_not_reach_does_not_push_it(self) -> None:
+        # The neighbour on In1.Cu holds a through via above y = 0.7.
+        scenario = spanning(scenarios.via_beside_chain(), ("In2.Cu", "B.Cu"))
+
+        result = run(scenario)
+
+        (via,) = result.vias
+        gap = to_polyline(via.position, result.chains[2].polyline)
+        assert via.position[1] < REACHED
+        assert gap < scenarios.NEIGHBOUR_LEVEL + REACHED
+        assert scenarios.NEIGHBOUR_LEVEL + REACHED < scenarios.VIA_TO_CHAIN
+
+    def test_a_buried_one_pushed_toward_its_zone_s_edge_stays_inside(self) -> None:
+        # `stitched`'s crowding chain on In1.Cu, and its zone on In2.Cu alone.
+        start, top = 0.8, 1.3
+        scenario = stitched(start, top=top)
+        (chain,), (given,) = scenario.chains, scenario.vias
+        via = replace(given.via, span=("In1.Cu", "In2.Cu"))
+        zone = ViaZone("plane", {"In2.Cu": box(0, -5, 10, top)}, 0.2, 0.0)
+        buried = replace(
+            scenario,
+            chains=(replace(chain, layer="In1.Cu"),),
+            vias=(replace(given, via=via, zones=(zone,)),),
+        )
+
+        result = run(buried)
+
+        (moved,) = result.vias
+        edge = top - STITCH_MARGIN
+        assert edge - STITCH_PARAMS.standoff <= moved.position[1]
+        assert moved.position[1] <= edge + INSIDE_TOLERANCE
+
+
 ZONE_CLEARANCE = 0.5
 """More than the scenarios' netclass clearance, so that it is the rule."""
 
