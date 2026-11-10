@@ -74,7 +74,12 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    move them apart, even where that overlap was their only connection. So a
    stub drawn past the track it crosses, its end beyond that track's copper,
    may come off it: draw a T to end on the track, or check the ratsnest
-   after the run. A
+   after the run. A closed loop is cut where copper of its net touches it,
+   a junction, another track, a pad or a via, and smoothed from there; one
+   that nothing of its net touches, or that surrounds nothing and would
+   shrink to a point or fold flat, is left as drawn. Should such a loop
+   shrink all the same, the optimizer goes on from where it was with the
+   loop held, and `--time-limit` covers both runs. A
    route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
@@ -363,7 +368,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst, or by one outer iteration when it must run again with a differential pair's section held as routed. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each problem's burst, so it may run over by one burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration and one burst more for each. |
 | `--settled-change MM` | 0.001 | A problem settles when a burst moves none of its tracks or vias by this much. Raising it alone saves little time and can leave visibly different tracks. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when its energy, in mm of track length, improves by less than this over `--stall-window` of its bursts. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
