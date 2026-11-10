@@ -19,12 +19,21 @@ from kipy.wrapper import Wrapper
 
 from kibends.chain import Chain, extract_chains
 from kibends.coords import BOARD_FRAME, UserFrame
-from kibends.snapshot import KICAD_MAX_ERROR, BoardSnapshot, read_selection
+from kibends.snapshot import (
+    KICAD_MAX_ERROR,
+    BoardSnapshot,
+    Via,
+    ViaKind,
+    read_selection,
+)
 from kibends.vias import (
     ChainEnd,
     MovableVia,
+    PairKind,
+    StaticVia,
     carried_copper,
     movable_vias,
+    pair_kind,
     pairs_with,
 )
 
@@ -734,6 +743,37 @@ class TestCopperAtCarriedEnds:
 GROUND = frozenset({"GND", "AGND"})
 
 
+def via_on(net: str, span: tuple[str, str] = ("F.Cu", "B.Cu")) -> Via:
+    kind = ViaKind.THROUGH if span == ("F.Cu", "B.Cu") else ViaKind.BLIND_BURIED
+    return Via(net, net, (0.0, 0.0), 0.6, 0.3, kind, span)
+
+
+@pytest.mark.parametrize(
+    ("net", "other", "expected"),
+    [
+        ("SIG", "GND", PairKind.RETURN),
+        ("GND", "SIG", PairKind.RETURN),
+        ("GND", "AGND", PairKind.GROUNDS),
+        ("GND", "GND", PairKind.SPREAD),
+        ("SIG", "SIG", None),
+        ("SIG", "PWR", None),
+    ],
+)
+def test_the_pair_kind_follows_the_nets_and_their_classes(
+    net: str, other: str, expected: PairKind | None
+) -> None:
+    kind = pair_kind(via_on(net), net in GROUND, via_on(other), other in GROUND)
+
+    assert kind is expected
+
+
+def test_vias_whose_spans_do_not_overlap_do_not_pair() -> None:
+    top = via_on("SIG", ("F.Cu", "In1.Cu"))
+    bottom = via_on("GND", ("In2.Cu", "B.Cu"))
+
+    assert pair_kind(top, False, bottom, True) is None
+
+
 @pytest.mark.parametrize(
     ("net", "other", "expected"),
     [
@@ -748,8 +788,6 @@ GROUND = frozenset({"GND", "AGND"})
 def test_pairs_are_ground_and_regular_or_two_ground_nets(
     net: str, other: str, expected: bool
 ) -> None:
-    assert pairs_with(net, other, GROUND) is expected
+    standing = StaticVia(via_on(other), other in GROUND, 0.2)
 
-
-def test_without_ground_nets_nothing_pairs() -> None:
-    assert not pairs_with("SIG", "GND", frozenset())
+    assert pairs_with(via_on(net), net in GROUND, standing) is expected

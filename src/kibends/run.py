@@ -70,9 +70,8 @@ from kibends.obstacles import (
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
-    build_via_obstacles,
     own_net_stops,
-    static_via_obstacles,
+    split_via_obstacles,
 )
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairInput
@@ -488,8 +487,12 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
 
     layout = lay_out(whole, pairs, section_field)
     logger.info(_optimizing(len(read.chains), len(pairs), len(read.movable)))
-    via_inputs = _via_inputs(read.movable, read.snapshots, options, read.ground_nets)
-    static_vias = _static_vias(read.snapshots, moving, read.ground_nets)
+    # One classing of the vias standing still both splits the moving vias'
+    # fields and gives the pairwise term its vias.
+    static = _static_vias(read.snapshots, moving, read.ground_nets)
+    via_inputs = _via_inputs(
+        read.movable, read.snapshots, options, read.ground_nets, static
+    )
     started = monotonic()
     previous: RunResult | None = None
     iterations = 0
@@ -505,7 +508,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             clock=monotonic,
             started=started,
             start=previous,
-            static_vias=static_vias,
+            static_vias=tuple(static.values()),
         )
         iterations += run.iterations
         for description, count in run.abnormal:
@@ -808,32 +811,36 @@ def _via_inputs(
     snapshots: Mapping[str, LayerSnapshot],
     options: SmoothOptions,
     ground: Collection[str],
+    static: Mapping[str, StaticVia],
 ) -> list[ViaInput]:
     """One optimizer input per movable via, its field over every layer read,
     without the other movable vias, which the optimizer adds where they are,
-    and without the vias it pairs with among the `ground` nets
-    (`vias.pairs_with`), which are its `static_vias`."""
+    and without the vias of `static`, by id, that it pairs with among the
+    `ground` nets (`vias.pairs_with`), which are its `static_vias`."""
     moving = {m.via.id for m in movable}
     layers = list(snapshots.values())
     inputs: list[ViaInput] = []
     for m in movable:
+        grounded = m.via.net in ground
 
-        def split(other: Via, net: str = m.via.net) -> bool:
-            return pairs_with(net, other.net, ground)
+        def split(other: Via, via: Via = m.via, grounded: bool = grounded) -> bool:
+            standing = static.get(other.id)
+            return standing is not None and pairs_with(via, grounded, standing)
 
+        field, static_vias = split_via_obstacles(
+            layers,
+            m.via,
+            split,
+            moving=moving,
+            edge_clearance=options.edge_clearance,
+            hole_clearance=options.hole_clearance,
+            zones=m.zones,
+        )
         inputs.append(
             ViaInput(
                 m.via,
                 m.ends,
-                build_via_obstacles(
-                    layers,
-                    m.via,
-                    moving=moving,
-                    edge_clearance=options.edge_clearance,
-                    hole_clearance=options.hole_clearance,
-                    zones=m.zones,
-                    split=split,
-                ),
+                field,
                 layers[0].clearance(m.via.net),
                 m.zones,
                 own_net_stops(
@@ -843,15 +850,8 @@ def _via_inputs(
                     hole_clearance=options.hole_clearance,
                     allow_via_in_pad=options.allow_via_in_pad,
                 ),
-                ground=m.via.net in ground,
-                static_vias=static_via_obstacles(
-                    layers,
-                    m.via,
-                    split,
-                    moving=moving,
-                    hole_clearance=options.hole_clearance,
-                    zones=m.zones,
-                ),
+                ground=grounded,
+                static_vias=static_vias,
             )
         )
     return inputs
@@ -861,18 +861,18 @@ def _static_vias(
     snapshots: Mapping[str, LayerSnapshot],
     moving: Collection[str],
     ground: Collection[str],
-) -> tuple[StaticVia, ...]:
-    """The board's vias the snapshots hold but those `moving`, with their
-    classes; none without `ground` nets."""
+) -> dict[str, StaticVia]:
+    """By id, the board's vias the snapshots hold but those `moving`, with
+    their classes; none without `ground` nets."""
     if not ground:
-        return ()
+        return {}
     vias = {
         v.id: (v, s.clearance(v.net))
         for s in snapshots.values()
         for v in s.vias
         if v.id not in moving
     }
-    return tuple(StaticVia(v, v.net in ground, c) for v, c in vias.values())
+    return {i: StaticVia(v, v.net in ground, c) for i, (v, c) in vias.items()}
 
 
 def _laid_out_vias(layout: Layout, via_inputs: Sequence[ViaInput]) -> list[ViaInput]:

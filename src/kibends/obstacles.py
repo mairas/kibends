@@ -24,7 +24,7 @@ so the refill reconnects it wherever the other copper ends up.
 With ground nets, the vias standing still that a moving via pairs with,
 ground with regular or of two ground nets (`vias.pairs_with`), leave its
 field and are built apart, each as the field would count it
-(`static_via_obstacles`): `vias.ViaInput.limits` takes them back in, so
+(`split_via_obstacles`): `vias.ViaInput.limits` takes them back in, so
 the distances it gives are the unsplit field's, and the optimizer's
 pairwise term (`via_pairs`) gives their energy.
 """
@@ -960,7 +960,6 @@ def build_via_obstacles(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     zones: Sequence[ViaZone] = (),
-    split: Callable[[Via], bool] = lambda _: False,
 ) -> ObstacleField:
     """Obstacles for `via` at any position, over every layer of `layers` it
     spans. The outside of the regions of `zones` is not among them, nor is
@@ -979,12 +978,52 @@ def build_via_obstacles(
     keeps the hole clearance. One field over all the layers' items is their
     minimum. The via itself and the vias in `moving`, which the caller adds
     at their current positions, are left out; so is the copper of zones,
-    which KiCad refills, and the vias `split` picks, which
-    `static_via_obstacles` gives apart.
+    which KiCad refills.
     """
     found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
+    return _via_field(found, via, found.others, edge_clearance, zones)
+
+
+def split_via_obstacles(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    split: Callable[[Via], bool],
+    *,
+    moving: Collection[str] = frozenset(),
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+    zones: Sequence[ViaZone] = (),
+) -> tuple[ObstacleField, Obstacles | None]:
+    """`build_via_obstacles` without the vias of other nets that `split`
+    picks, and those vias as obstacles to `via`, each as the field would
+    count it, or None if it picks none; both from one reading of the
+    layers."""
+    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
+    picked = [v for v in found.others if split(v)]
+    kept = [v for v in found.others if not split(v)]
+    field = _via_field(found, via, kept, edge_clearance, zones)
+    if not picked:
+        return field, None
+    rings = _via_rings(found.spanned[0], picked, found.via_keeper(zones))
+    return field, Obstacles(
+        [
+            *(Obstacle(d, g, i) for d, g, i in rings if i is not None),
+            *_hole_items((), picked, found.keeper),
+        ]
+    )
+
+
+def _via_field(
+    found: _ViaSurroundings,
+    via: Via,
+    others: Sequence[Via],
+    edge_clearance: float,
+    zones: Sequence[ViaZone],
+) -> ObstacleField:
+    """`build_via_obstacles` of `via` in `found`, with only `others` of the
+    vias of other nets there."""
     spanned, keeper = found.spanned, found.keeper
-    others = [v for v in found.others if not split(v)]
     drilled = [p for p in spanned[0].pads if not _plated_of(p, via)]
 
     def on(layers: Iterable[str]) -> _Keeper:
@@ -1010,33 +1049,6 @@ def build_via_obstacles(
     if outline is None:
         return Obstacles(items)
     return Obstacles(items, outline, edge_clearance + keeper.radius)
-
-
-def static_via_obstacles(
-    layers: Sequence[LayerSnapshot],
-    via: Via,
-    split: Callable[[Via], bool],
-    *,
-    moving: Collection[str] = frozenset(),
-    hole_clearance: float = HOLE_CLEARANCE,
-    hole_to_hole: float = HOLE_TO_HOLE,
-    zones: Sequence[ViaZone] = (),
-) -> Obstacles | None:
-    """The vias of other nets the layers of `layers` that `via` spans hold,
-    but those in `moving`, that `split` picks, as obstacles to `via`, each
-    as `build_via_obstacles` would count it without `split`; None if it
-    picks none."""
-    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
-    picked = [v for v in found.others if split(v)]
-    if not picked:
-        return None
-    rings = _via_rings(found.spanned[0], picked, found.via_keeper(zones))
-    return Obstacles(
-        [
-            *(Obstacle(d, g, i) for d, g, i in rings if i is not None),
-            *_hole_items((), picked, found.keeper),
-        ]
-    )
 
 
 @dataclass(frozen=True)

@@ -37,7 +37,7 @@ from kibends.obstacles import (
     contained,
     moving_via_obstacles,
     own_net_stops,
-    static_via_obstacles,
+    split_via_obstacles,
     via_chain_inflation,
 )
 from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
@@ -931,6 +931,11 @@ def split_board(net: str) -> FakeBoard:
     )
 
 
+def standing(snaps: Sequence[LayerSnapshot], via: Via) -> StaticVia:
+    """`via` standing still, classed by `SPLIT_GROUND`."""
+    return StaticVia(via, via.net in SPLIT_GROUND, snaps[0].clearance(via.net))
+
+
 def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
     """The moving via of `split_board` as an input with its field whole, and
     with the vias it pairs with split out, both in an In1.Cu zone."""
@@ -939,9 +944,10 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
     zones = (zone({"In1.Cu": box(-3, -3, 3, 3)}, min_width=0.25),)
 
     def split(other: Via) -> bool:
-        return pairs_with(via.net, other.net, SPLIT_GROUND)
+        return pairs_with(via, via.net in SPLIT_GROUND, standing(snaps, other))
 
     own = own_net_stops(snaps, via)
+    field, static_vias = split_via_obstacles(snaps, via, split, zones=zones)
     whole = ViaInput(
         via,
         (),
@@ -953,12 +959,12 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
     apart = ViaInput(
         via,
         (),
-        build_via_obstacles(snaps, via, zones=zones, split=split),
+        field,
         DEFAULT_CLEARANCE,
         zones,
         own,
         ground=via.net in SPLIT_GROUND,
-        static_vias=static_via_obstacles(snaps, via, split, zones=zones),
+        static_vias=static_vias,
     )
     return whole, apart
 
@@ -1009,11 +1015,8 @@ class TestStaticViasSplit:
         _, apart = split_inputs(net)
         via = apart.via
         others = {v.id: v for s in snaps for v in s.vias}.values()
-        static = [
-            StaticVia(v, v.net in SPLIT_GROUND, snaps[0].clearance(v.net))
-            for v in others
-            if pairs_with(via.net, v.net, SPLIT_GROUND)
-        ]
+        classed = [standing(snaps, v) for v in others]
+        static = [s for s in classed if pairs_with(via, apart.ground, s)]
         pairs = ViaPairs(
             [apart],
             [0],
@@ -1027,7 +1030,7 @@ class TestStaticViasSplit:
         assert static
 
         for s in static:
-            alone = static_via_obstacles(
+            _, alone = split_via_obstacles(
                 snaps, via, lambda o, s=s: o.id == s.via.id, zones=apart.zones
             )
             assert alone is not None
@@ -1040,4 +1043,4 @@ class TestStaticViasSplit:
         snaps = slices(split_board("SIG"))
         via = via_of(snaps)
 
-        assert static_via_obstacles(snaps, via, lambda _: False) is None
+        assert split_via_obstacles(snaps, via, lambda _: False)[1] is None

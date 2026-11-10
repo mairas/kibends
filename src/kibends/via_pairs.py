@@ -2,10 +2,11 @@
 vias of two ground nets, give each other, summed over every pair in range.
 
 A ground via is on one of the run's ground nets, a regular one on any other
-net (`vias.ViaInput.ground`, `vias.StaticVia`). Two vias interact here only
-where their layer spans overlap, and each pair is counted from the side of
-each moving via in it, weighted by that via's diameter, as the optimizer's
-other via terms are; a via standing still has no side of its own.
+net (`vias.ViaInput.ground`, `vias.StaticVia`). Two vias interact here as
+`vias.pair_kind` says, only where their layer spans overlap, and each pair
+is counted from the side of each moving via in it, weighted by that via's
+diameter, as the optimizer's other via terms are; a via standing still has
+no side of its own.
 
 - A ground via and a regular one: the full obstacle term
   (`energy.obstacle_integrand`), repulsion and clearance hinge, at the
@@ -25,7 +26,7 @@ attraction, nearest-only repulsion has no neutral distance once anything
 else is nearer. The pairs of other nets are therefore left out of the optimizer's
 nearest-only via terms and out of a moving via's static field, which then
 holds none of the vias standing still that it pairs with
-(`obstacles.static_via_obstacles`). Clearance judging is unchanged: the
+(`obstacles.split_via_obstacles`). Clearance judging is unchanged: the
 pairs keep the distances `obstacles.via_via_inflation` gives.
 
 The problem's other vias are paired once, at setup, at the distances the
@@ -36,7 +37,6 @@ positions however far the vias move; the distance a moving via keeps from
 one is worked out the first time they meet.
 """
 
-import enum
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -58,37 +58,7 @@ from kibends.energy import (
 )
 from kibends.obstacles import via_via_inflation
 from kibends.snapshot import Via
-from kibends.vias import StaticVia, ViaInput
-
-
-class PairKind(enum.IntEnum):
-    """How two vias interact in the pairwise term."""
-
-    RETURN = 0
-    """A ground via and a regular one: attraction and the full obstacle
-    term."""
-    GROUNDS = 1
-    """Ground vias of two ground nets: the full obstacle term."""
-    SPREAD = 2
-    """Ground vias of one ground net: the repulsion alone, beyond their
-    rings and clearance."""
-
-
-def pair_kind(
-    via: Via, ground: bool, other: Via, other_ground: bool
-) -> PairKind | None:
-    """How `via` and `other`, each a ground via or not, interact in the
-    pairwise term; None if they do not."""
-    if not via.shares_layer(other):
-        return None
-    if via.net == other.net:
-        return PairKind.SPREAD if ground else None
-    if ground and other_ground:
-        return PairKind.GROUNDS
-    if ground or other_ground:
-        return PairKind.RETURN
-    return None
-
+from kibends.vias import PairKind, StaticVia, ViaInput, pair_kind
 
 _NO_PAIR = -1
 
