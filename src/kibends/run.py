@@ -5,7 +5,10 @@ it hands over; it prints nothing.
 
 `run_smooth` reads the board once, extracts the chains, and, if any
 selected via could have moved but stays fixed, extracts them again with
-that via's copper pinning. With `fixed_vias`, a via that carries no chain
+that via's copper pinning. Selected tracks that form no chain, a loop
+nothing of its net touches or a stray zero-length track, stay on the board
+as unselected copper, and the chains are extracted again with them
+pinning. With `fixed_vias`, a via that carries no chain
 end is dropped from the candidates before the board is read. When a
 selected via may move and attraction is on, it finds the ground nets,
 logs them and classes every via by them; with attraction off nothing is
@@ -33,6 +36,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
+from typing import NamedTuple
 
 import kipy
 import kipy.board
@@ -111,6 +115,7 @@ from kibends.vias import (
     StaticVia,
     ViaInput,
     carried_copper,
+    carried_ends,
     may_move,
     movable_vias,
     pairs_with,
@@ -396,7 +401,9 @@ def _read(
     # via carries and `movable_vias` look at.
     carried = carried_copper(
         may,
-        split_chains(kept, locked, lambda _l, _n: (), frame=frame)
+        split_chains(
+            kept, locked, lambda _l, _n: (), frame=frame, left_out=lambda _line: None
+        )
         if may and chained
         else [],
     )
@@ -413,12 +420,16 @@ def _read(
         carried=carried,
         every_copper_layer=bool(may),
     )
-    snapshots = {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
+    snapshots = _slices(whole, replaced)
     ground = _ground_nets(whole, ground_nets) if may and paired else frozenset[str]()
     # A moving via's copper must not hold the chains it carries where they
-    # leave it.
+    # leave it. Only the last extraction before the copper is final says what
+    # it leaves out.
+    notes: list[str] = []
     chains = (
-        _extract_chains(kept, locked, snapshots, candidates, frame) if chained else []
+        _extract_chains(kept, locked, snapshots, candidates, frame, notes.append)
+        if chained
+        else []
     )
     movable = movable_vias(
         judged,
@@ -435,8 +446,64 @@ def _read(
         )
     moving = {m.via.id for m in movable}
     if chained and moving != candidates:
-        chains = _extract_chains(kept, locked, snapshots, moving, frame)
+        notes = []
+        chains = _extract_chains(kept, locked, snapshots, moving, frame, notes.append)
+    chains, snapshots = _leave_out(
+        _Extracted(kept, locked, snapshots, chains, notes),
+        whole,
+        replaced,
+        moving,
+        frame,
+    )
+    # Extracting again may order the chains differently.
+    movable = [replace(m, ends=carried_ends(m.via, chains)) for m in movable]
     return _Read(selected, chains, snapshots, movable, frame, ground, selection.arcs)
+
+
+def _slices(
+    whole: BoardSnapshot, replaced: Collection[str]
+) -> dict[str, LayerSnapshot]:
+    """Each layer of `whole` without the tracks `replaced`."""
+    return {layer: whole.slice(layer, replaced) for layer in sorted(whole.layers)}
+
+
+class _Extracted(NamedTuple):
+    """An extraction: what it took and gave, and its lines on what it left
+    out."""
+
+    kept: Sequence[Segment]
+    locked: Sequence[Segment]
+    snapshots: dict[str, LayerSnapshot]
+    chains: list[Chain]
+    notes: Sequence[str]
+
+
+def _leave_out(
+    extracted: _Extracted,
+    whole: BoardSnapshot,
+    replaced: Collection[str],
+    moving: Collection[str],
+    frame: UserFrame,
+) -> tuple[list[Chain], dict[str, LayerSnapshot]]:
+    """The final chains and the layers they are extracted over. The selected
+    tracks no chain of `extracted` took are taken out of the `replaced`
+    ones and stay on the board as unselected copper, which pins and blocks
+    the chains as any other does, and the chains are extracted again; the
+    extraction's notes on them are logged."""
+    kept, locked, snapshots, chains, notes = extracted
+    left_out = {s.id for s in kept} - {i for c in chains for i in c.segment_ids}
+    if not left_out:
+        return chains, snapshots
+    for note in notes:
+        logger.debug(note)
+    still = [s for s in kept if s.id not in left_out]
+    snapshots = _slices(whole, {*replaced} - left_out)
+    if not still:
+        return [], snapshots
+    return (
+        _extract_chains(still, locked, snapshots, moving, frame, logger.debug),
+        snapshots,
+    )
 
 
 def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]:
@@ -769,10 +836,12 @@ def _extract_chains(
     snapshots: Mapping[str, LayerSnapshot],
     moving: Collection[str],
     frame: UserFrame,
+    left_out: Callable[[str], None],
 ) -> list[Chain]:
     """The chains of the selection split into `kept` and `locked`, held by
     the same-net copper of their layers but the vias `moving`: pinned where
-    it touches them, or, for pads and vias, kept by a vertex inside."""
+    it touches them, or, for pads and vias, kept by a vertex inside. Each
+    piece that forms no chain is said to `left_out`."""
 
     def copper(layer: str, net: str) -> list[SameNetCopper]:
         snapshot = snapshots[layer]
@@ -781,7 +850,7 @@ def _extract_chains(
             snapshot = replace(snapshot, vias=staying)
         return snapshot.same_net_copper(net)
 
-    return split_chains(kept, locked, copper, frame=frame)
+    return split_chains(kept, locked, copper, frame=frame, left_out=left_out)
 
 
 def _chain_inputs(

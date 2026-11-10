@@ -376,7 +376,7 @@ class LayerSnapshot:
 
     def same_net_copper(self, net: str) -> list[SameNetCopper]:
         """Pad and via outlines, as contacts, copper shape outlines and the
-        tracks of `net` on the layer.
+        tracks of `net` on the layer, a zero-length one as its point.
 
         This is what `extract_chain` pins the chain to, or, for the pads and
         vias, keeps one vertex of the chain inside, unless a vertex lies on
@@ -397,9 +397,21 @@ class LayerSnapshot:
                 for v in self.vias
                 if v.net == net
             ),
-            *(SameNetTrack(t.centreline, t.width) for t in self.tracks if t.net == net),
+            *(
+                SameNetTrack(_touching(t.centreline), t.width)
+                for t in self.tracks
+                if t.net == net
+            ),
             *(g.geometry for g in self.graphics if g.net == net),
         ]
+
+
+def _touching(centreline: LineString) -> LineString | Point:
+    """A track's centreline as copper it touches: a zero-length one is its
+    point, as shapely's empty-length line meets nothing."""
+    if centreline.length == 0.0:
+        return Point(centreline.coords[0])
+    return centreline
 
 
 @dataclass(frozen=True, eq=False)

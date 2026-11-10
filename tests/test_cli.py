@@ -60,7 +60,7 @@ from kibends.bursts import (
     OptimizerSettings,
     Revert,
 )
-from kibends.chain import NM_PER_MM
+from kibends.chain import NM_PER_MM, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import (
     EnergyParams,
@@ -967,32 +967,14 @@ class TestErrors:
         assert "no tracks that can be modified" in exit_message(log)
         assert board.calls == []
 
-    # A selected via that may move makes the run extract the chains once
-    # without pins first, to find the copper the via carries.
-    @pytest.mark.parametrize("with_via", [False, True], ids=["tracks", "via"])
-    def test_selection_that_is_no_chain(
-        self, connect: Connector, log: list[str], with_via: bool
+    def test_selection_of_only_zero_length_tracks(
+        self, connect: Connector, log: list[str]
     ) -> None:
-        tracks = [
-            kipy_track("a", "SIG", (0, 0), (9, 0)),
-            kipy_track("b", "SIG", (9, 0), (9, 3)),
-            kipy_track("c", "SIG", (9, 3), (0, 0)),
-        ]
-        vias = [kipy_via("v", "SIG", 9, 0)] if with_via else []
-        board = CommitBoard(
-            selection=[*tracks, *vias],
-            tracks=list(tracks),
-            vias=vias,
-            grid_origin=GRID_ORIGIN,
-        )
-        connect.to(board)
+        dots = [kipy_track("a", "SIG", (1, 1), (1, 1))]
+        board = connect.to(CommitBoard(selection=list(dots), tracks=list(dots)))
 
-        message = exit_message(log)
-
-        assert "selected tracks form a closed loop through (-1.000, -2.000) mm" in (
-            message
-        )
-        assert "ChainError" not in message
+        assert "no tracks of non-zero length" in exit_message(log)
+        assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_refused_create_exits_with_the_reason(
@@ -1622,6 +1604,261 @@ def test_an_equally_spaced_bus_gives_up(
 
     (outcome,) = capsys.readouterr().out.splitlines()
     assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} ")
+
+
+def triangle_loop(net: str = "SIG") -> list[kbt.Track]:
+    """A closed triangle through (0, 0), (9, 0) and (9, 3)."""
+    return [
+        kipy_track("a", net, (0, 0), (9, 0), width=WIDTH),
+        kipy_track("b", net, (9, 0), (9, 3), width=WIDTH),
+        kipy_track("c", net, (9, 3), (0, 0), width=WIDTH),
+    ]
+
+
+IN_TRIANGLE = (7.75, 1.25)
+"""Near the centre of the circle inside `triangle_loop`, 1.26 mm across."""
+
+
+def pad_box(x: float, y: float) -> BaseGeometry:
+    h = PAD_HALF_SIZE
+    return box(x - h, y - h, x + h, y + h)
+
+
+def created_path(board: CommitBoard) -> LineString:
+    """The created tracks merged into one line, which they must form."""
+    merged = linemerge([segment(t) for t in cast(list[kbt.Track], board.created)])
+    assert isinstance(merged, LineString)
+    return merged
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestLoopsAndDots:
+    # A selected via that may move makes the run extract the chains once
+    # without pins first, to find the copper the via carries.
+    @pytest.mark.parametrize(
+        ("held_by", "at"),
+        [
+            ([kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)], (0.0, 0.0)),
+            ([kipy_via("v", "SIG", 9, 0)], (9.0, 0.0)),
+            ([kipy_pad("corner", "SIG", 0, 0)], (0.0, 0.0)),
+        ],
+        ids=["track", "via", "pad"],
+    )
+    def test_a_loop_is_cut_where_its_net_touches_it_and_smoothed_round_a_pad(
+        self,
+        connect: Connector,
+        log: list[str],
+        held_by: list[kbt.BoardItem],
+        at: Point2,
+    ) -> None:
+        loop = triangle_loop()
+        vias = [v for v in held_by if isinstance(v, kbt.Via)]
+        board = connect.to(
+            CommitBoard(
+                selection=[*loop, *vias],
+                tracks=[*loop, *(t for t in held_by if isinstance(t, kbt.Track))],
+                vias=vias,
+                pads=[
+                    kipy_pad("pad", "GND", *IN_TRIANGLE),
+                    *(p for p in held_by if isinstance(p, kbt.Pad)),
+                ],
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c"]
+        path = created_path(board)
+        assert path.is_closed
+        assert at in path.coords[:]
+        pad = pad_box(*IN_TRIANGLE)
+        assert shapely.Polygon(path.coords).contains(pad)
+        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+        assert path.length < sum(segment(t).length for t in loop)
+        # Extractions before the via is judged fixed leave the loop out.
+        assert not any("Leaving out" in line for line in log)
+
+    def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
+        tracks = [
+            kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+            kipy_track("b", "SIG", (5, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 0), (7, 2), width=WIDTH),
+            kipy_track("d", "SIG", (7, 2), (5, 4), width=WIDTH),
+            kipy_track("e", "SIG", (5, 4), (3, 2), width=WIDTH),
+            kipy_track("f", "SIG", (3, 2), (5, 0), width=WIDTH),
+        ]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                pads=[kipy_pad("pad", "GND", 5, 2)],
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "d", "e", "f"]
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        (junction,) = [p for p, n in degree.items() if n == 4]
+        assert {p for p, n in degree.items() if n == 1} == {
+            (nm(0), nm(0)),
+            (nm(10), nm(0)),
+        }
+        assert set(degree.values()) == {1, 2, 4}
+        # The loop round the pad pulls the junction off the straight route.
+        assert junction[1] > nm(0.1)
+
+    @pytest.mark.parametrize("touched", [False, True], ids=["alone", "touched"])
+    def test_a_loop_closed_by_an_arc_is_smoothed_or_left_whole(
+        self, connect: Connector, touched: bool
+    ) -> None:
+        # The arc bulges below (0, 0)-(9, 0), round the pad of GND.
+        arc = kipy_arc("arc", "SIG", (0, 0), (4.5, 3), (9, 0), width=WIDTH)
+        back = kipy_track("back", "SIG", (9, 0), (0, 0), width=WIDTH)
+        touch = kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)
+        board = connect.to(
+            CommitBoard(
+                selection=[arc, back],
+                tracks=[arc, back, *([touch] if touched else [])],
+                pads=[kipy_pad("pad", "GND", 4.5, 1.5)],
+            )
+        )
+
+        run()
+
+        if not touched:
+            assert board.deleted == []
+            return
+        assert sorted(board.deleted) == ["arc", "back"]
+        path = created_path(board)
+        assert path.is_closed and (0.0, 0.0) in path.coords[:]
+        pad = pad_box(4.5, 1.5)
+        assert shapely.Polygon(path.coords).contains(pad)
+        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+
+    def test_a_loop_nothing_touches_stays_and_holds_the_others_clear(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("l1", "SIG2", (1.6, 1.2), (2.4, 1.2), width=WIDTH),
+            kipy_track("l2", "SIG2", (2.4, 1.2), (2.4, 2.0), width=WIDTH),
+            kipy_track("l3", "SIG2", (2.4, 2.0), (1.6, 2.0), width=WIDTH),
+            kipy_track("l4", "SIG2", (1.6, 2.0), (1.6, 1.2), width=WIDTH),
+        ]
+        tracks = [*l_chain(), *loop]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        created = cast(list[kbt.Track], board.created)
+        assert {t.net.name for t in created} == {"SIG"}
+        required = CLEARANCE + WIDTH
+        assert all(
+            segment(t).distance(segment(other)) >= required - NM_ROUNDING
+            for t in created
+            for other in loop
+        )
+        assert len(created) > 1
+
+    def test_a_zero_length_track_beside_a_chain_stays(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (8, 8), (8, 8), width=WIDTH)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        (left_out,) = [line for line in log if "Leaving out" in line]
+        assert left_out.startswith("DEBUG") and "dot" in left_out
+
+    def test_a_zero_length_track_on_a_chain_goes_with_it(
+        self, connect: Connector
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (4, 0), (4, 0), width=WIDTH)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "dot"]
+
+    def test_a_dot_of_another_width_left_out_pins_the_chain_it_lies_on(
+        self, connect: Connector
+    ) -> None:
+        dot = kipy_track("dot", "SIG", (2, 0), (2, 0), width=0.4)
+        board = l_board()
+        board.selection.append(dot)
+        board.tracks.append(dot)
+        connect.to(board)
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b"]
+        assert (nm(2), nm(0)) in ends(cast(list[kbt.Track], board.created))
+
+    @pytest.mark.parametrize("with_via", [False, True], ids=["alone", "via"])
+    def test_a_selection_of_only_an_untouched_loop_has_nothing_to_do(
+        self, connect: Connector, log: list[str], with_via: bool
+    ) -> None:
+        loop = triangle_loop()
+        vias = [kipy_via("v", "SIG", 20, 20)] if with_via else []
+        board = connect.to(
+            CommitBoard(selection=[*loop, *vias], tracks=list(loop), vias=vias)
+        )
+
+        run()
+
+        assert board.calls == []
+        assert any("INFO Nothing to do" in line for line in log)
+        (left_out,) = [line for line in log if "Leaving out" in line]
+        assert left_out.startswith("DEBUG") and "a, b, c" in left_out
+
+    def test_a_moving_via_carries_its_own_chain_after_a_loop_is_left_out(
+        self, connect: Connector
+    ) -> None:
+        # The square loop, which crosses B and which nothing of SIG touches
+        # at an end, stays as copper and pins B, which then sorts after A.
+        tracks = [
+            kipy_track("A", "SIG", (0, 0), (5, 5), width=WIDTH),
+            kipy_track("B", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("D", "SIG", (0, 0), (0, 5), width=WIDTH),
+            kipy_track("E", "SIG", (5, 5), (9, 9), width=WIDTH, layer=BL.BL_B_Cu),
+            kipy_track("l1", "SIG", (2, -1), (4, -1), width=WIDTH),
+            kipy_track("l2", "SIG", (4, -1), (4, 1), width=WIDTH),
+            kipy_track("l3", "SIG", (4, 1), (2, 1), width=WIDTH),
+            kipy_track("l4", "SIG", (2, 1), (2, -1), width=WIDTH),
+        ]
+        via = kipy_via("V", "SIG", 5, 5)
+        board = connect.to(
+            CommitBoard(
+                selection=[*tracks, via],
+                tracks=list(tracks),
+                vias=[via],
+                pads=[kipy_pad("g", "GND", 5.6, 4.4)],
+            )
+        )
+
+        run()
+
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert at != (nm(5), nm(5))
+        created = cast(list[kbt.Track], board.created[:-1])
+        assert at in ends(created_on(board, BL.BL_F_Cu))
+        assert at in ends(created_on(board, BL.BL_B_Cu))
+        assert (nm(10), nm(0)) in ends(created)
+        assert not {"l1", "l2", "l3", "l4"} & set(board.deleted)
 
 
 VIA = (4.0, 4.0)
