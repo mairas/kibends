@@ -100,14 +100,16 @@ What a burst checks
 A burst runs L-BFGS-B over every free vertex and moving via of the problem
 without bounds (`bursts.run_burst`), and the checks after it compare where
 the burst ends with where it started. An edge that starts clear of static
-copper, or of the other members as it sees them, and ends crossing it
-moves its free ends back to the burst's start, and the check repeats, as
-moving one member's vertex back can put another member's moved edge
-across it; moved back whole, every member is at its start, clear
-(`bursts.revert_until_clear`). A junction moves back when any of its
-branches' edges at it does. An edge that starts inside another member's
-clearance is not checked; the violation guard on the best state counts
-it.
+copper and ends crossing it moves its free ends back to the burst's start,
+and the check repeats, as moving one member's vertex back can put another
+member's moved edge across it; moved back whole, every member is at its
+start, clear (`bursts.revert_until_clear`). A junction moves back when any
+of its branches' edges at it does. The other members are judged track by
+track and via by via (`seen.EdgesClear.obstacle`): an edge that ends
+across one it did not cross at the start moves back, with the edge or via
+it entered, so that an edge across one member is still kept out of the
+others. An edge that stays across what it started across is not checked;
+the violation guard on the best state counts it.
 
 A section moves as its centreline and is seen as its two tracks, which
 the others' edge checks see where the burst leaves them; its own edges
@@ -126,21 +128,23 @@ by the via's nearest distance to each: its static copper
 ends inside its clearance of one it started the burst clear of, or deeper
 inside one than it started, moves back with the ends it carries, so that
 a via inside one, such as its own pair's section, is still kept out of
-the others. So does any via that ends deeper inside
-what only stops it than it started the burst and inside it: outside
-where its zones, taken together on each layer where one reaches the
-via's ring, connect it at the next refill (`obstacles.containment`), or
-inside its own net's stops (`ViaInput.stops`, its net's other vias). The
-two are measured apart, so that a via inside one cannot be pushed deeper
-into the other. On those layers its inflation also holds the zone's
+the others. What only stops it is judged the same way, part by part
+(`ViaInput.stop_parts`): outside where its zones, taken together on each
+layer where one reaches the via's ring, connect it at the next refill
+(`obstacles.containment`), its own net's stops, and each moving via of
+its net. On the zones' layers its inflation also holds the zone's
 clearance and margin, against static copper and members alike, so that
 the refill reaches the via wherever the others move. The chains a via
-carries are of its net, so it does not see them, nor they it.
+carries are of its net, so it does not see them, nor they it. Static
+copper and each part of the stops are each one obstacle, however many
+items they hold, so a via inside one item of static copper may move into
+another by as deep.
 
-A crossing between a via and a member or another via moves back both
-sides: a member or via that a via newly or more deeply enters moves back
-too, the member's edge nearest the via, and a moving via whose ring a
-member's edge newly enters moves back with that edge. A crossing whose
+A crossing between two members, a via and a member or two vias moves
+back both sides: a member or via that a via newly or more deeply enters
+moves back too, the member's edge nearest the via, and a member's edge or
+a moving via whose copper a member's edge newly enters moves back with
+that edge. A crossing whose
 moving sides are all back already, as some that start inside something
 can be, moves the whole burst back (`bursts.revert_until_clear`).
 
@@ -182,7 +186,6 @@ that is lower in energy than the inputs, from which a resumed run
 measures too, and ends abnormally if not.
 """
 
-import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -196,7 +199,6 @@ from kibends.bursts import (
     INSIDE_TOLERANCE,
     OptimizerSettings,
     Stop,
-    point_distance,
     revert_until_clear,
     run_burst,
 )
@@ -244,7 +246,7 @@ from kibends.results import (
     Termination,
     ViaResult,
 )
-from kibends.seen import NeighbourList, Seen, StaticList, ViaSight
+from kibends.seen import EdgesClear, NeighbourList, Seen, StaticList, ViaSight
 from kibends.via_moves import (
     FreeDistances,
     MovingVias,
@@ -1096,29 +1098,24 @@ class _Problem:
         seen: Seen,
     ) -> bool:
         """Whether no member has more violations than `allowed` and no via
-        is newly inside, or deeper inside, its clearance of any obstacle
-        than it started (`via_moves.newly_inside`), or deeper inside its
-        stops than it started and inside them. The two are measured apart,
-        so that a via inside one cannot be pushed deeper into the other.
-        `seen` is what the members see at `polylines`."""
-        return (
-            all(
-                count <= allowed
-                for count, allowed in zip(
-                    self.violations(polylines, masks, positions, seen),
-                    self.allowed,
-                    strict=True,
-                )
+        is newly inside, or deeper inside, its clearance of any obstacle or
+        any of its stops than it started (`via_moves.newly_inside`), each
+        judged apart, so that a via inside one cannot be pushed into
+        another. `seen` is what the members see at `polylines`."""
+        return all(
+            count <= allowed
+            for count, allowed in zip(
+                self.violations(polylines, masks, positions, seen),
+                self.allowed,
+                strict=True,
             )
-            and not any(
-                inside.any()
-                for inside in newly_inside(
-                    self.via_distances(polylines, positions),
-                    self.inside,
-                    INSIDE_TOLERANCE,
-                )
+        ) and not any(
+            inside.any()
+            for now, start in (
+                (self.via_distances(polylines, positions), self.inside),
+                (self.stop_distances(polylines, positions), self.stopped),
             )
-            and _no_deeper(self.stop_distances(polylines, positions), self.stopped)
+            for inside in newly_inside(now, start, INSIDE_TOLERANCE)
         )
 
     def violations(
@@ -1162,7 +1159,7 @@ class _Problem:
         members near it at `polylines` and the vias of other nets at
         `positions`. What only stops it is `stop_distances`."""
         return free_distances(
-            [via.given for via in self.vias],
+            [(via.given.copper,) for via in self.vias],
             self.via_sight,
             polylines,
             positions,
@@ -1170,18 +1167,21 @@ class _Problem:
         )
 
     def stop_distances(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[float]:
-        """Each moving via's distance, in order, to what only stops it: its
-        stops (`ViaInput.stops`) and the other vias of its net at
-        `positions`."""
-        near = self.via_stop.distances(polylines, positions, math.inf)
-        return [
-            float(d)
-            if via.given.stops is None
-            else min(point_distance(via.given.stops, at), float(d))
-            for via, at, d in zip(self.vias, positions, near, strict=True)
-        ]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        below: float = -INSIDE_TOLERANCE,
+    ) -> FreeDistances:
+        """Each moving via's distance to each of what only stops it: each
+        part of its stops (`ViaInput.stop_parts`), and each of the other
+        vias of its net at `positions` nearer than `below`."""
+        return free_distances(
+            [via.given.stop_parts for via in self.vias],
+            self.via_stop,
+            polylines,
+            positions,
+            below,
+        )
 
     def via_energy(
         self,
@@ -1567,6 +1567,9 @@ class _Problem:
             for body, s in zip(self.bodies, starts, strict=True)
         ]
         others_before = seen.segments_clear(starts, flat_start)
+        stride = int(seen.obstacle.max(initial=-1)) + 1
+        crossed_before = [_crossing_keys(edges, stride) for edges in others_before]
+        member_of, vertex_of = _shown_vertices(members, starts)
         # Only a vertex that newly leaves its contact moves back, so that
         # moving back always ends.
         left_before = [self.left(i, s) for i, s in enumerate(starts)]
@@ -1582,8 +1585,9 @@ class _Problem:
 
         def crossings(x: FloatArray) -> tuple[_Round, BoolArray]:
             """What `_Round` counts at `x`, and the coordinates of the
-            variables to move back. A crossing between a via and a member or
-            another via moves back what both its sides can move."""
+            variables to move back. A crossing between two members, a via
+            and a member or two vias moves back what both its sides can
+            move."""
             polylines, centres = layout.unflatten(x)
             flat = shown_flat(members, polylines, centres)
             back = np.zeros(count, dtype=bool)
@@ -1592,14 +1596,22 @@ class _Problem:
             others = seen.segments_clear(polylines, flat)
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
-                newly = others_before[i].clear & ~others[i].clear
+                edges = others[i]
+                new = ~np.isin(_crossing_keys(edges, stride), crossed_before[i])
+                newly = np.zeros(len(a), dtype=bool)
+                newly[edges.edge[new]] = True
                 crossing = (
                     static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
                 ) | newly
                 # A via's piece is its first vertex in `flat`.
-                entered = others[i].vertex[newly[others[i].edge]]
-                entered = entered[entered >= vias_from]
-                back[layout.via_index[(entered - vias_from) // 2]] = True
+                entered = edges.vertex[new]
+                via = entered >= vias_from
+                back[layout.via_index[(entered[via] - vias_from) // 2]] = True
+                for j, v in zip(
+                    member_of[entered[~via]], vertex_of[entered[~via]], strict=True
+                ):
+                    edge = index[int(j)][int(v) : int(v) + 2]
+                    back[edge[edge >= 0]] = True
                 ends = np.zeros(len(points), dtype=bool)
                 ends[:-1] |= crossing
                 ends[1:] |= crossing
@@ -1615,23 +1627,26 @@ class _Problem:
                     rejected += more
                 counts.append((rejected, close))
                 back[index[i][ends & free[i]]] = True
-            free_now = self.via_distances(polylines, centres)
-            static, inside = newly_inside(free_now, free_before, INSIDE_TOLERANCE)
-            judged = free_now.by_obstacle
-            for obstacle, vertex in zip(
-                judged.obstacle[inside], judged.vertex[inside], strict=True
+            entering = np.zeros(len(self.vias), dtype=bool)
+            for now, before in (
+                (self.via_distances(polylines, centres), free_before),
+                (self.stop_distances(polylines, centres), stopped_before),
             ):
-                if obstacle < len(members):
-                    edge = index[int(obstacle)][vertex : vertex + 2]
-                    back[edge[edge >= 0]] = True
-                else:
-                    back[layout.via_index[obstacle - len(members)]] = True
-            entering = static.copy()
-            entering[judged.via[inside]] = True
-            for k, stopped in enumerate(self.stop_distances(polylines, centres)):
-                if entering[k] or stopped < min(stopped_before[k], -INSIDE_TOLERANCE):
-                    back[layout.via_index[k]] = True
-                    via_counts[k] += 1
+                static, inside = newly_inside(now, before, INSIDE_TOLERANCE)
+                judged = now.by_obstacle
+                for obstacle, vertex in zip(
+                    judged.obstacle[inside], judged.vertex[inside], strict=True
+                ):
+                    if obstacle < len(members):
+                        edge = index[int(obstacle)][vertex : vertex + 2]
+                        back[edge[edge >= 0]] = True
+                    else:
+                        back[layout.via_index[obstacle - len(members)]] = True
+                entering |= static
+                entering[judged.via[inside]] = True
+            back[layout.via_index[entering]] = True
+            for k in np.flatnonzero(entering):
+                via_counts[k] += 1
             return _Round(counts, via_counts), np.repeat(back, 2)
 
         found: list[_Round] = []
@@ -1685,13 +1700,25 @@ def _description(layers: Sequence[str], vias: bool) -> str:
     return f"the chains and vias on {named}" if vias else f"the chains on {named}"
 
 
-def _no_deeper(distances: Sequence[float], starts: Sequence[float]) -> bool:
-    """Whether each of `distances` is no deeper inside than its start, and
-    inside."""
-    return all(
-        distance >= min(start, -INSIDE_TOLERANCE)
-        for distance, start in zip(distances, starts, strict=True)
-    )
+def _crossing_keys(edges: EdgesClear, stride: int) -> IntArray:
+    """Each (edge, obstacle) pair of `edges` as one number, the obstacles
+    numbered below `stride`."""
+    return edges.edge * stride + edges.obstacle
+
+
+def _shown_vertices(
+    members: Sequence[Member], polylines: Sequence[FloatArray]
+) -> tuple[IntArray, IntArray]:
+    """For each vertex the members at `polylines` show the others
+    (`members.shown_flat`), its member and its vertex there: a section's
+    tracks have a vertex for each of its centreline's."""
+    member: list[IntArray] = [np.empty(0, dtype=np.intp)]
+    vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
+    for i, (given, points) in enumerate(zip(members, polylines, strict=True)):
+        for _ in range(2 if isinstance(given, PairBlock) else 1):
+            member.append(np.full(len(points), i, dtype=np.intp))
+            vertex.append(np.arange(len(points), dtype=np.intp))
+    return np.concatenate(member), np.concatenate(vertex)
 
 
 def _one_net(via: _Via, other: _Via) -> bool:

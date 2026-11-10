@@ -113,11 +113,19 @@ class ViaInput:
     energy."""
 
     @cached_property
+    def stop_parts(self) -> tuple[ObstacleField | None, ObstacleField | None]:
+        """`stops` in its two parts, each None where it has none: the
+        outside of where its zones connect it, and `own_net`. The checks
+        judge them apart, so that a via inside one is still kept out of the
+        other."""
+        return containment(self.zones), self.own_net
+
+    @cached_property
     def stops(self) -> ObstacleField | None:
         """What stands still and only stops it, without repelling it: the
         outside of where its zones, taken together on each layer, connect it
         (`containment`) and `own_net`."""
-        parts = [f for f in (containment(self.zones), self.own_net) if f is not None]
+        parts = [f for f in self.stop_parts if f is not None]
         return CompositeField(parts) if parts else None
 
     @cached_property
