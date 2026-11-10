@@ -349,7 +349,10 @@ def run_smooth(
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
     if options.plot is not None:
-        _draw(options.plot, read, optimized, outcome)
+        if read.chains:
+            _draw(options.plot, read, optimized, outcome)
+        else:
+            logger.info("No plot: the selection has no chains to draw")
     on_optimized(
         OptimizerReport(
             outcome.reports,
@@ -386,15 +389,16 @@ def _read(
     replaced = {s.id for s in selected if not s.locked}
     may = [v for v in selection.vias if may_move(v)]
     kept, locked = split_locked(selected)
+    # Selected vias without tracks that can be modified leave no chains: only
+    # the stitching vias among them move.
+    chained = bool(kept) or not selection.vias
     # Pins never change a chain's order or ends, which is all the copper a
     # via carries and `movable_vias` look at.
-    carried = (
-        carried_copper(
-            may,
-            split_chains(kept, locked, lambda _l, _n: (), frame=frame),
-        )
-        if may
-        else {}
+    carried = carried_copper(
+        may,
+        split_chains(kept, locked, lambda _l, _n: (), frame=frame)
+        if may and chained
+        else [],
     )
     judged = list(selection.vias)
     if fixed_vias:
@@ -413,7 +417,9 @@ def _read(
     ground = _ground_nets(whole, ground_nets) if may and paired else frozenset[str]()
     # A moving via's copper must not hold the chains it carries where they
     # leave it.
-    chains = _extract_chains(kept, locked, snapshots, candidates, frame)
+    chains = (
+        _extract_chains(kept, locked, snapshots, candidates, frame) if chained else []
+    )
     movable = movable_vias(
         judged,
         whole.via_contacts,
@@ -428,7 +434,7 @@ def _read(
             movable, chains, pairs_among(chains, chord_tolerance), frame
         )
     moving = {m.via.id for m in movable}
-    if moving != candidates:
+    if chained and moving != candidates:
         chains = _extract_chains(kept, locked, snapshots, moving, frame)
     return _Read(selected, chains, snapshots, movable, frame, ground)
 

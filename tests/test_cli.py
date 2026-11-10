@@ -19,6 +19,7 @@ import shapely
 from conftest import (
     COMMIT_CALLS,
     PAD_HALF_SIZE,
+    RETURN_SIGNAL_VIA,
     RETURN_VIAS_APART,
     BurstClock,
     CommitBoard,
@@ -858,7 +859,7 @@ class TestErrors:
     def test_empty_selection(self, connect: Connector, log: list[str]) -> None:
         connect.to(CommitBoard())
 
-        assert "no tracks" in exit_message(log)
+        assert "no tracks or vias" in exit_message(log)
 
     def test_arc_in_selection(self, connect: Connector, log: list[str]) -> None:
         connect.to(CommitBoard(selection=[kipy_arc("arc")]))
@@ -2547,6 +2548,63 @@ class TestViaClasses:
         balanced, _, by_default = distances
         assert balanced == pytest.approx(neutral, abs=RETURN_SETTLED)
         assert RETURN_VIAS_APART - NM_ROUNDING <= by_default < neutral - RETURN_SETTLED
+
+    @pytest.mark.parametrize("locked", [False, True], ids=["alone", "locked tracks"])
+    def test_a_stitching_via_selected_without_tracks_moves(
+        self,
+        connect: Connector,
+        coarse_optimizer: None,
+        reports: list[pipeline.RunReport],
+        locked: bool,
+    ) -> None:
+        # The stitching via 2.5 mm across the route from the SIG via, which
+        # stays with its unselected tracks; with them selected but locked,
+        # they hold it as well.
+        board = return_via_board((5.0, 2.5), stitching=True)
+        route = [t for t in board.tracks if t.net.name == "SIG"]
+        for track in route:
+            track.locked = locked
+        stitching = [v for v in board.vias if v.id.value == "g"]
+        board.selection = [*(route if locked else []), *stitching]
+        connect.to(board)
+
+        run("--dry-run")
+
+        (via,) = reports[-1].vias
+        assert via.moved
+        assert math.dist(via.end, RETURN_SIGNAL_VIA) < math.dist(
+            via.start, RETURN_SIGNAL_VIA
+        )
+        assert reports[-1].chains == ()
+
+    def test_fixed_vias_hold_a_stitching_via_selected_without_tracks(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = return_via_board((5.0, 2.5), stitching=True)
+        board.selection = [v for v in board.vias if v.id.value == "g"]
+        connect.to(board)
+
+        run("--dry-run", "--fixed-vias")
+
+        assert not any(v.moved for v in reports[-1].vias)
+
+    def test_a_selection_without_tracks_draws_no_plot(
+        self,
+        connect: Connector,
+        coarse_optimizer: None,
+        reports: list[pipeline.RunReport],
+        tmp_path: Path,
+    ) -> None:
+        board = return_via_board((5.0, 2.5), stitching=True)
+        board.selection = [v for v in board.vias if v.id.value == "g"]
+        connect.to(board)
+        figure = tmp_path / "vias.png"
+
+        run("--dry-run", f"--plot={figure}")
+
+        (via,) = reports[-1].vias
+        assert via.moved
+        assert not figure.exists()
 
     @pytest.mark.parametrize(
         "args", [("--attraction=-0.1",), ("--attraction-range=0",)]

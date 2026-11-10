@@ -553,8 +553,8 @@ class BoardSnapshot:
 
 
 def read_selection(board: kipy.board.Board) -> Selection:
-    """The selected straight tracks and vias; arcs are refused, anything else
-    ignored."""
+    """The selected straight tracks and vias, either of which may be absent;
+    arcs are refused, anything else ignored."""
     items = board.get_selection()
     arcs = [i for i in items if isinstance(i, kbt.ArcTrack)]
     if arcs:
@@ -564,8 +564,8 @@ def read_selection(board: kipy.board.Board) -> Selection:
         )
     tracks = [i for i in items if isinstance(i, kbt.Track)]
     vias = [i for i in items if isinstance(i, kbt.Via)]
-    if not tracks:
-        raise SelectionError("selection has no tracks")
+    if not tracks and not vias:
+        raise SelectionError("selection has no tracks or vias")
     return Selection(
         [segment_from_track(t) for t in tracks], tuple(map(via_from_kipy, vias))
     )
