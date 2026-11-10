@@ -36,6 +36,7 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import pairwise
 from typing import NamedTuple
 
 import kipy.board
@@ -68,6 +69,7 @@ from shapely.ops import polygonize, unary_union
 from kibends.chain import (
     NM_PER_MM,
     Contact,
+    NmPoint,
     Point2,
     SameNetCopper,
     SameNetTrack,
@@ -292,10 +294,42 @@ class GroundNets(NamedTuple):
 
 
 @dataclass(frozen=True)
+class Arc:
+    """A selected arc track as read, in integer nanometres."""
+
+    id: str
+    start: NmPoint
+    mid: NmPoint
+    end: NmPoint
+    width: int
+    layer: str
+    net: str
+    locked: bool = False
+
+    def segments(self) -> list[Segment]:
+        """Straight segments along the arc, as `arc_points` tessellates it,
+        each with the arc's id: its two ends exact, the points between on
+        KiCad's nanometre grid."""
+        # arc_points works in any unit; in nanometres the points between
+        # need only rounding.
+        between = [
+            (round(x), round(y))
+            for x, y in arc_points(self.start, self.mid, self.end)[1:-1]
+        ]
+        path = [self.start, *between, self.end]
+        return [
+            Segment(self.id, a, b, self.width, self.layer, self.net, self.locked)
+            for a, b in pairwise(path)
+        ]
+
+
+@dataclass(frozen=True)
 class Selection:
     segments: list[Segment]
-    """The selected straight tracks."""
+    """The selected straight tracks and the segments of the selected arcs."""
     vias: tuple[Via, ...]
+    arcs: tuple[Arc, ...]
+    """The selected arcs as read, for the commit to compare."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -553,22 +587,22 @@ class BoardSnapshot:
 
 
 def read_selection(board: kipy.board.Board) -> Selection:
-    """The selected straight tracks and vias, either of which may be absent;
-    arcs are refused, anything else ignored."""
+    """The selected tracks and vias, either of which may be absent, anything
+    else ignored. An arc becomes the straight segments of `Arc.segments`,
+    which chain extraction treats as one track split into several edges."""
     items = board.get_selection()
-    arcs = [i for i in items if isinstance(i, kbt.ArcTrack)]
-    if arcs:
-        ids = ", ".join(a.id.value for a in arcs)
-        raise SelectionError(
-            f"selection contains arc tracks, which kibends does not modify: {ids}"
-        )
-    tracks = [i for i in items if isinstance(i, kbt.Track)]
+    segments: list[Segment] = []
+    arcs: list[Arc] = []
+    for item in items:
+        if isinstance(item, kbt.Track):
+            segments.append(segment_from_track(item))
+        elif isinstance(item, kbt.ArcTrack):
+            arcs.append(arc_from_kipy(item))
+            segments += arcs[-1].segments()
     vias = [i for i in items if isinstance(i, kbt.Via)]
-    if not tracks and not vias:
+    if not segments and not vias:
         raise SelectionError("selection has no tracks or vias")
-    return Selection(
-        [segment_from_track(t) for t in tracks], tuple(map(via_from_kipy, vias))
-    )
+    return Selection(segments, tuple(map(via_from_kipy, vias)), tuple(arcs))
 
 
 def read_user_frame(board: kipy.board.Board) -> UserFrame:
@@ -585,6 +619,19 @@ def segment_from_track(t: kbt.Track) -> Segment:
         layer=canonical_name(t.layer),
         net=t.net.name,
         locked=t.locked,
+    )
+
+
+def arc_from_kipy(a: kbt.ArcTrack) -> Arc:
+    return Arc(
+        id=a.id.value,
+        start=(a.start.x, a.start.y),
+        mid=(a.mid.x, a.mid.y),
+        end=(a.end.x, a.end.y),
+        width=a.width,
+        layer=canonical_name(a.layer),
+        net=a.net.name,
+        locked=a.locked,
     )
 
 

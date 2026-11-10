@@ -194,7 +194,8 @@ def split_locked(
     locked = [s for s in segments if s.locked]
     if locked:
         logger.warning(
-            "Leaving locked segments untouched: {}", ", ".join(s.id for s in locked)
+            "Leaving locked segments untouched: {}",
+            ", ".join(dict.fromkeys(s.id for s in locked)),
         )
     return [s for s in segments if not s.locked], locked
 

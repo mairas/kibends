@@ -920,11 +920,6 @@ class TestErrors:
 
         assert "no tracks or vias" in exit_message(log)
 
-    def test_arc_in_selection(self, connect: Connector, log: list[str]) -> None:
-        connect.to(CommitBoard(selection=[kipy_arc("arc")]))
-
-        assert "arc" in exit_message(log)
-
     def test_selection_of_only_locked_tracks(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -1060,6 +1055,177 @@ class TestFailureAfterOptimizing:
 
         assert "may have landed" in error
         self.assert_reported_before(error, log, capsys)
+
+
+ARC_MID = (5 + 5 * math.sqrt(0.5), 5 - 5 * math.sqrt(0.5))
+"""On the 90° arc from (5, 0) to (10, 5) around (5, 5)."""
+
+
+def quarter_arc(
+    net: str = "SIG", *, locked: bool = False, down: float = 0.0
+) -> kbt.ArcTrack:
+    """The arc of ARC_MID, `down` mm lower."""
+    return kipy_arc(
+        "arc",
+        net,
+        start=(5, down),
+        mid=(ARC_MID[0], ARC_MID[1] + down),
+        end=(10, 5 + down),
+        width=WIDTH,
+        locked=locked,
+    )
+
+
+def selected(*tracks: kbt.Track | kbt.ArcTrack) -> CommitBoard:
+    return CommitBoard(selection=list(tracks), tracks=list(tracks))
+
+
+def track_arc_track(
+    net: str = "SIG", down: float = 0.0
+) -> list[kbt.Track | kbt.ArcTrack]:
+    """A track, a 90° arc and a track, from (0, 0) to (10, 10), `down` mm
+    lower."""
+    return [
+        kipy_track("in", net, (0, down), (5, down), width=WIDTH),
+        quarter_arc(net, down=down),
+        kipy_track("out", net, (10, 5 + down), (10, 10 + down), width=WIDTH),
+    ]
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestArcs:
+    def test_track_arc_and_track_become_straight_tracks_in_one_commit(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(selected(*track_arc_track()))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert sorted(board.deleted) == ["arc", "in", "out"]
+        assert board.created and all(type(t) is kbt.Track for t in board.created)
+        (report,) = reports
+        assert [c.tracks for c in report.chains] == [3]
+
+    def test_dry_run_with_an_arc_ends_without_an_error(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(selected(*track_arc_track()))
+
+        run("--dry-run")
+
+        assert board.calls == []
+        (report,) = reports
+        assert [c.changed for c in report.chains] == [True]
+
+    def test_arc_alone_becomes_one_straight_track(self, connect: Connector) -> None:
+        board = connect.to(selected(quarter_arc()))
+
+        run()
+
+        assert board.deleted == ["arc"]
+        (track,) = cast(list[kbt.Track], board.created)
+        assert ends([track]) == {(nm(5), nm(0)), (nm(10), nm(5))}
+
+    def test_locked_arc_stays_and_holds_the_chains_at_its_ends(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(
+            selected(
+                kipy_track("a1", "SIG", (0, 3), (0, 0), width=WIDTH),
+                kipy_track("a2", "SIG", (0, 0), (5, 0), width=WIDTH),
+                quarter_arc(locked=True),
+                kipy_track("c1", "SIG", (10, 5), (10, 10), width=WIDTH),
+                kipy_track("c2", "SIG", (10, 10), (15, 10), width=WIDTH),
+            )
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a1", "a2", "c1", "c2"]
+        created = cast(list[kbt.Track], board.created)
+        assert {(nm(5), nm(0)), (nm(10), nm(5))} <= ends(created)
+        (report,) = reports
+        assert [c.changed for c in report.chains] == [True, True]
+
+    def test_chain_with_an_arc_left_as_it_was_is_not_committed(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        board = connect.to(selected(*l_chain(), *track_arc_track("SIG2", down=20)))
+        real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
+
+        def arc_chain_as_given(
+            chains: Sequence[ChainInput], *args: object, **kwargs: object
+        ) -> list[FloatArray]:
+            return [
+                c.centreline.points if c.centreline.net == "SIG2" else s
+                for c, s in zip(chains, real(chains, *args, **kwargs), strict=True)
+            ]
+
+        monkeypatch.setattr(pipeline, "simplify_chains", arc_chain_as_given)
+
+        run()
+
+        assert sorted(board.deleted) == list(OUTER)
+        created = cast(list[kbt.Track], board.created)
+        assert {t.net.name for t in created} == {"SIG"}
+        (report,) = reports
+        assert [c.changed for c in report.chains] == [True, False]
+
+    def test_arc_split_at_a_tee_is_replaced_whole_when_one_side_changes(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 2° past the vertex at the arc's middle, partway along a piece.
+        angle = math.radians(-45 + 2)
+        on_arc = (5 + 5 * math.cos(angle), 5 + 5 * math.sin(angle))
+        tee = kipy_track("tee", "SIG", (12, -2), on_arc, width=WIDTH)
+        board = connect.to(selected(*track_arc_track(), tee))
+        real: Callable[..., list[FloatArray]] = pipeline.simplify_chains
+
+        def out_side_as_given(
+            chains: Sequence[ChainInput], *args: object, **kwargs: object
+        ) -> list[FloatArray]:
+            given = [c.centreline.points for c in chains]
+            return [
+                points if (10, 10) in (tuple(points[0]), tuple(points[-1])) else s
+                for points, s in zip(given, real(chains, *args, **kwargs), strict=True)
+            ]
+
+        monkeypatch.setattr(pipeline, "simplify_chains", out_side_as_given)
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert board.deleted.count("arc") == 1
+        assert {"in", "out"} <= set(board.deleted)
+        created = cast(list[kbt.Track], board.created)
+        assert {(nm(0), nm(0)), (nm(10), nm(5)), (nm(10), nm(10))} <= ends(created)
+
+    def test_moving_via_carries_the_end_of_an_arc(self, connect: Connector) -> None:
+        arc = kipy_arc(
+            "arc",
+            start=(0, 0),
+            mid=(4 * math.sqrt(0.5), 4 - 4 * math.sqrt(0.5)),
+            end=VIA,
+            width=WIDTH,
+        )
+        route = [arc, *detour_back()]
+        via = kipy_via("v", "SIG", *VIA)
+        board = connect.to(
+            CommitBoard(selection=[*route, via], tracks=list(route), vias=[via])
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["arc", "e", "f", "v"]
+        (moved_via,) = created_vias(board)
+        moved = (moved_via.position.x, moved_via.position.y)
+        assert moved != VIA_NM
+        assert moved in ends(created_on(board, BL.BL_F_Cu))
+        assert moved in ends(created_on(board, BL.BL_B_Cu))
 
 
 INNER_OFFSET = 0.6

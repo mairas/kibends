@@ -133,15 +133,25 @@ def kipy_track(
     return t
 
 
-def kipy_arc(track_id: str, net: str = "SIG") -> kbt.ArcTrack:
+def kipy_arc(
+    track_id: str,
+    net: str = "SIG",
+    start: tuple[float, float] = (0, 0),
+    mid: tuple[float, float] = (1, 1),
+    end: tuple[float, float] = (2, 0),
+    width: float = 0.25,
+    layer: BL.ValueType = BL.BL_F_Cu,
+    locked: bool = False,
+) -> kbt.ArcTrack:
     a = kbt.ArcTrack()
     a.proto.id.value = track_id
     a.net = kbt.Net(name=net)
-    a.start = vec(0, 0)
-    a.mid = vec(1, 1)
-    a.end = vec(2, 0)
-    a.width = nm(0.25)
-    a.layer = BL.BL_F_Cu
+    a.start = vec(*start)
+    a.mid = vec(*mid)
+    a.end = vec(*end)
+    a.width = nm(width)
+    a.layer = layer
+    a.locked = locked
     return a
 
 
