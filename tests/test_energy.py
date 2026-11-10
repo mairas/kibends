@@ -9,6 +9,7 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     TermValue,
+    attraction_integrand,
     bend_radius_energy,
     clearance_energy,
     length_energy,
@@ -381,3 +382,68 @@ class TestShortEdgeBarrier:
         fixed = free(len(points))
         fixed[[4, 5]] = True
         assert short_edge_barrier(points, fixed)[0] == 0.0
+
+
+ATTRACTION = 0.3
+ATTRACTION_RANGE = 3.0
+LIMIT = 0.8
+"""A pair's limit distance r_min, mm."""
+ATTRACTING = EnergyParams(
+    repulsion=0.7,
+    falloff_range=FALLOFF_RANGE,
+    clearance_weight=50.0,
+    standoff=STANDOFF,
+    points_per_edge=POINTS_PER_EDGE,
+    attraction=ATTRACTION,
+    attraction_range=ATTRACTION_RANGE,
+)
+
+
+def attraction(r: float, limit: float = LIMIT) -> tuple[float, float]:
+    value, slope = attraction_integrand(ATTRACTING)(np.array([r]), np.array([limit]))
+    return float(value[0]), float(slope[0])
+
+
+class TestAttraction:
+    def test_is_the_shifted_force_form_between_the_limit_and_the_range(
+        self,
+    ) -> None:
+        w, cutoff = ATTRACTION, ATTRACTION_RANGE
+        for r in (LIMIT, 1.2, 2.5):
+            value, slope = attraction(r)
+            assert value == pytest.approx(
+                -w * (1 / r - 1 / cutoff) - w * (r - cutoff) / cutoff**2
+            )
+            assert slope == pytest.approx(w * (1 / r**2 - 1 / cutoff**2))
+            # Its slope is positive: it pulls the pair together.
+            assert value < 0.0 < slope
+
+    def test_value_and_slope_vanish_at_the_range_and_beyond(self) -> None:
+        near, near_slope = attraction(ATTRACTION_RANGE - 1e-4)
+        assert abs(near) < 1e-8
+        assert near_slope < 1e-4
+        for r in (ATTRACTION_RANGE, ATTRACTION_RANGE + 0.5, 100.0):
+            assert attraction(r) == (0.0, 0.0)
+
+    def test_continues_linearly_inside_the_limit(self) -> None:
+        at_limit, limit_slope = attraction(LIMIT)
+        for r in (LIMIT - 0.1, 0.2, 0.0):
+            value, slope = attraction(r)
+            assert slope == pytest.approx(limit_slope)
+            assert value == pytest.approx(at_limit + limit_slope * (r - LIMIT))
+
+    def test_slope_is_the_derivative_of_the_value(self) -> None:
+        for r in (0.3, LIMIT + 0.01, 1.7, ATTRACTION_RANGE - 0.01):
+            numeric = (attraction(r + FD_STEP)[0] - attraction(r - FD_STEP)[0]) / (
+                2 * FD_STEP
+            )
+            assert attraction(r)[1] == pytest.approx(numeric, rel=1e-6)
+
+    def test_a_limit_beyond_the_range_attracts_nowhere(self) -> None:
+        for r in (0.5, 3.5, 5.0):
+            assert attraction(r, limit=ATTRACTION_RANGE + 1.0) == (0.0, 0.0)
+
+    def test_without_weight_it_is_zero(self) -> None:
+        off = attraction_integrand(PARAMS)(np.array([0.5, 1.0]), np.array([LIMIT] * 2))
+        np.testing.assert_array_equal(off[0], 0.0)
+        np.testing.assert_array_equal(off[1], 0.0)
