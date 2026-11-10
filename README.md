@@ -305,15 +305,14 @@ or not, but two vias interact only where they share a layer.
 A ground via and a regular via within `--attraction-range` of each other,
 centre to centre, pull each other, and the pulls of all such vias add up.
 Each still keeps its clearance from the other and is repelled by it as by
-other copper, and the push and the pull balance at a neutral distance. With
-the defaults, two 0.6 mm vias with 0.2 mm clearance settle about 1.6 mm
-apart, centre to centre, and two 0.4 mm vias with a 0.2 mm drill and
-0.1 mm clearance about 1.25 mm apart. At the clearance the push is the stronger, so the pull alone
-never brings a pair onto it; with `--repulsion 0` nothing pushes, and the
-pull brings a pair to its clearance unless something else, such as a via's
-tracks, holds it apart. A signal via whose route runs straight through it
-slides along the route toward its return via, which costs its tracks no
-length.
+other copper. A via's tracks and the copper around it hold it well beyond
+its clearance: with the defaults, a signal via on a straight route with a
+return via 1.5 mm across it moves about 0.13 mm off the route toward it,
+ending about 1.37 mm from it, and the route grows by a few micrometres. A
+pair with nothing else near settles about 0.02 mm beyond its clearance,
+since the default pull is the stronger at every distance past it; a lower
+`--attraction`, such as 0.25, balances the two farther out, two 0.6 mm
+vias with 0.2 mm clearance about 1.6 mm apart, centre to centre.
 
 Ground vias of one net push each other apart within `--range` beyond their
 rings and the clearance, so that stitching vias drawn toward a signal via
@@ -324,7 +323,7 @@ zones they connect to let them. Ground vias of two ground nets keep their
 clearance and repel each other as other copper does.
 
 A selected grid of ground stitching vias that moving signal vias pass
-through can take up to about five times as many iterations to settle as
+through can take up to about seven times as many iterations to settle as
 with `--attraction 0`, as the vias creep toward their balance, and the
 chains on their layers wait for them, since moving vias tie those layers
 into one problem. Leave the stitching vias out of the selection, lock
@@ -340,7 +339,7 @@ ground net leave each other alone, as vias of any other net do.
 |---|---|---|
 | `--repulsion WEIGHT` | 0.5 | Weight of keeping away from other copper, relative to length. 0 disables it, so the track pulls tight against obstacles at exactly the clearance. |
 | `--range MM` | 1.0 | Distance beyond the required clearance at which repulsion fades to zero. Copper further away has no effect. |
-| `--attraction WEIGHT` | 0.25 | Weight of ground vias and regular vias pulling each other, relative to length (see [Return vias](#return-vias)). More weight moves the vias farther toward each other against the copper around them, though the neutral distance of a pair barely changes. 0 turns the pull and the push between vias of one ground net off, and `--ground-nets` is then ignored. |
+| `--attraction WEIGHT` | 1.15 | Weight of ground vias and regular vias pulling each other, relative to length (see [Return vias](#return-vias)). More weight moves the vias farther toward each other against the copper and tracks around them. 0 turns the pull and the push between vias of one ground net off, and `--ground-nets` is then ignored. |
 | `--attraction-range MM` | 3.0 | Centre distance at which the pull between a ground via and a regular via fades to zero. |
 | `--ground-nets NET ...` | detected | The ground nets, instead of the nets with copper zones on at least two inner layers, or `GND`. |
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |

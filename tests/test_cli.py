@@ -60,8 +60,6 @@ from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import (
     EnergyParams,
     FloatArray,
-    attraction_integrand,
-    repulsion_integrand,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
@@ -125,11 +123,20 @@ COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 KEPT = 1e-3
 """mm a chain's length may rise by between runs, as repulsion trades it."""
-# The runs of `return_via_board` here end 0.0005 to 0.004 mm from it; the
-# rest is platform slack.
+# The runs of `return_via_board` with `BALANCED` here end 0.0005 to
+# 0.004 mm from the neutral distance; the rest is platform slack.
 RETURN_SETTLED = 0.02
 """How near its neutral distance a SIG via and its return via settle under
 COARSE, mm."""
+BALANCED = "--attraction=0.25"
+"""The argument for a weight whose pull stays below the push beyond the
+clearance and standoff of `return_via_board`'s vias, so that they balance
+about 1.58 mm apart; the default pulls harder."""
+# The default's runs of `return_via_board` here end 0.0065 mm shorter to
+# 0.0033 mm longer than without attraction; the rest is platform slack.
+RETURN_TRADED = 0.01
+"""mm the default's pull may lengthen `return_via_board`'s route by, against
+the run without attraction."""
 
 
 def path_length(points: FloatArray) -> float:
@@ -2506,26 +2513,12 @@ class TestViaClasses:
         assert params.attraction > 0.0
         assert params.attraction_range > 0.0
 
-    def test_by_default_the_pull_is_weaker_than_the_push_at_a_small_limit(
-        self,
-    ) -> None:
-        # The rings and clearance of two 0.4 mm vias with 0.1 mm clearance,
-        # which a drill only widens; the pull stays below three quarters of
-        # the push, leaving at least a quarter for the pull of farther vias.
-        limit = np.array([0.5])
-        params = cli.smooth_options(cli.parse_args(["smooth"])).params
-
-        _, pull = attraction_integrand(params)(limit, limit)
-        _, push = repulsion_integrand(params)(np.zeros(1))
-
-        assert pull[0] < 0.75 * -push[0]
-
     @pytest.mark.parametrize(
         ("ground", "stitching"),
         [((5.0, 1.5), False), ((6.06, 1.06), False), ((5.0, 2.5), True)],
         ids=["across", "diagonal", "stitching"],
     )
-    def test_a_return_via_settles_at_the_neutral_distance_with_chains_as_short(
+    def test_a_return_via_settles_at_the_neutral_distance_and_nearer_by_default(
         self,
         connect: Connector,
         coarse_optimizer: None,
@@ -2535,20 +2528,25 @@ class TestViaClasses:
     ) -> None:
         # An unselected GND via 1.5 mm across the route from the via or
         # diagonally beside it, or a stitching via 2.5 mm across it, which
-        # moves too.
+        # moves too. The default pulls the vias nearer than the balance,
+        # trading some chain length for it.
         lengths: list[float] = []
-        for args in ((), ("--attraction=0",)):
+        distances: list[float] = []
+        for args in ((BALANCED,), ("--attraction=0",), ()):
             connect.to(return_via_board(ground, stitching=stitching))
             run("--dry-run", *args)
             lengths.append(sum(c.after.length for c in reports[-1].chains))
+            ends = {v.id: v.end for v in reports[-1].vias}
+            distances.append(math.dist(ends["v"], ends.get("g", ground)))
 
-        pulled, alone = lengths
+        pulled, alone, defaulted = lengths
         assert pulled <= alone + KEPT
-        ends = {v.id: v.end for v in reports[0].vias}
-        params = cli.smooth_options(cli.parse_args(["smooth"])).params
+        assert defaulted <= alone + RETURN_TRADED
+        params = cli.smooth_options(cli.parse_args(["smooth", BALANCED])).params
         neutral = neutral_distance(params, RETURN_VIAS_APART)
-        distance = math.dist(ends["v"], ends.get("g", ground))
-        assert distance == pytest.approx(neutral, abs=RETURN_SETTLED)
+        balanced, _, by_default = distances
+        assert balanced == pytest.approx(neutral, abs=RETURN_SETTLED)
+        assert RETURN_VIAS_APART - NM_ROUNDING <= by_default < neutral - RETURN_SETTLED
 
     @pytest.mark.parametrize(
         "args", [("--attraction=-0.1",), ("--attraction-range=0",)]

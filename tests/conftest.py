@@ -736,4 +736,4 @@ def neutral_distance(params: EnergyParams, apart: float) -> float:
         pull = attraction(np.array([r]), np.array([apart]))[1]
         return float(push[0] + pull[0])
 
-    return float(brentq(slope, apart + params.standoff, apart + params.falloff_range))
+    return float(brentq(slope, apart, apart + params.falloff_range))
