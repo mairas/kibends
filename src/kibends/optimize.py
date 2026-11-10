@@ -1341,8 +1341,10 @@ class _Problem:
 
         Logs at DEBUG what the burst cost: L-BFGS-B's iterations and energy
         evaluations, the seconds those evaluations took and the seconds of
-        the rest of the step, by the process's clock and not the run's, and
-        what L-BFGS-B says ended it."""
+        the rest of the step, and what L-BFGS-B says ended it. The seconds
+        are wall time by `time.perf_counter`, not by the run's clock. The
+        rest includes L-BFGS-B's own work and the after-burst check, which
+        the benchmark's "outside L-BFGS-B" splits differently."""
         began = time.perf_counter()
         settings = self.settings
         # The change counts from the shapes as given, so that resampling the
