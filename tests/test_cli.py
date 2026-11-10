@@ -2531,6 +2531,41 @@ class TestMovingVias:
         for width in (WIDE, NARROW):
             assert at in ends([t for t in created if t.width == nm(width)])
 
+    @pytest.mark.parametrize(
+        "via_type", [ViaType.VT_BLIND, ViaType.VT_MICRO], ids=["blind", "micro"]
+    )
+    def test_a_blind_or_micro_via_moves_keeping_its_type_and_span(
+        self, connect: Connector, log: list[str], via_type: ViaType.ValueType
+    ) -> None:
+        # Across its way on B.Cu, which it does not reach, lies a GND track
+        # that would hold a through via 2 mm short of where it goes.
+        inner = [
+            kipy_track("e", "SIG", VIA, (8, 4), width=WIDTH, layer=BL.BL_In1_Cu),
+            kipy_track("f", "SIG", (8, 4), (8, 0), width=WIDTH, layer=BL.BL_In1_Cu),
+        ]
+        across = kipy_track("g", "GND", (0, 2), (8, 2), width=WIDTH, layer=BL.BL_B_Cu)
+        span = (BL.BL_F_Cu, BL.BL_In1_Cu)
+        via = kipy_via("v", "SIG", *VIA, via_type=via_type, span=span)
+        route = [*l_chain(), *inner]
+        board = CommitBoard(
+            selection=[*route, via], tracks=[*route, across], vias=[via]
+        )
+        board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+        connect.to(board)
+
+        run()
+
+        assert "stays fixed" not in "".join(log)
+        assert sorted(board.deleted) == ["a", "b", "e", "f", "v"]
+        (moved,) = created_vias(board)
+        assert moved.type == via_type
+        drill = moved.padstack.drill
+        assert (drill.start_layer, drill.end_layer) == span
+        at = (moved.position.x, moved.position.y)
+        assert at[1] < nm(1)
+        assert at in ends(created_on(board, BL.BL_F_Cu))
+        assert at in ends(created_on(board, BL.BL_In1_Cu))
+
     def test_a_stitching_via_the_chain_crowds_moves_in_the_same_commit(
         self, connect: Connector, log: list[str]
     ) -> None:
