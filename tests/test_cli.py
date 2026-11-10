@@ -1761,11 +1761,20 @@ class TestMovingVias:
         assert via.position.y / 1e6 < PUSHED_STITCHING[1] - 0.05
 
     @pytest.mark.parametrize("still", ["unselected", "locked"])
-    def test_a_via_of_its_net_that_stands_still_does_not_push_it(
-        self, connect: Connector, log: list[str], still: str
+    @pytest.mark.parametrize(
+        ("args", "pushed"), [(("--attraction=0",), False), ((), True)]
+    )
+    def test_a_ground_via_of_its_net_that_stands_still_pushes_it_with_attraction(
+        self,
+        connect: Connector,
+        log: list[str],
+        still: str,
+        args: tuple[str, ...],
+        pushed: bool,
     ) -> None:
         # Within range of the stitching via, beyond their touching distance;
-        # nothing else is in range.
+        # nothing else is in range. Without attraction, vias of one net only
+        # keep hole-to-hole; with it, ground vias of one net also repel.
         start = (2.0, 3.0)
         straight = [kipy_track("a", "SIG", (0, 0), (4, 0), width=WIDTH)]
         stitching = kipy_via("s", "GND", *start)
@@ -1788,10 +1797,16 @@ class TestMovingVias:
             )
         )
 
-        run()
+        run(*args)
 
-        assert board.calls == []
-        assert "Nothing to do" in "".join(log)
+        if not pushed:
+            assert board.calls == []
+            assert "Nothing to do" in "".join(log)
+            return
+        assert board.calls == COMMIT_CALLS
+        (via,) = board.created
+        assert isinstance(via, kbt.Via)
+        assert via.position.x / 1e6 < start[0] - 0.1
 
     def test_a_dry_run_moving_only_a_stitching_via_commits_nothing(
         self, connect: Connector, log: list[str]

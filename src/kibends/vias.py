@@ -23,7 +23,9 @@ Every via is a ground via, on one of the run's ground nets, or a regular
 one, on any other net (`ViaInput.ground`, `StaticVia`). A ground via and a
 regular one, or two ground vias of different ground nets, are a pair
 (`pairs_with`); the vias standing still that a moving via pairs with are
-held apart from its field (`ViaInput.static_vias`).
+held apart from its field (`ViaInput.static_vias`). Ground vias of one
+net stay in its stops, which keep hole-to-hole, and the optimizer's
+pairwise term (`via_pairs`) also has them repel each other.
 """
 
 import math

@@ -71,12 +71,14 @@ layers together.
 The board's vias that are none of the run's, each a ground via or a
 regular one (`vias.StaticVia`), reach `optimize_chains` as `static_vias`;
 a problem keeps those its moving vias share a layer with
-(`_Problem.static_vias`). A ground via and a regular one, and ground vias
-of two ground nets, interact through the pairwise term (`via_pairs`),
-summed over every such pair, moving or standing still, rather than the
-nearest only: they attract each other, the first, and keep clear of each
-other, both, at the distances the via's limits give. Without such a pair
-the problem's energy is the one without ground vias, term for term.
+(`_Problem.static_vias`). A ground via and a regular one, ground vias of
+two ground nets, and ground vias of one net interact through the pairwise
+term (`via_pairs`), summed over every such pair, moving or standing still,
+rather than the nearest only: the first attract each other and keep clear
+of each other, the second keep clear, both at the distances the via's
+limits give, and the third repel each other beyond their rings and
+clearance while their stops keep hole-to-hole. Without such a pair the
+problem's energy is the one without ground vias, term for term.
 
 How much of a chain of one of its nets a section leaves out near a fan-out
 depends on the angles both leave it at. A burst fixes it, as pieces of the

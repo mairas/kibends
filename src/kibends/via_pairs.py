@@ -13,10 +13,16 @@ other via terms are; a via standing still has no side of its own.
   the attraction (`energy.attraction_integrand`), continued linearly below
   that distance. Together they give each pair a neutral distance.
 - Ground vias of two ground nets: the full obstacle term alone.
+- Ground vias of one ground net: the repulsion alone
+  (`energy.repulsion_integrand`), beyond their rings and the netclass
+  clearance, so that stitching vias drawn toward a signal via spread around
+  it. It has no clearance hinge: their only limit stays hole-to-hole, which
+  the optimizer's stops keep, so it pushes apart without becoming a wall
+  that freezes or blocks them.
 
 Summed over pairs rather than taken for the nearest only: against summed
 attraction, nearest-only repulsion has no neutral distance once anything
-else is nearer. These pairs are therefore left out of the optimizer's
+else is nearer. The pairs of other nets are therefore left out of the optimizer's
 nearest-only via terms and out of a moving via's static field, which then
 holds none of the vias standing still that it pairs with
 (`obstacles.static_via_obstacles`). Clearance judging is unchanged: the
@@ -48,6 +54,7 @@ from kibends.energy import (
     attraction_integrand,
     obstacle_integrand,
     obstacle_reach,
+    repulsion_integrand,
 )
 from kibends.obstacles import via_via_inflation
 from kibends.snapshot import Via
@@ -62,6 +69,9 @@ class PairKind(enum.IntEnum):
     term."""
     GROUNDS = 1
     """Ground vias of two ground nets: the full obstacle term."""
+    SPREAD = 2
+    """Ground vias of one ground net: the repulsion alone, beyond their
+    rings and clearance."""
 
 
 def pair_kind(
@@ -69,8 +79,10 @@ def pair_kind(
 ) -> PairKind | None:
     """How `via` and `other`, each a ground via or not, interact in the
     pairwise term; None if they do not."""
-    if via.net == other.net or not via.shares_layer(other):
+    if not via.shares_layer(other):
         return None
+    if via.net == other.net:
+        return PairKind.SPREAD if ground else None
     if ground and other_ground:
         return PairKind.GROUNDS
     if ground or other_ground:
@@ -79,6 +91,14 @@ def pair_kind(
 
 
 _NO_PAIR = -1
+
+
+def _spread(given: ViaInput, other: Via, clearance: float) -> float:
+    """The centre distance beyond which `given` and `other`, ground vias of
+    one net, repel each other: their rings and the larger of their
+    clearances, `clearance` being `other`'s."""
+    rings = (given.via.diameter + other.diameter) / 2
+    return rings + max(given.clearance, clearance)
 
 
 class ViaPairs:
@@ -109,6 +129,7 @@ class ViaPairs:
         self.hole_clearance = hole_clearance
         self.hole_to_hole = hole_to_hole
         self.obstacle = obstacle_integrand(params)
+        self.repulsion = repulsion_integrand(params)
         self.attraction = attraction_integrand(params)
         first: list[int] = []
         second: list[int] = []
@@ -116,13 +137,18 @@ class ViaPairs:
         kinds: list[PairKind] = []
         for k in free:
             given = vias[k]
-            for u, distance in apart[k].items():
-                kind = pair_kind(given.via, given.ground, vias[u].via, vias[u].ground)
-                if kind is not None:
-                    first.append(k)
-                    second.append(u)
-                    distances.append(distance)
-                    kinds.append(kind)
+            for u, other in enumerate(vias):
+                kind = pair_kind(given.via, given.ground, other.via, other.ground)
+                if u == k or kind is None:
+                    continue
+                first.append(k)
+                second.append(u)
+                distances.append(
+                    _spread(given, other.via, other.clearance)
+                    if kind is PairKind.SPREAD
+                    else apart[k][u]
+                )
+                kinds.append(kind)
         self.first = np.array(first, dtype=np.intp)
         self.second = np.array(second, dtype=np.intp)
         self.apart = np.array(distances, dtype=float)
@@ -150,7 +176,8 @@ class ViaPairs:
         self.static = [s for s, m in zip(static, met, strict=True) if m]
         self.static_kinds = static_kinds[:, met]
         self.static_apart = np.full(self.static_kinds.shape, math.nan)
-        """By moving via and static via, the distance their centres keep;
+        """By moving via and static via, the distance their centres keep,
+        or for vias of one ground net the distance beyond which they repel;
         NaN until they first meet."""
         at = np.array([s.via.position for s in self.static], dtype=float)
         self.tree = cKDTree(at.reshape(-1, 2)) if self.static else None
@@ -208,7 +235,12 @@ class ViaPairs:
         new_rows: list[int] = rows[unknown].tolist()
         new_columns: list[int] = columns[unknown].tolist()
         for n, s in zip(new_rows, new_columns, strict=True):
-            self.static_apart[n, s] = self._kept(free[n], self.static[s])
+            other = self.static[s]
+            self.static_apart[n, s] = (
+                _spread(self.vias[free[n]], other.via, other.clearance)
+                if self.static_kinds[n, s] == PairKind.SPREAD
+                else self._kept(free[n], other)
+            )
         return rows, columns
 
     def _kept(self, k: int, other: StaticVia) -> float:
@@ -232,7 +264,8 @@ class ViaPairs:
 
     def _widest(self, given: ViaInput) -> float:
         """The largest distance `given`'s centre keeps from a static via it
-        pairs with: from one as wide, as widely drilled and of as wide a
+        pairs with, or beyond which one of its net repels it (`_spread`),
+        which is no larger: from one as wide, as widely drilled and of as wide a
         clearance as the widest, of a net other than its own."""
         if not self.static:
             return 0.0
@@ -268,7 +301,12 @@ class ViaPairs:
         if not len(delta):
             return 0.0, np.zeros((0, 2))
         r = np.linalg.norm(delta, axis=1)
+        spreading = kinds == PairKind.SPREAD
         value, slope = self.obstacle(r - apart)
+        if spreading.any():
+            value[spreading], slope[spreading] = self.repulsion(
+                r[spreading] - apart[spreading]
+            )
         attracting = kinds == PairKind.RETURN
         if attracting.any():
             pull, pull_slope = self.attraction(r[attracting], apart[attracting])

@@ -112,9 +112,10 @@ IDS = [
 
 
 def _detour_among_ground_vias() -> ViasScenario:
-    """`scenarios.via_detour` with a GND via, an AGND via and a regular via
-    of another net moving near its via and each other, so that ground and
-    regular vias, ground vias of two nets and two regular vias meet."""
+    """`scenarios.via_detour` with two GND vias, an AGND via and a regular
+    via of another net moving near its via and each other, so that ground
+    and regular vias, ground vias of one net and of two nets, and two
+    regular vias meet."""
     scenario = scenarios.via_detour()
 
     def stitching(via_id: str, net: str, at: tuple[float, float]) -> ViaInput:
@@ -131,6 +132,7 @@ def _detour_among_ground_vias() -> ViasScenario:
         vias=(
             *scenario.vias,
             stitching("g", "GND", (5.0, 4.0)),
+            stitching("h", "GND", (5.6, 4.3)),
             stitching("a", "AGND", (6.0, 2.4)),
             stitching("p", "P", (4.0, 2.5)),
         ),
@@ -378,8 +380,9 @@ def _reference_view(
 ) -> tuple[ChainField, FloatArray, FloatArray, list[tuple[int, int]]]:
     """What via k sees of the members and the other vias, as a field of its
     own, its edges' starts and ends, and each edge's member and first
-    vertex, or -1 and the via; `unpaired` leaves out the vias the pairwise
-    term takes instead: of other nets, where either is a ground via."""
+    vertex, or -1 and the via; `unpaired` leaves out the vias that only stop
+    it, of its net, and those the pairwise term takes instead, of other
+    nets where either is a ground via."""
     via = problem.vias[k]
     starts = [np.empty((0, 2))]
     ends = [np.empty((0, 2))]
@@ -398,10 +401,8 @@ def _reference_view(
         owner += [(j, e) for e in range(len(points) - 1)]
     for u, apart in via.apart.items():
         other = problem.vias[u].given
-        if (
-            unpaired
-            and other.via.net != via.given.via.net
-            and (other.ground or via.given.ground)
+        if unpaired and (
+            other.via.net == via.given.via.net or other.ground or via.given.ground
         ):
             continue
         starts.append(positions[u][None])

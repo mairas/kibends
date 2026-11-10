@@ -263,8 +263,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_ATTRACTION,
         metavar="WEIGHT",
         help="Weight of the pull between ground vias and other vias, so that "
-        "signal vias keep their return vias near; 0 turns it off "
-        f"(default: {DEFAULT_ATTRACTION:g})",
+        "signal vias keep their return vias near. While it is above 0, ground "
+        "vias of one net also repel each other, with --repulsion and --range. "
+        f"0 turns off both (default: {DEFAULT_ATTRACTION:g})",
     )
     smooth_parser.add_argument(
         "--attraction-range",
