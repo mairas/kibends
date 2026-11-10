@@ -1619,6 +1619,24 @@ IN_TRIANGLE = (7.75, 1.25)
 """Near the centre of the circle inside `triangle_loop`, 1.26 mm across."""
 
 
+def off_junction_route() -> list[kbt.Track]:
+    """A bent route that ends at `triangle_loop`'s corner (0, 0), so that
+    the loop hangs off a junction there."""
+    return [
+        kipy_track("r1", "SIG", (-5, 0), (-2, -1), width=WIDTH),
+        kipy_track("r2", "SIG", (-2, -1), (0, 0), width=WIDTH),
+    ]
+
+
+SHRINK_LIMIT = 6
+"""Bursts after which `off_junction_route` and `triangle_loop`, unheld,
+have shrunk the loop and not yet converged, under COARSE: unlimited, the
+first run takes 8."""
+
+TRIANGLE_PADS = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
+"""Pads of SIG on three corners of a square loop."""
+
+
 def pad_box(x: float, y: float) -> BaseGeometry:
     h = PAD_HALF_SIZE
     return box(x - h, y - h, x + h, y + h)
@@ -1711,6 +1729,234 @@ class TestLoopsAndDots:
         assert set(degree.values()) == {1, 2, 4}
         # The loop round the pad pulls the junction off the straight route.
         assert junction[1] > nm(0.1)
+
+    # Unlimited, the loop shrinks for 10 bursts; stopped at 3, it is still
+    # part way.
+    @pytest.mark.parametrize("limit", [(), ("--time-limit=3",)], ids=["free", "3"])
+    def test_a_loop_nothing_holds_open_is_left_as_drawn(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        limit: tuple[str, ...],
+    ) -> None:
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
+        loop = triangle_loop()
+        touch = kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)
+        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, touch]))
+
+        run(*limit)
+
+        assert board.deleted == []
+        assert "begin_commit" not in board.calls
+        (held,) = [line for line in log if "holds it open" in line]
+        assert held.startswith("DEBUG") and "a, b, c" in held
+        assert not any("shrinks to no area" in line for line in log)
+
+    def test_a_loop_through_three_pads_of_its_net_settles_into_their_triangle(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (10, 10), width=WIDTH),
+            kipy_track("c", "SIG", (10, 10), (0, 10), width=WIDTH),
+            kipy_track("d", "SIG", (0, 10), (0, 0), width=WIDTH),
+        ]
+        pads = [kipy_pad(f"p{k}", "SIG", *at) for k, at in enumerate(TRIANGLE_PADS)]
+        board = connect.to(
+            CommitBoard(selection=list(loop), tracks=list(loop), pads=pads)
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c", "d"]
+        corners = {(nm(x), nm(y)) for x, y in TRIANGLE_PADS}
+        created = cast(list[kbt.Track], board.created)
+        assert {(p.x, p.y) for t in created for p in (t.start, t.end)} == corners
+        assert len(created) == len(corners)
+
+    def test_a_loop_touched_at_two_points_that_would_fold_flat_is_left_as_drawn(
+        self, connect: Connector
+    ) -> None:
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
+            kipy_track("b", "SIG", (10, 0), (10, 4), width=WIDTH),
+            kipy_track("c", "SIG", (10, 4), (0, 4), width=WIDTH),
+            kipy_track("d", "SIG", (0, 4), (0, 0), width=WIDTH),
+        ]
+        touches = [
+            kipy_track("t1", "SIG", (-3, 0), (0, 0), width=WIDTH),
+            kipy_track("t2", "SIG", (13, 4), (10, 4), width=WIDTH),
+        ]
+        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, *touches]))
+
+        run()
+
+        assert board.deleted == []
+        assert "begin_commit" not in board.calls
+
+    def test_a_loop_shrinking_off_a_junction_holds_it_for_the_other_branches(
+        self, connect: Connector
+    ) -> None:
+        tracks = [*off_junction_route(), *triangle_loop()]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["r1", "r2"]
+        assert created_path(board).coords[:] in (
+            [(-5.0, 0.0), (0.0, 0.0)],
+            [(0.0, 0.0), (-5.0, 0.0)],
+        )
+
+    def test_a_loop_that_shrinks_all_the_same_is_held_from_where_the_run_was(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        log: list[str],
+    ) -> None:
+        # Taken for a loop held open, the loop off the route's junction
+        # shrinks in the first run instead.
+
+        def none_collapsing(_read: object, _options: object) -> list[int]:
+            return []
+
+        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        clock = BurstClock(monkeypatch)
+        monkeypatch.setattr(pipeline, "monotonic", clock)
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+        starts: list[RunResult | None] = []
+
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
+            starts.append(cast(RunResult | None, kwargs["start"]))
+            result = replace(real(*args, **kwargs), abnormal=(("a burst", 1),))
+            if not runs:
+                result = replace(result, gave_up=(("a problem", 3),))
+            runs.append(result)
+            return result
+
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+        tracks = [*off_junction_route(), *triangle_loop()]
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--dry-run", f"--time-limit={SHRINK_LIMIT}")
+
+        first, second = runs
+        assert starts[0] is None
+        resumed = starts[1]
+        assert resumed is not None
+        # The route goes on from where the first run left it, its end back
+        # on the junction as drawn; the loop starts over as drawn, held.
+        route, loop = resumed.chains
+        assert np.array_equal(route.polyline[:-1], first.chains[0].polyline[:-1])
+        assert tuple(route.polyline[-1]) == (0.0, 0.0) and route.fixed[-1]
+        assert loop.fixed.all()
+        assert loop.polyline.tolist() == [[0, 0], [9, 0], [9, 3], [0, 0]]
+        # Resumed, the second run completes one outer iteration, then stops
+        # at the first burst of the next.
+        assert second.iterations <= 2
+        assert clock.bursts <= SHRINK_LIMIT + 2
+        (report,) = reports
+        assert report.iterations == first.iterations + second.iterations
+        assert report.elapsed == clock.bursts
+        assert report.abnormal == (("a burst", 2),)
+        # The give-up the first run logged counts in, once.
+        assert sum("Gave up on a problem" in line for line in log) == 1
+        assert sum("INFO Optimizing" in line for line in log) == 1
+        assert log.count("INFO Setting up the optimizer\n") == 1
+        assert "INFO Setting up the optimizer again, with held loops\n" in log
+
+    def test_a_give_up_before_a_loop_is_held_stays_the_outcome(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        def none_collapsing(_read: object, _options: object) -> list[int]:
+            return []
+
+        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        runs: list[RunResult] = []
+
+        def giving_up_first(*args: object, **kwargs: object) -> RunResult:
+            result = real(*args, **kwargs)
+            if not runs:
+                result = replace(result, gave_up=(("a problem", 3),))
+            runs.append(result)
+            return result
+
+        monkeypatch.setattr(pipeline, "optimize_chains", giving_up_first)
+        tracks = [*off_junction_route(), *triangle_loop()]
+        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run("--dry-run")
+
+        _, second = runs
+        assert second.termination is Termination.CONVERGED
+        (report,) = reports
+        assert report.termination is Termination.GAVE_UP
+
+    @pytest.mark.parametrize("backstop", [False, True], ids=["before", "backstop"])
+    def test_a_via_a_held_loop_ends_at_stays(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        backstop: bool,
+    ) -> None:
+        if backstop:
+
+            def none_collapsing(_read: object, _options: object) -> list[int]:
+                return []
+
+            monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
+        route = [
+            kipy_track("f", "SIG", (-6, -6), (0, 0), width=WIDTH),
+            kipy_track("r", "SIG", (0, 0), (6, -6), width=WIDTH, layer=BL.BL_B_Cu),
+        ]
+        loop = [
+            kipy_track("a", "SIG", (0, 0), (3, 0), width=WIDTH),
+            kipy_track("b", "SIG", (3, 0), (3, 2), width=WIDTH),
+            kipy_track("c", "SIG", (3, 2), (0, 0), width=WIDTH),
+        ]
+        via = kipy_via("V", "SIG", 0, 0)
+        board = connect.to(
+            CommitBoard(
+                selection=[*route, *loop, via],
+                tracks=[*route, *loop],
+                vias=[via],
+                pads=[kipy_pad("p", "SIG", -6, -6), kipy_pad("q", "SIG", 6, -6)],
+            )
+        )
+
+        run()
+
+        assert created_vias(board) == []
+        assert not {"a", "b", "c"} & set(board.deleted)
+        (stays,) = [line for line in log if "Via V" in line and "a, b, c" in line]
+        assert stays.startswith("DEBUG") and "stays fixed" in stays
+
+    def test_routes_off_a_held_loop_still_meet_it_where_it_was_drawn(
+        self, connect: Connector
+    ) -> None:
+        # Alone, the two routes' ends would meet anywhere on the line between
+        # their far ends.
+        other = [
+            kipy_track("s1", "SIG", (0, -5), (-1, -2), width=WIDTH),
+            kipy_track("s2", "SIG", (-1, -2), (0, 0), width=WIDTH),
+        ]
+        tracks = [*off_junction_route(), *other, *triangle_loop()]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["r1", "r2", "s1", "s2"]
+        created = cast(list[kbt.Track], board.created)
+        ends_there = [p for t in created for p in (t.start, t.end) if p.x == p.y == 0]
+        assert len(ends_there) == 2
 
     @pytest.mark.parametrize("touched", [False, True], ids=["alone", "touched"])
     def test_a_loop_closed_by_an_arc_is_smoothed_or_left_whole(
