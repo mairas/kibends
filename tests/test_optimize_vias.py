@@ -32,6 +32,7 @@ from kibends.energy import (
     ObstacleField,
     attraction_integrand,
     obstacle_integrand,
+    obstacle_reach,
     repulsion_integrand,
 )
 from kibends.neighbours import ChainInput
@@ -1436,6 +1437,31 @@ def short_pull() -> ViasScenario:
     )
 
 
+EDGE_OF_REACH = 0.95
+"""Where a pair at the edge of its reach lies, as a fraction of it: near
+enough to give energy, past a query radius only a little too short."""
+
+
+def far_return() -> ViasScenario:
+    """`returned` with a GND via moving at EDGE_OF_REACH of the attraction
+    range from the via."""
+    x, y = scenarios.DETOUR_VIA
+    return returned(
+        grounded("g", (x, y + EDGE_OF_REACH * RETURN_PARAMS.attraction_range))
+    )
+
+
+def far_spread() -> ViasScenario:
+    """`short_pull` with a second GND via above its moving one, at
+    EDGE_OF_REACH of the obstacle reach beyond their rings and clearance."""
+    scenario = short_pull()
+    (_, g) = scenario.vias
+    rings = g.via.diameter + g.clearance
+    gap = rings + EDGE_OF_REACH * obstacle_reach(scenario.params)
+    x, y = g.via.position
+    return replace(scenario, vias=(*scenario.vias, grounded("h", (x, y + gap))))
+
+
 def grounded_grid() -> ViasScenario:
     """`stitched_grid` with its G vias on a ground net and attraction."""
     scenario = stitched_grid()
@@ -1460,6 +1486,8 @@ PAIR_ENERGY_SCENARIOS = {
     "two-grounds": two_grounds,
     "close-grounds": close_grounds,
     "short-pull": short_pull,
+    "far-return": far_return,
+    "far-spread": far_spread,
     "zoned": lambda: zoned(returned(grounded("g", (5.0, 4.2))), 0, "In1.Cu"),
     "frozen": frozen_ground,
     "grid": grounded_grid,

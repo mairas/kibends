@@ -29,12 +29,16 @@ holds none of the vias standing still that it pairs with
 (`obstacles.split_via_obstacles`). Clearance judging is unchanged: the
 pairs keep the distances `obstacles.via_via_inflation` gives.
 
-The problem's other vias are paired once, at setup, at the distances the
-optimizer gives (`optimize._Via.apart`). The vias standing still, unselected
-ones and those the run did not let move, are found near each moving via at
-every evaluation with one k-d tree, so the energy is one function of the
-positions however far the vias move; the distance a moving via keeps from
-one is worked out the first time they meet.
+Two k-d trees find the pairs near enough to give energy. The problem's
+vias are paired once, at setup, at the distances the optimizer gives
+(`optimize._Via.apart`), and a tree over their positions, built at every
+evaluation, keeps the pairs within reach of each other, so that a grid of
+many vias costs as many terms as its vias have neighbours. The vias
+standing still, unselected ones and those the run did not let move, sit in
+a tree built once, at setup, which finds those near each moving via at
+every evaluation, so the energy is one function of the positions however
+far the vias move; the distance a moving via keeps from one is worked out
+the first time they meet.
 """
 
 import math
@@ -61,6 +65,15 @@ from kibends.snapshot import Via
 from kibends.vias import PairKind, StaticVia, ViaInput, pair_kind
 
 _NO_PAIR = -1
+
+
+def _scatter(gradient: FloatArray, index: IntArray, values: FloatArray) -> None:
+    """Add each row of `values` to the row of `gradient` that `index`
+    gives, as `np.add.at` does, but faster."""
+    for axis in range(gradient.shape[1]):
+        gradient[:, axis] += np.bincount(
+            index, weights=values[:, axis], minlength=len(gradient)
+        )
 
 
 def _spread(given: ViaInput, other: Via, clearance: float) -> float:
@@ -124,6 +137,21 @@ class ViaPairs:
         self.apart = np.array(distances, dtype=float)
         self.kinds = np.array(kinds, dtype=np.int8)
         self.weights = np.array([vias[k].via.diameter for k in first], dtype=float)
+        self.slot = np.full((len(vias), len(vias)), _NO_PAIR, dtype=np.intp)
+        """By the indices of a pair's first and second via, its index among
+        the pairs."""
+        self.slot[self.first, self.second] = np.arange(len(first))
+        reach = obstacle_reach(params)
+        cutoff = params.attraction_range if params.attraction else 0.0
+        self.reach = max(
+            (
+                max(cutoff, a + reach) if kind is PairKind.RETURN else a + reach
+                for a, kind in zip(distances, kinds, strict=True)
+            ),
+            default=0.0,
+        )
+        """The centre distance beyond which no pair of the problem's vias
+        gives energy."""
         self.paired = [set[int]() for _ in vias]
         """Per via, the problem's vias it pairs with."""
         for k, u in zip(first, second, strict=True):
@@ -152,8 +180,6 @@ class ViaPairs:
         at = np.array([s.via.position for s in self.static], dtype=float)
         self.tree = cKDTree(at.reshape(-1, 2)) if self.static else None
         self.static_at = at.reshape(-1, 2)
-        reach = obstacle_reach(params)
-        cutoff = params.attraction_range if params.attraction else 0.0
         self.static_reach = np.array(
             [max(cutoff, self._widest(vias[k]) + reach) for k in free], dtype=float
         )
@@ -169,11 +195,12 @@ class ViaPairs:
         gradient at each via's centre."""
         at = np.array(positions, dtype=float).reshape(-1, 2)
         gradient = np.zeros_like(at)
-        value, push = self._terms(
-            at[self.first] - at[self.second], self.apart, self.kinds, self.weights
-        )
-        np.add.at(gradient, self.first, push)
-        np.add.at(gradient, self.second, -push)
+        near = self._near(at)
+        first, second = self.first[near], self.second[near]
+        apart, kinds, weights = self.apart[near], self.kinds[near], self.weights[near]
+        value, push = self._terms(at[first] - at[second], apart, kinds, weights)
+        _scatter(gradient, first, push)
+        _scatter(gradient, second, -push)
         if self.tree is not None:
             rows, columns = self._static_near(at[self.free])
             moving = self.free[rows]
@@ -184,8 +211,18 @@ class ViaPairs:
                 self.free_diameters[rows],
             )
             value += static_value
-            np.add.at(gradient, moving, static_push)
+            _scatter(gradient, moving, static_push)
         return value, gradient
+
+    def _near(self, at: FloatArray) -> IntArray:
+        """The problem's pairs whose vias at `at` are near enough to give
+        each other energy."""
+        if not len(self.first):
+            return np.zeros(0, dtype=np.intp)
+        close = cKDTree(at).query_pairs(self.reach, output_type="ndarray")
+        i, j = close[:, 0], close[:, 1]
+        found = np.concatenate([self.slot[i, j], self.slot[j, i]])
+        return np.sort(found[found != _NO_PAIR])
 
     def _static_near(self, at: FloatArray) -> tuple[IntArray, IntArray]:
         """The pairs of a moving via, by its row of `at`, and a static via
