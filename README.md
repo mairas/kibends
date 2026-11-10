@@ -131,11 +131,12 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    would carry (an unselected track, a pad, a copper shape or another via of
    its net, on a layer it spans), it sits at the edge of a zone's region
    (closer to it than that margin, so moving might lose a connection it has
-   now), only one selected track ends at it, or none does and no zone of its
-   net reaches it. A moving via that starts closer to other copper than its
-   clearance moves out of it like any other (see below). Teardrops are
-   ignored: KiCad reapplies them on the next refill. Selected pads and other
-   items are ignored.
+   now), a coupled section of a differential pair ends at it (see
+   [Differential pairs](#differential-pairs)), only one selected track ends
+   at it, or none does and no zone of its net reaches it. A moving via that
+   starts closer to other copper than its clearance moves out of it like any
+   other (see below). Teardrops are ignored: KiCad reapplies them on the
+   next refill. Selected pads and other items are ignored.
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
    set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
@@ -309,9 +310,10 @@ different widths, when a chain runs coupled with one of its pair net that
 pairs with another chain, and when a pair's measured gap differs by more
 than a tenth from its netclass's differential pair gap. Each of these is
 smoothed as separate chains, or, for the last, at its measured gap. A pair
-is paired on each layer separately, and a via that joins a pair's track
-stays fixed. kibends does not route uncoupled fan-outs
-into coupling.
+is paired on each layer separately. A selected via at the end of a fan-out
+moves with it as with any chain; one at which a coupled section itself
+ends, with no fan-out between, stays fixed, since a section's ends do not
+move. kibends does not route uncoupled fan-outs into coupling.
 
 ### Return vias
 
