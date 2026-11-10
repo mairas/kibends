@@ -39,6 +39,7 @@ from loguru import logger
 from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
+from kibends.bursts import FALLBACK_WARNING
 from kibends.chain import NM_PER_MM
 from kibends.energy import (
     EnergyParams,
@@ -83,6 +84,22 @@ class BurstClock:
 
     def __call__(self) -> float:
         return float(self.bursts)
+
+
+@pytest.fixture(autouse=True)
+def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fails any test in which a burst's check reaches the fallback of
+    `bursts.revert_until_clear`, unless marked `fallback`."""
+    warned: list[str] = []
+    sink = logger.add(
+        lambda m: warned.append(str(m)),
+        level="WARNING",
+        filter=lambda record: record["message"] == FALLBACK_WARNING,
+    )
+    yield
+    logger.remove(sink)
+    if warned and request.node.get_closest_marker("fallback") is None:
+        pytest.fail("a burst reached the fallback that moves it all back")
 
 
 @pytest.fixture

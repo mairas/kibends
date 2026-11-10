@@ -48,6 +48,7 @@ testpaths = ["tests"]
 addopts = "-n auto"
 markers = [
     "slow: takes several seconds; deselect with -m 'not slow'",
+    "fallback: reaches the fallback that moves a whole burst back on purpose",
 ]
 
 [tool.ruff]

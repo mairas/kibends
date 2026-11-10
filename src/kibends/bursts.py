@@ -10,9 +10,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+from loguru import logger
 from scipy.optimize import minimize
 
 from kibends.energy import BoolArray, DistanceField, FloatArray
+
+FALLBACK_WARNING = (
+    "A burst's crossings named nothing more to move back; moving the whole burst back"
+)
 
 # Depth inside the clearance, mm, that the violation guard ignores as float
 # noise: a track routed at exactly the clearance resamples to vertices about
@@ -114,11 +119,13 @@ def revert_until_clear(
     """Move coordinates of `candidate` back to `start`, in place, until
     `crossings` finds no edge newly crossing an obstacle.
 
-    `crossings` gives the number of crossing edges and the coordinates to
-    move back for them. Moving back can make a neighbouring edge cross,
-    hence the loop; it ends because edges moved back whole are the start's,
-    clear ones. Returns the mask of coordinates moved back and the number of
-    edges that crossed in the candidate as given.
+    `crossings` gives the number of crossings and the coordinates to move
+    back for them. Moving back can make a neighbouring edge cross, hence
+    the loop; it ends because the start, judged against itself, crosses
+    nothing. A crossing whose moving coordinates are all back already
+    moves the whole candidate back, with `FALLBACK_WARNING` logged. Returns
+    the mask of coordinates moved back and the number of crossings in the
+    candidate as given.
     """
     reverted = np.zeros(len(candidate), dtype=bool)
     initial: int | None = None
@@ -130,9 +137,10 @@ def revert_until_clear(
             return reverted, initial
         back &= ~reverted
         if not back.any():
-            # Should not happen: an edge with both ends moved back is as
-            # clear as at the start. Should it, moving everything back ends
-            # the loop, as the start crosses nothing.
+            # A crossing whose moving coordinates are all back already, so
+            # that what crosses does not move back. Moving everything back
+            # ends the loop, as the start crosses nothing.
+            logger.warning(FALLBACK_WARNING)
             back = ~reverted
         candidate[back] = start[back]
         reverted |= back
