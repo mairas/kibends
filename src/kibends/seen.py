@@ -26,6 +26,10 @@ A moving via sees whole members and the other vias (`ViaSight`): one tree
 over their edges and centres answers every via, each pair inflated by the
 distance its via keeps from that member or via, each member and each via
 an obstacle of the smooth distance.
+
+What the members and moving vias see of static copper is searched once
+per asker and kept between evaluations (`StaticList`), as `NeighbourList`
+keeps what the members see of each other.
 """
 
 import itertools
@@ -37,18 +41,32 @@ from typing import NamedTuple
 
 import numpy as np
 
-from kibends.energy import BoolArray, FloatArray, IntArray, smooth_reach
+from kibends.energy import (
+    BoolArray,
+    FloatArray,
+    IntArray,
+    ObstacleField,
+    smooth_reach,
+)
 from kibends.obstacles import (
+    NO_FOUND,
     ChainField,
     ComplexArray,
+    Found,
     SmoothAnswer,
+    StaticEdges,
+    StaticItems,
     candidate_pairs,
     complex_points,
+    join_found,
     near_segments,
     nearest_of_pairs,
     obstacle_order,
     pairs_inside,
+    search_parts,
     smooth_of_pairs,
+    static_parts,
+    static_smooth,
 )
 
 
@@ -699,6 +717,120 @@ class NeighbourList:
         pairs = self.seen.candidates(n, points, owner, flat, self.reach, 2 * skin)
         self._found[n] = _Found(points, ends, pairs, skin)
         return pairs
+
+
+STATIC_SKIN = SKIN_LEAST
+"""The skin of every asker of a `StaticList`, mm."""
+
+
+class _StaticFound(NamedTuple):
+    points: FloatArray
+    found: Found
+
+
+class StaticList:
+    """The static fields of several askers, members or moving vias, each
+    at its own points, answered from their edges (`obstacles.StaticEdges`)
+    with one search per asker, kept between evaluations as `NeighbourList`
+    keeps a layer's pairs.
+
+    Static edges never move, so a point's distance to one changes by at
+    most the point's own move: an asker searches again once one of its
+    points has moved farther than STATIC_SKIN since its last search, with
+    that skin to spare. Either way the answers are those of a search at the
+    points; the list only spares the search. The askers' pairs are
+    measured together, in one pass (`obstacles.static_smooth`).
+
+    Unlike a layer's in `NeighbourList`, the skin does not follow how far
+    the points moved: a wider skin lists more edges of each item and more
+    items behind the nearest at every evaluation. Measured with
+    `./run bench --only bus` on the pad rows, a skin following the moves up
+    to SKIN_MOST listed 1.6 times the pairs and took a tenth longer.
+
+    A field that gives no edges (`obstacles.static_parts`) answers by its
+    own `smooth_distance`, and an asker with no field sees nothing. Not
+    `listed`, every call searches without a skin.
+    """
+
+    def __init__(
+        self,
+        fields: Sequence[ObstacleField | None],
+        reach: float,
+        *,
+        listed: bool = True,
+    ) -> None:
+        self.fields = tuple(fields)
+        self.reach = reach
+        self.listed = listed
+        every: dict[int, int] = {}
+        parts: list[StaticEdges] = []
+        given = [None if f is None else static_parts(f) for f in self.fields]
+        for found in given:
+            for part in found or ():
+                if every.setdefault(id(part), len(parts)) == len(parts):
+                    parts.append(part)
+        self.items = StaticItems(parts)
+        """Every asker's items, one field after another, each field once."""
+        self._parts: list[list[tuple[StaticEdges, int]] | None] = [
+            None
+            if found is None
+            else [(p, int(self.items.starts[every[id(p)]])) for p in found]
+            for found in given
+        ]
+        self._found: list[_StaticFound | None] = [None] * len(self.fields)
+        self._joined: Found = NO_FOUND
+
+    def smooth(
+        self, queries: Sequence[FloatArray]
+    ) -> list[tuple[FloatArray, FloatArray]]:
+        """Each asker's smooth distance at its `queries`, (n, 2) points, and
+        its gradient, as its field's `smooth_distance` with the list's reach
+        gives them."""
+        edged = [k for k, parts in enumerate(self._parts) if parts is not None]
+        reach = smooth_reach(self.reach)
+        changed = not self.listed or not any(self._found)
+        for k in edged:
+            parts = self._parts[k]
+            assert parts is not None
+            points = queries[k]
+            last = self._found[k]
+            if (
+                self.listed
+                and last is not None
+                and last.points.shape == points.shape
+                and _moved(points, last.points) <= STATIC_SKIN
+            ):
+                continue
+            slack = STATIC_SKIN if self.listed else 0.0
+            found = search_parts(parts, points, reach, slack)
+            self._found[k] = _StaticFound(points, found)
+            changed = True
+        sizes = [len(queries[k]) for k in edged]
+        firsts = list(itertools.accumulate(sizes, initial=0))
+        if changed:
+            founds: list[Found] = []
+            for k, first in zip(edged, firsts, strict=False):
+                last = self._found[k]
+                assert last is not None
+                founds.append(last.found._replace(point=last.found.point + first))
+            self._joined = join_found(founds) if founds else NO_FOUND
+        coords = np.concatenate([np.empty((0, 2)), *(queries[k] for k in edged)])
+        distance, gradient = static_smooth(
+            complex_points(coords), self._joined, self.items
+        )
+        answers: list[tuple[FloatArray, FloatArray]] = []
+        place = dict(zip(edged, firsts, strict=False))
+        for k, (field, points) in enumerate(zip(self.fields, queries, strict=True)):
+            first = place.get(k)
+            if first is not None:
+                last = first + len(points)
+                answers.append((distance[first:last], gradient[first:last]))
+            elif field is None:
+                free = np.full(len(points), np.inf)
+                answers.append((free, np.zeros((len(points), 2))))
+            else:
+                answers.append(field.smooth_distance(points, self.reach))
+        return answers
 
 
 def _moved(points: FloatArray, start: FloatArray) -> float:

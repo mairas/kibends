@@ -186,6 +186,7 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import numpy as np
 from loguru import logger
@@ -220,6 +221,7 @@ from kibends.members import (
     seen_parts,
     shown,
     shown_flat,
+    static_list,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
@@ -242,7 +244,7 @@ from kibends.results import (
     Termination,
     ViaResult,
 )
-from kibends.seen import NeighbourList, Seen, ViaSight
+from kibends.seen import NeighbourList, Seen, StaticList, ViaSight
 from kibends.via_moves import (
     FreeDistances,
     MovingVias,
@@ -608,6 +610,14 @@ class _Via:
     apart: Mapping[int, float]
     """The other vias it keeps clear of, and how far apart their centres
     keep."""
+
+
+class _StaticLists(NamedTuple):
+    """The static fields of a problem's members and of its moving vias,
+    kept between the evaluations of one objective."""
+
+    members: StaticList
+    vias: StaticList
 
 
 @dataclass(frozen=True)
@@ -1174,7 +1184,10 @@ class _Problem:
         ]
 
     def via_energy(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        statics: StaticList | None = None,
     ) -> tuple[float, list[FloatArray], FloatArray]:
         """The moving vias' own obstacle terms, each via's ring standing for
         a track as long as it is wide, and their gradient at every vertex and
@@ -1186,13 +1199,13 @@ class _Problem:
         field and the members and the vias of other nets it does not pair
         with (`via_pairs` has those), and the clearance hinge alone for what
         only stops it, its zones' regions and the vias of its net, moving
-        or standing still."""
+        or standing still. `statics` is as for `via_statics`."""
         gradients = [np.zeros_like(points) for points in polylines]
         via_gradients = np.zeros((len(self.vias), 2))
         if not self.vias:
             return 0.0, gradients, via_gradients
         at = np.array(positions)
-        distances, directions = self.via_statics(at)
+        distances, directions = self.via_statics(at, statics)
         value = 0.0
         for part, static, toward in zip(
             self.via_parts, distances, directions, strict=True
@@ -1209,21 +1222,31 @@ class _Problem:
             pull_answers(near, weighted * seen_share, at, gradients, via_gradients)
         return value, gradients, via_gradients
 
-    def via_statics(self, at: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def via_statics(
+        self, at: FloatArray, statics: StaticList | None = None
+    ) -> tuple[FloatArray, FloatArray]:
         """The smooth distance (parts, n) and its gradient (parts, n, 2) of
         each moving via, at its row of `at`, to what the static field of
-        each of `via_parts` gives of it, in one loop over the vias; +inf and
-        zero where it gives none or it is beyond the reach."""
-        distance = np.full((len(self.via_parts), len(at)), math.inf)
-        direction = np.zeros((len(self.via_parts), len(at), 2))
-        for n, (via, point) in enumerate(zip(self.vias, at, strict=True)):
-            given = via.given
-            for p, part in enumerate(self.via_parts):
-                field = part.static(given)
-                if field is not None:
-                    d, g = field.smooth_distance(point[None], self.reach)
-                    distance[p, n], direction[p, n] = d[0], g[0]
+        each of `via_parts` gives of it; +inf and zero where it gives none
+        or it is beyond the reach. From `statics`, made by
+        `via_static_list`, by default from one search each."""
+        if statics is None:
+            statics = self.via_static_list(listed=False)
+        rows = [at[n : n + 1] for _ in self.via_parts for n in range(len(at))]
+        answers = statics.smooth(rows)
+        parts = len(self.via_parts)
+        distance = np.concatenate([d for d, _ in answers]).reshape(parts, len(at))
+        direction = np.concatenate([g for _, g in answers]).reshape(parts, len(at), 2)
         return distance, direction
+
+    def via_static_list(self, *, listed: bool = True) -> StaticList:
+        """The moving vias' static fields, those of each of `via_parts`
+        one after another, as a `StaticList` for `via_statics`."""
+        return StaticList(
+            [part.static(via.given) for part in self.via_parts for via in self.vias],
+            self.reach,
+            listed=listed,
+        )
 
     def left(self, i: int, points: FloatArray) -> BoolArray:
         """Member i's vertices at `points` that lie outside the contact
@@ -1247,11 +1270,13 @@ class _Problem:
         masks: Sequence[BoolArray],
         seen: Seen | None = None,
         listed: NeighbourList | None = None,
+        statics: _StaticLists | None = None,
     ) -> tuple[float, list[FloatArray], FloatArray]:
         """The problem's energy, by default with what each member sees of
         the others as `members.seen_parts` finds it at `polylines`, and its gradient
-        at every vertex and every via's centre; `listed` as for
-        `members.members_energy`."""
+        at every vertex and every via's centre; `listed` and the members'
+        list of `statics` as for `members.members_energy`, its vias' as for
+        `via_statics`."""
         if seen is None:
             seen = self.seeing(polylines)
         value, gradients, via_gradients = members_energy(
@@ -1263,8 +1288,11 @@ class _Problem:
             seen,
             positions,
             listed,
+            None if statics is None else statics.members,
         )
-        own, pulls, own_gradients = self.via_energy(polylines, positions)
+        own, pulls, own_gradients = self.via_energy(
+            polylines, positions, None if statics is None else statics.vias
+        )
         for g, pull in zip(gradients, pulls, strict=True):
             g += pull
         if self.pairs is not None:
@@ -1495,16 +1523,22 @@ class _Problem:
     ) -> Callable[[FloatArray], tuple[float, FloatArray]]:
         """The problem's energy as a function of `layout`'s variables, with
         what each member sees of the others measured at the layout's start
-        unless given, through a `NeighbourList` unless not `listed`."""
+        unless given, through a `NeighbourList` and `StaticList`s unless
+        not `listed`."""
         if seen is None:
             seen = self.seeing(layout.starts)
         masks = self.masks
         neighbours = NeighbourList(seen, self.reach) if listed else None
+        statics = (
+            _StaticLists(static_list(self.members, self.reach), self.via_static_list())
+            if listed
+            else None
+        )
 
         def objective(x: FloatArray) -> tuple[float, FloatArray]:
             polylines, positions = layout.unflatten(x)
             value, gradients, via_gradients = self.total(
-                polylines, positions, masks, seen, neighbours
+                polylines, positions, masks, seen, neighbours, statics
             )
             return value, layout.gradient(gradients, via_gradients)
 
