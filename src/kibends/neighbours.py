@@ -40,6 +40,9 @@ class ChainInput:
     of the region it may lie in, held as the board edge is: positive inside.
     Such a vertex is free, but a stop keeps it inside and a burst never
     leaves it outside. A fixed vertex keeps its contact by staying."""
+    held: bool = False
+    """It stays as drawn: every vertex is fixed, and none is added between
+    them, as resampling a chain does."""
 
 
 def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:

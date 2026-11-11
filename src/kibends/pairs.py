@@ -55,6 +55,12 @@ VERTEX_SNAP = 1e-5
 chord tolerance, whichever is larger, so that neither nanometre rounding of
 45° routing nor tracks simplified one by one leave a sliver segment."""
 
+REACHED_PITCHES = 1.0
+"""A chain end this many pitches or less along the chain from a coupled
+section's end counts as reached by it (`reach`). A section ends at an
+in-band vertex, and near a 45° corner the nearest such vertex can lie up to
+about a pitch short of a stub's junction."""
+
 SAMPLES_PER_WIDTH = 4
 """Both tracks are sampled at this many points per track width."""
 
@@ -301,25 +307,66 @@ def vertex_snap(chord_tolerance: float) -> float:
     return max(VERTEX_SNAP, chord_tolerance)
 
 
-def opposite_ends(pair: Pair) -> tuple[list[float], list[float]]:
-    """Arc lengths along chain a opposite each end of chain b that a section
-    reaches, and along b opposite such ends of a, leaving out the ends of
-    the chain they lie on."""
-    last_a, last_b = len(pair.a.points) - 1, len(pair.b.points) - 1
-    on_a: list[int] = []
-    on_b: list[int] = []
+class Opposite(NamedTuple):
+    """An end of one chain of a pair that a coupled section reaches, and
+    where that section ends on the other chain."""
+
+    at: float
+    """Arc length along the other chain, mm."""
+    end: int
+    """Which end: 0 for its start, -1 for its end."""
+
+
+class Reach(NamedTuple):
+    """What the coupled sections of a pair reach on one of its chains."""
+
+    spans: list[tuple[float, float]]
+    """Each section's arc lengths along the chain, mm."""
+    opposite: list[Opposite]
+    """The ends of the other chain that a section reaches, opposite this one."""
+
+
+def reach(pair: Pair) -> tuple[Reach, Reach]:
+    """What the sections of `pair` reach on chain a and on chain b.
+
+    A chain end counts as reached when a section ends within `reached` of
+    it along the chain."""
+    arcs = [_polyline(track.points).arc for track in (pair.a, pair.b)]
+    spans: tuple[list[tuple[float, float]], list[tuple[float, float]]] = ([], [])
+    opposite: tuple[list[Opposite], list[Opposite]] = ([], [])
     for s in pair.sections:
-        # (end of a, end of b) opposite each other.
+        spans[0].append((float(arcs[0][s.a_start]), float(arcs[0][s.a_end])))
+        spans[1].append((float(arcs[1][s.b_start]), float(arcs[1][s.b_end])))
+        # (vertex of a, vertex of b) at each end of the section.
         across = [(s.a_start, s.b_start), (s.a_end, s.b_end)]
         if s.b_reversed:
             across = [(s.a_start, s.b_end), (s.a_end, s.b_start)]
-        for a, b in across:
-            if b in (0, last_b) and a not in (0, last_a):
-                on_a.append(a)
-            if a in (0, last_a) and b not in (0, last_b):
-                on_b.append(b)
-    arc_a, arc_b = _polyline(pair.a.points).arc, _polyline(pair.b.points).arc
-    return [float(arc_a[k]) for k in on_a], [float(arc_b[k]) for k in on_b]
+        for vertices in across:
+            for side, other in ((0, 1), (1, 0)):
+                at = arcs[side][vertices[side]]
+                for end, chain_end in ((0, 0.0), (-1, float(arcs[side][-1]))):
+                    if abs(at - chain_end) <= reached(pair):
+                        there = float(arcs[other][vertices[other]])
+                        opposite[other].append(Opposite(there, end))
+    return Reach(spans[0], opposite[0]), Reach(spans[1], opposite[1])
+
+
+def reached(pair: Pair) -> float:
+    """How near, mm, a coupled section must end to a point along a chain to
+    reach it: `REACHED_PITCHES` pitches."""
+    return REACHED_PITCHES * (pair.width + pair.gap)
+
+
+def between_sections(
+    at: float, spans: list[tuple[float, float]], tolerance: float
+) -> bool:
+    """Whether arc length `at` lies between two of the `spans`, outside each,
+    within `tolerance`."""
+    return (
+        any(end <= at + tolerance for _, end in spans)
+        and any(start >= at - tolerance for start, _ in spans)
+        and not any(start + tolerance < at < end - tolerance for start, end in spans)
+    )
 
 
 def cut_chain(chain: Chain, at: list[float], snap: float) -> list[Chain]:

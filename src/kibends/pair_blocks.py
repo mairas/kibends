@@ -316,7 +316,7 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
         max(given.a.clearance, given.b.clearance),
         line,
     )
-    chain = ChainInput(pseudo, given.layer, fixed, given.field)
+    chain = ChainInput(pseudo, given.layer, fixed, given.field, held=held)
     facing = replace(chain, centreline=replace(pseudo, width=2 * half_pitch + width))
     start_a, start_b = _offset(given, a_on_right, held, gaps.at(line), line)
     track_a, track_b = (

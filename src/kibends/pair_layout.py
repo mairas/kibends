@@ -2,15 +2,17 @@
 for the optimizer.
 
 Two selected chains on one layer whose nets KiCad pairs by name form a diff
-pair where they run coupled (`pairs.find_pair`). A track that runs coupled
-with two or more chains of the other net, where a stub junction or
-unselected copper such as a length-tuning pattern cuts that net, is cut
-opposite each of their ends that a coupled section reaches (`cut_parts`),
-and the parts pair one to one; so the sections run up to the stub or the
-pattern on both tracks, and a stretch beside the pattern with no partner
-stays an uncoupled piece. The optimizer sees a diff pair as its coupled
-sections, each a block of its own (`pair_blocks`), and its uncoupled
-pieces, each an ordinary chain; the other selected chains stay as they are.
+pair where they run coupled (`pairs.find_pair`). Where a stub junction or
+unselected copper such as a length-tuning pattern cuts one net of a diff
+pair into several chains, the track of the other net is cut between two
+of its coupled sections, where a section ends opposite an end of a chain
+of the cut net, within about a pitch (`cut_parts`), and the parts pair
+one to one. The sections then run up to the stub or the pattern on both
+tracks. A stretch of either track between a cut and a section, or beside
+the pattern, pairs with nothing and is held as drawn; a fan-out to a pad
+or via smooths. The optimizer sees a diff pair as its coupled sections,
+each a block of its own (`pair_blocks`), and its uncoupled pieces, each an
+ordinary chain; the other selected chains stay as they are.
 No via moves at a paired chain, as a diff pair's vias stay fixed
 (`vias.may_move`).
 After the run, the pieces and the sections' tracks join back into one
@@ -32,14 +34,17 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
 from kibends.pair_blocks import PairInput, end_gaps
 from kibends.pairs import (
+    Opposite,
     Pair,
     PairError,
     Piece,
     Track,
+    between_sections,
     cut_chain,
     find_pair,
     nets_pair,
-    opposite_ends,
+    reach,
+    reached,
     runs_coupled,
     vertex_snap,
 )
@@ -54,18 +59,25 @@ class ChainPart:
     """Index of the selected chain it is a part of."""
     chain: Chain
     """Its stretch of that chain, the whole chain unless `cut_parts` cut it."""
+    cut: tuple[bool, bool] = (False, False)
+    """Whether its start and its end are cuts: where `cut_parts` cut it, or
+    a chain end that a chain of the other net was cut opposite."""
 
 
 def cut_parts(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPart]:
     """The parts of `chains`, chain by chain and in order along each.
 
-    A chain that runs coupled with two or more chains of its diff pair's
-    other net on its layer is cut, at a pinned vertex, opposite each of
-    their ends that a coupled section reaches; any other chain is one part.
-    Then a chain of a diff pair that a stub or unselected copper cuts pairs
-    part by part with the track beside it (`find_pairs`).
+    A chain is cut, at a pinned vertex, where a coupled section ends on it
+    opposite an end of a chain of its diff pair's other net on its layer
+    that the section reaches (`pairs.reach`), if that lies between two of
+    the chain's coupled sections, within the reach; any other chain is one
+    part. Then a chain of a diff pair that a stub or unselected copper cuts
+    pairs part by part with the track beside it (`find_pairs`). The end of
+    the diff pair, where its tracks fan out, cuts nothing.
     """
-    opposite: dict[int, list[list[float]]] = {}
+    spans: list[list[tuple[float, float]]] = [[] for _ in chains]
+    opposite: list[list[tuple[Opposite, int]]] = [[] for _ in chains]
+    tolerance = [0.0 for _ in chains]
     for k, m in combinations(range(len(chains)), 2):
         a, b = chains[k], chains[m]
         if a.layer != b.layer or not nets_pair(a.net, b.net):
@@ -76,15 +88,23 @@ def cut_parts(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPart
             continue
         if pair is None:
             continue
-        on_a, on_b = opposite_ends(pair)
-        opposite.setdefault(k, []).append(on_a)
-        opposite.setdefault(m, []).append(on_b)
-    snap = vertex_snap(chord_tolerance)
+        for own, other, got in zip((k, m), (m, k), reach(pair), strict=True):
+            spans[own] += got.spans
+            opposite[own] += [(o, other) for o in got.opposite]
+            tolerance[own] = max(tolerance[own], reached(pair))
+    cuts: list[list[float]] = [[] for _ in chains]
+    cut_ends: set[tuple[int, int]] = set()
+    for k in range(len(chains)):
+        for o, m in opposite[k]:
+            if between_sections(o.at, spans[k], tolerance[k]):
+                cuts[k].append(o.at)
+                cut_ends.add((m, o.end))
     parts: list[ChainPart] = []
     for k, chain in enumerate(chains):
-        partners = opposite.get(k, [])
-        cuts = [at for ends in partners for at in ends] if len(partners) > 1 else []
-        parts += [ChainPart(k, part) for part in cut_chain(chain, cuts, snap)]
+        own = cut_chain(chain, cuts[k], vertex_snap(chord_tolerance))
+        for n, part in enumerate(own):
+            cut = (n > 0 or (k, 0) in cut_ends, n < len(own) - 1 or (k, -1) in cut_ends)
+            parts.append(ChainPart(k, part, cut))
     return parts
 
 
@@ -190,13 +210,18 @@ tracks, b running the same way as a, and its gap."""
 
 
 def split_pair(
-    pair: Pair, a: ChainInput, b: ChainInput, field: SectionField
+    pair: Pair,
+    a: ChainInput,
+    b: ChainInput,
+    field: SectionField,
+    cut: tuple[tuple[bool, bool], tuple[bool, bool]] = ((False, False), (False, False)),
 ) -> tuple[
     list[PairInput], list[tuple[Piece, ChainInput]], list[tuple[Piece, ChainInput]]
 ]:
     """The coupled sections of `pair` as pair inputs, each with its `field`,
     and the uncoupled pieces of each of its chains, a's and then b's, as
-    chain inputs pinned at both ends.
+    chain inputs (`_piece_input`), given which ends of each chain are `cut`
+    (`ChainPart.cut`).
 
     `a` and `b` are its chains with their vertices and pins as `pair.a` and
     `pair.b` hold them. A piece of one vertex, where a section reaches a
@@ -230,26 +255,36 @@ def split_pair(
         )
     pieces_a, pieces_b = (
         [
-            (piece, _piece_input(chain, track, piece))
+            (piece, _piece_input(chain, track, piece, ends))
             for piece in uncoupled
             if piece.end != piece.start
         ]
-        for chain, track, uncoupled in zip(
-            (a, b), (pair.a, pair.b), pair.uncoupled(), strict=True
+        for chain, track, uncoupled, ends in zip(
+            (a, b), (pair.a, pair.b), pair.uncoupled(), cut, strict=True
         )
     )
     return sections, pieces_a, pieces_b
 
 
-def _piece_input(chain: ChainInput, track: Track, piece: Piece) -> ChainInput:
+def _piece_input(
+    chain: ChainInput, track: Track, piece: Piece, cut: tuple[bool, bool]
+) -> ChainInput:
+    """An uncoupled piece of `chain`, whose points and pins `track` holds,
+    pinned at both ends, as a chain input. A piece that reaches a `cut` end
+    of its chain pairs with nothing there, as a stretch beside a stub or a
+    length-tuning pattern does, and is held as drawn; a fan-out to a pad or
+    via smooths."""
     fixed = track.pinned[piece.start : piece.end + 1].copy()
+    held = (piece.after is None and cut[0]) or (piece.before is None and cut[1])
     fixed[[0, -1]] = True
+    fixed |= held
     return replace(
         chain,
         centreline=replace(
             chain.centreline, points=track.between(piece.start, piece.end)
         ),
         fixed=fixed,
+        held=held,
     )
 
 
@@ -368,8 +403,8 @@ def lay_out(
     diff pairs among those, with `field` building each section's field.
 
     A selected chain of one part that does not pair is laid out whole; a
-    part of a cut chain that does not pair is an uncoupled piece pinned at
-    both ends."""
+    part of a cut chain that does not pair is an uncoupled piece of its own
+    (`_piece_input`)."""
     paired = {k for p in pairs for k in (p.a, p.b)}
     of_chain: list[list[int]] = [[] for _ in whole]
     for i, part in enumerate(parts):
@@ -401,7 +436,8 @@ def lay_out(
             for i, track in ((p.a, pair.a), (p.b, pair.b))
         )
         first = len(sections)
-        new_sections, pieces_a, pieces_b = split_pair(pair, a, b, field)
+        cut = (parts[p.a].cut, parts[p.b].cut)
+        new_sections, pieces_a, pieces_b = split_pair(pair, a, b, field, cut)
         sections += new_sections
         pair_sections.append(range(first, len(sections)))
         for i, pieces, on_b in ((p.a, pieces_a, False), (p.b, pieces_b, True)):
@@ -425,10 +461,12 @@ def lay_out(
     for i, part in enumerate(parts):
         if i in paired or slots[part.selected] is not None:
             continue
-        fixed = np.array(part.chain.pinned)
-        fixed[[0, -1]] = True
-        stretches[i] = [_Stretch(0, len(fixed) - 1, piece=len(inputs))]
-        inputs.append(part_input(i, np.array(part.chain.points, dtype=float), fixed))
+        points = np.array(part.chain.points, dtype=float)
+        track = Track(points, np.array(part.chain.pinned))
+        piece = Piece(0, len(track.points) - 1, None, None)
+        stretches[i] = [_Stretch(piece.start, piece.end, piece=len(inputs))]
+        given = part_input(i, track.points, track.pinned)
+        inputs.append(_piece_input(given, track, piece, part.cut))
     inputs = _pinned_where_fixed(inputs, sections)
     return Layout(inputs, sections, slots, stretches, of_chain, pair_sections)
 

@@ -3809,9 +3809,10 @@ MEANDER = [
 pattern whose tracks the selection leaves out."""
 
 
-def cut_partner_board() -> CommitBoard:
-    """`pair_board` with USB_D- cut by a selected stub on its first straight
-    and by `MEANDER` on its last, USB_D+ running past both."""
+def cut_partner_board(*, stub: bool = True) -> CommitBoard:
+    """`pair_board` with USB_D- cut by a selected stub on its first straight,
+    unless not `stub`, and by `MEANDER` on its last, USB_D+ running past
+    both."""
     h = PAIR_HALF_PITCH
     mitre = math.tan(math.pi / 8) * h
     p = [t for t in pair_tracks() if t.net.name == USB[0]]
@@ -3829,20 +3830,31 @@ def cut_partner_board() -> CommitBoard:
     ]
     end = (13.0, 3.0 - h)
     n.append(kipy_track("n_end", USB[1], MEANDER[-1], end, width=PAIR_WIDTH))
-    stub = kipy_track(
-        "n_stub", USB[1], (N_STUB_AT, -h), (N_STUB_AT, -2.0), width=PAIR_WIDTH
-    )
+    foot, top = (N_STUB_AT, -h), (N_STUB_AT, -2.0)
+    stubs = [kipy_track("n_stub", USB[1], foot, top, width=PAIR_WIDTH)] if stub else []
     meander = [
         kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
         for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
     ]
     usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
-    selected = [*p, *n, stub]
+    selected = [*p, *n, *stubs]
     return CommitBoard(
         selection=list(selected),
         tracks=[*selected, *meander],
         netclasses={net: usb for net in USB},
     )
+
+
+def corner_stub_board(at: float) -> CommitBoard:
+    """`pair_board` with a selected USB_D- stub leaving the outer track at x
+    `at`, near its first 45° corner at x 5 + mitre."""
+    h = PAIR_HALF_PITCH
+    corner = 5.0 + math.tan(math.pi / 8) * h
+    foot = (at, -h + max(at - corner, 0.0))
+    stub = kipy_track("n_stub", USB[1], foot, (at, -2.0), width=PAIR_WIDTH)
+    board = pair_board(extra=[stub])
+    board.selection = [*board.selection, stub]
+    return board
 
 
 PAIR_SECOND_TRACK = 5.0
@@ -4201,6 +4213,60 @@ class TestPairs:
         h = PAIR_HALF_PITCH
         cuts = [(N_STUB_AT, h), (MEANDER[0][0], 3.0 + h), (MEANDER[-1][0], 3.0 + h)]
         assert {(nm(x), nm(y)) for x, y in cuts} <= ends(p)
+
+    @pytest.mark.parametrize("at", [4.9, 5.0])
+    def test_a_stub_near_a_corner_keeps_the_gap(
+        self, connect: Connector, log: list[str], at: float
+    ) -> None:
+        # Within a pitch before the outer track's corner, a section ends
+        # short of the stub's foot on one track or the other.
+        board = connect.to(corner_stub_board(at))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert not unexpected_warnings(log)
+        lines = by_net(board)
+        n = [line for line in lines[USB[1]] if {x for x, _ in line.coords} != {at}]
+        gaps = coupled_gaps(lines[USB[0]], n)
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+
+    def test_a_stub_on_a_corner_holds_the_section(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # A stub on the corner's diagonal pins the outer track where it does
+        # not run straight, so the section stays as drawn.
+        board = connect.to(corner_stub_board(5.1))
+
+        run()
+
+        assert board.calls == []
+        assert not unexpected_warnings(log)
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 1)]
+
+    def test_a_stretch_beside_a_meander_stays_as_drawn(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # USB_D+ beside the meander pairs with nothing there.
+        board = connect.to(cut_partner_board(stub=False))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert not unexpected_warnings(log)
+        y = 3.0 + PAIR_HALF_PITCH
+        beside = [(MEANDER[0][0], y), (MEANDER[-1][0], y)]
+        p = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
+        assert [[(nm(x), nm(y)) for x, y in beside]] == [
+            [(t.start.x, t.start.y), (t.end.x, t.end.y)]
+            for t in p
+            if MEANDER[0][0] <= t.start.x / 1e6 <= MEANDER[-1][0]
+            and MEANDER[0][0] <= t.end.x / 1e6 <= MEANDER[-1][0]
+        ]
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]
