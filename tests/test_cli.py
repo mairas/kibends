@@ -2196,6 +2196,13 @@ INSIDE_PAD = (4.0, 4.65)
 inside its 0.2 mm clearance."""
 
 
+# The fan-out vias here stop 0.019 mm short of touching their pad; the rest
+# is platform slack.
+PAD_SETTLED = 0.05
+"""How near touching a pad of its net that stops it a via settles under
+COARSE, mm."""
+
+
 def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
     """`l_chain` down the selected via `v` at `VIA` and on along
     `detour_back`, in free space."""
@@ -2731,6 +2738,43 @@ class TestMovingVias:
             assert pad.contains(centre)
         else:
             assert pad.distance(centre) >= via.diameter / 2e6 - NM_ROUNDING
+
+    @pytest.mark.parametrize("in_pad", [False, True])
+    def test_a_fan_out_via_moves_to_its_pad_and_stops_there_unless_allowed(
+        self, connect: Connector, in_pad: bool
+    ) -> None:
+        # One track from a pad of its net down to the via, and a plane of
+        # its net on the inner layer.
+        stub = l_chain()
+        via = kipy_via("v", "SIG", *VIA)
+        board = CommitBoard(
+            selection=[*stub, via],
+            tracks=list(stub),
+            vias=[via],
+            pads=[kipy_pad("p", "SIG", 0, 0, layers=(BL.BL_F_Cu,))],
+            enabled_layers=[BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu],
+            zones=[
+                kipy_copper_zone(
+                    "plane", "SIG", kipy_rect(-3, -3, 10, 10), [BL.BL_In1_Cu]
+                )
+            ],
+        )
+        connect.to(board)
+
+        run(*(["--allow-via-in-pad"] if in_pad else []))
+
+        assert sorted(board.deleted) == ["a", "b", "v"]
+        (moved,) = created_vias(board)
+        centre = Point(moved.position.x / 1e6, moved.position.y / 1e6)
+        length = sum(segment(t).length for t in created_on(board, BL.BL_F_Cu))
+        assert length < centre.distance(Point(0, 0)) + STRAIGHT_TOLERANCE
+        h = PAD_HALF_SIZE
+        pad = box(-h, -h, h, h)
+        if in_pad:
+            assert pad.contains(centre)
+        else:
+            assert pad.distance(centre) >= moved.diameter / 2e6 - NM_ROUNDING
+            assert pad.distance(centre) < moved.diameter / 2e6 + PAD_SETTLED
 
     def test_chains_meeting_at_a_moved_via_on_one_layer_need_no_trim_there(
         self, connect: Connector

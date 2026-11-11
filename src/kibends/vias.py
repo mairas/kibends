@@ -4,8 +4,9 @@ A selected via moves only when it is unlocked, not on a net of a diff pair
 (`pairs.in_diff_pair`: KiCad's naming rule, with the other net on the
 board, whether or not the selection pairs its tracks), every copper item touching
 it on a layer it spans is the end of a selected chain or a zone of its
-net, no other copper touches those ends, and either at least two such ends
-meet it or none does and a zone of its net reaches it: a stitching via,
+net, no other copper touches those ends, and either such an end meets it
+or a zone of its net reaches it. One end is enough: a pad's fan-out via
+moves along its track toward the pad. One with no end is a stitching via,
 which carries no chain and moves only where other copper crowds it.
 Through, blind, buried and micro vias move alike, each on the layers of its
 span: copper on a layer it does not reach neither moves with it nor holds
@@ -270,7 +271,7 @@ def movable_vias(
         unions = zone_unions(inside)
         held = any(chains[end.chain].held for end in ends)
         reason = _fixed_reason(
-            via, nets, strangers, len(ends), bool(inside), held=held
+            via, nets, strangers, bool(ends), bool(inside), held=held
         ) or (_edge_reason(via, unions))
         if reason is None:
             for layer, union in unions.items():
@@ -289,7 +290,7 @@ def _fixed_reason(
     via: Via,
     nets: Collection[str],
     strangers: Sequence[str],
-    ends: int,
+    ended: bool,
     zoned: bool,
     *,
     held: bool,
@@ -303,13 +304,8 @@ def _fixed_reason(
     if strangers:
         verb = "connects" if len(strangers) == 1 else "connect"
         return f"{', '.join(strangers)} {verb} to it"
-    if ends == 0:
-        # A stitching via: its zones keep it connected wherever it moves.
-        if zoned:
-            return None
+    if not ended and not zoned:
         return "no selected track ends at it and no zone of its net reaches it"
-    if ends == 1:
-        return "only one selected track ends at it"
     return None
 
 
