@@ -1,6 +1,10 @@
 """Differential pairs: pairing nets by name, finding where two chains run
 coupled, and the geometry of a pair's centreline and its two tracks.
 
+Two tracks run coupled wherever they run parallel at about the pair's
+pitch, however short the stretch, as in KiCad's coupling check; either may
+be drawn in any number of segments.
+
 A coupled stretch is split into sections at each vertex where same-net
 copper pins either track and both tracks run straight for
 `STRAIGHT_PITCHES` pitches to either side, and square across from it on
@@ -44,11 +48,6 @@ pairs keep their gap to the nanometre; this absorbs uneven routing."""
 MAX_GAP_TO_WIDTH = 4.0
 """Tracks further apart than this many track widths are not coupled. Real
 pairs use a gap of about one to three widths."""
-
-MIN_COUPLED_PITCHES = 5.0
-MIN_COUPLED_LENGTH = 1.0
-"""mm: a coupled stretch must be at least `MIN_COUPLED_PITCHES` pitches and at
-least this long; shorter ones are coincidences in fan-outs, not coupling."""
 
 VERTEX_SNAP = 1e-5
 """mm: a coupled section's end ends at a chain vertex this close or within the
@@ -234,13 +233,14 @@ def runs_coupled(a: Chain, b: Chain, chord_tolerance: float) -> bool:
 def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     """Find the coupled sections of two chains whose nets pair.
 
-    A coupled section is a stretch where each track stays within a band
-    around the pair's pitch from the other, at least `MIN_COUPLED_PITCHES`
-    pitches and `MIN_COUPLED_LENGTH` long. `chord_tolerance` widens the band,
-    since tracks simplified on their own each stray from the true curve by up
-    to that. The ends of a section lie opposite each other, so a track that
-    runs on past the other's fan-out gets a vertex there. None when no
-    stretch qualifies.
+    A coupled section is a stretch, however short, where each track runs
+    parallel to the other within a band around the pair's pitch, edge
+    against facing edge as KiCad's coupling check has it, so that tracks
+    that only pass through the band at an angle do not couple.
+    `chord_tolerance` widens the band, since tracks simplified on their own
+    each stray from the true curve by up to that. The ends of a section lie
+    opposite each other, so a track that runs on past the other's fan-out
+    gets a vertex there. None when no stretch qualifies.
 
     Same-net copper fixes a pair where it pins either track. Where both
     tracks run straight around the pin (`_Splits.of`), the stretch is split
@@ -540,7 +540,8 @@ def _coupled_spans(
     a: FloatArray, b: FloatArray, width: float, chord_tolerance: float
 ) -> list[_SectionEnds]:
     """Sample both tracks, measure each sample's distance to the other track,
-    and keep the runs of samples in the band around the dominant pitch.
+    and keep the runs of samples in the band around the dominant pitch whose
+    edge runs parallel to the facing one (`_parallel`), however short.
 
     Runs on the two tracks belong to one section when either maps onto the
     other: at a corner the outer track leaves the band around its vertex, but
@@ -556,8 +557,14 @@ def _coupled_spans(
     if pitch is None:
         return []
     band = _band(pitch, width, chord_tolerance)
-    runs_a = _runs(np.abs(near_a.distance - pitch) <= band)
-    runs_b = _runs(np.abs(near_b.distance - pitch) <= band)
+    runs_a = _runs(
+        (np.abs(near_a.distance - pitch) <= band)
+        & _parallel(a, at_a, b, near_a, pitch, band)
+    )
+    runs_b = _runs(
+        (np.abs(near_b.distance - pitch) <= band)
+        & _parallel(b, at_b, a, near_b, pitch, band)
+    )
     reach_a, reach_b = at_a[runs_a], at_b[runs_b]
     links = _overlapping(_mapped(runs_a, near_a.along), reach_b, step)
 
@@ -585,11 +592,13 @@ def _coupled_spans(
         )
         for rows, columns in _components(links)
     ]
-    min_length = max(MIN_COUPLED_PITCHES * pitch, MIN_COUPLED_LENGTH)
+    # `_ends` places an end only to within a step, or to a vertex within a
+    # snap; a span no longer than that on either track has no extent.
+    resolution = max(step, vertex_snap(chord_tolerance))
     return [
         span
         for span in sorted(spans, key=lambda s: s.a[0])
-        if min(abs(span.a[1] - span.a[0]), abs(span.b[1] - span.b[0])) >= min_length
+        if min(abs(span.a[1] - span.a[0]), abs(span.b[1] - span.b[0])) > resolution
     ]
 
 
@@ -618,6 +627,75 @@ def _dominant_pitch(
     upper = np.searchsorted(usable, usable + window, side="right")
     best = int(np.argmax(upper - np.arange(len(usable))))
     return float(np.median(usable[best : upper[best]]))
+
+
+def _parallel(
+    line: FloatArray,
+    at: FloatArray,
+    other: FloatArray,
+    near: _Nearest,
+    pitch: float,
+    band: float,
+) -> BoolArray:
+    """Whether the edge of `line` at each arc length of `at` and the edge of
+    `other` that its nearest point `near` lies on run parallel, as KiCad's
+    coupling check has it (`SEG::ApproxParallel` over a common projection):
+    over the stretch where the two edges face each other, the spacing stays
+    within `band` of `pitch`. Edges that only meet end to end do not face
+    each other. A point on a vertex lies on both edges there, and either
+    one will do."""
+    own, across = _polyline(line), _polyline(other)
+    edge = np.clip(np.searchsorted(own.arc, at, "right") - 1, 0, len(own.lengths) - 1)
+    result = np.zeros(len(at), dtype=bool)
+    for mine in _edges_at(own, at - own.arc[edge], edge):
+        for theirs in _edges_at(across, near.along - across.arc[near.edge], near.edge):
+            result |= _facing_in_band(line, mine, across, theirs, pitch, band)
+    return result
+
+
+def _edges_at(line: _Polyline, t: FloatArray, edge: IntArray) -> list[IntArray]:
+    """The edge each point lies on, given `t` along it, and the neighbouring
+    edge for a point on the vertex they share."""
+    last = len(line.lengths) - 1
+    before = (t <= SQUARE_SLACK) & (edge > 0)
+    after = (t >= line.lengths[edge] - SQUARE_SLACK) & (edge < last)
+    return [edge, np.where(before, edge - 1, np.where(after, edge + 1, edge))]
+
+
+def _facing_in_band(
+    line: FloatArray,
+    edge: IntArray,
+    across: _Polyline,
+    facing: IntArray,
+    pitch: float,
+    band: float,
+) -> BoolArray:
+    """Whether each `edge` of `line` overlaps edge `facing` of the other
+    polyline square across, and the spacing stays within `band` of `pitch`
+    at both ends of the overlap, so all along it."""
+    start, end = line[edge], line[edge + 1]
+    origin, direction = across.starts[facing], across.directions[facing]
+    length = across.lengths[facing]
+    # Where the edge's ends project along `facing`, from its start.
+    t_start = np.sum((start - origin) * direction, axis=1)
+    rate = np.sum((end - origin) * direction, axis=1) - t_start
+    perpendicular = np.abs(rate) <= SQUARE_SLACK
+    rate = np.where(perpendicular, 1.0, rate)
+    # The fractions of the edge whose projection lies inside `facing`.
+    enter, leave = -t_start / rate, (length - t_start) / rate
+    low = np.where(perpendicular, 0.0, np.maximum(np.minimum(enter, leave), 0.0))
+    high = np.where(perpendicular, 1.0, np.minimum(np.maximum(enter, leave), 1.0))
+    within = (t_start >= -SQUARE_SLACK) & (t_start <= length + SQUARE_SLACK)
+    overlaps = np.where(perpendicular, within, low <= high)
+    in_band = [
+        np.abs(
+            np.abs(_cross(direction, start + f[:, None] * (end - start) - origin))
+            - pitch
+        )
+        <= band
+        for f in (low, high)
+    ]
+    return overlaps & in_band[0] & in_band[1]
 
 
 def _runs(inside: BoolArray) -> IntArray:
@@ -788,6 +866,8 @@ class _Nearest(NamedTuple):
     distance: FloatArray
     square: BoolArray
     """Whether the foot lies inside its edge rather than at one of its ends."""
+    edge: IntArray
+    """The index of the polyline's edge the foot lies on."""
 
 
 def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
@@ -807,7 +887,11 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
         projection < line.lengths[index] + SQUARE_SLACK
     )
     return _Nearest(
-        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), square
+        foot,
+        line.arc[index] + t,
+        np.hypot(offset[:, 0], offset[:, 1]),
+        square,
+        index,
     )
 
 

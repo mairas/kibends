@@ -3855,11 +3855,13 @@ PATTERN_X = (8.3, 10.5, 12.0, 14.2)
 end, mm."""
 
 
-def pattern_board(nesting: int) -> CommitBoard:
+def pattern_board(
+    nesting: int, pattern_x: tuple[float, float, float, float] = PATTERN_X
+) -> CommitBoard:
     """`pair_board` run on to x `PATTERN_END`, USB_D- through a selected
     length-tuning pattern group, inside `nesting` more groups: two coupled
     straights and a bump between them, away from USB_D+, of two tracks and
-    an arc."""
+    an arc, at the x of `pattern_x` as `PATTERN_X` gives them."""
     h = PAIR_HALF_PITCH
     y = 3.0 - h
     deep = y - MEANDER_DEPTH
@@ -3869,7 +3871,7 @@ def pattern_board(nesting: int) -> CommitBoard:
             t.end = vec(PATTERN_END, t.end.y / 1e6)
     n_end = next(t for t in tracks if t.id.value == "n4")
     n_end.end = vec(PATTERN_X[0], y)
-    start, left, right, end = ((x, y) for x in PATTERN_X)
+    start, left, right, end = ((x, y) for x in pattern_x)
     pattern_items: list[kbt.BoardItem] = [
         kipy_track("pt_left", USB[1], start, left, width=PAIR_WIDTH),
         kipy_track("pt_down", USB[1], left, (left[0], deep), width=PAIR_WIDTH),
@@ -3902,6 +3904,8 @@ def pattern_board(nesting: int) -> CommitBoard:
 
 
 PATTERN_IDS = {"pt_left", "pt_down", "pt_bump", "pt_up", "pt_right"}
+SHORT_PATTERN_X = (8.3, 9.0, 10.5, 11.2)
+"""`PATTERN_X` with straights of two pitches."""
 
 
 def corner_stub_board(at: float) -> CommitBoard:
@@ -4333,6 +4337,32 @@ class TestPairs:
         assert [y for _, y in beside.coords] == pytest.approx(
             [y] * len(beside.coords), abs=NM_ROUNDING
         )
+
+    def test_a_pattern_s_short_straights_pair_against_a_push(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # A via beside USB_D+, opposite the pattern's first straight, would
+        # push it toward the pattern if it smoothed on its own.
+        board = pattern_board(0, SHORT_PATTERN_X)
+        y = 3.0 + PAIR_HALF_PITCH
+        x = (SHORT_PATTERN_X[0] + SHORT_PATTERN_X[1]) / 2
+        board.vias = [kipy_via("gnd", "GND", x, y + PAIR_HALF_PITCH + 0.3)]
+        connect.to(board)
+
+        run()
+
+        assert not unexpected_warnings(log)
+        (pairs,) = (r.pairs for r in reports)
+        assert (2, 2) in [(p.sections, p.held) for p in pairs]
+        p = linemerge(by_net(board)[USB[0]])
+        for start, end in itertools.batched(SHORT_PATTERN_X, 2, strict=True):
+            beside = p.intersection(box(start, -FAR, end, FAR))
+            assert [y for _, y in beside.coords] == pytest.approx(
+                [y] * len(beside.coords), abs=NM_ROUNDING
+            )
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]

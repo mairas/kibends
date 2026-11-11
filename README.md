@@ -272,8 +272,11 @@ violations than the selection had, and KiCad's DRC reports what remains.
 Two selected chains on one layer whose nets KiCad pairs by name, a common
 base with a `+`/`-` or `P`/`N` suffix (trailing digits and underscores
 ignored, as KiCad's router does), are smoothed as a pair where they run
-coupled: side by side at a near-constant gap for at least five pitches and
-1 mm. Each such stretch is a coupled section; a pair that splits around a
+coupled: side by side and parallel at a near-constant gap, however short
+the stretch, as in KiCad's own diff pair coupling check. Either track may
+be drawn in any number of segments, such as an arc split finely or the
+straights of a length-tuning pattern. Each such stretch is a coupled
+section; a pair that splits around a
 pad or via and rejoins has several. The pair's centreline is optimised and
 both tracks follow it at the gap the routing had, measured as the median
 over the coupled sections, so a pair costs about as much as one chain. The

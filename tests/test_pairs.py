@@ -274,13 +274,32 @@ def test_sections_either_side_of_a_short_bump_stay_disjoint() -> None:
     assert first.b_end <= second.b_start
 
 
-def test_short_coincidental_parallel_stretch_is_no_pair() -> None:
+def test_a_parallel_stretch_shorter_than_two_pitches_is_coupled() -> None:
     a = chain(
         "LVDS_P", (0.0, -3.0), (2.0, -HALF_PITCH), (2.5, -HALF_PITCH), (4.5, -3.0)
     )
     b = chain("LVDS_N", (0.0, 3.0), (2.0, HALF_PITCH), (2.5, HALF_PITCH), (4.5, 3.0))
 
-    assert find_pair(a, b, CHORD) is None
+    coupled_a, coupled_b = only_section(find_pair(a, b, CHORD))
+
+    np.testing.assert_allclose(coupled_a, [(2.0, -HALF_PITCH), (2.5, -HALF_PITCH)])
+    np.testing.assert_allclose(coupled_b, [(2.0, HALF_PITCH), (2.5, HALF_PITCH)])
+
+
+@pytest.mark.parametrize("split_a", [False, True])
+def test_a_finely_split_arc_pairs_as_one_section(split_a: bool) -> None:
+    """A 90° turn of radius 1, one track split every 5°, the other every 3°,
+    both into segments far shorter than a pitch."""
+    coarse, fine = offset_pair(arc(1.0, 19), GAP, WIDTH)[0], arc(1.0, 31)
+    fine = offset_pair(fine, GAP, WIDTH)[1]
+    a, b = (fine, coarse) if split_a else (coarse, fine)
+
+    coupled_a, coupled_b = only_section(
+        find_pair(from_array("CLK_P", a), from_array("CLK_N", b), CHORD)
+    )
+
+    assert len(coupled_a) == len(a)
+    assert len(coupled_b) == len(b)
 
 
 @pytest.mark.parametrize("chord", [0.0, 0.01, 0.025])
@@ -401,9 +420,9 @@ def test_coupled_end_is_found_with_a_wide_chord_tolerance() -> None:
     np.testing.assert_allclose(coupled_a, [(1.0, -HALF_PITCH), (9.0, -HALF_PITCH)])
 
 
-def test_pair_coupled_only_on_the_outside_of_a_tight_turn_is_no_pair() -> None:
-    """Around a 180° turn of radius 0.5 the outer track runs 2.1 mm coupled,
-    the inner only 1.0 mm, short of the 1.75 mm minimum."""
+def test_a_pair_around_a_tight_turn_is_coupled_around_it() -> None:
+    """Around a 180° turn of radius 0.5 the inner track runs 1.0 mm coupled,
+    under three pitches, then both fan out."""
     angles = np.linspace(-np.pi / 2, np.pi / 2, 61)
     turn = 0.5 * np.stack([np.cos(angles), np.sin(angles)], axis=1)
     inner, outer = offset_pair(turn, GAP, WIDTH)
@@ -418,9 +437,11 @@ def test_pair_coupled_only_on_the_outside_of_a_tight_turn_is_no_pair() -> None:
         ]
     )
 
-    assert (
-        find_pair(from_array("CLK_P", inner), from_array("CLK_N", outer), CHORD) is None
-    )
+    pair = find_pair(from_array("CLK_P", inner), from_array("CLK_N", outer), CHORD)
+
+    assert pair is not None
+    (section,) = pair.sections
+    assert section[:4] == (1, len(inner) - 2, 1, len(outer) - 2)
 
 
 def test_gap_widened_by_a_third_ends_the_section() -> None:
