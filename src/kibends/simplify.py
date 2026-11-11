@@ -11,9 +11,13 @@ vertex that keeps a pad or via (`chain.Contact`) is fixed, so merging keeps
 it where the optimizer left it, inside its region. A coupled section of a
 differential pair is simplified as its centreline, as the optimizer moved
 it, and its two tracks follow it as they do in the optimizer.
+
+`kept_vertices` merges a section's routing the same way before it moves
+(`pair_blocks`).
 """
 
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 from loguru import logger
@@ -27,8 +31,11 @@ from kibends.neighbours import (
     same_layer_neighbours,
 )
 from kibends.obstacles import CompositeField
-from kibends.pair_blocks import PairBlock
-from kibends.results import RunResult
+
+if TYPE_CHECKING:
+    # Both import pair_blocks, which simplifies a section's routing.
+    from kibends.pair_blocks import PairBlock
+    from kibends.results import RunResult
 
 
 def simplify(
@@ -39,7 +46,9 @@ def simplify(
 ) -> FloatArray:
     """Merge consecutive segments while the chord stays within `tolerance` of
     the merged vertices and clear of obstacles; fixed vertices are kept."""
-    return polyline[_kept(polyline, fixed, field, np.full(len(polyline), tolerance))]
+    return polyline[
+        kept_vertices(polyline, fixed, field, np.full(len(polyline), tolerance))
+    ]
 
 
 def simplify_chains(
@@ -83,7 +92,7 @@ def simplify_chains(
         fixed = result.fixed | seen.bounds(i)
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
-            kept[i] = _kept(result.polyline, fixed, field, allowed)
+            kept[i] = kept_vertices(result.polyline, fixed, field, allowed)
             loose = seen.loose_corners(i, kept[i], field)
             if not loose.any():
                 break
@@ -223,7 +232,7 @@ class _Neighbours:
         ]
 
 
-def _kept(
+def kept_vertices(
     polyline: FloatArray,
     fixed: BoolArray,
     field: ObstacleField,

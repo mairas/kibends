@@ -132,7 +132,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    through a neck, which only KiCad's DRC
    sees. Any other selected via stays where it is; a debug log line names it
    and the reason: it is locked, it is on a net of a differential pair (see
-   [Differential pairs](#differential-pairs)), other copper touches it or a chain end it
+   [Differential pairs](#differential-pairs)), a track of a selected group
+   ends at it, other copper touches it or a chain end it
    would carry (an unselected track, a selected track that passes it with
    no vertex at its centre, a pad, a copper shape or another via of its
    net, on a layer it spans), it sits at the edge of a zone's region
@@ -272,8 +273,11 @@ violations than the selection had, and KiCad's DRC reports what remains.
 Two selected chains on one layer whose nets KiCad pairs by name, a common
 base with a `+`/`-` or `P`/`N` suffix (trailing digits and underscores
 ignored, as KiCad's router does), are smoothed as a pair where they run
-coupled: side by side at a near-constant gap for at least five pitches and
-1 mm. Each such stretch is a coupled section; a pair that splits around a
+coupled: side by side and parallel at a near-constant gap, however short
+the stretch, as in KiCad's own diff pair coupling check. Either track may
+be drawn in any number of segments, such as an arc split finely or the
+straights of a length-tuning pattern. Each such stretch is a coupled
+section; a pair that splits around a
 pad or via and rejoins has several. The pair's centreline is optimised and
 both tracks follow it at the gap the routing had, measured as the median
 over the coupled sections, so a pair costs about as much as one chain. The
@@ -281,7 +285,8 @@ rest of each chain, such as its fan-outs to pads or vias, is smoothed as an
 ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
-already bends tighter keeps its own tracks. So does one whose corner the
+already bends tighter keeps its own tracks; a jog or sliver of less than a
+micrometre, such as KiCad leaves on its nanometre grid, does not count. So does one whose corner the
 copper around it keeps from rounding, such as a pad inside a sharp corner,
 or its own parts beyond the corner: the run is repeated with that section
 held, so that the other chains keep clear of its tracks. The repeat goes on from
@@ -313,14 +318,31 @@ not selected, still keep clearance from the other net's tracks.
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which
 KiCad's length tuner does. Same-net copper that touches a coupled section
-between its ends, such as a pad the pair runs past or a stub that branches
-off one track, fixes the pair there. Where both tracks run straight for
-at least two pitches (track width plus gap) to either side of that
-point, the section is split there, and square across the pair from it on
-the other track, into sections that each move on their own and meet where
-the copper is; a part too short to change shape between two such points
-stays as it is. Copper anywhere else, such as near a corner, leaves the
-whole section as it is.
+between its ends, such as a pad the pair runs through or a stub that
+branches off one track, fixes the pair there: the track it touches keeps
+passing through that point in the direction it did, the other track runs
+beside it at the gap, and the rest of the section, such as a corner beyond
+the pad, is smoothed. Copper close to a corner keeps that corner sharp, and
+when that bends more tightly than the inner track allows, or leaves too
+little of the section to change shape, the whole section stays as it is.
+
+A selected stub, such as a test pad's or an ESD diode's, splits the track
+it branches off into separate chains. The other track of the diff pair is
+then cut opposite each end where the two run coupled up to it, or to within
+one pitch of it, and each part pairs with the part beside it. The stub's
+junction and the points opposite it stay where they are. On a straight the
+diff pair stays coupled at its gap up to the stub on both tracks. Within
+about a pitch of a corner, coupling ends at the corner's vertex, and the
+stretch of either track between it and the stub stays as drawn, at its
+routed gap.
+
+A selected group, such as a length-tuning pattern, counts as its tracks,
+arcs and vias and those of every group inside it. They stay exactly as
+drawn, and the tracks they touch end there. They still pair like any
+track: where a tuning pattern's straight runs beside the other track of
+its diff pair, that track keeps its routed gap, and the diff pair on
+either side of the pattern pairs up to it as at a stub. Beside the
+pattern's bumps, the other track is smoothed on its own.
 
 A run warns when two chains whose nets pair run coupled but have
 different widths, when a chain runs coupled with one of its pair net that

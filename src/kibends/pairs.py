@@ -1,21 +1,21 @@
 """Differential pairs: pairing nets by name, finding where two chains run
 coupled, and the geometry of a pair's centreline and its two tracks.
 
-A coupled stretch is split into sections at each vertex where same-net
-copper pins either track and both tracks run straight for
-`STRAIGHT_PITCHES` pitches to either side, and square across from it on
-the other track, so that sections end at pins with the pair's gap and keep
-room to round their corners within the bend-radius limit. A pin that splits
-nothing holds the section it lies in (`pair_blocks.Hold.COPPER`), and a
-section left with no vertex to move is held as routed (`Hold.SHORT`),
-neither with a warning.
+Two tracks run coupled wherever they run parallel at about the pair's
+pitch, however short the stretch, as in KiCad's coupling check; either may
+be drawn in any number of segments.
+
+Each coupled stretch is one section, whatever same-net copper pins either
+track between its ends: the section's centreline is fixed where a pin
+needs it (`pair_blocks`), and a section left with no vertex to move is
+held as routed (`pair_blocks.Hold.SHORT`), without a warning.
 
 Units are mm floats in KiCad's board frame, with y pointing down.
 """
 
 import math
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -45,15 +45,16 @@ MAX_GAP_TO_WIDTH = 4.0
 """Tracks further apart than this many track widths are not coupled. Real
 pairs use a gap of about one to three widths."""
 
-MIN_COUPLED_PITCHES = 5.0
-MIN_COUPLED_LENGTH = 1.0
-"""mm: a coupled stretch must be at least `MIN_COUPLED_PITCHES` pitches and at
-least this long; shorter ones are coincidences in fan-outs, not coupling."""
-
 VERTEX_SNAP = 1e-5
 """mm: a coupled section's end ends at a chain vertex this close or within the
 chord tolerance, whichever is larger, so that neither nanometre rounding of
 45° routing nor tracks simplified one by one leave a sliver segment."""
+
+REACHED_PITCHES = 1.0
+"""A chain end this many pitches or less along the chain from a coupled
+section's end counts as reached by it (`reach`). A section ends at an
+in-band vertex, and near a 45° corner the nearest such vertex can lie up to
+about a pitch short of a stub's junction."""
 
 SAMPLES_PER_WIDTH = 4
 """Both tracks are sampled at this many points per track width."""
@@ -61,19 +62,6 @@ SAMPLES_PER_WIDTH = 4
 SQUARE_SLACK = 1e-9
 """mm: a foot this close to an edge's end still counts as inside it, so that
 a point opposite a straight vertex does not drop out."""
-
-STRAIGHT_PITCHES = 2.0
-"""Same-net copper splits a coupled stretch only where both tracks run
-straight for this many pitches to either side of the pin. Then the point
-square across from the pin lies on the other track's straight too, and a
-section ending there has at least two pitches of centreline before its
-first corner, whose vertex lies between the two tracks' corners. Less a
-spacing to its direction pin, at most a pitch, that leaves a pitch, more
-than the bend-radius limit, which is the straight an arc at that limit
-takes to turn by 90°."""
-
-STRAIGHT_TURN = 1e-3
-"""Radians: edges whose directions differ by less run straight."""
 
 BEND_RADIUS_TOLERANCE = 1e-3
 """Relative: a dense polyline drawn at the radius limit measures a hair below
@@ -146,11 +134,11 @@ class Track:
 
 
 class Section(NamedTuple):
-    """One coupled stretch, or a part of one between pins: inclusive vertex
-    indices into `Pair.a.points` and `Pair.b.points`, with start < end on
-    each track. `a_start` lies opposite `b_start` unless `b_reversed`, when
-    b runs against a and `a_start` lies opposite `b_end`. `gap` is the
-    section's median edge-to-edge gap."""
+    """One coupled stretch: inclusive vertex indices into `Pair.a.points`
+    and `Pair.b.points`, with start < end on each track. `a_start` lies
+    opposite `b_start` unless `b_reversed`, when b runs against a and
+    `a_start` lies opposite `b_end`. `gap` is the section's median
+    edge-to-edge gap."""
 
     a_start: int
     a_end: int
@@ -228,20 +216,16 @@ def runs_coupled(a: Chain, b: Chain, chord_tolerance: float) -> bool:
 def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     """Find the coupled sections of two chains whose nets pair.
 
-    A coupled section is a stretch where each track stays within a band
-    around the pair's pitch from the other, at least `MIN_COUPLED_PITCHES`
-    pitches and `MIN_COUPLED_LENGTH` long. `chord_tolerance` widens the band,
-    since tracks simplified on their own each stray from the true curve by up
-    to that. The ends of a section lie opposite each other, so a track that
-    runs on past the other's fan-out gets a vertex there. None when no
-    stretch qualifies.
+    A coupled section is a stretch, however short, where each track runs
+    parallel to the other within a band around the pair's pitch, edge
+    against facing edge as KiCad's coupling check has it, so that tracks
+    that only pass through the band at an angle do not couple.
+    `chord_tolerance` widens the band, since tracks simplified on their own
+    each stray from the true curve by up to that. The ends of a section lie
+    opposite each other, so a track that runs on past the other's fan-out
+    gets a vertex there. None when no stretch qualifies.
 
-    Same-net copper fixes a pair where it pins either track. Where both
-    tracks run straight around the pin (`_Splits.of`), the stretch is split
-    there into sections, which end at the pinned vertex and square across
-    from it on the other track, given a vertex there. A pin elsewhere, or
-    one that would not lie strictly between its neighbours on both tracks,
-    splits nothing and stays inside a section.
+    Pins between a stretch's ends stay inside its section.
     """
     if not nets_pair(a.net, b.net):
         raise PairError(f"nets {a.net} and {b.net} do not form a differential pair")
@@ -260,29 +244,19 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     spans = _coupled_spans(points_a, points_b, a.width, chord_tolerance)
     if not spans:
         return None
-    snap = max(VERTEX_SNAP, chord_tolerance)
-    pinned_a, pinned_b = np.array(a.pinned), np.array(b.pinned)
-    stations = [
-        _stations(points_a, pinned_a, points_b, pinned_b, ends, a.width, snap)
-        for ends in spans
-    ]
+    snap = vertex_snap(chord_tolerance)
+    # Each span's two ends, in turn, on each track.
     track_a, index_a = _with_vertices(
-        points_a, pinned_a, [a for stretch in stations for a, _ in stretch], snap
+        points_a, np.array(a.pinned), [at for span in spans for at in span.a], snap
     )
     track_b, index_b = _with_vertices(
-        points_b, pinned_b, [b for stretch in stations for _, b in stretch], snap
+        points_b, np.array(b.pinned), [at for span in spans for at in span.b], snap
     )
-    at_a, at_b = iter(index_a), iter(index_b)
-    parts = [
-        (a_start, a_end, b_first, b_last)
-        for stretch in stations
-        for (a_start, b_first), (a_end, b_last) in pairwise(
-            _in_order([(next(at_a), next(at_b)) for _ in stretch])
-        )
-    ]
     sections: list[Section] = []
     distances: list[FloatArray] = []
-    for a_start, a_end, b_first, b_last in parts:
+    for a_start, a_end, b_first, b_last in zip(
+        index_a[::2], index_a[1::2], index_b[::2], index_b[1::2], strict=True
+    ):
         b_start, b_end = min(b_first, b_last), max(b_first, b_last)
         section_distances = _centre_distances(
             track_a.points[a_start : a_end + 1],
@@ -296,111 +270,94 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     return Pair(track_a, track_b, tuple(sections), a.width, gap)
 
 
-def _stations(
-    a: FloatArray,
-    pinned_a: BoolArray,
-    b: FloatArray,
-    pinned_b: BoolArray,
-    ends: _SectionEnds,
-    width: float,
-    snap: float,
-) -> list[tuple[float, float]]:
-    """A coupled stretch's ends and, between them, the pins of either track
-    that split it (`_Splits.of`), each as (arc length along a, along b)."""
-    (a_first, a_last), (b_first, b_last) = ends.a, ends.b
-    span_a, span_b = (a_first, a_last), (min(b_first, b_last), max(b_first, b_last))
-    pitch = float(
-        np.median(_centre_distances(_cut(a, *span_a), _cut(b, *span_b), width))
+def vertex_snap(chord_tolerance: float) -> float:
+    """How near, mm, a point must lie to a chain vertex to count as on it."""
+    return max(VERTEX_SNAP, chord_tolerance)
+
+
+class Opposite(NamedTuple):
+    """An end of one chain of a pair that a coupled section reaches, and
+    where that section ends on the other chain."""
+
+    at: float
+    """Arc length along the other chain, mm."""
+    end: int
+    """Which end: 0 for its start, -1 for its end."""
+
+
+class Reach(NamedTuple):
+    """What the coupled sections of a pair reach on one of its chains."""
+
+    spans: list[tuple[float, float]]
+    """Each section's arc lengths along the chain, mm."""
+    opposite: list[Opposite]
+    """The ends of the other chain that a section reaches, opposite this one."""
+
+
+def reach(pair: Pair) -> tuple[Reach, Reach]:
+    """What the sections of `pair` reach on chain a and on chain b.
+
+    A chain end counts as reached when a section ends within `reached` of
+    it along the chain."""
+    arcs = [_polyline(track.points).arc for track in (pair.a, pair.b)]
+    spans: tuple[list[tuple[float, float]], list[tuple[float, float]]] = ([], [])
+    opposite: tuple[list[Opposite], list[Opposite]] = ([], [])
+    for s in pair.sections:
+        spans[0].append((float(arcs[0][s.a_start]), float(arcs[0][s.a_end])))
+        spans[1].append((float(arcs[1][s.b_start]), float(arcs[1][s.b_end])))
+        # (vertex of a, vertex of b) at each end of the section.
+        across = [(s.a_start, s.b_start), (s.a_end, s.b_end)]
+        if s.b_reversed:
+            across = [(s.a_start, s.b_end), (s.a_end, s.b_start)]
+        for vertices in across:
+            for side, other in ((0, 1), (1, 0)):
+                at = arcs[side][vertices[side]]
+                for end, chain_end in ((0, 0.0), (-1, float(arcs[side][-1]))):
+                    if abs(at - chain_end) <= reached(pair):
+                        there = float(arcs[other][vertices[other]])
+                        opposite[other].append(Opposite(there, end))
+    return Reach(spans[0], opposite[0]), Reach(spans[1], opposite[1])
+
+
+def reached(pair: Pair) -> float:
+    """How near, mm, a coupled section must end to a point along a chain to
+    reach it: `REACHED_PITCHES` pitches."""
+    return REACHED_PITCHES * (pair.width + pair.gap)
+
+
+def between_sections(
+    at: float, spans: list[tuple[float, float]], tolerance: float
+) -> bool:
+    """Whether arc length `at` lies between two of the `spans`, outside each,
+    within `tolerance`."""
+    return (
+        any(end <= at + tolerance for _, end in spans)
+        and any(start >= at - tolerance for start, _ in spans)
+        and not any(start + tolerance < at < end - tolerance for start, end in spans)
     )
-    splits = _Splits(pitch - width, width, STRAIGHT_PITCHES * pitch, snap)
-    inner = [
-        *splits.of(a, pinned_a, span_a, b, span_b),
-        *((x, y) for y, x in splits.of(b, pinned_b, span_b, a, span_a)),
+
+
+def cut_chain(chain: Chain, at: list[float], snap: float) -> list[Chain]:
+    """`chain` cut into parts, in order along it, at each arc length of `at`
+    more than `snap` from its ends, at a vertex pinned there: one within
+    `snap` of the arc length, or else one inserted."""
+    track, cuts = _with_vertices(
+        np.array(chain.points, dtype=float), np.array(chain.pinned), at, snap
+    )
+    last = len(track.points) - 1
+    inner = sorted({k for k in cuts if 0 < k < last})
+    if not inner:
+        return [chain]
+    points = [(float(x), float(y)) for x, y in track.points]
+    pinned = [bool(p) or k in inner for k, p in enumerate(track.pinned)]
+    return [
+        replace(
+            chain,
+            points=tuple(points[start : end + 1]),
+            pinned=tuple(pinned[start : end + 1]),
+        )
+        for start, end in pairwise([0, *inner, last])
     ]
-    return [(a_first, b_first), *inner, (a_last, b_last)]
-
-
-def _cut(points: FloatArray, start: float, end: float) -> FloatArray:
-    """The stretch of `points` between two arc lengths."""
-    arc = _polyline(points).arc
-    inside = (arc > start) & (arc < end)
-    ends = _point_at(points, np.array([start, end]))
-    return np.concatenate([ends[:1], points[inside], ends[1:]])
-
-
-class _Splits(NamedTuple):
-    """Where pins split one coupled stretch."""
-
-    gap: float
-    """The stretch's routed gap, mm."""
-    width: float
-    reach: float
-    """How far, mm, both tracks must run straight to either side."""
-    snap: float
-
-    def of(
-        self,
-        line: FloatArray,
-        pinned: BoolArray,
-        span: tuple[float, float],
-        other: FloatArray,
-        other_span: tuple[float, float],
-    ) -> list[tuple[float, float]]:
-        """(arc length along `line`, along `other`) of each pin of `line`
-        more than a snap inside the stretch that splits it: one where both
-        tracks run straight for `reach` to either side, each from its own
-        point (`_straight`), and the other track's point, the nearest one
-        to the pin, lies square across it at the routed gap. A pin too
-        close to a corner splits nothing, so the section around it stays
-        as it is."""
-        arc = _polyline(line).arc
-        inside = pinned & (arc > span[0] + self.snap) & (arc < span[1] - self.snap)
-        pins = np.flatnonzero(inside)
-        if len(pins) == 0:
-            return []
-        across = _nearest(line[pins], other)
-        splits: list[tuple[float, float]] = []
-        for pin, along, distance in zip(
-            pins.tolist(), across.along.tolist(), across.distance.tolist(), strict=True
-        ):
-            if (
-                other_span[0] + self.snap < along < other_span[1] - self.snap
-                and abs(distance - self.width - self.gap) <= GAP_TOLERANCE * self.gap
-                and _straight(line, float(arc[pin]), self.reach)
-                and _straight(other, along, self.reach)
-            ):
-                splits.append((float(arc[pin]), along))
-        return splits
-
-
-def _straight(points: FloatArray, at: float, reach: float) -> bool:
-    """Whether the polyline keeps one direction, within `STRAIGHT_TURN`,
-    for `reach` to either side of arc length `at`, or to its end. Vertices
-    on the way that do not turn, such as a straight drawn in two clicks,
-    do not end it."""
-    line = _polyline(points)
-    last = len(line.lengths) - 1
-    edge = min(int(np.searchsorted(line.arc, at, side="right")) - 1, last)
-    near = (line.arc[1:] > at - reach) & (line.arc[:-1] < at + reach)
-    return bool(
-        (line.directions[near] @ line.directions[edge] >= math.cos(STRAIGHT_TURN)).all()
-    )
-
-
-def _in_order(stations: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """A stretch's ends and the stations between them, vertex indices into
-    tracks a and b, in order along a and then b, without each station that
-    does not lie strictly between the last one kept and the end on both
-    tracks, so that every part runs on both. A pin dropped stays inside a
-    section, which then stays as it is."""
-    first, *inner, last = stations
-    sign = 1 if last[1] > first[1] else -1
-    kept = [first]
-    for a, b in sorted(inner, key=lambda station: (station[0], sign * station[1])):
-        a_kept, b_kept = kept[-1]
-        if a_kept < a < last[0] and sign * b_kept < sign * b < sign * last[1]:
-            kept.append((a, b))
-    return [*kept, last]
 
 
 class _SectionEnds(NamedTuple):
@@ -444,7 +401,8 @@ def _coupled_spans(
     a: FloatArray, b: FloatArray, width: float, chord_tolerance: float
 ) -> list[_SectionEnds]:
     """Sample both tracks, measure each sample's distance to the other track,
-    and keep the runs of samples in the band around the dominant pitch.
+    and keep the runs of samples in the band around the dominant pitch whose
+    edge runs parallel to the facing one (`_parallel`), however short.
 
     Runs on the two tracks belong to one section when either maps onto the
     other: at a corner the outer track leaves the band around its vertex, but
@@ -460,8 +418,14 @@ def _coupled_spans(
     if pitch is None:
         return []
     band = _band(pitch, width, chord_tolerance)
-    runs_a = _runs(np.abs(near_a.distance - pitch) <= band)
-    runs_b = _runs(np.abs(near_b.distance - pitch) <= band)
+    runs_a = _runs(
+        (np.abs(near_a.distance - pitch) <= band)
+        & _parallel(a, at_a, b, near_a, pitch, band)
+    )
+    runs_b = _runs(
+        (np.abs(near_b.distance - pitch) <= band)
+        & _parallel(b, at_b, a, near_b, pitch, band)
+    )
     reach_a, reach_b = at_a[runs_a], at_b[runs_b]
     links = _overlapping(_mapped(runs_a, near_a.along), reach_b, step)
 
@@ -489,11 +453,13 @@ def _coupled_spans(
         )
         for rows, columns in _components(links)
     ]
-    min_length = max(MIN_COUPLED_PITCHES * pitch, MIN_COUPLED_LENGTH)
+    # `_ends` places an end only to within a step, or to a vertex within a
+    # snap; a span no longer than that on either track has no extent.
+    resolution = max(step, vertex_snap(chord_tolerance))
     return [
         span
         for span in sorted(spans, key=lambda s: s.a[0])
-        if min(abs(span.a[1] - span.a[0]), abs(span.b[1] - span.b[0])) >= min_length
+        if min(abs(span.a[1] - span.a[0]), abs(span.b[1] - span.b[0])) > resolution
     ]
 
 
@@ -522,6 +488,75 @@ def _dominant_pitch(
     upper = np.searchsorted(usable, usable + window, side="right")
     best = int(np.argmax(upper - np.arange(len(usable))))
     return float(np.median(usable[best : upper[best]]))
+
+
+def _parallel(
+    line: FloatArray,
+    at: FloatArray,
+    other: FloatArray,
+    near: _Nearest,
+    pitch: float,
+    band: float,
+) -> BoolArray:
+    """Whether the edge of `line` at each arc length of `at` and the edge of
+    `other` that its nearest point `near` lies on run parallel, as KiCad's
+    coupling check has it (`SEG::ApproxParallel` over a common projection):
+    over the stretch where the two edges face each other, the spacing stays
+    within `band` of `pitch`. Edges that only meet end to end do not face
+    each other. A point on a vertex lies on both edges there, and either
+    one will do."""
+    own, across = _polyline(line), _polyline(other)
+    edge = np.clip(np.searchsorted(own.arc, at, "right") - 1, 0, len(own.lengths) - 1)
+    result = np.zeros(len(at), dtype=bool)
+    for mine in _edges_at(own, at - own.arc[edge], edge):
+        for theirs in _edges_at(across, near.along - across.arc[near.edge], near.edge):
+            result |= _facing_in_band(line, mine, across, theirs, pitch, band)
+    return result
+
+
+def _edges_at(line: _Polyline, t: FloatArray, edge: IntArray) -> list[IntArray]:
+    """The edge each point lies on, given `t` along it, and the neighbouring
+    edge for a point on the vertex they share."""
+    last = len(line.lengths) - 1
+    before = (t <= SQUARE_SLACK) & (edge > 0)
+    after = (t >= line.lengths[edge] - SQUARE_SLACK) & (edge < last)
+    return [edge, np.where(before, edge - 1, np.where(after, edge + 1, edge))]
+
+
+def _facing_in_band(
+    line: FloatArray,
+    edge: IntArray,
+    across: _Polyline,
+    facing: IntArray,
+    pitch: float,
+    band: float,
+) -> BoolArray:
+    """Whether each `edge` of `line` overlaps edge `facing` of the other
+    polyline square across, and the spacing stays within `band` of `pitch`
+    at both ends of the overlap, so all along it."""
+    start, end = line[edge], line[edge + 1]
+    origin, direction = across.starts[facing], across.directions[facing]
+    length = across.lengths[facing]
+    # Where the edge's ends project along `facing`, from its start.
+    t_start = np.sum((start - origin) * direction, axis=1)
+    rate = np.sum((end - origin) * direction, axis=1) - t_start
+    perpendicular = np.abs(rate) <= SQUARE_SLACK
+    rate = np.where(perpendicular, 1.0, rate)
+    # The fractions of the edge whose projection lies inside `facing`.
+    enter, leave = -t_start / rate, (length - t_start) / rate
+    low = np.where(perpendicular, 0.0, np.maximum(np.minimum(enter, leave), 0.0))
+    high = np.where(perpendicular, 1.0, np.minimum(np.maximum(enter, leave), 1.0))
+    within = (t_start >= -SQUARE_SLACK) & (t_start <= length + SQUARE_SLACK)
+    overlaps = np.where(perpendicular, within, low <= high)
+    in_band = [
+        np.abs(
+            np.abs(_cross(direction, start + f[:, None] * (end - start) - origin))
+            - pitch
+        )
+        <= band
+        for f in (low, high)
+    ]
+    return overlaps & in_band[0] & in_band[1]
 
 
 def _runs(inside: BoolArray) -> IntArray:
@@ -602,6 +637,17 @@ def _ends(
 
     first, last = snap(start, 1.0), snap(end, -1.0)
     return _SectionEnds((first[0], last[0]), (first[1], last[1]))
+
+
+def with_nearest_vertices(
+    track: Track, targets: FloatArray, snap: float
+) -> tuple[Track, list[int]]:
+    """`track` with a vertex at its point nearest each of `targets`, unless
+    one lies within `snap` of it, and the vertex index of each target."""
+    if len(targets) == 0:
+        return track, []
+    along = _nearest(targets, track.points).along
+    return _with_vertices(track.points, track.pinned, along.tolist(), snap)
 
 
 def _with_vertices(
@@ -692,6 +738,8 @@ class _Nearest(NamedTuple):
     distance: FloatArray
     square: BoolArray
     """Whether the foot lies inside its edge rather than at one of its ends."""
+    edge: IntArray
+    """The index of the polyline's edge the foot lies on."""
 
 
 def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
@@ -711,7 +759,11 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
         projection < line.lengths[index] + SQUARE_SLACK
     )
     return _Nearest(
-        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), square
+        foot,
+        line.arc[index] + t,
+        np.hypot(offset[:, 0], offset[:, 1]),
+        square,
+        index,
     )
 
 
@@ -803,26 +855,41 @@ class BendCheck(NamedTuple):
     too_tight: bool
 
 
-def check_bend_radius(centreline: FloatArray, gap: float, width: float) -> BendCheck:
-    """The centreline's smallest bend radius and whether it is below the limit."""
-    radius = float(bend_radii(centreline).min())
+def check_bend_radius(
+    centreline: FloatArray,
+    gap: float,
+    width: float,
+    turning: BoolArray | None = None,
+) -> BendCheck:
+    """The centreline's smallest bend radius and whether it is below the
+    limit, counting the turns at the vertices `turning` (`bend_radii`)."""
+    radius = float(bend_radii(centreline, turning).min())
     return BendCheck(radius, bool(too_tight(radius, bend_radius_limit(gap, width))))
 
 
-def bend_radii(centreline: FloatArray) -> FloatArray:
+def bend_radii(centreline: FloatArray, turning: BoolArray | None = None) -> FloatArray:
     """Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
-    beside a fold. For a dense arc of radius R with turn Δ per vertex it is
-    R·cos(Δ/2)."""
+    beside a fold and for an edge of no length, where the centreline turns
+    on the spot. For a dense arc of radius R with turn Δ per vertex it is
+    R·cos(Δ/2). Only the turns and folds at the vertices `turning` count,
+    every vertex by default."""
     delta = np.diff(centreline, axis=0)
     lengths = np.hypot(delta[:, 0], delta[:, 1])
-    direction = delta / lengths[:, None]
+    empty = lengths == 0.0
+    direction = np.divide(
+        delta, lengths[:, None], out=np.zeros_like(delta), where=~empty[:, None]
+    )
     sine = _cross(direction[:-1], direction[1:])
     one_plus_cos = 1.0 + np.sum(direction[:-1] * direction[1:], axis=1)
     folds = one_plus_cos <= FOLD_SLACK
     half_turns = np.divide(sine, one_plus_cos, out=np.zeros_like(sine), where=~folds)
+    if turning is not None:
+        folds &= turning[1:-1]
+        half_turns = np.where(turning[1:-1], half_turns, 0.0)
     radii, _ = edge_bend_radii(lengths, half_turns)
     radii[:-1][folds] = 0.0
     radii[1:][folds] = 0.0
+    radii[empty] = 0.0
     return radii
 
 

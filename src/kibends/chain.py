@@ -16,7 +16,10 @@ share the cut: at the junction it hangs off, else at a point other copper
 pins, else at the vertex that keeps a pad or via it passes, which is then
 pinned (`_cut_loop`). A loop nothing of its net touches, and zero-length
 tracks that touch no selected track of their width, form no chain; the run
-leaves them on the board as unselected copper.
+leaves them on the board as unselected copper. A track shorter than
+`JUNCTION_TOLERANCE_NM` counts as zero-length, its ends merged into one
+point (`_short_tracks_merged`), so it adds no vertex to a chain, which
+still replaces it.
 
 Where selected chains of one net overlap or cross away from their ends,
 nothing pins either: copper of one net does not interact, so a run may move
@@ -63,7 +66,7 @@ NM_PER_MM = 1_000_000
 # Below KiCad's 1 nm resolution, so two distinct chain vertices never merge.
 PIN_MERGE_TOLERANCE_MM = 0.5 / NM_PER_MM
 # Far below any real geometry, yet above the rounding of a point placed on a
-# diagonal segment.
+# diagonal segment, or of a corner KiCad rounds into a track of its own.
 JUNCTION_TOLERANCE_NM = 10
 MAX_CHAIN_DEGREE = 2
 # Widens the float candidate search so a point exactly at the tolerance still
@@ -89,6 +92,8 @@ class Segment:
     layer: str
     net: str
     locked: bool = False
+    held: bool = False
+    """It came from a selected group, and stays as drawn (`Chain.held`)."""
 
 
 Adjacency = dict[NmPoint, list[Segment]]
@@ -153,6 +158,9 @@ class Chain:
     net: str
     segment_ids: tuple[str, ...]
     slides: tuple[tuple[int, BaseGeometry], ...] = ()
+    held: bool = False
+    """Its segments are held (`Segment.held`): it stays as drawn, every
+    vertex pinned."""
 
     def with_slides_pinned(self) -> Chain:
         """The chain with each sliding vertex pinned where it is."""
@@ -176,7 +184,9 @@ def extract_chains(
     Selected segments are grouped by layer, net and width, and each group is
     split into connected pieces. A closed loop is cut where its net touches
     it; one nothing of its net touches, and zero-length segments that touch
-    no other of their width, form no chain and are logged at debug. Two
+    no other of their width, form no chain and are logged at debug. A
+    segment shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends
+    merged into one point (`_short_tracks_merged`). Two
     widths that overlap along a span stay a chain each, held where the end
     of one reaches the other. A point where three or more selected tracks of
     one net on one layer end, or tracks of more than one width that do not
@@ -194,7 +204,9 @@ def extract_chains(
     apart. `cuts(layer, net)` gives the points, in mm, at which to end
     chains, the centres of vias that may move or that move: the pieces are
     also split at each one that is a vertex, into chains that end there,
-    pinned, as at any chain end, unless it is a junction.
+    pinned, as at any chain end, unless it is a junction. Held segments
+    (`Segment.held`) and the others are split apart in the same way, and a
+    chain of held ones is held whole (`Chain.held`).
     Locked segments stay out of every chain, with a warning, and pin the
     chains they touch on their layer.
 
@@ -232,6 +244,7 @@ def split_chains(
     giving `left_out` a line on each piece that forms no chain."""
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
+    kept = _short_tracks_merged(kept)
     if all(s.start == s.end for s in kept):
         raise ChainError("selection has no tracks of non-zero length")
 
@@ -255,7 +268,11 @@ def split_chains(
         }
         # Exact float equality is nanometre equality: see `Contact.anchor`.
         cut_mm = set(cuts(layer, net))
-        cut_vertices = {p for p in adjacency if _mm(p) in cut_mm} - junctions
+        cut_vertices = {
+            p
+            for p, segs in adjacency.items()
+            if _mm(p) in cut_mm or len({s.held for s in segs}) > 1
+        } - junctions
         pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
             of_width_pieces = _split(_adjacency(edges, dots), junctions | cut_vertices)
@@ -303,7 +320,7 @@ def split_chains(
         ]
         bodies = _CopperIndex([t for _, t in tracks], [k for k, _ in tracks])
         net_chains = [
-            chain
+            _held(chain) if all(s.held for s in _edges_of(adjacency)) else chain
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
             if (
                 chain := _chain(
@@ -328,6 +345,12 @@ def split_chains(
     return sorted(
         chains, key=lambda c: (c.net, c.layer, c.points[0], c.width, c.points)
     )
+
+
+def _held(chain: Chain) -> Chain:
+    """`chain` held as drawn."""
+    pinned = (True,) * len(chain.points)
+    return replace(chain.with_slides_pinned(), pinned=pinned, held=True)
 
 
 def shared_track_groups(segment_ids: Sequence[Collection[str]]) -> list[int]:
@@ -425,6 +448,7 @@ def extract_chain(
     The chain starts at the end with the smaller (x, y).
     """
     kept, locked = split_locked(segments)
+    kept = _short_tracks_merged(kept)
     copper = tuple(same_net_copper)
     if kept:
         _, layer, net = _uniform_attributes(kept)
@@ -610,6 +634,34 @@ def _single_value[Attribute: (int, str)](
         for value, ids in sorted(ids_by_value.items())
     )
     raise ChainError(f"selected tracks have different {what}: {listing}{hint}")
+
+
+def _short_tracks_merged(segments: Sequence[Segment]) -> list[Segment]:
+    """`segments` with each one shorter than `JUNCTION_TOLERANCE_NM` made a
+    zero-length dot: its two ends merge into the smaller, and every segment
+    of its layer and net that ends at either ends there.
+
+    KiCad leaves such tracks where it rounds a corner to the nanometre grid.
+    As an edge, one would give a chain two vertices a nanometre apart, which
+    every later stage reads as a sharp kink.
+    """
+    into: dict[tuple[str, str, NmPoint], NmPoint] = {}
+
+    def merged(s: Segment, p: NmPoint) -> NmPoint:
+        while (s.layer, s.net, p) in into:
+            p = into[s.layer, s.net, p]
+        return p
+
+    for s in segments:
+        dx, dy = s.end[0] - s.start[0], s.end[1] - s.start[1]
+        if dx * dx + dy * dy >= JUNCTION_TOLERANCE_NM**2:
+            continue
+        low, high = sorted((merged(s, s.start), merged(s, s.end)))
+        if low != high:
+            into[s.layer, s.net, high] = low
+    return [
+        replace(s, start=merged(s, s.start), end=merged(s, s.end)) for s in segments
+    ]
 
 
 def _unique_edges(segments: Sequence[Segment]) -> tuple[list[Segment], set[NmPoint]]:

@@ -26,6 +26,7 @@ from conftest import (
     Ticking,
     kipy_arc,
     kipy_copper_zone,
+    kipy_group,
     kipy_pad,
     kipy_rect,
     kipy_track,
@@ -35,10 +36,12 @@ from conftest import (
     neutral_distance,
     nm,
     return_via_board,
+    vec,
     via_ids,
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
+from kipy.geometry import Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
@@ -2627,6 +2630,30 @@ class TestMovingVias:
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
 
+    def test_a_via_a_group_track_ends_at_stays_and_the_run_commits(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # Moved, the via would drag the group's track, which the commit's
+        # re-read then finds changed.
+        route = [*l_chain(), *detour_back()]
+        via = kipy_via("v", "SIG", *VIA)
+        group = kipy_group("Tuning Pattern", route[:2])
+        board = connect.to(
+            CommitBoard(
+                selection=[group, *route[2:], via],
+                tracks=list(route),
+                vias=[via],
+                groups=[group],
+            )
+        )
+
+        run("--verbose")
+
+        assert board.calls == COMMIT_CALLS
+        assert not created_vias(board)
+        assert not {"a", "b", "v"} & {*board.deleted}
+        assert any("a track of a selected group ends at it" in line for line in log)
+
     def test_a_via_at_a_width_change_carries_both_ends(
         self, connect: Connector
     ) -> None:
@@ -3737,6 +3764,10 @@ ROUNDED_OFF = 0.05
 at least."""
 GAP_SLACK = GAP_TOLERANCE * PAIR_GAP
 """How far, mm, a pair's gap may stray and still count as coupled."""
+JOG_NM = 100
+"""A sideways jog in a track, nm."""
+JOG_AT_NM = 200_000
+"""nm along a pair's coupled start where its tracks jog."""
 STUB_NEAR_CORNER = 0.02
 """mm before a corner of the pair's inner track where a stub leaves it."""
 STUBS_APART = 0.05
@@ -3793,6 +3824,131 @@ def pair_board(
     )
 
 
+STUB_AT = 2.5
+"""x where a stub leaves a pair's first straight, mm."""
+N_STUB_AT = 2.0
+"""x where `cut_partner_board`'s stub leaves USB_D-, mm."""
+MEANDER_DEPTH = 0.8
+"""How far, mm, `cut_partner_board`'s meander bulges away from USB_D+."""
+MEANDER = [
+    (9.5, 3.0 - PAIR_HALF_PITCH),
+    (9.5, 3.0 - PAIR_HALF_PITCH - MEANDER_DEPTH),
+    (11.0, 3.0 - PAIR_HALF_PITCH - MEANDER_DEPTH),
+    (11.0, 3.0 - PAIR_HALF_PITCH),
+]
+"""An unselected meander on USB_D-'s last straight, copper the selection
+leaves out."""
+
+
+def cut_partner_board() -> CommitBoard:
+    """`pair_board` with USB_D- cut by a selected stub on its first straight
+    and by `MEANDER` on its last, USB_D+ running past both."""
+    h = PAIR_HALF_PITCH
+    mitre = math.tan(math.pi / 8) * h
+    p = [t for t in pair_tracks() if t.net.name == USB[0]]
+    n_points = [
+        (PAIR_FAN[0], -PAIR_FAN[1]),
+        (0.0, -h),
+        (N_STUB_AT, -h),
+        (5.0 + mitre, -h),
+        (8.0 + mitre, 3.0 - h),
+        MEANDER[0],
+    ]
+    n = [
+        kipy_track(f"n{k}", USB[1], start, end, width=PAIR_WIDTH)
+        for k, (start, end) in enumerate(itertools.pairwise(n_points))
+    ]
+    end = (13.0, 3.0 - h)
+    n.append(kipy_track("n_end", USB[1], MEANDER[-1], end, width=PAIR_WIDTH))
+    stub = kipy_track(
+        "n_stub", USB[1], (N_STUB_AT, -h), (N_STUB_AT, -2.0), width=PAIR_WIDTH
+    )
+    meander = [
+        kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
+        for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
+    ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    selected = [*p, *n, stub]
+    return CommitBoard(
+        selection=list(selected),
+        tracks=[*selected, *meander],
+        netclasses={net: usb for net in USB},
+    )
+
+
+PATTERN_END = 17.0
+"""x where `pattern_board`'s diff pair ends, mm, long enough for the
+pattern's straights to run coupled."""
+PATTERN_X = (8.3, 10.5, 12.0, 14.2)
+"""x of `pattern_board`'s pattern's start, its bump's two sides, and its
+end, mm."""
+
+
+def pattern_board(
+    nesting: int, pattern_x: tuple[float, float, float, float] = PATTERN_X
+) -> CommitBoard:
+    """`pair_board` run on to x `PATTERN_END`, USB_D- through a selected
+    length-tuning pattern group, inside `nesting` more groups: two coupled
+    straights and a bump between them, away from USB_D+, of two tracks and
+    an arc, at the x of `pattern_x` as `PATTERN_X` gives them."""
+    h = PAIR_HALF_PITCH
+    y = 3.0 - h
+    deep = y - MEANDER_DEPTH
+    tracks = pair_tracks()
+    for t in tracks:
+        if t.end.x == nm(13.0):
+            t.end = vec(PATTERN_END, t.end.y / 1e6)
+    n_end = next(t for t in tracks if t.id.value == "n4")
+    n_end.end = vec(PATTERN_X[0], y)
+    start, left, right, end = ((x, y) for x in pattern_x)
+    pattern_items: list[kbt.BoardItem] = [
+        kipy_track("pt_left", USB[1], start, left, width=PAIR_WIDTH),
+        kipy_track("pt_down", USB[1], left, (left[0], deep), width=PAIR_WIDTH),
+        kipy_arc(
+            "pt_bump",
+            USB[1],
+            (left[0], deep),
+            ((left[0] + right[0]) / 2, deep - MEANDER_DEPTH / 2),
+            (right[0], deep),
+            width=PAIR_WIDTH,
+        ),
+        kipy_track("pt_up", USB[1], (right[0], deep), right, width=PAIR_WIDTH),
+        kipy_track("pt_right", USB[1], right, end, width=PAIR_WIDTH),
+    ]
+    after = kipy_track("n5", USB[1], end, (PATTERN_END, y), width=PAIR_WIDTH)
+    groups = [kipy_group("Tuning Pattern", pattern_items)]
+    for k in range(nesting):
+        groups.append(kipy_group(f"outer{k}", [groups[-1]]))
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    return CommitBoard(
+        selection=[*tracks, after, groups[-1]],
+        tracks=[
+            *tracks,
+            after,
+            *cast(list[kbt.Track | kbt.ArcTrack], pattern_items),
+        ],
+        groups=groups,
+        netclasses={net: usb for net in USB},
+    )
+
+
+PATTERN_IDS = {"pt_left", "pt_down", "pt_bump", "pt_up", "pt_right"}
+SHORT_PATTERN_X = (8.3, 9.0, 10.5, 11.2)
+"""`PATTERN_X` with straights of two pitches."""
+
+
+def corner_stub_board(at: float) -> CommitBoard:
+    """`pair_board` with a selected USB_D- stub leaving the outer track at x
+    `at`, near its first 45° corner at x 5 + mitre."""
+    h = PAIR_HALF_PITCH
+    corner = 5.0 + math.tan(math.pi / 8) * h
+    foot = (at, -h + max(at - corner, 0.0))
+    stub = kipy_track("n_stub", USB[1], foot, (at, -2.0), width=PAIR_WIDTH)
+    board = pair_board(extra=[stub])
+    board.selection = [*board.selection, stub]
+    return board
+
+
 PAIR_SECOND_TRACK = 5.0
 """How far, mm, track USB_D- moves away to not pair."""
 PAIR_WIDER = 0.25
@@ -3845,6 +4001,70 @@ def coupled_gaps(p: list[LineString], n: list[LineString]) -> tuple[float, float
     return gap_range(a, b, PAIR_WIDTH)
 
 
+def assert_stubs_kept(board: CommitBoard, feet: Sequence[float]) -> None:
+    """USB_D+ of `pair_board`, as committed or else as routed, still passes
+    through the foot of each stub at x of `feet` on its first straight."""
+    routed = [segment(t) for t in pair_tracks() if t.net.name == USB[0]]
+    p = linemerge(by_net(board)[USB[0]] or routed)
+    for x in feet:
+        assert p.distance(Point(x, PAIR_HALF_PITCH)) <= NM_ROUNDING
+
+
+TVS_WIDTH = 0.261
+TVS_GAP = 0.203
+"""The track width and gap, mm, of the USB pair on the board that
+`tvs_board` follows."""
+TVS_CENTRELINE = ((0.0, 3.1), (0.0, 0.0), (0.7, -0.7), (1.5, -0.7))
+"""`tvs_board`'s centreline: up from the connector's pins, then right by
+90° through a 45° chamfer."""
+TVS_PADS_Y = 0.6
+"""y of the TVS part's pads, each passed through by a track of its net."""
+TVS_PAD_SHIFT = 0.2
+"""How far, mm, each pad's centre lies outward of its track, so that the
+two nets' pads keep apart."""
+TVS_VIA_DIAMETER = 0.4
+TVS_VIA_DRILL = 0.2
+TVS_N_RUNS_ON = 0.5
+"""How far, mm, USB_D- runs on past the pair's end to its via, so that
+the two vias keep apart."""
+
+
+def tvs_tracks() -> tuple[FloatArray, FloatArray]:
+    """`tvs_board`'s tracks USB_D+ and USB_D-, mitred about its centreline."""
+    n, p = offset_pair(np.array(TVS_CENTRELINE), TVS_GAP, TVS_WIDTH)
+    n = np.concatenate([n, [n[-1] + (TVS_N_RUNS_ON, 0.0)]])
+    return p, n
+
+
+def tvs_board() -> CommitBoard:
+    """A pair leaving a connector's pins straight up through the pads of a
+    TVS part, one pad of its own net on each track, then turning 90° to two
+    vias through a 45° chamfer."""
+    tracks: list[kbt.Track] = []
+    pads: list[kbt.Pad] = []
+    vias: list[kbt.Via] = []
+    for net, track, side in zip(USB, tvs_tracks(), (-1.0, 1.0), strict=True):
+        route = [(float(x), float(y)) for x, y in track]
+        tracks += [
+            kipy_track(f"{net}{k}", net, start, end, width=TVS_WIDTH)
+            for k, (start, end) in enumerate(itertools.pairwise(route))
+        ]
+        (x, y), end = route[0], route[-1]
+        pads += [
+            kipy_pad(f"pin{net}", net, x + side * TVS_PAD_SHIFT, y),
+            kipy_pad(f"tvs{net}", net, x + side * TVS_PAD_SHIFT, TVS_PADS_Y),
+        ]
+        vias.append(kipy_via(f"via{net}", net, *end, TVS_VIA_DIAMETER, TVS_VIA_DRILL))
+    usb = netclass("USB", PAIR_CLEARANCE, TVS_GAP)
+    return CommitBoard(
+        selection=list(tracks),
+        tracks=list(tracks),
+        pads=pads,
+        vias=vias,
+        netclasses={net: usb for net in USB},
+    )
+
+
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestPairs:
     def test_commits_both_tracks_in_one_commit_at_their_gap(
@@ -3856,6 +4076,64 @@ class TestPairs:
 
         assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == list(PAIR_IDS)
+        gaps = coupled_gaps(*by_net(board).values())
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+
+    def test_a_nanometre_track_at_a_corner_is_smoothed_away(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = pair_board()
+        corner = next(t for t in board.tracks if t.id.value == "p3")
+        # As KiCad leaves one at a 45° corner: across it, 1 nm each way.
+        dot = kipy_track("dot", USB[0], (0, 0), (0, 0), width=PAIR_WIDTH)
+        dot.start = Vector2.from_xy(corner.start.x, corner.start.y)
+        dot.end = Vector2.from_xy(corner.start.x + 1, corner.start.y - 1)
+        corner.start = dot.end
+        board.selection = [*board.selection, dot]
+        board.tracks = [*board.tracks, dot]
+        connect.to(board)
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert pair.held == 0
+        assert sorted(board.deleted) == sorted([*PAIR_IDS, "dot"])
+
+    def test_a_sideways_jog_in_both_tracks_is_smoothed_away(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = pair_board()
+        jogs: list[kbt.Track] = []
+        for prefix, net in zip(("p", "n"), USB, strict=True):
+            (straight,) = (t for t in board.tracks if t.id.value == f"{prefix}2")
+            beyond_ids = {f"{prefix}3", f"{prefix}4"}
+            later = [t for t in board.tracks if t.id.value in beyond_ids]
+            # As KiCad leaves one where a track was nudged: the rest of it
+            # moved aside, toward N, so near the section's start that the
+            # centreline's offset turns there within 0.03 mm of it.
+            at = Vector2.from_xy(straight.start.x + JOG_AT_NM, straight.start.y)
+            aside = Vector2.from_xy(at.x, at.y - JOG_NM)
+            step = kipy_track(f"{prefix}jog", net, (0, 0), (0, 0), width=PAIR_WIDTH)
+            step.start, step.end = at, aside
+            beyond = kipy_track(f"{prefix}on", net, (0, 0), (0, 0), width=PAIR_WIDTH)
+            beyond.start = aside
+            beyond.end = Vector2.from_xy(straight.end.x, straight.end.y - JOG_NM)
+            straight.end = at
+            for track in later:
+                track.start = Vector2.from_xy(track.start.x, track.start.y - JOG_NM)
+                track.end = Vector2.from_xy(track.end.x, track.end.y - JOG_NM)
+            jogs += [step, beyond]
+        board.selection = [*board.selection, *jogs]
+        board.tracks = [*board.tracks, *jogs]
+        connect.to(board)
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert pair.held == 0
+        assert sorted(board.deleted) == sorted(
+            [*PAIR_IDS, "pjog", "pon", "njog", "non"]
+        )
         gaps = coupled_gaps(*by_net(board).values())
         assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
@@ -4005,7 +4283,7 @@ class TestPairs:
         assert any("1 moving via" in line for line in log)
         assert seen == [{"w"}]
 
-    def test_section_with_copper_between_its_ends_is_split_there(
+    def test_a_section_with_copper_between_its_ends_moves_whole(
         self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:
         stub = kipy_track(
@@ -4016,7 +4294,32 @@ class TestPairs:
         run("--dry-run")
 
         ((pair,),) = (r.pairs for r in reports)
-        assert (pair.sections, pair.held) == (2, 0)
+        assert (pair.sections, pair.held) == (1, 0)
+
+    def test_pins_inside_a_section_hold_it_there_and_let_its_turn_round(
+        self, connect: Connector, log: list[str], reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(tvs_board())
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert not unexpected_warnings(log)
+        ((pair,),) = (r.pairs for r in reports)
+        assert (pair.sections, pair.held) == (1, 0)
+        lines = by_net(board)
+        coupled = box(-FAR, -FAR, TVS_CENTRELINE[-1][0], TVS_CENTRELINE[0][1])
+        tracks: list[FloatArray] = []
+        for net, routed in zip(USB, tvs_tracks(), strict=True):
+            joined = linemerge(lines[net])
+            assert isinstance(joined, LineString)
+            assert joined.distance(Point(routed[0][0], TVS_PADS_Y)) <= NM_ROUNDING
+            for corner in routed[1:3]:
+                assert joined.distance(Point(corner)) >= ROUNDED_OFF
+            tracks.append(np.array(joined.intersection(coupled).coords))
+        low, high = gap_range(tracks[0], tracks[1], TVS_WIDTH)
+        slack = GAP_TOLERANCE * TVS_GAP
+        assert TVS_GAP - slack <= low <= high <= TVS_GAP + slack
 
     def test_pair_past_same_net_pads_commits_smoothed_and_pinned(
         self, connect: Connector
@@ -4050,17 +4353,22 @@ class TestPairs:
         low, high = coupled_gaps(*lines.values())
         assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
 
-    @pytest.mark.parametrize("before", [0.0, STUB_NEAR_CORNER])
-    def test_a_stub_at_or_near_a_corner_holds_the_section_without_a_warning(
+    @pytest.mark.parametrize(
+        ("before", "held"),
+        # The stub holds the routing beside it. At the corner, direction
+        # pins a coarse spacing along both edges keep the corner within the
+        # bend-radius limit; just before it, the corner is the direction
+        # pin, too close to bend within it, so the section is held.
+        [(0.0, 0), (STUB_NEAR_CORNER, 1)],
+    )
+    def test_a_stub_at_or_near_a_corner_stays_on_its_track_without_a_warning(
         self,
         connect: Connector,
         log: list[str],
         reports: list[pipeline.RunReport],
         before: float,
+        held: int,
     ) -> None:
-        # Same-net copper at P's inner corner, or just before it, closer
-        # than two pitches: the section stays as routed, and so do its
-        # straight fan-outs, which nothing else repels.
         corner = 5.0 - math.tan(math.pi / 8) * PAIR_HALF_PITCH
         x = nm(corner - before) / NM_PER_MM
         stub = kipy_track(
@@ -4071,30 +4379,173 @@ class TestPairs:
         run()
 
         ((pair,),) = (r.pairs for r in reports)
-        assert (pair.sections, pair.held) == (1, 1)
+        assert (pair.sections, pair.held) == (1, held)
         assert not unexpected_warnings(log)
-        assert not board.created
+        assert_stubs_kept(board, [x])
 
-    def test_a_part_held_between_two_stubs_commits_the_rest(
+    def test_two_stubs_close_together_let_their_section_move(
         self,
         connect: Connector,
         log: list[str],
         reports: list[pipeline.RunReport],
     ) -> None:
+        feet = (2.5, 2.5 + STUBS_APART)
         stubs = [
             kipy_track(
                 f"stub{k}", "USB_D+", (x, PAIR_HALF_PITCH), (x, 2.0), width=PAIR_WIDTH
             )
-            for k, x in enumerate((2.5, 2.5 + STUBS_APART))
+            for k, x in enumerate(feet)
         ]
         board = connect.to(pair_board(extra=stubs))
 
         run()
 
         ((pair,),) = (r.pairs for r in reports)
-        assert (pair.sections, pair.held) == (3, 1)
+        assert (pair.sections, pair.held) == (1, 0)
         assert board.calls == COMMIT_CALLS
         assert not unexpected_warnings(log)
+        assert_stubs_kept(board, feet)
+
+    def test_a_selected_stub_on_one_track_keeps_both_sides_coupled(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # The stub cuts USB_D+ into two chains at its foot; USB_D- is cut
+        # opposite it, and each part pairs with the one beside it.
+        foot = (STUB_AT, PAIR_HALF_PITCH)
+        stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
+        board = pair_board(extra=[stub])
+        board.selection = [*board.selection, stub]
+        connect.to(board)
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 0), (1, 0)]
+        for pair in pairs:
+            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert not [w for w in log if "on its own" in w or "do not run coupled" in w]
+        lines = by_net(board)
+        p = [line for line in lines[USB[0]] if {x for x, _ in line.coords} != {STUB_AT}]
+        gaps = coupled_gaps(p, lines[USB[1]])
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+        n_tracks = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[1]]
+        assert (nm(STUB_AT), nm(-PAIR_HALF_PITCH)) in ends(n_tracks)
+
+    def test_a_track_cut_by_a_stub_and_a_meander_pairs_part_by_part(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # USB_D- is cut by a selected stub and by an unselected meander;
+        # USB_D+ runs past both.
+        board = connect.to(cut_partner_board())
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 0)] * 3
+        for pair in pairs:
+            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert not unexpected_warnings(log)
+        assert not {f"m{k}" for k in range(len(MEANDER) - 1)} & set(board.deleted)
+        # USB_D+ is cut opposite the stub and both ends of the meander.
+        p = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
+        h = PAIR_HALF_PITCH
+        cuts = [(N_STUB_AT, h), (MEANDER[0][0], 3.0 + h), (MEANDER[-1][0], 3.0 + h)]
+        assert {(nm(x), nm(y)) for x, y in cuts} <= ends(p)
+
+    @pytest.mark.parametrize("at", [4.9, 5.0])
+    def test_a_stub_near_a_corner_keeps_the_gap(
+        self, connect: Connector, log: list[str], at: float
+    ) -> None:
+        # Within a pitch before the outer track's corner, a section ends
+        # short of the stub's foot on one track or the other.
+        board = connect.to(corner_stub_board(at))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert not unexpected_warnings(log)
+        lines = by_net(board)
+        n = [line for line in lines[USB[1]] if {x for x, _ in line.coords} != {at}]
+        gaps = coupled_gaps(lines[USB[0]], n)
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+
+    def test_a_stub_on_a_corner_holds_the_section(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # A stub on the corner's diagonal pins the outer track where it does
+        # not run straight, so the section stays as drawn.
+        board = connect.to(corner_stub_board(5.1))
+
+        run()
+
+        assert board.calls == []
+        assert not unexpected_warnings(log)
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 1)]
+
+    @pytest.mark.parametrize("nesting", [0, 2])
+    def test_a_selected_tuning_pattern_stays_and_pairs(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+        nesting: int,
+    ) -> None:
+        board = connect.to(pattern_board(nesting))
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        assert not unexpected_warnings(log)
+        assert not [line for line in log if "do not run coupled" in line]
+        assert not PATTERN_IDS & set(board.deleted)
+        # The pattern's straights pair with USB_D+, which stays at its
+        # routed gap beside them.
+        (pairs,) = (r.pairs for r in reports)
+        assert (2, 2) in [(p.sections, p.held) for p in pairs]
+        p = linemerge(by_net(board)[USB[0]])
+        beside = p.intersection(box(PATTERN_X[0], -FAR, PATTERN_X[-1], FAR))
+        y = 3.0 + PAIR_HALF_PITCH
+        assert [y for _, y in beside.coords] == pytest.approx(
+            [y] * len(beside.coords), abs=NM_ROUNDING
+        )
+
+    def test_a_pattern_s_short_straights_pair_against_a_push(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # A via beside USB_D+, opposite the pattern's first straight, would
+        # push it toward the pattern if it smoothed on its own.
+        board = pattern_board(0, SHORT_PATTERN_X)
+        y = 3.0 + PAIR_HALF_PITCH
+        x = (SHORT_PATTERN_X[0] + SHORT_PATTERN_X[1]) / 2
+        board.vias = [kipy_via("gnd", "GND", x, y + PAIR_HALF_PITCH + 0.3)]
+        connect.to(board)
+
+        run()
+
+        assert not unexpected_warnings(log)
+        (pairs,) = (r.pairs for r in reports)
+        assert (2, 2) in [(p.sections, p.held) for p in pairs]
+        p = linemerge(by_net(board)[USB[0]])
+        for start, end in itertools.batched(SHORT_PATTERN_X, 2, strict=True):
+            beside = p.intersection(box(start, -FAR, end, FAR))
+            assert [y for _, y in beside.coords] == pytest.approx(
+                [y] * len(beside.coords), abs=NM_ROUNDING
+            )
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]
@@ -4105,6 +4556,20 @@ class TestPairs:
 
         (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
         assert "0.150" in warning and "0.200" in warning
+
+    def test_a_diff_pair_cut_by_a_stub_counts_and_warns_once(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        foot = (STUB_AT, PAIR_HALF_PITCH)
+        stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
+        board = pair_board(diff_pair_gap=0.2, extra=[stub])
+        board.selection = [*board.selection, stub]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert "INFO Optimizing 4 chains, 1 differential pair among them\n" in log
+        assert len([w for w in log if w.startswith("WARNING") and "netclass" in w]) == 1
 
     def test_via_where_a_coupled_section_ends_stays_fixed(
         self, connect: Connector, log: list[str]

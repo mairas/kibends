@@ -268,9 +268,10 @@ def movable_vias(
         ]
         inside = tuple(zones.get(via.id, ()))
         unions = zone_unions(inside)
-        reason = _fixed_reason(via, nets, strangers, len(ends), bool(inside)) or (
-            _edge_reason(via, unions)
-        )
+        held = any(chains[end.chain].held for end in ends)
+        reason = _fixed_reason(
+            via, nets, strangers, len(ends), bool(inside), held=held
+        ) or (_edge_reason(via, unions))
         if reason is None:
             for layer, union in unions.items():
                 logger.debug(
@@ -285,12 +286,20 @@ def movable_vias(
 
 
 def _fixed_reason(
-    via: Via, nets: Collection[str], strangers: Sequence[str], ends: int, zoned: bool
+    via: Via,
+    nets: Collection[str],
+    strangers: Sequence[str],
+    ends: int,
+    zoned: bool,
+    *,
+    held: bool,
 ) -> str | None:
     if via.locked:
         return "it is locked"
     if in_diff_pair(via.net, nets):
         return f"it is on {via.net}, a net of a diff pair"
+    if held:
+        return "a track of a selected group ends at it"
     if strangers:
         verb = "connects" if len(strangers) == 1 else "connect"
         return f"{', '.join(strangers)} {verb} to it"

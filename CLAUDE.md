@@ -37,7 +37,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 - One run is one undo step in KiCad.
 - kibends never refills zones and never runs KiCad's DRC. The user refills the zones, or lets the DRC do it, and runs the DRC for everything the optimizer does not model (custom rules, board minimums, thermal reliefs, island removal, hatched fills, minimum-width necks).
 - A moved via stays where the zones of its net that reached its ring connect it, taken together, on each layer where one did, and keeps the zone's clearance and margin from other-net copper there, so that the refill reconnects it.
-- Locked tracks, other nets' copper, unselected or fixed vias and pads are never modified.
+- Locked tracks, the tracks, arcs and vias of a selected group (at any depth), other nets' copper, unselected or fixed vias and pads are never modified.
 - Pinned points stay where they are, except chain ends at a moving via, which keep their offset from its centre.
 - A vertex that keeps a pad or a staying via may move but stays inside it, shrunk by `CONTACT_MARGIN`; the chain keeps touching every pad and via it touched. A vertex on a pad's anchor or a staying via's centre stays there, since KiCad's drag carries only the track ends there.
 - The loose ends of a junction's branches move together and stay one point.

@@ -10,6 +10,8 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
 from kibends.pair_layout import (
     ChainPair,
+    ChainPart,
+    cut_parts,
     find_pairs,
     lay_out,
 )
@@ -171,8 +173,12 @@ def free(
     return FreeSpace()
 
 
-def laid_out(chains: list[Chain]) -> tuple[list[ChainPair], list[ChainInput]]:
-    return find_pairs(chains, CHORD, frame=BOARD_FRAME), [given(c) for c in chains]
+def laid_out(
+    chains: list[Chain],
+) -> tuple[list[ChainPart], list[ChainPair], list[ChainInput]]:
+    parts = cut_parts(chains, CHORD)
+    pairs = find_pairs([p.chain for p in parts], CHORD, frame=BOARD_FRAME)
+    return parts, pairs, [given(c) for c in chains]
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -181,7 +187,7 @@ def test_layout_joins_unchanged_parts_back_into_the_pair_tracks(
 ) -> None:
     b = fanned("USB_D-", 1)
     chains = [far("GND"), fanned("USB_D+", -1), reversed_chain(b) if reverse else b]
-    pairs, whole = laid_out(chains)
+    parts, pairs, whole = laid_out(chains)
     section_fields: list[tuple[str, str, str, float]] = []
 
     def field(
@@ -190,7 +196,7 @@ def test_layout_joins_unchanged_parts_back_into_the_pair_tracks(
         section_fields.append((layer, a.net, b.net, gap))
         return FreeSpace()
 
-    layout = lay_out(whole, pairs, field)
+    layout = lay_out(whole, parts, pairs, field)
 
     assert layout.inputs[0] is whole[0]
     assert layout.slots == [0, None, None]
@@ -225,7 +231,7 @@ def test_a_section_s_field_is_as_wide_as_its_widest_end() -> None:
             (10.0, FAN),
         ),
     ]
-    pairs, whole = laid_out(chains)
+    parts, pairs, whole = laid_out(chains)
     gaps: list[float] = []
 
     def field(
@@ -234,7 +240,7 @@ def test_a_section_s_field_is_as_wide_as_its_widest_end() -> None:
         gaps.append(gap)
         return FreeSpace()
 
-    lay_out(whole, pairs, field)
+    lay_out(whole, parts, pairs, field)
 
     assert gaps == [pytest.approx(GAP + WIDER_END)]
 
@@ -250,9 +256,9 @@ def test_layout_of_two_pairs_gives_each_its_own_sections() -> None:
         fanned("USB_D-", 1),
         fanned("ETH_N", 1, at=SECOND_PAIR),
     ]
-    pairs, whole = laid_out(chains)
+    parts, pairs, whole = laid_out(chains)
 
-    layout = lay_out(whole, pairs, free)
+    layout = lay_out(whole, parts, pairs, free)
 
     assert [(p.a, p.b) for p in pairs] == [(0, 2), (1, 3)]
     assert layout.pair_sections == [range(0, 1), range(1, 2)]
@@ -271,18 +277,18 @@ def test_layout_of_two_pairs_gives_each_its_own_sections() -> None:
 
 def test_layout_moves_via_ends_to_the_chains_new_places() -> None:
     chains = [fanned("USB_D+", -1), fanned("USB_D-", 1), far("GND")]
-    pairs, whole = laid_out(chains)
+    parts, pairs, whole = laid_out(chains)
 
-    layout = lay_out(whole, pairs, free)
+    layout = lay_out(whole, parts, pairs, free)
 
     assert layout.ends((ChainEnd(2, True),)) == (ChainEnd(0, True),)
 
 
 def test_layout_without_pairs_is_the_chains() -> None:
     chains = [far("GND"), far("SIG")]
-    pairs, whole = laid_out(chains)
+    parts, pairs, whole = laid_out(chains)
 
-    layout = lay_out(whole, pairs, free)
+    layout = lay_out(whole, parts, pairs, free)
 
     assert layout.inputs == whole
     assert layout.sections == []

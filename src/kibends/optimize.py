@@ -46,7 +46,8 @@ track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
 check, a burst moves back what `polylines.SelfCheck` finds: a centreline
 newly bent below its limit, or brought closer to its own parts beyond a
-turn than it may. A held section is fully pinned and not resampled; a run
+turn than it may. A held member (`ChainInput.held`), such as a held
+section, is fully pinned and not resampled; a run
 given an earlier one's result resumes from it (`optimize_chains`), which
 is how `run` repeats a run with the sections that ended too tight held.
 
@@ -950,20 +951,20 @@ class _Problem:
         self.before = self.start_statistics(self.originals, self.start_positions)
         # A burst starts from the members resampled; the shapes as the burst
         # left them are what the energy, the guard and the best state see.
-        # Resampling would put free vertices between a held section's pins.
+        # Resampling would put free vertices between a held member's pins.
         self.points: list[FloatArray] = []
         self.masks: list[BoolArray] = []
         self.contact_of: list[IntArray] = []
         """Per member, each vertex's contact among `within`, -1 for none."""
-        for member, original, anchors, given, loose in zip(
-            self.members,
+        for body, original, anchors, given, loose in zip(
+            self.bodies,
             self.originals,
             self.anchors,
             self.given_contact_of,
             self.loose,
             strict=True,
         ):
-            if isinstance(member, PairBlock) and member.held:
+            if body.held:
                 points, mask, contact_of = original, anchors, given
             else:
                 points, mask, contact_of = _resample(

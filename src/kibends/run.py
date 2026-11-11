@@ -76,6 +76,7 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     ObstacleField,
+    arc_lengths,
 )
 from kibends.neighbours import (
     ChainInput,
@@ -96,7 +97,9 @@ from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
     ChainPair,
+    ChainPart,
     Layout,
+    cut_parts,
     find_pairs,
     lay_out,
 )
@@ -226,12 +229,13 @@ class PairReport:
     """Smallest and largest gap along the result's coupled sections, mm."""
     skew_before: float
     skew_after: float
-    """Length difference of the two chains, mm."""
+    """Length difference of its two tracks, mm."""
     sections: int
     held: int
-    """Coupled sections left as they are: same-net copper touches them
-    between their ends, their routing bends too tightly, or the copper
-    around them kept them from rounding a corner (`Hold`)."""
+    """Coupled sections left as they are: their routing, or what same-net
+    copper touching them keeps of it, bends too tightly, they are too short
+    to move, or the copper around them kept them from rounding a corner
+    (`Hold`)."""
     rejected_edges: int
 
 
@@ -297,6 +301,8 @@ class _Read:
 class _Optimized:
     whole: list[ChainInput]
     """One per selected chain."""
+    parts: list[ChainPart]
+    """The selected chains' parts, which `pairs` index."""
     pairs: list[ChainPair]
     layout: Layout
     via_inputs: list[ViaInput]
@@ -767,10 +773,11 @@ def _optimize(
     moving = {m.via.id for m in read.movable}
     whole = _chain_inputs(read.chains, read.snapshots, fields, moving, read.frame)
     # A diff pair's tracks keep their contacts where they are.
+    parts = cut_parts(
+        [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
+    )
     pairs = find_pairs(
-        [chain.with_slides_pinned() for chain in read.chains],
-        options.chord_tolerance,
-        frame=read.frame,
+        [part.chain for part in parts], options.chord_tolerance, frame=read.frame
     )
 
     def section_field(
@@ -787,9 +794,11 @@ def _optimize(
             hole_clearance=options.hole_clearance,
         )
 
-    layout = lay_out(whole, pairs, section_field)
+    layout = lay_out(whole, parts, pairs, section_field)
     if earlier is None:
-        logger.info(_optimizing(len(read.chains), len(pairs), len(read.movable)))
+        logger.info(
+            _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
+        )
     # One classing of the vias standing still both splits the moving vias'
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
@@ -846,7 +855,9 @@ def _optimize(
             )
             _log_gave_up([(d, streak) for d, streak in run.gave_up if d not in logged])
             elapsed = monotonic() - started
-            return _Optimized(whole, pairs, layout, via_inputs, run, started, elapsed)
+            return _Optimized(
+                whole, parts, pairs, layout, via_inputs, run, started, elapsed
+            )
         # The other chains were smoothed around the sections' results, so
         # the sections cannot simply keep their own tracks; the run goes on
         # from where this one left them, with these sections held.
@@ -950,9 +961,7 @@ def _simplify_and_report(
         _whole_results(optimized, final_inputs, unsimplified),
         simplified,
     )
-    pair_reports = _pair_reports(
-        read, optimized.pairs, layout, run.pairs, final_tracks, reports
-    )
+    pair_reports = _pair_reports(read, optimized, chains, final_tracks)
     return _Outcome(
         final_inputs,
         unsimplified,
@@ -1081,6 +1090,7 @@ def _chain_inputs(
                 np.array(chain.pinned),
                 fields(snapshot, chain, moving),
                 tuple((i, Obstacles((), region)) for i, region in chain.slides),
+                held=chain.held,
             )
         )
     return inputs
@@ -1288,9 +1298,8 @@ def _whole_results(
             r = run.chains[slot]
             results.append(_WholeResult(r.polyline, r.before, r.rejected_edges))
             continue
-        pieces = [
-            run.chains[s.piece] for s in layout.stretches[k] if s.piece is not None
-        ]
+        stretches = layout.chain_stretches(k)
+        pieces = [run.chains[s.piece] for s in stretches if s.piece is not None]
         field = chain_field(
             inputs[k].field,
             neighbour_fields(inputs, k, neighbours[k], originals),
@@ -1307,35 +1316,45 @@ def _whole_results(
 
 def _pair_reports(
     read: _Read,
-    pairs: Sequence[ChainPair],
-    layout: Layout,
-    results: Sequence[PairResult],
+    optimized: _Optimized,
+    chains: Sequence[FloatArray],
     tracks: Sequence[tuple[FloatArray, FloatArray]],
-    reports: Sequence[ChainReport],
 ) -> tuple[PairReport, ...]:
-    """A report per pair, warning where its gap is not its netclass's."""
-    pair_reports: list[PairReport] = []
-    for pair, sections in zip(pairs, layout.pair_sections, strict=True):
-        a, b = read.chains[pair.a], read.chains[pair.b]
+    """A report per pair of parts, from `chains` and `tracks` as simplified,
+    warning once per diff pair where the gap of its first pair of parts is
+    not its netclass's."""
+    layout, results = optimized.layout, optimized.run.pairs
+    for group in layout.diff_pairs:
+        pair = optimized.pairs[group[0]]
+        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
         _check_netclass_gap(read.snapshots[a.layer], a, b, pair.pair.gap)
+    pair_reports: list[PairReport] = []
+    for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
+        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
         gaps = [gap_range(*tracks[k], a.width) for k in sections]
         ours = [results[k] for k in sections]
-        before = (reports[pair.a].before, reports[pair.b].before)
-        after = (reports[pair.a].after, reports[pair.b].after)
+        before = (_length(np.array(a.points)), _length(np.array(b.points)))
+        after = (
+            _length(layout.part_polyline(k, chains, tracks)) for k in (pair.a, pair.b)
+        )
         pair_reports.append(
             PairReport(
                 nets=(a.net, b.net),
                 layer=a.layer,
                 gap=pair.pair.gap,
                 gap_after=(min(g[0] for g in gaps), max(g[1] for g in gaps)),
-                skew_before=abs(before[0].length - before[1].length),
-                skew_after=abs(after[0].length - after[1].length),
+                skew_before=abs(before[0] - before[1]),
+                skew_after=abs(next(after) - next(after)),
                 sections=len(sections),
                 held=sum(r.block.held for r in ours),
                 rejected_edges=sum(r.rejected_edges for r in ours),
             )
         )
     return tuple(pair_reports)
+
+
+def _length(points: FloatArray) -> float:
+    return float(arc_lengths(points)[-1])
 
 
 def _check_netclass_gap(
@@ -1412,8 +1431,9 @@ def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> 
     from kibends.plot import Panel, render
 
     run = optimized.run
+    parts = optimized.parts
     partner = {
-        k: read.chains[other].net
+        parts[k].selected: parts[other].chain.net
         for p in optimized.pairs
         for k, other in ((p.a, p.b), (p.b, p.a))
     }
