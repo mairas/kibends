@@ -16,6 +16,7 @@ from kibends.obstacles import (
     via_chain_inflation,
     via_via_inflation,
 )
+from kibends.pairs import diff_pair_nets
 from kibends.snapshot import Via, ViaZone
 
 
@@ -24,7 +25,10 @@ def chain_obstacles(
 ) -> ChainField:
     """`others` as obstacles to a track of `net`, `width` and netclass
     `clearance` (mm), each inflated as `chain_inflation` gives it."""
-    return chains_field((o, chain_inflation(net, width, clearance, o)) for o in others)
+    ignored = diff_pair_nets(net)
+    return chains_field(
+        (o, chain_inflation(ignored, width, clearance, o)) for o in others
+    )
 
 
 def chain_obstacles_for_via(

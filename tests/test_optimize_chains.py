@@ -27,7 +27,6 @@ from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
-    obstacle_reach,
     total_energy,
 )
 from kibends.members import layer_energy, seen_parts
@@ -69,11 +68,10 @@ def y_at(points: FloatArray, x: float) -> float:
 
 
 def fields(
-    chains: Sequence[ChainInput], polylines: Sequence[FloatArray], params: EnergyParams
+    chains: Sequence[ChainInput], polylines: Sequence[FloatArray]
 ) -> list[ObstacleField]:
     """Each chain's field with the others on its layer at `polylines`, built
     chain by chain as a reference for the problem's energy."""
-    reach = obstacle_reach(params)
     return [
         chain_field(
             chain.field,
@@ -85,8 +83,6 @@ def fields(
                         for j, other in enumerate(chains)
                         if j != i and other.layer == chain.layer
                     ],
-                    reach,
-                    polylines[i],
                 )
             ],
         )
@@ -105,9 +101,7 @@ def committed_energy(
     polylines = [c.polyline for c in result.chains]
     return sum(
         total_energy(c.polyline, c.fixed, field, params, settings.short_edge)[0]
-        for c, field in zip(
-            result.chains, fields(chains, polylines, params), strict=True
-        )
+        for c, field in zip(result.chains, fields(chains, polylines), strict=True)
     )
 
 
@@ -121,7 +115,7 @@ def after(
     polylines = [c.polyline for c in result.chains]
     return [
         measure(p, field, settings.spacing)
-        for p, field in zip(polylines, fields(chains, polylines, params), strict=True)
+        for p, field in zip(polylines, fields(chains, polylines), strict=True)
     ]
 
 
@@ -163,9 +157,7 @@ class TestEnergy:
 
         expected = sum(
             total_energy(p, m, f, self.params(), 0.01)[0]
-            for p, m, f in zip(
-                polylines, masks, fields(chains, polylines, self.params()), strict=True
-            )
+            for p, m, f in zip(polylines, masks, fields(chains, polylines), strict=True)
         )
         assert value == pytest.approx(expected, rel=1e-12)
 
@@ -235,7 +227,7 @@ class TestEnergy:
         polylines = [c.centreline.points.copy() for c in chains]
         masks = [c.fixed for c in chains]
         params = self.params()
-        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        seen = seen_parts(chains, polylines)
         _, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
         step = 1e-7
 
@@ -257,7 +249,7 @@ class TestEnergy:
         polylines = [c.centreline.points.copy() for c in chains]
         masks = [c.fixed for c in chains]
         params = self.params()
-        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        seen = seen_parts(chains, polylines)
         value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
         alone = sum(
             layer_energy([c], [p], [m], params, 0.01)[0]
@@ -776,11 +768,41 @@ def test_a_chain_passes_through_a_chain_of_its_net() -> None:
     assert abs(y_at(straightened, 5.0)) < 0.01
 
 
+SIDE_BY_SIDE = scenarios.PAIR_INFLATION - 0.1
+"""mm between the centrelines of two straight tracks drawn side by side,
+inside the clearance two tracks of different nets keep."""
+
+
+def side_by_side(net: str, other_net: str) -> RunResult:
+    """A straight track of `net` and a shorter one of `other_net` beside its
+    middle, `SIDE_BY_SIDE` apart."""
+    free = FreeSpace()
+    chains = [
+        selected("track", net, free, (0.0, 0.0), (5.0, 0.0), (10.0, 0.0)),
+        selected("bar", other_net, free, (4.0, SIDE_BY_SIDE), (6.0, SIDE_BY_SIDE)),
+    ]
+    return optimize_chains(chains, scenarios.PARAMS, COARSE)
+
+
+def test_tracks_of_a_diff_pair_s_two_nets_are_not_pushed_apart() -> None:
+    result = side_by_side("USB_D+", "USB_D-")
+
+    first = result.chains[0].polyline
+    assert abs(y_at(first, 5.0)) < COARSE.settled_change
+
+
+def test_a_diff_pair_s_track_keeps_clear_of_a_third_net() -> None:
+    result = side_by_side("USB_D+", "GND")
+
+    first, second = (c.polyline for c in result.chains)
+    assert gap(first, second) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+
+
 def re_extracted(scenario: ChainsScenario, result: RunResult) -> list[ChainInput]:
     """The chains of `result`, simplified and committed as straight tracks
     and extracted again, as a second run takes them, each with its
     scenario's field."""
-    simplified = simplify_chains(scenario.chains, result, scenario.params)
+    simplified = simplify_chains(scenario.chains, result)
     segments = [
         Segment(
             f"{k}.{i}",
@@ -1362,7 +1384,7 @@ def test_simplified_and_snapped_branches_still_share_the_junction() -> None:
     chains = fermat_tee((0.2, 0.4, 0.3))
     result = optimize_chains(chains, scenarios.PARAMS, JUNCTION_SETTINGS)
 
-    simplified = simplify_chains(chains, result, scenarios.PARAMS)
+    simplified = simplify_chains(chains, result)
 
     junction = junction_of(result)
     for polyline in simplified:
@@ -1409,7 +1431,7 @@ class TestJunctionEnergy:
         masks = [np.arange(len(p)) == len(p) - 1 for p in polylines[:3]]
         masks.append(other.fixed)
         params = self.params()
-        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        seen = seen_parts(chains, polylines)
         value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
 
         def apart(members: Sequence[ChainInput]) -> float:

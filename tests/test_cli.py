@@ -1812,6 +1812,21 @@ class TestLoopsAndDots:
         assert held.startswith("DEBUG") and "a, b, c" in held
         assert not any("shrinks to no area" in line for line in log)
 
+    def test_a_diff_pair_loop_round_its_other_net_surrounds_nothing(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        loop = triangle_loop("D_P")
+        touch = kipy_track("t", "D_P", (-3, 0), (0, 0), width=WIDTH)
+        inside = kipy_track("n", "D_N", (6, 1), (8, 1.5), width=WIDTH)
+        connect.to(
+            CommitBoard(selection=[*loop, inside], tracks=[*loop, touch, inside])
+        )
+
+        run()
+
+        (held,) = [line for line in log if "holds it open" in line]
+        assert "a, b, c" in held
+
     def test_a_loop_through_three_pads_of_its_net_settles_into_their_triangle(
         self, connect: Connector
     ) -> None:
@@ -4050,8 +4065,8 @@ class TestPairs:
         before: float,
     ) -> None:
         # Same-net copper at P's inner corner, or just before it, closer
-        # than two pitches: the section stays as routed, while its fan-outs
-        # are smoothed.
+        # than two pitches: the section stays as routed, and so do its
+        # straight fan-outs, which nothing else repels.
         corner = 5.0 - math.tan(math.pi / 8) * PAIR_HALF_PITCH
         x = nm(corner - before) / NM_PER_MM
         stub = kipy_track(
@@ -4064,12 +4079,7 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.sections, pair.held) == (1, 1)
         assert not unexpected_warnings(log)
-        lines = by_net(board)
-        joined = linemerge(lines[USB[0]])
-        assert isinstance(joined, LineString)
-        assert (x, PAIR_HALF_PITCH) in joined.coords
-        low, high = coupled_gaps(*lines.values())
-        assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
+        assert not board.created
 
     def test_a_part_held_between_two_stubs_commits_the_rest(
         self,
@@ -4674,12 +4684,11 @@ def spy_simplify(monkeypatch: pytest.MonkeyPatch) -> list[Simplified]:
     def spy(
         chains: Sequence[ChainInput],
         run: RunResult,
-        params: EnergyParams,
         tolerance: float,
         *,
         sections: Mapping[int, PairBlock],
     ) -> list[FloatArray]:
-        result = real(chains, run, params, tolerance, sections=sections)
+        result = real(chains, run, tolerance, sections=sections)
         calls.append(Simplified(run, sections, tolerance, result))
         return result
 
@@ -4721,8 +4730,8 @@ SPLIT_DETOUR = 1.2
 
 def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
     """Pair USB_D+/USB_D- fanned out at both ends, coupled along y = 0 in
-    two straight sections, split by a detour of each track outward; the
-    second section at `second_gap`."""
+    two straight sections, split by a detour of each track outward around a
+    pad of another net; the second section at `second_gap`."""
     h, h2 = PAIR_HALF_PITCH, (second_gap + PAIR_WIDTH) / 2
     (start, split), (rejoin, end) = SPLIT_SECTIONS
     tracks: list[kbt.Track] = []
@@ -4745,6 +4754,7 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
+        pads=[kipy_pad("pad", "GND", (split + rejoin) / 2, 0.0)],
         netclasses={"USB_D+": usb, "USB_D-": usb},
     )
 
@@ -5081,12 +5091,11 @@ def test_a_pair_whose_tracks_cross_is_committed_for_the_drc_to_report(
     def folded(
         chains: Sequence[ChainInput],
         run: RunResult,
-        params: EnergyParams,
         tolerance: float,
         *,
         sections: Mapping[int, PairBlock],
     ) -> list[FloatArray]:
-        result = real(chains, run, params, tolerance, sections=sections)
+        result = real(chains, run, tolerance, sections=sections)
         for i, block in sections.items():
             optimised = run.chains[i].polyline
             last = len(optimised) - 1

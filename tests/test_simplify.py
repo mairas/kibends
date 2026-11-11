@@ -124,7 +124,7 @@ def optimized(scenario: ChainsScenario, settings: OptimizerSettings) -> RunResul
 def simplify_run(
     scenario: ChainsScenario, run: RunResult, tolerance: float
 ) -> list[FloatArray]:
-    return simplify_chains(scenario.chains, run, scenario.params, tolerance)
+    return simplify_chains(scenario.chains, run, tolerance)
 
 
 @pytest.fixture(scope="module")
@@ -164,7 +164,7 @@ class TestSeveralChains:
         run = optimize_chains([alone], PARAMS, COARSE)
         (optimised,) = run.chains
 
-        (result,) = simplify_chains([alone], run, PARAMS, WIDE_TOLERANCE)
+        (result,) = simplify_chains([alone], run, WIDE_TOLERANCE)
 
         assert np.array_equal(
             result,
@@ -177,7 +177,7 @@ class TestSeveralChains:
         scenario, run = drape
 
         with pytest.raises(ValueError, match="2 optimised chains for 1"):
-            simplify_chains(scenario.chains[:1], run, scenario.params)
+            simplify_chains(scenario.chains[:1], run)
 
     def test_a_width_change_merges_each_side_up_to_the_shared_junction(
         self, log: list[str]
@@ -207,7 +207,6 @@ def test_merged_edges_cutting_into_a_neighbour_are_found() -> None:
         optimised,
         [a.centreline.points[merged_a], b.centreline.points],
         [merged_a, unmerged_b],
-        reach=0.0,
     )
 
     assert cutting == [0]
@@ -257,7 +256,6 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     (centreline,) = simplify_chains(
         [replace(block.facing, field=field)],
         run,
-        PARAMS,
         SECTION_TOLERANCE,
         sections={0: block},
     )

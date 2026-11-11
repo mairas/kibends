@@ -5,10 +5,10 @@ chord tolerance alone would cut into the clearance at every wrap; each merged
 segment must also pass the exact edge check.
 
 Several chains are simplified in turn, each against its own field plus the
-other chains on its layer at their latest shapes, those of its net left
-out, as the optimizer leaves them out. A vertex that keeps a pad or via
-(`chain.Contact`) is fixed, so merging keeps it where the optimizer left
-it, inside its region. A coupled section of a
+other chains on its layer at their latest shapes, those it ignores left
+out, as the optimizer leaves them out (`neighbours.neighbour_field`). A
+vertex that keeps a pad or via (`chain.Contact`) is fixed, so merging keeps
+it where the optimizer left it, inside its region. A coupled section of a
 differential pair is simplified as its centreline, as the optimizer moved
 it, and its two tracks follow it as they do in the optimizer.
 """
@@ -19,13 +19,7 @@ import numpy as np
 from loguru import logger
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
-from kibends.energy import (
-    BoolArray,
-    EnergyParams,
-    FloatArray,
-    ObstacleField,
-    obstacle_reach,
-)
+from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.neighbours import (
     ChainInput,
     chain_field,
@@ -51,50 +45,39 @@ def simplify(
 def simplify_chains(
     chains: Sequence[ChainInput],
     run: RunResult,
-    params: EnergyParams,
     tolerance: float = DEFAULT_CHORD_TOLERANCE,
     *,
     sections: Mapping[int, PairBlock] | None = None,
 ) -> list[FloatArray]:
     """Simplify the optimised chains of `run`, each against its field and the
-    other chains of other nets on its layer at their latest shapes.
+    other chains on its layer that it does not ignore, at their latest
+    shapes.
 
     Each of `sections` stands in for the chain of its index, its polyline
-    a coupled section's centreline; sections go first, then the chains in
-    the order of `chains`. A section merges within its block's
+    a coupled section's centreline. A section merges within its block's
     tolerance, never across the vertices that bound its ends' gap tapers,
     and keeps its merged edges clear of its field as the block's `facing`,
-    with its own nets' chains left out near the fan-outs it touches. Its
-    tracks' mitred corners at kept vertices next to a merged edge reach
-    farther out than the edges: where one enters the field, the vertices
-    on either side of it are kept and the section merged again. The others
-    see its two tracks, offset from its centreline at its latest shape with
-    each kept vertex at its optimised gap.
+    which leaves out the chains of its two nets. Its tracks' mitred corners
+    at kept vertices next to a merged edge reach farther out than the
+    edges: where one enters the field, the vertices on either side of it
+    are kept and the section merged again. The others see its two tracks,
+    offset from its centreline at its latest shape with each kept vertex at
+    its optimised gap.
 
     Since the pairwise clearance is symmetric, every merged edge keeps
     clear of the final neighbours; a chain whose merged edges do not is
     logged as an error and left as optimised.
-
-    A section's own nets' chains are trimmed near the fan-outs it touches
-    by the reach of `params`, measured against its starting centreline,
-    where the optimizer measures against its current one. That is
-    deliberate: trimming against the optimised polyline left more segments
-    at acute junctions when tried
-    (https://github.com/mairas/kibends/issues/17).
     """
     if len(run.chains) != len(chains):
         raise ValueError(
             f"{len(run.chains)} optimised chains for {len(chains)} chain inputs"
         )
     optimised = [c.polyline for c in run.chains]
-    seen = _Neighbours(chains, optimised, sections or {}, obstacle_reach(params))
+    seen = _Neighbours(chains, optimised, sections or {})
     neighbours = same_layer_neighbours(chains)
     current = list(optimised)
     kept = [list(range(len(polyline))) for polyline in optimised]
-    # Sections first: a section leaves its fan-outs out of its field near
-    # where they touch it, so they must keep clear of its final tracks.
-    order = [*seen.sections, *(i for i in range(len(chains)) if i not in seen.sections)]
-    for i in order:
+    for i in range(len(chains)):
         result = run.chains[i]
         field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
         fixed = result.fixed | seen.bounds(i)
@@ -107,7 +90,7 @@ def simplify_chains(
             fixed = fixed | loose
         current[i] = result.polyline[kept[i]]
     cutting = cutting_chains(
-        chains, optimised, current, kept, seen.reach, neighbours, sections=sections
+        chains, optimised, current, kept, neighbours, sections=sections
     )
     for i in cutting:
         logger.error(
@@ -124,7 +107,6 @@ def cutting_chains(
     optimised: Sequence[FloatArray],
     simplified: Sequence[FloatArray],
     kept: Sequence[Sequence[int]],
-    reach: float,
     neighbours: Sequence[Sequence[int]] | None = None,
     *,
     sections: Mapping[int, PairBlock] | None = None,
@@ -133,7 +115,7 @@ def cutting_chains(
     one optimised edge, enter a neighbour at its `simplified` shape; by
     default every other chain on its layer is its neighbour. `sections` are
     as `simplify_chains` takes them."""
-    seen = _Neighbours(chains, optimised, sections or {}, reach)
+    seen = _Neighbours(chains, optimised, sections or {})
     cutting: list[int] = []
     if neighbours is None:
         neighbours = same_layer_neighbours(chains)
@@ -158,12 +140,10 @@ class _Neighbours:
         chains: Sequence[ChainInput],
         optimised: Sequence[FloatArray],
         sections: Mapping[int, PairBlock],
-        reach: float,
     ) -> None:
         self.chains = chains
         self.optimised = optimised
         self.sections = sections
-        self.reach = reach
 
     def tolerances(self, i: int, points: FloatArray, tolerance: float) -> FloatArray:
         """How far each vertex of chain i at `points` may lie off a chord
@@ -226,22 +206,17 @@ class _Neighbours:
         others: Sequence[int],
         polylines: Sequence[FloatArray],
     ) -> list[ObstacleField]:
-        """The chains `others`, at `polylines`, as obstacles to chain i, a
-        section's own nets' chains left out near its fan-outs as measured
-        against its starting centreline; those left out entirely are
-        dropped."""
+        """The chains `others`, at `polylines`, as obstacles to chain i;
+        those it ignores are dropped."""
         block = self.sections.get(i)
         own = self.chains[i] if block is None else block.facing
-        as_net = None if block is None else block.as_net
+        ignored = None if block is None else block.nets
         return [
             field
             for j in others
             if (
                 field := neighbour_field(
-                    own,
-                    self.shown(j, polylines[j]),
-                    self.reach,
-                    as_net=as_net,
+                    own, self.shown(j, polylines[j]), ignored=ignored
                 )
             )
             is not None

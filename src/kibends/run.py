@@ -80,7 +80,6 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     ObstacleField,
-    obstacle_reach,
 )
 from kibends.neighbours import (
     ChainInput,
@@ -106,7 +105,7 @@ from kibends.pair_layout import (
     lay_out,
     pairs_and_partners_taken,
 )
-from kibends.pairs import GAP_TOLERANCE, gap_range
+from kibends.pairs import GAP_TOLERANCE, diff_pair_nets, gap_range
 from kibends.polylines import enclosed_area, measure
 from kibends.results import (
     ChainResult,
@@ -787,8 +786,10 @@ def _surrounds_something(
 ) -> bool:
     """Whether the area a loop encloses as drawn reaches anything it keeps
     clear of: the static copper, holes and keepouts of its field, the
-    board's edge, or another net's selected chain or moving via."""
+    board's edge, a selected chain of a net other than its own and its
+    diff pair's other net, or another net's moving via."""
     interior = shapely.make_valid(shapely.Polygon(chain.points))
+    ignored = diff_pair_nets(chain.net)
     field = fields(read.snapshots[chain.layer], chain, moving)
     if field.board_outline is not None and not field.board_outline.covers(interior):
         return True
@@ -797,7 +798,7 @@ def _surrounds_something(
         *(
             LineString(c.points)
             for c in read.chains
-            if c.layer == chain.layer and c.net != chain.net
+            if c.layer == chain.layer and c.net not in ignored
         ),
         *(
             Point(m.via.position)
@@ -1003,9 +1004,8 @@ def _simplify_and_report(
     reports = _chain_reports(
         read.chains,
         final_inputs,
-        _whole_results(optimized, final_inputs, unsimplified, options.params),
+        _whole_results(optimized, final_inputs, unsimplified),
         simplified,
-        options.params,
     )
     pair_reports = _pair_reports(
         read, optimized.pairs, layout, run.pairs, final_tracks, reports
@@ -1346,7 +1346,6 @@ def _simplify(
             options,
         ),
         replace(run, chains=tuple(results)),
-        options.params,
         tolerance=options.chord_tolerance,
         sections=blocks,
     )
@@ -1393,7 +1392,6 @@ def _whole_results(
     optimized: _Optimized,
     inputs: Sequence[ChainInput],
     unsimplified: Sequence[FloatArray],
-    params: EnergyParams,
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
@@ -1401,7 +1399,6 @@ def _whole_results(
     run, layout = optimized.run, optimized.layout
     originals = [given.centreline.points for given in inputs]
     neighbours = same_layer_neighbours(inputs)
-    reach = obstacle_reach(params)
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
         if slot is not None:
@@ -1413,7 +1410,7 @@ def _whole_results(
         ]
         field = chain_field(
             inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals, reach),
+            neighbour_fields(inputs, k, neighbours[k], originals),
         )
         results.append(
             _WholeResult(
@@ -1474,10 +1471,8 @@ def _chain_reports(
     inputs: Sequence[ChainInput],
     results: Sequence[_WholeResult],
     simplified: Sequence[FloatArray],
-    params: EnergyParams,
 ) -> tuple[ChainReport, ...]:
     neighbours = same_layer_neighbours(inputs)
-    reach = obstacle_reach(params)
     reports: list[ChainReport] = []
     changes = _changed_with_shared_tracks(
         chains,
@@ -1491,7 +1486,7 @@ def _chain_reports(
     ):
         given_points = given.centreline.points
         field = chain_field(
-            given.field, neighbour_fields(inputs, i, neighbours[i], simplified, reach)
+            given.field, neighbour_fields(inputs, i, neighbours[i], simplified)
         )
         # An unchanged chain stays on the board as it is.
         after = simplified[i] if changed else given_points

@@ -160,7 +160,9 @@ repel each other like other copper. Copper of one net does not interact,
 but for the vias of a ground net (below): chains of one net neither repel
 nor hold each other back, and may come
 close, overlap or cross, as may a chain and a via of its net, and a chain
-and the static copper of its net. Only selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
+and the static copper of its net. Nor do the selected tracks of the two
+nets of a differential pair keep clearance from each other (below). Only
+selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A moving
 via that starts inside its clearance or inside such a rule area moves out
@@ -300,12 +302,14 @@ tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
 than their clearance.
 Both nets' tracks go into the one commit.
 
-A chain of one of the pair's nets, such as a fan-out, keeps clear of the
-pair's track of the other net. The coupled section cannot tell which of its
-tracks faces the chain, so it keeps its whole width clear of the chain as of
-any other, except near where the two connect. In effect, beyond its fan-out
-such a chain keeps off the pair's track of its own net too: it neither comes
-close to it nor crosses it there.
+The selected tracks of a diff pair's two nets do not keep clearance from
+each other while optimising: a coupled section and the chains of its two
+nets, such as its fan-outs, ignore each other, and so do a chain of one net
+and a chain of the other, at the fan-outs and wherever the two tracks run
+apart, such as around a via. Nothing keeps one net's track from being
+pulled across the other's there; kibends does not check for it, and KiCad's
+DRC reports it. The diff pair's vias, and the copper of either net that is
+not selected, still keep clearance from the other net's tracks.
 
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which

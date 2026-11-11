@@ -111,6 +111,12 @@ def nets_pair(a: str, b: str) -> bool:
     return complementary_net(a) == b
 
 
+def diff_pair_nets(net: str) -> frozenset[str]:
+    """`net` and the other net of its diff pair, if it has one."""
+    other = complementary_net(net)
+    return frozenset({net} if other is None else {net, other})
+
+
 @dataclass(frozen=True)
 class Track:
     """A chain's points with vertices inserted where coupled sections end.
