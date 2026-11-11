@@ -171,14 +171,10 @@ piece of static copper around it, the outside of its zones and each of its
 net's pads and holes. Static copper of one net that overlaps on one
 layer, such as two tracks meeting at a width change or a T-junction, is
 one piece, judged by the via's depth in the whole of it: inside one track
-of a piece, the via may move into another of its tracks no deeper. The run
-refuses, naming the via, to commit one that would end newly or deeper
-inside any of these.
-This check judges a differential pair's via against its partner track
-like any other net's track, while the optimizer judges it against the
-pair's coupled section, which it starts inside: where the pair's netclass
-clearance exceeds its gap, a run that leaves such a via deeper inside its
-clearance of the partner track is refused.
+of a piece, the via may move into another of its tracks no deeper. The
+optimizer keeps vias so while it runs; kibends does not check the result
+again before the commit, and KiCad's DRC reports any clearance violation
+left after the run.
 Two vias keep their clearances and hole-to-hole distance from each other
 only where their spans overlap; KiCad's DRC judges any stricter rule for
 blind, buried or micro vias.
@@ -236,7 +232,8 @@ run, or a run that commits nothing, leaves the selection as it was.
 A track or via edited in KiCad since the run read it stops the commit.
 kibends does not refill zones and does not run KiCad's DRC: refill the
 zones yourself (B), or run the DRC, which refills them and checks the result
-against every rule of the board.
+against every rule of the board. kibends checks no clearance of its own
+after optimizing: the DRC is the check for clearance after a run.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where

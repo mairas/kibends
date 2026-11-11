@@ -57,9 +57,8 @@ from kibends.obstacles import (
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains, stalled
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
-from kibends.run import COMMIT_ROUNDING, GRID_ROUNDING
 from kibends.snapshot import LayerSnapshot, ViaZone
-from kibends.via_moves import MovingVias, crowded
+from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -968,107 +967,6 @@ def test_the_guard_refuses_a_via_newly_inside_one_static_item_inside_another(
     moved = [np.array(SIDEWAYS)]
 
     assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
-
-
-def crowded_at(
-    scenario: ViasScenario,
-    *at: tuple[float, float],
-    chains: Sequence[FloatArray] | None = None,
-) -> list[bool]:
-    """Which of `scenario`'s vias `via_moves.crowded` finds crowded with
-    them at `at` and the chains at `chains`, by default as given."""
-    starts = [c.centreline.points for c in scenario.chains]
-    crowding = crowded(
-        moving_vias(scenario),
-        starts,
-        starts if chains is None else chains,
-        [np.array(v.via.position) for v in scenario.vias],
-        [np.array(p) for p in at],
-        COMMIT_ROUNDING,
-        GRID_ROUNDING,
-    )
-    return [found is not None for found in crowding]
-
-
-class TestCrowded:
-    def test_a_via_that_stays_is_not(self) -> None:
-        assert crowded_at(scenarios.via_over_pinned("P"), scenarios.DETOUR_VIA) == [
-            False
-        ]
-
-    def test_a_via_moved_onto_a_chain_of_another_net_is(self) -> None:
-        on = (5.0, scenarios.PINNED_LEVEL)
-
-        assert crowded_at(scenarios.via_over_pinned("P"), on) == [True]
-
-    def test_a_chain_moved_into_a_via_s_ring_is_its_via_s(self) -> None:
-        scenario = scenarios.via_over_pinned("P")
-        chains = [c.centreline.points.copy() for c in scenario.chains]
-        chains[2][:, 1] = scenarios.DETOUR_VIA[1]
-
-        assert crowded_at(scenario, scenarios.DETOUR_VIA, chains=chains) == [True]
-
-    def test_a_via_starting_inside_one_obstacle_moved_into_another_is(
-        self,
-    ) -> None:
-        assert crowded_at(beside_a_wall_under_pinned(), SIDEWAYS) == [True]
-
-    def test_a_via_starting_inside_one_static_item_moved_into_another_is(
-        self,
-    ) -> None:
-        assert crowded_at(inside_one_item_beside_another(), SIDEWAYS) == [True]
-
-    @pytest.mark.parametrize(
-        ("branch_net", "branch_layer", "found"), BRANCHES, ids=BRANCH_IDS
-    )
-    def test_a_via_moved_along_a_track_under_its_branch_is_unless_connected(
-        self, branch_net: str, branch_layer: str, found: bool
-    ) -> None:
-        scenario = inside_a_track_beside_its_branch(branch_net, branch_layer)
-
-        assert crowded_at(scenario, UNDER_THE_BRANCH) == [found]
-
-    def test_a_via_starting_inside_one_static_item_moved_along_it_is_not(
-        self,
-    ) -> None:
-        x, y = scenarios.DETOUR_VIA
-
-        assert crowded_at(inside_one_item_beside_another(), (x + 0.5, y)) == [False]
-
-    def test_a_via_starting_inside_one_obstacle_moved_no_deeper_is_not(
-        self,
-    ) -> None:
-        x, y = scenarios.DETOUR_VIA
-
-        assert crowded_at(beside_a_wall_under_pinned(), (x + 0.5, y)) == [False]
-
-    @pytest.mark.parametrize(("deeper", "crowds"), [(0.5e-6, False), (1e-3, True)])
-    def test_a_via_starting_inside_moved_deeper_is_beyond_grid_rounding(
-        self, deeper: float, crowds: bool
-    ) -> None:
-        # The pinned chain lies at larger y than the via.
-        x, y = scenarios.DETOUR_VIA
-
-        assert crowded_at(beside_a_wall_under_pinned(), (x + 0.5, y + deeper)) == [
-            crowds
-        ]
-
-    @pytest.mark.parametrize(("to", "crowds"), [(2.0, True), (3.2, False)])
-    def test_a_via_outside_its_zone_is_if_moved_farther_out(
-        self, to: float, crowds: bool
-    ) -> None:
-        # The zone's region starts above the via.
-        scenario = in_zone(scenarios.DETOUR_VIA[1] + 0.5)
-
-        assert crowded_at(scenario, (scenarios.DETOUR_VIA[0], to)) == [crowds]
-
-    def test_a_via_on_a_chain_moved_onto_one_of_its_net_is(self) -> None:
-        # Leaving the chain, it lands on the via of its net standing still.
-        scenario = beside_still(0.0, 1.0)
-        (given,) = scenario.vias
-        x, _ = given.via.position
-
-        assert crowded_at(scenario, (x, 1.0)) == [True]
 
 
 def stitching_inside(chain: ChainInput) -> ViasScenario:

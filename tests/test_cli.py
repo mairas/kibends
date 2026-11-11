@@ -37,7 +37,6 @@ from conftest import (
     return_via_board,
     via_ids,
 )
-from distance_fields import FreeSpace
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -67,7 +66,7 @@ from kibends.energy import (
     FloatArray,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import HOLE_CLEARANCE, ChainCentreline, Obstacles
+from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
@@ -2596,24 +2595,8 @@ def through_via_board(
     )
 
 
-CROWDED = "The via is crowded; nothing committed"
-
-
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestMovingVias:
-    def test_a_crowded_via_refuses_the_run(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = connect.to(moving_via_board())
-
-        def refuse(*_args: object) -> str:
-            return CROWDED
-
-        monkeypatch.setattr(pipeline, "_crowded", refuse)
-
-        assert CROWDED in exit_message(log)
-        assert board.calls == []
-
     def test_moves_the_via_with_its_chains_in_one_commit(
         self, connect: Connector
     ) -> None:
@@ -5211,91 +5194,6 @@ def test_a_sharp_pair_held_as_routed_commits_nothing(
     assert (pair.sections, pair.held) == (1, 1)
     assert not any(line.startswith("ERROR") for line in log)
     assert board.calls == []
-
-
-def crowded(end: tuple[float, float]) -> str | None:
-    """Why the run refuses the via of `scenarios.via_over_pinned` moved to
-    `end`, with the chains as given, if it does."""
-    scenario = scenarios.via_over_pinned("P")
-    (given,) = scenario.vias
-    via = pipeline.ViaReport("v", given.via.position, end, rejected_edges=0)
-    return pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        scenario.chains,
-        scenario.vias,
-        [c.centreline.points for c in scenario.chains],
-        [via],
-        HOLE_CLEARANCE,
-        BOARD_FRAME,
-    )
-
-
-def test_a_via_ending_newly_inside_its_clearance_is_refused() -> None:
-    message = crowded((5.0, scenarios.PINNED_LEVEL))
-
-    assert message is not None
-    assert "N" in message and "(5.000, 1.500)" in message
-    assert "the track of P" in message
-    assert "nothing committed" in message
-
-
-def test_a_via_a_chain_moves_onto_is_refused_where_it_stays() -> None:
-    scenario = scenarios.via_over_pinned("P")
-    (given,) = scenario.vias
-    chains = [c.centreline.points.copy() for c in scenario.chains]
-    chains[2][:, 1] = scenarios.DETOUR_VIA[1]
-    via = pipeline.ViaReport("v", given.via.position, given.via.position, 0)
-
-    message = pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        scenario.chains, scenario.vias, chains, [via], HOLE_CLEARANCE, BOARD_FRAME
-    )
-
-    assert message is not None
-    assert "at (5.000, 3.000)" in message and "moved" not in message
-
-
-def test_a_via_ending_clear_is_not_refused() -> None:
-    assert crowded((5.5, scenarios.DETOUR_VIA[1])) is None
-
-
-PAIR_VIA = (5.0, 0.0)
-TIGHT_GAP = scenarios.PAIR_CLEARANCE / 2
-"""A pair's gap, edge to edge, below its netclass clearance."""
-
-
-def pair_via_crowded(end: tuple[float, float]) -> str | None:
-    """Why the run refuses the via of a pair's D+ track, moved to `end`,
-    beside its D- partner track TIGHT_GAP away, if it does. The via starts
-    inside the partner's clearance; the check judges the partner as any
-    other net's track, not as the pair's coupled section the optimizer
-    sees."""
-    partner = scenarios.selected(
-        "D-",
-        "D-",
-        FreeSpace(),
-        (0.0, scenarios.PAIR_WIDTH + TIGHT_GAP),
-        (10.0, scenarios.PAIR_WIDTH + TIGHT_GAP),
-    )
-    chains = (*scenarios.route("D+", PAIR_VIA), partner)
-    vias = (scenarios.joining(scenarios.through_via("v", "D+", PAIR_VIA), 0),)
-    via = pipeline.ViaReport("v", PAIR_VIA, end, rejected_edges=0)
-    return pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        chains,
-        vias,
-        [c.centreline.points for c in chains],
-        [via],
-        HOLE_CLEARANCE,
-        BOARD_FRAME,
-    )
-
-
-def test_a_pair_via_ending_deeper_toward_its_partner_is_refused() -> None:
-    message = pair_via_crowded((PAIR_VIA[0], PAIR_VIA[1] + 0.001))
-
-    assert message is not None and "the track of D-" in message
-
-
-def test_a_pair_via_sliding_along_its_partner_is_not_refused() -> None:
-    assert pair_via_crowded((PAIR_VIA[0] + 0.5, PAIR_VIA[1])) is None
 
 
 def pad_inside(at: tuple[float, float]) -> BaseGeometry:

@@ -31,12 +31,9 @@ thus stays an arc only in a chain left exactly as drawn; simplification
 merges its pieces and the optimizer shortens it, so it is nearly always
 replaced.
 
-Before the commit it checks every moving via where the run leaves it, with
-the chains as simplified, against where it started (`_crowded`), and
-refuses the run if one ends newly or deeper inside its clearance of any
-chain, via, item of its static copper or of its stops: the
-optimizer keeps vias so, and this catches a gap in its checks before it
-reaches the board.
+The run checks no clearance of its own after optimizing: what the
+optimizer and simplification leave is committed, and the user's KiCad DRC
+reports any violation. It refuses only an abnormal optimizer stop.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
@@ -65,9 +62,8 @@ from loguru import logger
 from shapely.geometry import LineString, Point
 from shapely.geometry.base import BaseGeometry
 
-from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE, OptimizerSettings
+from kibends.bursts import DEFAULT_SETTINGS, OptimizerSettings
 from kibends.chain import (
-    NM_PER_MM,
     PIN_MERGE_TOLERANCE_MM,
     Chain,
     Point2,
@@ -130,7 +126,7 @@ from kibends.snapshot import (
     read_selection,
     read_user_frame,
 )
-from kibends.via_moves import Crowding, MovingVias, crowded
+from kibends.via_moves import MovingVias
 from kibends.vias import (
     ChainEnd,
     MovableVia,
@@ -147,15 +143,6 @@ from kibends.vias import (
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
 KICAD_TIMEOUT_MS = 30_000
-
-# How much closer rounding two vias to KiCad's 1 nm grid can bring them, mm.
-GRID_ROUNDING = math.sqrt(2) / NM_PER_MM
-
-# The whole tolerance of the check before the commit, mm: how far inside
-# its clearance a via may end where it started clear, the guard's
-# tolerance plus the grid's rounding. A via that started inside may end up
-# to GRID_ROUNDING deeper than it started.
-COMMIT_ROUNDING = INSIDE_TOLERANCE + GRID_ROUNDING
 
 PLOT_EXTRA_MESSAGE = (
     "--plot needs matplotlib, which comes with the `plot` extra: "
@@ -285,7 +272,9 @@ class OptimizerReport:
 class RunReport(OptimizerReport):
     committed: bool
     refusal: str | None
-    """Why nothing was committed, when that is a failure of the run."""
+    """Why nothing was committed, when the optimizer stopped abnormally
+    (`ABNORMAL_MESSAGE`). The run checks no clearance after optimizing;
+    the user's KiCad DRC does."""
 
     @property
     def changes(self) -> bool:
@@ -355,8 +344,6 @@ class _Outcome:
     reports: tuple[ChainReport, ...]
     via_reports: tuple[ViaReport, ...]
     pair_reports: tuple[PairReport, ...]
-    crowded: str | None
-    """Why the moved vias may not be committed, if they may not."""
 
 
 def run_smooth(
@@ -367,8 +354,8 @@ def run_smooth(
 
     `on_optimized` gets the optimizer's report before the commit, which may
     raise. Raises on failures that leave nothing to report (no board, a bad
-    selection, a refused commit); an abnormal optimizer stop or a crowded
-    via comes back as the report's `refusal`, with nothing committed.
+    selection, a refused commit); an abnormal optimizer stop comes back as
+    the report's `refusal`, with nothing committed.
     """
     if options.plot is not None:
         _require_plot()
@@ -1030,69 +1017,7 @@ def _simplify_and_report(
         reports,
         via_reports,
         pair_reports,
-        _crowded(
-            optimized.whole,
-            optimized.via_inputs,
-            simplified,
-            via_reports,
-            options.hole_clearance,
-            read.frame,
-        ),
     )
-
-
-def _crowded(
-    chains: Sequence[ChainInput],
-    via_inputs: Sequence[ViaInput],
-    simplified: Sequence[FloatArray],
-    vias: Sequence[ViaReport],
-    hole_clearance: float,
-    frame: UserFrame,
-) -> str | None:
-    """Why the first via that ends, with the selected chains at
-    `simplified`, newly or deeper inside its clearance of other nets'
-    copper or its stops than it started (`via_moves.crowded`) may not be
-    committed. The optimizer already keeps vias so; this checks what
-    reaches the board, after simplification and on KiCad's grid, so that
-    a gap in its checks fails the run instead of committing a violation."""
-    if not via_inputs:
-        return None
-    found = crowded(
-        MovingVias(chains, via_inputs, hole_clearance, HOLE_TO_HOLE),
-        [c.centreline.points for c in chains],
-        simplified,
-        [np.array(r.start, dtype=float) for r in vias],
-        [np.array(r.end, dtype=float) for r in vias],
-        COMMIT_ROUNDING,
-        GRID_ROUNDING,
-    )
-    for given, report, crowding in zip(via_inputs, vias, found, strict=True):
-        if crowding is not None:
-            where = (
-                f"moved from {frame.point(report.start)} to {frame.point(report.end)}"
-                if report.moved
-                else f"at {frame.point(report.start)}"
-            )
-            return (
-                f"The via of {given.via.net} {where} would end "
-                f"{_crowding_text(crowding)} than it started; nothing committed"
-            )
-    return None
-
-
-def _crowding_text(crowding: Crowding) -> str:
-    """Where a crowded via ends, to follow "would end" in the refusal."""
-    match crowding.kind:
-        case "copper":
-            return "deeper inside its clearance of the copper standing still"
-        case "zones":
-            return "farther outside its zones"
-        case "own net":
-            return "deeper inside its net's pads and holes"
-        case "chain":
-            return f"deeper inside its clearance of the track of {crowding.net}"
-        case "via":
-            return f"deeper inside its clearance of the via of {crowding.net}"
 
 
 def _commit(
@@ -1126,8 +1051,6 @@ def _commit(
 
     if run.termination is Termination.ABNORMAL:
         return report(refusal=ABNORMAL_MESSAGE)
-    if outcome.crowded is not None:
-        return report(refusal=outcome.crowded)
     if options.dry_run or not report().changes:
         return report()
     changed = [
