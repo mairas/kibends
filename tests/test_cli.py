@@ -2018,6 +2018,31 @@ class TestLoopsAndDots:
             "stays fixed: the closed loop a, b, c it ends is held as drawn"
         )
 
+    def test_a_via_two_held_loops_run_through_stays_naming_both(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        top = triangle_loop()
+        corners = [(0, 0), (9, 0), (9, 3), (0, 0)]
+        bottom = [
+            kipy_track(f"b{name}", "SIG", p, q, width=WIDTH, layer=BL.BL_B_Cu)
+            for name, (p, q) in zip("abc", itertools.pairwise(corners), strict=True)
+        ]
+        via = kipy_via("v", "SIG", 9, 0)
+        board = connect.to(
+            CommitBoard(
+                selection=[*top, *bottom, via], tracks=[*top, *bottom], vias=[via]
+            )
+        )
+
+        run()
+
+        assert created_vias(board) == []
+        (stays,) = [line for line in log if "Via v" in line]
+        assert stays.rstrip().endswith(
+            "stays fixed: the closed loops ba, bb, bc; a, b, c it ends are held "
+            "as drawn"
+        )
+
     def test_routes_off_a_held_loop_still_meet_it_where_it_was_drawn(
         self, connect: Connector
     ) -> None:
@@ -2247,6 +2272,233 @@ def layout(board: CommitBoard) -> set[tuple[int, int, int, int, int]]:
         (t.layer, t.start.x, t.start.y, t.end.x, t.end.y)
         for t in cast(list[kbt.Track], board.created)
     }
+
+
+def straight_tracks(board: CommitBoard) -> set[frozenset[Point2]]:
+    """The created tracks, each by its two ends in mm."""
+    return {
+        frozenset((p.x / NM_PER_MM, p.y / NM_PER_MM) for p in (t.start, t.end))
+        for t in cast(list[kbt.Track], board.created)
+    }
+
+
+def junction_tee(pad: Point2) -> CommitBoard:
+    """A tee whose branch `c` runs from its junction at (0, -3) to (0, 1),
+    through a pad of its net at `pad`. The angle at (0, 1) is over 120
+    degrees, so that is the branches' Fermat point, where they drag the
+    junction."""
+    tracks = [
+        kipy_track("a1", "SIG", (-5, 0), (-2, -4), width=WIDTH),
+        kipy_track("a2", "SIG", (-2, -4), (0, -3), width=WIDTH),
+        kipy_track("b", "SIG", (0, -3), (5, 0), width=WIDTH),
+        kipy_track("c", "SIG", (0, -3), (0, 1), width=WIDTH),
+    ]
+    return CommitBoard(
+        selection=list(tracks), tracks=list(tracks), pads=[kipy_pad("p", "SIG", *pad)]
+    )
+
+
+def degrees(board: CommitBoard) -> Counter[Point2]:
+    """How many created tracks end at each point, in mm."""
+    return Counter(
+        (p.x / NM_PER_MM, p.y / NM_PER_MM)
+        for t in cast(list[kbt.Track], board.created)
+        for p in (t.start, t.end)
+    )
+
+
+@pytest.mark.usefixtures("coarse_optimizer")
+class TestCollapsingBranches:
+    """Junctions may merge and a branch may shrink onto its pad, as its
+    copper still connects; two ways between the same junctions that end on
+    top of each other are held as drawn. Loops round something, or held open
+    by their pads, are smoothed."""
+
+    @pytest.mark.parametrize(
+        "pad", [(0.0, 1.0), (0.0, 0.5)], ids=["at-the-end", "mid-branch"]
+    )
+    def test_a_branch_shrunk_onto_its_pad_is_committed_and_connects(
+        self, connect: Connector, pad: Point2
+    ) -> None:
+        board = connect.to(junction_tee(pad))
+
+        run()
+
+        assert sorted(board.deleted) == ["a1", "a2", "b", "c"]
+        ends = degrees(board)
+        assert {p for p, n in ends.items() if n == 1} == {
+            (-5.0, 0.0),
+            (5.0, 0.0),
+            (0.0, 1.0),
+        }
+        (junction,) = [p for p, n in ends.items() if n == 3]
+        assert pad_box(*pad).contains(Point(junction))
+
+    def test_an_h_whose_junctions_merge_into_an_x_is_committed(
+        self, connect: Connector
+    ) -> None:
+        legs = [(-1, -5), (-1, 5), (1, -5), (1, 5)]
+        tracks = [
+            kipy_track("bar", "SIG", (-0.5, 0), (0.5, 0), width=WIDTH),
+            *(
+                kipy_track(f"l{k}", "SIG", (x / 2, 0), (x, y), width=WIDTH)
+                for k, (x, y) in enumerate(legs)
+            ),
+        ]
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["bar", "l0", "l1", "l2", "l3"]
+        ends = degrees(board)
+        assert {p for p, n in ends.items() if n == 1} == {
+            (float(x), float(y)) for x, y in legs
+        }
+        bar = [p for p, n in ends.items() if n == 3]
+        assert len(bar) == 2
+        assert math.dist(*bar) < WIDTH
+
+    def test_a_route_split_round_nothing_keeps_both_ways_apart(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # Unheld, the two ways round the rectangle are dragged together and
+        # committed as two identical tracks.
+        tracks = split_route()
+        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
+
+        run()
+
+        assert sorted(board.deleted) == ["t1", "t2", "t3", "t4"]
+        assert straight_tracks(board) == {
+            frozenset({(-5.0, 0.0), (0.0, 0.0)}),
+            frozenset({(9.0, 3.0), (14.0, 3.0)}),
+        }
+        (held,) = [line for line in log if "on top of each other" in line]
+        assert held.startswith("DEBUG") and "r1, r2" in held and "r3, r4" in held
+
+    def test_held_ways_stay_as_drawn_beside_other_copper(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # Were the held ways resampled, the via would bend the free samples
+        # between their pins off the drawn ways.
+        middle = [
+            kipy_track("m1", "SIG", (0, 0), (4.5, 2.5), width=WIDTH),
+            kipy_track("m2", "SIG", (4.5, 2.5), (9, 3), width=WIDTH),
+        ]
+        tracks = [*rectangle_ways(), *middle]
+        board = connect.to(
+            CommitBoard(
+                selection=list(tracks),
+                tracks=list(tracks),
+                vias=[kipy_via("g", "GND", 5.5, 1.5)],
+            )
+        )
+
+        run()
+
+        (held,) = [line for line in log if "on top of each other" in line]
+        assert "r3, r4" in held and "m1, m2" in held
+        assert not {"r3", "r4", "m1", "m2"} & {*board.deleted}
+
+    def test_a_way_collapsing_onto_a_straight_way_between_pads_is_held(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # The straight way is all pins from the start, yet the bent one
+        # straightens onto it.
+        tracks = [
+            kipy_track("t1", "SIG", (-5, 0), (0, 0), width=WIDTH),
+            kipy_track("t2", "SIG", (9, 3), (14, 3), width=WIDTH),
+            kipy_track("a", "SIG", (0, 0), (9, 3), width=WIDTH),
+            kipy_track("b1", "SIG", (0, 0), (9, 0), width=WIDTH),
+            kipy_track("b2", "SIG", (9, 0), (9, 3), width=WIDTH),
+        ]
+        pads = [kipy_pad("p0", "SIG", 0, 0), kipy_pad("p1", "SIG", 9, 3)]
+        board = connect.to(
+            CommitBoard(selection=list(tracks), tracks=list(tracks), pads=pads)
+        )
+
+        run()
+
+        (held,) = [line for line in log if "on top of each other" in line]
+        assert "b1, b2" in held
+        assert not {"a", "b1", "b2"} & {*board.deleted}
+
+    @pytest.mark.parametrize(
+        ("width", "diameter"), [(0.5, 0.6), (0.4, 0.45)], ids=["0.5mm", "0.4mm"]
+    )
+    def test_a_loop_off_a_junction_round_a_via_is_smoothed_round_it(
+        self, connect: Connector, width: float, diameter: float
+    ) -> None:
+        tail = kipy_track("t", "SIG", (-5, 0), (0, 0), width=width)
+        corners = [(0, 0), (3, -2), (6, 0), (3, 2), (0, 0)]
+        loop = [
+            kipy_track(f"l{k}", "SIG", a, b, width=width)
+            for k, (a, b) in enumerate(itertools.pairwise(corners))
+        ]
+        via = kipy_via("g", "GND", *ROUND_VIA, diameter)
+        tracks = [tail, *loop]
+        board = connect.to(
+            CommitBoard(selection=list(tracks), tracks=list(tracks), vias=[via])
+        )
+
+        run()
+
+        assert sorted(board.deleted) == ["l0", "l1", "l2", "l3", "t"]
+        (ring,) = shapely.polygonize(
+            [segment(t) for t in cast(list[kbt.Track], board.created)]
+        ).geoms
+        assert ring.contains(Point(ROUND_VIA).buffer(diameter / 2))
+
+    def test_a_loop_through_three_pads_is_smoothed_to_their_triangle(
+        self, connect: Connector
+    ) -> None:
+        a, b, c = (0.0, 0.0), (1.5, 0.0), (0.75, 1.3)
+        hexagon = [a, (0.75, -0.4), b, (1.47, 0.85), c, (0.03, 0.85), a]
+        loop = [
+            kipy_track(f"l{k}", "SIG", p, q, width=WIDTH)
+            for k, (p, q) in enumerate(itertools.pairwise(hexagon))
+        ]
+        pads = [kipy_pad(f"p{k}", "SIG", *p) for k, p in enumerate((a, b, c))]
+        board = connect.to(
+            CommitBoard(selection=list(loop), tracks=list(loop), pads=pads)
+        )
+
+        run()
+
+        assert sorted(board.deleted) == [f"l{k}" for k in range(6)]
+        assert straight_tracks(board) == {
+            frozenset({a, b}),
+            frozenset({b, c}),
+            frozenset({c, a}),
+        }
+
+
+def split_route() -> list[kbt.Track]:
+    """A route from (-5, 0) to (14, 3) that splits at (0, 0) into the
+    `rectangle_ways` and rejoins at (9, 3)."""
+    return [
+        kipy_track("t1", "SIG", (-5, 0), (-2, -1), width=WIDTH),
+        kipy_track("t2", "SIG", (-2, -1), (0, 0), width=WIDTH),
+        kipy_track("t3", "SIG", (9, 3), (11, 4), width=WIDTH),
+        kipy_track("t4", "SIG", (11, 4), (14, 3), width=WIDTH),
+        *rectangle_ways(),
+    ]
+
+
+def rectangle_ways() -> list[kbt.Track]:
+    """Two ways from (0, 0) to (9, 3) round a rectangle that surrounds
+    nothing."""
+    return [
+        kipy_track("r1", "SIG", (0, 0), (9, 0), width=WIDTH),
+        kipy_track("r2", "SIG", (9, 0), (9, 3), width=WIDTH),
+        kipy_track("r3", "SIG", (9, 3), (0, 3), width=WIDTH),
+        kipy_track("r4", "SIG", (0, 3), (0, 0), width=WIDTH),
+    ]
+
+
+ROUND_VIA = (3.0, 0.0)
+"""A GND via inside the loop of
+`TestCollapsingBranches.test_a_loop_off_a_junction_round_a_via_is_smoothed_round_it`."""
 
 
 @pytest.mark.usefixtures("coarse_optimizer")

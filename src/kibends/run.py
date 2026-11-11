@@ -24,12 +24,17 @@ area, to a point or a line doubled back: one that nothing holds open is held
 as drawn from the start (`_collapsing`), with the junction it hangs off if
 any, and one that shrinks all the same (`_shrunk`) is held as drawn in a run
 that resumes from the previous one's best state, on the same clock and time
-limit. A chain whose result equals its selected tracks, and that shares no
-split track with a changed chain, is left out of the commit; nothing is
-committed when every chain is unchanged and no via moved. A selected arc
-thus stays an arc only in a chain left exactly as drawn; simplification
-merges its pieces and the optimizer shortens it, so it is nearly always
-replaced.
+limit. So are two chains between the same two ends whose results lie on top
+of each other (`_on_top`), as the two ways of a route that splits and
+rejoins round nothing do once its junctions are pulled together. A held
+chain is pinned whole and not resampled, so it keeps its drawn shape.
+Junctions may otherwise merge, and a branch may shrink onto the pad it ends
+at: its copper still connects. A chain whose
+result equals its selected tracks, and that shares no split track with a
+changed chain, is left out of the commit; nothing is committed when every
+chain is unchanged and no via moved. A selected arc thus stays an arc only
+in a chain left exactly as drawn; simplification merges its pieces and the
+optimizer shortens it, so it is nearly always replaced.
 
 Before the commit it checks every moving via where the run leaves it, with
 the chains as simplified, against where it started (`_crowded`), and
@@ -609,13 +614,61 @@ def _shrunk(read: _Read, simplified: Sequence[FloatArray]) -> list[int]:
     return shrunk
 
 
-def _hold(read: _Read, held: Collection[int]) -> tuple[_Read, list[int]]:
-    """`read` with the loops `held` pinned whole, and the moving vias that
-    carry an end of one, by index, which stay fixed now and hold every end
-    they carried, each logged at debug.
+def _on_top(read: _Read, simplified: Sequence[FloatArray]) -> list[int]:
+    """The chains whose results lie on top of another's between the same two
+    ends, by index, each pair logged at debug.
 
-    The other branches of a junction a loop hangs off are pinned there with
-    it, as `lay_out` pins every loose end that meets a fixed one."""
+    Two ways from one junction to another round nothing, as a route that
+    splits and rejoins, are pulled together by the junctions as each
+    shortens, and would be committed as one track twice. A result lies on
+    another when each is within half the narrower width of the other along
+    its whole length (their Hausdorff distance): each then runs inside the
+    other's copper. A way drawn straight between two pins counts too, since
+    the other can collapse onto it; two chains both held already are not
+    judged again."""
+    on_top: set[int] = set()
+    for i, j in combinations(range(len(read.chains)), 2):
+        a, b = read.chains[i], read.chains[j]
+        if (
+            a.layer != b.layer
+            or a.net != b.net
+            or (a.held and b.held)
+            or {a.points[0], a.points[-1]} != {b.points[0], b.points[-1]}
+        ):
+            continue
+        apart = LineString(simplified[i]).hausdorff_distance(LineString(simplified[j]))
+        if apart >= min(a.width, b.width) / 2:
+            continue
+        logger.debug(
+            f"Leaving {', '.join(a.segment_ids)} and {', '.join(b.segment_ids)} "
+            f"as drawn: both run from {read.frame.point(a.points[0])} to "
+            f"{read.frame.point(a.points[-1])} and end on top of each other; "
+            "optimizing again with them held"
+        )
+        on_top |= {i, j}
+    return sorted(on_top)
+
+
+def _closed(chain: Chain) -> bool:
+    return chain.points[0] == chain.points[-1]
+
+
+def _held_label(chains: Sequence[Chain], held: Collection[int]) -> str:
+    """What the chains `held` are, for the log."""
+    kinds = dict.fromkeys(
+        "loops" if _closed(chains[k]) else "branches" for k in sorted(held)
+    )
+    return " and ".join(kinds)
+
+
+def _hold(read: _Read, held: Collection[int]) -> tuple[_Read, list[int]]:
+    """`read` with the chains `held`, loops or branches off a junction,
+    held as drawn (`Chain.held`), and the moving vias that carry an end of
+    one, by index, which stay fixed now and hold every end they carried,
+    each logged at debug.
+
+    The other branches of a junction a held chain ends at are pinned there
+    with it, as `lay_out` pins every loose end that meets a fixed one."""
     released = [
         v for v, m in enumerate(read.movable) if any(e.chain in held for e in m.ends)
     ]
@@ -626,19 +679,25 @@ def _hold(read: _Read, held: Collection[int]) -> tuple[_Read, list[int]]:
     }
     for v in released:
         via = read.movable[v].via
-        loops = "; ".join(
-            ", ".join(read.chains[k].segment_ids)
+        chains = [
+            read.chains[k]
             for k in dict.fromkeys(e.chain for e in read.movable[v].ends)
             if k in held
-        )
+        ]
+        names = "; ".join(", ".join(c.segment_ids) for c in chains)
+        noun = "closed loop" if all(_closed(c) for c in chains) else "chain"
+        several = len(chains) > 1
         logger.debug(
             f"Via {via.id} at {read.frame.point(via.position)} stays fixed: the "
-            f"closed loop {loops} it ends is held as drawn"
+            f"{noun}{'s' if several else ''} {names} it ends "
+            f"{'are' if several else 'is'} held as drawn"
         )
 
     def pinned(k: int, chain: Chain) -> Chain:
         if k in held:
-            return replace(chain, pinned=(True,) * len(chain.points), slides=())
+            return replace(
+                chain, pinned=(True,) * len(chain.points), slides=(), held=True
+            )
         last = len(chain.points) - 1
         pins = tuple(
             pin or (i in (0, last) and (k, -1 if i == last else 0) in ends)
@@ -684,21 +743,24 @@ def _smooth(read: _Read, options: SmoothOptions) -> tuple[_Read, _Optimized, _Ou
     drawn: one that nothing holds open (`_collapsing`) from the start, and
     one whose result shrank to nothing all the same (`_shrunk`) in a run
     that resumes from the last, on its clock and time limit and with its
-    counts."""
+    counts. Two chains whose results lie on top of each other (`_on_top`)
+    are held as drawn in such a run too."""
     fields = _StaticFields(options)
     collapsing = _collapsing(read, fields)
     if collapsing:
         read, _ = _hold(read, collapsing)
     optimized = _optimize(read, options, fields)
     outcome = _simplify_and_report(read, optimized, options)
-    while shrunk := _shrunk(read, outcome.simplified):
-        read, released = _hold(read, shrunk)
+    while held := sorted(
+        {*_shrunk(read, outcome.simplified), *_on_top(read, outcome.simplified)}
+    ):
+        read, released = _hold(read, held)
         optimized = _optimize(
             read,
             options,
             fields,
             earlier=optimized,
-            held_loops=shrunk,
+            held=held,
             released=released,
         )
         outcome = _simplify_and_report(read, optimized, options)
@@ -831,11 +893,11 @@ def _optimize(
     fields: _StaticFields,
     *,
     earlier: _Optimized | None = None,
-    held_loops: Collection[int] = (),
+    held: Collection[int] = (),
     released: Collection[int] = (),
 ) -> _Optimized:
     """Optimize the chains of `read`, again after `earlier` if given, with
-    the loops `held_loops` held since and the vias `released` fixed since,
+    the loops and branches `held` since and the vias `released` fixed since,
     by their index in that run: the run resumes from its result
     (`_resumed_holding`), its start stays the stage's start, which the time
     limit counts from, and its iterations, abnormal bursts and give-ups
@@ -873,9 +935,9 @@ def _optimize(
     previous = (
         None
         if earlier is None
-        else _resumed_holding(earlier.run, layout, held_loops, released)
+        else _resumed_holding(earlier.run, layout, held, released)
     )
-    held_label = "loops"
+    held_label = _held_label(read.chains, held)
     iterations = 0 if earlier is None else earlier.run.iterations
     abnormal = {} if earlier is None else dict(earlier.run.abnormal)
     # The earlier run logged its own.
@@ -900,8 +962,8 @@ def _optimize(
             abnormal[description] = abnormal.get(description, 0) + count
         for description, streak in run.gave_up:
             gave_up.setdefault(description, streak)
-        held = _bent_too_tightly(layout.sections, run.pairs)
-        if not held:
+        bent = _bent_too_tightly(layout.sections, run.pairs)
+        if not bent:
             # A problem given up on stopped on abnormal bursts; a later run
             # converging from its best state does not make that stop a
             # convergence.
@@ -926,7 +988,7 @@ def _optimize(
         previous = run
         held_label = "sections"
         sections = list(layout.sections)
-        for k, hold in held.items():
+        for k, hold in bent.items():
             sections[k] = replace(sections[k], hold=hold)
         layout = replace(layout, sections=sections)
 
@@ -1316,6 +1378,7 @@ def _chain_inputs(
                 np.array(chain.pinned),
                 fields(snapshot, chain, moving),
                 tuple((i, Obstacles((), region)) for i, region in chain.slides),
+                chain.held,
             )
         )
     return inputs

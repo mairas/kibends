@@ -143,7 +143,8 @@ class Chain:
     `segment_ids` includes duplicate and zero-length segments, which the
     chain also replaces. A track split where another ends inside it is in
     the `segment_ids` of every chain that has a part of it
-    (`shared_track_groups`).
+    (`shared_track_groups`). `held` marks a chain `run` holds as drawn:
+    pinned whole, and not resampled, so that it keeps its drawn shape.
     """
 
     points: tuple[Point2, ...]
@@ -153,6 +154,7 @@ class Chain:
     net: str
     segment_ids: tuple[str, ...]
     slides: tuple[tuple[int, BaseGeometry], ...] = ()
+    held: bool = False
 
     def with_slides_pinned(self) -> Chain:
         """The chain with each sliding vertex pinned where it is."""

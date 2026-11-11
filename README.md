@@ -55,20 +55,24 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    selection branches: it is split there into chains
    that end at the junction, the junction moves with them unless other
    copper of the net holds it, and the branches meet at one point again in
-   the result. A track that ends in the middle of another, anywhere its
-   copper reaches the other's, branches there too: the other is split at
-   the point of its centreline nearest the end, and the end moves onto it.
-   That holds when every track ending there meets the other from one side,
-   or ends past its centreline by no more than the other's half width, and
-   leaves its copper through its side, and no other copper of the net
-   touches the end where it was drawn. A track that crosses the other, runs
-   along it, already connects to it through the selection, or has other
-   copper on its end keeps its end, and the other is held where that end's
-   copper reaches it; a track that lies on another of its width merges into
-   it. Tracks of two widths that overlap, as at a neck-down whose narrow
-   track ends inside the wide one's copper rather than on its end, stay
-   separate chains of their own widths, held where the end of one reaches
-   the other.
+   the result. Two junctions may merge into one point, and a branch may
+   shrink onto the pad it ends at; its copper still connects. A route that
+   splits and rejoins round nothing would have its two ways pulled on top
+   of each other: should they end so, the optimizer goes on from where it
+   was with both held as drawn. A track that ends in the middle of another,
+   anywhere its copper reaches the other's, branches there too: the other
+   is split at the point of its centreline nearest the end, and the end
+   moves onto it. That holds when every track ending there meets the other
+   from one side, or ends past its centreline by no more than the other's
+   half width, and leaves its copper through its side, and no other copper
+   of the net touches the end where it was drawn. A track that crosses the
+   other, runs along it, already connects to it through the selection, or
+   has other copper on its end keeps its end, and the other is held where
+   that end's copper reaches it; a track that lies on another of its width
+   merges into it. Tracks of two widths that overlap, as at a neck-down
+   whose narrow track ends inside the wide one's copper rather than on its
+   end, stay separate chains of their own widths, held where the end of one
+   reaches the other.
    Where selected tracks of one net overlap or cross away from their ends,
    nothing holds them: copper of one net does not interact, and the run may
    move them apart, even where that overlap was their only connection. So a
@@ -79,9 +83,9 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    that nothing of its net touches, or that surrounds nothing and would
    shrink to a point or fold flat, is left as drawn. Should such a loop
    shrink all the same, the optimizer goes on from where it was with the
-   loop held, and `--time-limit` covers both runs. A
-   route that changes layers through a via is one chain per layer. Chains on different layers do not affect
-   each other, except through the vias that move with them.
+   loop held, and `--time-limit` covers both runs. A route that changes
+   layers through a via is one chain per layer. Chains on different layers
+   do not affect each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
    when it is unlocked, at least two selected chain ends meet it, and no
@@ -397,7 +401,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration more for each. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop, or the two ways of a route that splits and rejoins, held as drawn, it first completes one outer iteration, so it may run over by one outer iteration more for each. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
