@@ -92,7 +92,7 @@ from kibends.pair_layout import (
     find_pairs,
     lay_out,
 )
-from kibends.pairs import GAP_TOLERANCE, gap_range
+from kibends.pairs import gap_range
 from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
@@ -673,7 +673,7 @@ def _simplify_and_report(
         _whole_results(optimized, final_inputs, unsimplified),
         simplified,
     )
-    pair_reports = _pair_reports(read, optimized, chains, final_tracks)
+    pair_reports = _pair_reports(optimized, chains, final_tracks)
     return _Outcome(
         final_inputs,
         unsimplified,
@@ -1031,19 +1031,12 @@ def _whole_results(
 
 
 def _pair_reports(
-    read: _Read,
     optimized: _Optimized,
     chains: Sequence[FloatArray],
     tracks: Sequence[tuple[FloatArray, FloatArray]],
 ) -> tuple[PairReport, ...]:
-    """A report per pair of parts, from `chains` and `tracks` as simplified,
-    warning once per diff pair where the gap of its first pair of parts is
-    not its netclass's."""
+    """A report per pair of parts, from `chains` and `tracks` as simplified."""
     layout, results = optimized.layout, optimized.run.pairs
-    for group in layout.diff_pairs:
-        pair = optimized.pairs[group[0]]
-        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
-        _check_netclass_gap(read.snapshots[a.layer], a, b, pair.pair.gap)
     pair_reports: list[PairReport] = []
     for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
         a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
@@ -1071,17 +1064,6 @@ def _pair_reports(
 
 def _length(points: FloatArray) -> float:
     return float(arc_lengths(points)[-1])
-
-
-def _check_netclass_gap(
-    snapshot: LayerSnapshot, a: Chain, b: Chain, gap: float
-) -> None:
-    expected = snapshot.diff_pair_gap(a.net) or snapshot.diff_pair_gap(b.net)
-    if expected is not None and abs(gap - expected) > GAP_TOLERANCE * expected:
-        logger.warning(
-            f"Differential pair {a.net} and {b.net} keeps its measured gap of "
-            f"{gap:.3f} mm, not its netclass's {expected:.3f} mm"
-        )
 
 
 def _chain_reports(

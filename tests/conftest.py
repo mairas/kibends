@@ -471,13 +471,10 @@ def kipy_copper_zone(
     return z
 
 
-def netclass(
-    name: str, clearance: float | None = None, diff_pair_gap: float | None = None
-) -> NetClass:
+def netclass(name: str, clearance: float | None = None) -> NetClass:
     # NetClass() without a proto shares one default proto between instances.
     nc = NetClass(project_settings_pb2.NetClass(name=name))
     nc.clearance = None if clearance is None else nm(clearance)
-    nc.diff_pair_gap = None if diff_pair_gap is None else nm(diff_pair_gap)
     return nc
 
 

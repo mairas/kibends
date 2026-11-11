@@ -3418,7 +3418,6 @@ the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
-OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
 PADS_AT = 10.5
@@ -3478,11 +3477,9 @@ def pair_tracks(
     return tracks
 
 
-def pair_board(
-    *, diff_pair_gap: float = PAIR_GAP, extra: Sequence[kbt.Track] = ()
-) -> CommitBoard:
+def pair_board(*, extra: Sequence[kbt.Track] = ()) -> CommitBoard:
     tracks = pair_tracks()
-    usb = netclass("USB", PAIR_CLEARANCE, diff_pair_gap)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=[*tracks, *extra],
@@ -3533,7 +3530,7 @@ def cut_partner_board() -> CommitBoard:
         kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
         for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     selected = [*p, *n, stub]
     return CommitBoard(
         selection=list(selected),
@@ -3585,7 +3582,7 @@ def pattern_board(
     groups = [kipy_group("Tuning Pattern", pattern_items)]
     for k in range(nesting):
         groups.append(kipy_group(f"outer{k}", [groups[-1]]))
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=[*tracks, after, groups[-1]],
         tracks=[
@@ -3721,7 +3718,7 @@ def tvs_board() -> CommitBoard:
             kipy_pad(f"tvs{net}", net, x + side * TVS_PAD_SHIFT, TVS_PADS_Y),
         ]
         vias.append(kipy_via(f"via{net}", net, *end, TVS_VIA_DIAMETER, TVS_VIA_DRILL))
-    usb = netclass("USB", PAIR_CLEARANCE, TVS_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -3811,7 +3808,7 @@ class TestPairs:
             *pair_tracks(),
             *pair_tracks(eth, at=SECOND_PAIR, prefixes=("q", "m")),
         ]
-        pairs = netclass("DP", PAIR_CLEARANCE, PAIR_GAP)
+        pairs = netclass("DP", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=list(tracks),
@@ -3860,7 +3857,7 @@ class TestPairs:
             for net, points in lines.items()
             for k, (start, end) in enumerate(itertools.pairwise(points))
         ]
-        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        usb = netclass("USB", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=list(tracks),
@@ -3877,30 +3874,6 @@ class TestPairs:
         assert pair.skew_before == pytest.approx(skew, abs=REPORTED)
         p_now, n_now = (unary_union(c).length for c in by_net(board).values())
         assert pair.skew_after == pytest.approx(abs(p_now - n_now), abs=REPORTED)
-
-    def test_netclass_gap_like_the_measured_one_does_not_warn(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        connect.to(pair_board())
-
-        run("--dry-run")
-
-        assert not any("netclass" in line for line in log)
-
-    def test_netclass_gap_of_either_net_is_checked(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        board = pair_board()
-        board.netclasses = {
-            "USB_D+": netclass("USB", PAIR_CLEARANCE),
-            "USB_D-": netclass("USB", PAIR_CLEARANCE, OTHER_PAIR_GAP),
-        }
-        connect.to(board)
-
-        run("--dry-run")
-
-        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
-        assert f"{OTHER_PAIR_GAP:.3f}" in warning
 
     def test_section_fields_leave_out_moving_vias(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
@@ -4213,29 +4186,18 @@ class TestPairs:
                 [y] * len(beside.coords), abs=NM_ROUNDING
             )
 
-    def test_netclass_gap_unlike_the_measured_one_warns(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        connect.to(pair_board(diff_pair_gap=0.2))
-
-        run("--dry-run")
-
-        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
-        assert "0.150" in warning and "0.200" in warning
-
-    def test_a_diff_pair_cut_by_a_stub_counts_and_warns_once(
+    def test_a_diff_pair_cut_by_a_stub_counts_once(
         self, connect: Connector, log: list[str]
     ) -> None:
         foot = (STUB_AT, PAIR_HALF_PITCH)
         stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
-        board = pair_board(diff_pair_gap=0.2, extra=[stub])
+        board = pair_board(extra=[stub])
         board.selection = [*board.selection, stub]
         connect.to(board)
 
         run("--dry-run")
 
         assert "INFO Optimizing 4 chains, 1 differential pair among them\n" in log
-        assert len([w for w in log if w.startswith("WARNING") and "netclass" in w]) == 1
 
     def test_via_where_a_coupled_section_ends_stays_fixed(
         self, connect: Connector, log: list[str]
@@ -4295,7 +4257,7 @@ class TestPairs:
                 for k, (a, b) in enumerate(itertools.pairwise(points))
             ]
         via = kipy_via("v", USB[0], *mid, diameter=0.3, drill=0.15)
-        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        usb = netclass("USB", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=[*tracks, via],
@@ -4593,7 +4555,7 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
     # Without its fan-out, the pair is coupled from its start.
     tracks = [t for t in pair_tracks() if t.id.value not in ("p1", "n1")]
     side = 1.0 if net == USB[0] else -1.0
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),
@@ -4628,7 +4590,7 @@ def pair_tracks_at(
     the run's calls of `simplify_chains`."""
     calls = spy_simplify(monkeypatch)
     board = pair_board()
-    usb = netclass("USB", clearance, PAIR_GAP)
+    usb = netclass("USB", clearance)
     board.netclasses = {"USB_D+": usb, "USB_D-": usb}
     connect.to(board)
     run()
@@ -4760,7 +4722,7 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
             kipy_track(f"{prefix}{k + 1}", net, a, b, width=PAIR_WIDTH)
             for k, (a, b) in enumerate(itertools.pairwise(points))
         ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -4821,7 +4783,7 @@ def bus_board(margin: float = BUS_MARGIN) -> CommitBoard:
                 kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
                 for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
             ]
-    bus = netclass("BUS", PAIR_GAP, PAIR_GAP)
+    bus = netclass("BUS", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -4884,7 +4846,7 @@ def routed_too_tightly_board() -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -4926,7 +4888,7 @@ def test_a_chain_beside_a_pair_at_clearance_lets_both_smooth(
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(points)))
     ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),
@@ -4971,7 +4933,7 @@ def stubbed_pair_board() -> CommitBoard:
             kipy_track(f"{net}{k}", net, a, b, width=PAIR_WIDTH)
             for k, (a, b) in enumerate(itertools.pairwise(points))
         ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5010,7 +4972,7 @@ def corner_board(*centre: tuple[float, float]) -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5146,7 +5108,7 @@ def v_board(turn: float) -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5197,7 +5159,7 @@ def test_a_sharp_pair_held_as_routed_commits_nothing(
     # Same-net copper on P's apex, whose outline crosses P closer to the
     # turn than two pitches, holds the section as routed.
     held_by = kipy_pad("pad", USB[0], float(p[1, 0]), float(p[1, 1]))
-    usb = netclass("USB", clearance, gap)
+    usb = netclass("USB", clearance)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),

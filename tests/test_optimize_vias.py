@@ -361,7 +361,6 @@ def layer(name: str, via_keepouts: tuple[BaseGeometry, ...] = ()) -> LayerSnapsh
         edge_paths=(),
         clearances={},
         default_clearance=scenarios.PAIR_CLEARANCE,
-        diff_pair_gaps={},
     )
 
 

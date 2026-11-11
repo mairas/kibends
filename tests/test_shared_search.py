@@ -660,7 +660,6 @@ def _zoned_beside_a_via_of_its_net() -> ViasScenario:
             edge_paths=(),
             clearances={},
             default_clearance=scenarios.PAIR_CLEARANCE,
-            diff_pair_gaps={},
         )
         for name in given.via.span
     ]
