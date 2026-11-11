@@ -749,6 +749,49 @@ def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
     assert_held_as_drawn(result, scenario)
 
 
+def test_a_second_hold_in_one_problem_goes_on_from_the_first() -> None:
+    scenario = two_tents()
+    asked: list[list[int]] = []
+
+    def counted(results: Sequence[PairResult]) -> list[int]:
+        named = hold_first(results)
+        asked.append(named)
+        # A hold forgotten would be named again whenever the run settles.
+        assert len(asked) <= len(scenario.pairs) + 1
+        return named
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        to_hold=counted,
+    )
+
+    assert asked == [[0], [1], []]
+    assert result.termination is Termination.CONVERGED
+    assert_held_as_drawn(result, scenario)
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_hold_leaves_another_problem_as_it_was() -> None:
+    scenario = scenarios.pair_tent()
+    back = replace(
+        selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+        layer="B.Cu",
+    )
+    chains = (*scenario.chains, back)
+    plain = optimize_chains(chains, scenario.params, COARSE, pairs=scenario.pairs)
+
+    result = optimize_chains(
+        chains, scenario.params, COARSE, pairs=scenario.pairs, to_hold=hold_every
+    )
+
+    assert result.pairs[0].block.hold is Hold.CROWDING
+    np.testing.assert_array_equal(result.chains[1].polyline, plain.chains[1].polyline)
+
+
 def test_a_section_named_again_once_held_is_not_held_again() -> None:
     scenario = scenarios.pair_tent()
     asked = 0
