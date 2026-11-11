@@ -34,7 +34,7 @@ replaced.
 Before the commit it checks every moving via where the run leaves it, with
 the chains as simplified, against where it started (`_crowded`), and
 refuses the run if one ends newly or deeper inside its clearance of any
-chain, via or its stops, or of its static copper taken as one: the
+chain, via, item of its static copper or of its stops: the
 optimizer keeps vias so, and this catches a gap in its checks before it
 reaches the board.
 

@@ -32,6 +32,7 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     ChainCentreline,
+    Obstacles,
     build_obstacles,
     build_via_obstacles,
     contained,
@@ -120,6 +121,28 @@ TRACK_HALF = 0.25 / 2
 
 
 class TestViaField:
+    def test_copper_of_one_net_on_two_layers_is_two_pieces(self) -> None:
+        # Crossing in plan, the tracks are not connected copper: a via inside
+        # one's clearance entering the other's enters new copper's.
+        fake = FakeBoard(
+            tracks=[
+                kipy_track("top", "GND", (0, 2), (10, 2), layer=BL.BL_F_Cu),
+                kipy_track("bottom", "GND", (5, -3), (5, 7), layer=BL.BL_B_Cu),
+                kipy_track("top-branch", "GND", (3, 2), (3, 5), layer=BL.BL_F_Cu),
+            ],
+            vias=[moving_via()],
+        )
+
+        field = field_of(fake)
+
+        assert isinstance(field, Obstacles)
+        clearance = field.static_edges.clearance_obstacles
+        piece = {
+            o.description: int(c) for o, c in zip(field.items, clearance, strict=False)
+        }
+        assert piece["track top"] == piece["track top-branch"]
+        assert piece["track top"] != piece["track bottom"]
+
     def test_the_nearer_of_a_pad_on_top_and_a_track_below_limits_it(self) -> None:
         fake = FakeBoard(pads=[PAD_ON_TOP], tracks=[TRACK_BELOW], vias=[moving_via()])
 

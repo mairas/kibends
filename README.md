@@ -166,11 +166,14 @@ out vias on those layers, and the chains it joins move with it. A moving
 via that starts inside its clearance or inside such a rule area moves out
 of it where there is room, and never ends deeper inside than it started.
 Starting inside the clearance of one chain or via does not let it into
-another's: each chain and each via is judged on its own, as are the static
-copper around it, taken as one, the outside of its zones and its net's
-pads and holes. A via starting inside the clearance of one piece of static
-copper may still move as deep into another's. The run refuses, naming the
-via, to commit one that would end newly or deeper inside any of these.
+another's: each chain and each via is judged on its own, and so is each
+piece of static copper around it, the outside of its zones and each of its
+net's pads and holes. Static copper of one net that overlaps on one
+layer, such as two tracks meeting at a width change or a T-junction, is
+one piece, judged by the via's depth in the whole of it: inside one track
+of a piece, the via may move into another of its tracks no deeper. The run
+refuses, naming the via, to commit one that would end newly or deeper
+inside any of these.
 This check judges a differential pair's via against its partner track
 like any other net's track, while the optimizer judges it against the
 pair's coupled section, which it starts inside: where the pair's netclass

@@ -24,6 +24,12 @@ FALLBACK_WARNING = (
 # 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
 INSIDE_TOLERANCE = 1e-7
 
+# How much deeper than at the start something already inside may measure
+# without going deeper, mm: round-off in measuring a shape that moved along
+# what it is inside, such as an edge sliding inside a clearance, up to
+# about 1e-16 mm. A thousandth of KiCad's 1 nm coordinate step.
+DEEPER_ROUND_OFF = 1e-9
+
 LBFGSB_ABNORMAL = 2
 
 # Edges shorter than this fraction of the spacing meet the short-edge barrier.

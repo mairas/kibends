@@ -50,6 +50,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     containment,
+    static_distances,
 )
 from kibends.snapshot import ViaZone
 
@@ -1250,3 +1251,186 @@ class TestEdgeList:
                     found.append(field.static_edges.search(points, reach, slack))
                 for a, b in zip(*found, strict=True):
                     np.testing.assert_array_equal(a, b)
+
+
+def _shapely_by_obstacle(
+    points: FloatArray, below: float
+) -> dict[tuple[int, int], float]:
+    """Each point's distance to each of `SCENE`'s items and its board edge,
+    obstacles 0 to 6, with each alone (`signed_distance`), where below
+    `below`."""
+    alone = [Obstacles([item]) for item in SCENE]
+    alone.append(Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION))
+    return {
+        (p, o): float(d)
+        for o, field in enumerate(alone)
+        for p, d in enumerate(field.signed_distance(points)[0])
+        if d < below
+    }
+
+
+class TestStaticDistances:
+    """Each obstacle's exact distance from the static edges, as a clearance
+    check judges it item by item."""
+
+    @pytest.mark.parametrize("below", [0.3, -0.05])
+    def test_matches_shapely_item_by_item(self, below: float) -> None:
+        points = _scene_points(5)
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+
+        got = static_distances([field.static_edges], points, below)
+
+        expected = _shapely_by_obstacle(points, below)
+        found = {
+            (int(p), int(o)): float(d)
+            for p, o, d in zip(got.point, got.obstacle, got.distance, strict=True)
+        }
+        assert found.keys() == expected.keys()
+        np.testing.assert_allclose(
+            [found[key] for key in expected],
+            list(expected.values()),
+            atol=EXACT,
+            rtol=0.0,
+        )
+
+    def test_a_many_edged_item_matches_shapely(self) -> None:
+        disc = Point(0.0, 0.0).buffer(3.0, quad_segs=256)
+        assert len(disc.exterior.coords) - 1 > INDEXED_EDGES
+        field = Obstacles([Obstacle("logo", disc, 0.3)])
+        points = np.random.default_rng(7).uniform(-4.0, 4.0, (200, 2))
+
+        got = static_distances([field.static_edges], points, math.inf)
+
+        assert got.point.tolist() == list(range(len(points)))
+        np.testing.assert_allclose(
+            got.distance, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+        )
+
+    def test_without_a_bound_holds_each_point_s_nearest(self) -> None:
+        points = _scene_points(6)
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+
+        got = static_distances([field.static_edges], points, math.inf)
+
+        nearest = np.full(len(points), np.inf)
+        np.minimum.at(nearest, got.point, got.distance)
+        np.testing.assert_allclose(
+            nearest, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+        )
+
+    def test_numbers_obstacles_one_part_after_another(self) -> None:
+        first = Obstacles(SCENE[:2])
+        second = Obstacles(SCENE[2:3], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        # Inside the edge's clearance only: the second part's second obstacle.
+        at = np.array([[8.9, 3.9]])
+
+        got = static_distances([first.static_edges, second.static_edges], at, 0.0)
+
+        assert got.obstacle.tolist() == [3]
+
+
+JOINT_EXTENT = 0.1
+"""Half the width of the tracks meeting at a joint, mm."""
+JOINT_INFLATION = 0.3
+"""How far a clearance check keeps from the tracks' centrelines, mm."""
+
+
+def _joint(
+    branch: LineString,
+    *,
+    net: str | None = "N",
+    extent: float = JOINT_EXTENT,
+    inflation: float = JOINT_INFLATION,
+    layer: str | None = LAYER,
+) -> Obstacles:
+    """A track of net N on LAYER along x from 0 to 4 mm and `branch`, the
+    second item, of `net` on `layer`, reaching `extent` beyond its
+    centreline."""
+    return Obstacles(
+        [
+            Obstacle(
+                "track",
+                LineString([(0.0, 0.0), (4.0, 0.0)]),
+                JOINT_INFLATION,
+                "N",
+                JOINT_EXTENT,
+                LAYER,
+            ),
+            Obstacle("branch", branch, inflation, net, extent, layer),
+        ]
+    )
+
+
+class TestClearanceObstacles:
+    """Connected copper of one net is one obstacle to a clearance check,
+    however the energy splits it."""
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            _joint(LineString([(2.0, 0.0), (2.0, 2.0)])),
+            _joint(LineString([(4.0, 0.0), (6.0, 0.0)]), inflation=0.4, extent=0.2),
+            _joint(LineString([(2.0, 0.15), (2.0, 2.0)])),
+        ],
+        ids=["t-junction", "width-change", "overlapping"],
+    )
+    def test_connected_copper_of_one_net_is_one(self, field: Obstacles) -> None:
+        edges = field.static_edges
+
+        assert edges.obstacles.tolist() == [0, 1]
+        assert edges.clearance_obstacles.tolist() == [0, 0]
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            _joint(LineString([(2.0, 0.0), (2.0, 2.0)]), net="M"),
+            _joint(LineString([(2.0, 0.0), (2.0, 2.0)]), net=None),
+            _joint(LineString([(2.0, 0.0), (2.0, 2.0)]), layer="B.Cu"),
+            _joint(LineString([(2.0, -1.0), (2.0, 2.0)]), layer="B.Cu"),
+            _joint(LineString([(2.0, 0.0), (2.0, 2.0)]), layer=None),
+            _joint(LineString([(2.0, 0.25), (2.0, 2.0)])),
+        ],
+        ids=[
+            "other-net",
+            "not-copper",
+            "other-layer",
+            "crossing-on-another-layer",
+            "of-no-layer",
+            "apart",
+        ],
+    )
+    def test_other_items_stay_apart(self, field: Obstacles) -> None:
+        assert field.static_edges.clearance_obstacles.tolist() == [0, 1]
+
+    def test_distances_judge_connected_copper_as_one(self) -> None:
+        field = _joint(LineString([(2.0, 0.0), (2.0, 2.0)]))
+        at = np.array([[2.0, -0.1], [2.1, 1.0]])
+
+        got = static_distances([field.static_edges], at, math.inf)
+
+        assert got.point.tolist() == [0, 1]
+        assert got.obstacle.tolist() == [0, 0]
+        np.testing.assert_allclose(
+            got.distance, [0.1 - JOINT_INFLATION] * 2, atol=EXACT, rtol=0.0
+        )
+
+    def test_the_board_edge_stays_its_own(self) -> None:
+        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+
+        edges = field.static_edges
+
+        assert edges.clearance_obstacles.tolist() == edges.obstacles.tolist()
+
+    def test_a_board_s_tracks_meeting_at_a_width_change_are_one(self) -> None:
+        fake = FakeBoard(
+            tracks=[
+                kipy_track("narrow", "GND", (0, 0), (2, 0), width=WIDTH),
+                kipy_track("wide", "GND", (2, 0), (4, 0), width=2 * WIDTH),
+                kipy_track("other", "VCC", (5, 0), (7, 0), width=2 * WIDTH),
+            ]
+        )
+
+        edges = obstacles_of(fake).static_edges
+
+        assert edges.obstacles.tolist() == [0, 1, 2]
+        assert edges.clearance_obstacles.tolist() == [0, 0, 2]

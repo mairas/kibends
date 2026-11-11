@@ -24,7 +24,13 @@ field's own.
 shapely, and `smooth_distance` from its items as edges (`StaticEdges`):
 a search with the field's tree finds the items near the points and the
 edges of them that can answer, and numpy measures those by GEOS's
-point-to-segment formula (`static_smooth`). An `Obstacles` field's
+point-to-segment formula (`static_smooth`). A moving via's clearance
+checks take each obstacle's exact distance from the same edges
+(`static_distances`), so that they judge static copper obstacle by
+obstacle; to them an obstacle of `Obstacles` is its connected copper of
+one net on one layer (`Obstacles._clearance_ids`), since the energy's
+split at a width
+change or a T-junction is no gap in the copper. An `Obstacles` field's
 distances are then shapely's to round-off, and bit for bit with the GEOS
 it was tested on (shapely 2.2.0, GEOS 3.14.1). A static `ChainField` and
 the joined fields of a `CompositeField` take the same path in the energy
@@ -70,6 +76,8 @@ import numpy as np
 import shapely
 from loguru import logger
 from numpy.typing import NDArray
+from scipy.sparse import coo_array
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
@@ -79,6 +87,7 @@ from kibends.chain import Point2
 from kibends.energy import (
     SMOOTH_REACH,
     BoolArray,
+    DistanceField,
     FloatArray,
     IntArray,
     ObstacleField,
@@ -140,6 +149,13 @@ class Obstacle:
     """Polygonal copper, or a centreline or centre point to be inflated."""
     inflation: float
     """Distance from `geometry` at which the chain's centreline is at clearance."""
+    net: str | None = None
+    """The net of copper, None for what is not copper."""
+    extent: float = 0.0
+    """How far copper reaches beyond `geometry`, mm: half a track's width or
+    a via's diameter."""
+    layer: str | None = None
+    """The layer of copper, None for what is not copper of one layer."""
 
 
 class Obstacles:
@@ -221,7 +237,63 @@ class Obstacles:
             inflations,
             obstacles.astype(np.intp),
             self._tree,
+            self._clearance_ids,
         )
+
+    def _clearance_ids(self) -> IntArray:
+        """Each item's obstacle as a clearance check judges it, then the
+        board edge's: the obstacles (`_obstacle_ids`) joined where copper of
+        one net overlaps on one layer, as at a track's width change or a
+        T-junction, each numbered as its lowest obstacle. Connected copper
+        is one piece of copper, whatever the energy splits it into; copper
+        on two layers is two, even where a via joins them, since a via
+        crossing from one to the other's clearance enters new copper."""
+        ids = self._obstacle
+        count = int(ids.max(initial=-1)) + 1
+        net = np.array([o.net for o in self.items], dtype=object)
+        layer = np.array([o.layer for o in self.items], dtype=object)
+        is_copper = np.array(
+            [o.net is not None and o.layer is not None for o in self.items],
+            dtype=bool,
+        )
+        extent = np.array([o.extent for o in self.items], dtype=float)
+        copper = np.flatnonzero(is_copper)
+        joined = ids
+        if len(copper) > 1:
+            # Two pieces overlap within twice the wider one's extent, so the
+            # wider finds the pair; one wide track does not widen every query.
+            source, found = self._tree.query(
+                self._geometries[copper],
+                predicate="dwithin",
+                distance=2 * extent[copper] + TOUCH_TOLERANCE,
+            )
+            a = np.minimum(copper[source], found)
+            b = np.maximum(copper[source], found)
+            pair = np.unique(a * len(self.items) + b)
+            a, b = pair // len(self.items), pair % len(self.items)
+            same = (
+                (a != b)
+                & is_copper[a]
+                & is_copper[b]
+                & (net[a] == net[b])
+                & (layer[a] == layer[b])
+            )
+            a, b = a[same], b[same]
+            gaps: FloatArray = shapely.distance(  # pyright: ignore[reportUnknownMemberType]
+                self._geometries[a], self._geometries[b]
+            )
+            touch = gaps <= extent[a] + extent[b] + TOUCH_TOLERANCE
+            graph = coo_array(
+                (np.ones(int(touch.sum())), (ids[a[touch]], ids[b[touch]])),
+                shape=(count, count),
+            )
+            _, label = connected_components(graph, directed=False)
+            lowest = np.full(count, count, dtype=np.intp)
+            np.minimum.at(lowest, label, np.arange(count, dtype=np.intp))
+            joined = lowest[label][ids]
+        if self.board_outline is None:
+            return joined
+        return np.append(joined, self._edge_obstacle).astype(np.intp)
 
     def _candidates(
         self, coords: FloatArray, reach: float
@@ -471,6 +543,20 @@ NO_FOUND = Found(
 )
 
 
+class StaticDistances(NamedTuple):
+    """(point, obstacle) pairs of a static field, by point then obstacle,
+    and each point's exact signed distance to its obstacle."""
+
+    point: IntArray
+    obstacle: IntArray
+    distance: FloatArray
+
+
+NO_DISTANCES = StaticDistances(
+    np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp), np.empty(0)
+)
+
+
 def join_found(founds: Sequence[Found]) -> Found:
     """`founds` one after another."""
     if len(founds) == 1:
@@ -518,6 +604,7 @@ class StaticEdges:
         inflations: FloatArray,
         obstacles: IntArray,
         tree: STRtree | None = None,
+        clearance: Callable[[], IntArray] | None = None,
     ) -> None:
         self.geometries = geometries
         self.kinds = kinds
@@ -531,6 +618,7 @@ class StaticEdges:
             tree = STRtree(geometries[: self.indexed])
         self._tree = tree if self.indexed else None
         self.obstacle_count = int(obstacles.max(initial=-1)) + 1
+        self._clearance = clearance
         self._inflation = float(inflations[: self.indexed].max(initial=0.0))
         self._slot = np.full(len(geometries), -1, dtype=np.intp)
         self._first: IntArray = np.empty(0, dtype=np.intp)
@@ -595,6 +683,47 @@ class StaticEdges:
             inside[pair],
             unsure[pair],
         )
+
+    @cached_property
+    def clearance_obstacles(self) -> IntArray:
+        """Each item's obstacle as a clearance check judges it, numbered
+        below `obstacle_count`: its obstacle, or for an `Obstacles` field
+        its connected copper (`Obstacles._clearance_ids`). Taken only when
+        a moving via's clearance asks."""
+        return self.obstacles if self._clearance is None else self._clearance()
+
+    def distances(self, coords: FloatArray, below: float) -> StaticDistances:
+        """Each point's exact signed distance to each obstacle nearer than
+        `below`, as a clearance check judges obstacles
+        (`clearance_obstacles`), measured as `static_smooth` measures: its
+        nearest item's nearest edge. Without a finite `below`, to at least
+        each obstacle within SMOOTH_REACH of the point's nearest."""
+        point, item = self._near(coords, max(below, 0.0), 0.0)
+        self._split(item)
+        slot = self._slot[item]
+        some = self._count[slot] > 0
+        point, item, slot = point[some], item[some], slot[some]
+        if not len(point):
+            return NO_DISTANCES
+        inside = self.inside(item, coords[point])
+        query = complex_points(coords)
+        pair, edge = self._pair_edges(query[point], item, slot, 0.0)
+        at = query[point[pair]]
+        starts, ends = self._starts[edge], self._ends[edge]
+        best, _, length = _measured(
+            at, starts, ends, _segment_distances(at, starts, ends), *_groups(pair, pair)
+        )
+        measured = pair[best]
+        of = item[measured]
+        distance = np.where(inside[measured], -length, length) - self.inflations[of]
+        obstacle = self.clearance_obstacles[of]
+        point = point[measured]
+        order = np.lexsort((distance, obstacle, point))
+        point, obstacle, distance = point[order], obstacle[order], distance[order]
+        first = np.ones(len(point), dtype=bool)
+        first[1:] = (point[1:] != point[:-1]) | (obstacle[1:] != obstacle[:-1])
+        kept = first & (distance < below)
+        return StaticDistances(point[kept], obstacle[kept], distance[kept])
 
     def inside(self, items: IntArray, coords: FloatArray) -> BoolArray:
         """Whether each point lies inside its item, items[i] of coords[i]:
@@ -809,7 +938,7 @@ class StaticItems:
         return self.parts[p].normal(item - int(self.starts[p]), point)
 
 
-def static_parts(field: ObstacleField) -> list[StaticEdges] | None:
+def static_parts(field: DistanceField) -> list[StaticEdges] | None:
     """`field` as `StaticEdges`, one per field it joins, or None if it is
     of a kind that gives none."""
     if isinstance(field, Obstacles | ChainField):
@@ -851,6 +980,28 @@ def search_parts(
     return joined.taken(order)
 
 
+def static_distances(
+    parts: Sequence[StaticEdges], coords: FloatArray, below: float
+) -> StaticDistances:
+    """`StaticEdges.distances` over several parts, their obstacles numbered
+    one part after another, as `search_parts` numbers them."""
+    points: list[IntArray] = [NO_DISTANCES.point]
+    obstacles: list[IntArray] = [NO_DISTANCES.obstacle]
+    distances: list[FloatArray] = [NO_DISTANCES.distance]
+    first = 0
+    for part in parts:
+        found = part.distances(coords, below)
+        points.append(found.point)
+        obstacles.append(found.obstacle + first)
+        distances.append(found.distance)
+        first += part.obstacle_count
+    point, obstacle = np.concatenate(points), np.concatenate(obstacles)
+    order = np.lexsort((obstacle, point))
+    return StaticDistances(
+        point[order], obstacle[order], np.concatenate(distances)[order]
+    )
+
+
 def parts_smooth_distance(
     parts: Sequence[StaticEdges], points: FloatArray, reach: float = math.inf
 ) -> tuple[FloatArray, FloatArray]:
@@ -887,10 +1038,9 @@ def static_smooth(
             found.item[unsure], np.column_stack([where.real, where.imag])
         )
     counted = np.where(inside | (key <= found.limit + DEGENERATE_DISTANCE), key, np.inf)
-    best = _nearest_in_groups(counted, *_groups(found.point, found.item))
-    nearest = _closest_points(at[best], found.starts[best], found.ends[best])
-    offset = np.column_stack([at[best].real, at[best].imag]) - nearest
-    length = np.linalg.norm(offset, axis=1)
+    best, offset, length = _measured(
+        at, found.starts, found.ends, counted, *_groups(found.point, found.item)
+    )
     sign = np.where(inside[best], -1.0, 1.0)
     reached = np.isfinite(counted[best])
     distance = np.where(reached, sign * length, np.inf) - found.inflation[best]
@@ -913,6 +1063,24 @@ def static_smooth(
 # GEOS's point-to-segment formula, which `Obstacles.signed_distance` gets
 # through shapely: equal to shapely's distances to round-off, and bit for
 # bit with shapely 2.2.0 on GEOS 3.14.1.
+
+
+def _measured(
+    at: ComplexArray,
+    starts: ComplexArray,
+    ends: ComplexArray,
+    key: FloatArray,
+    first: IntArray,
+    group: IntArray,
+) -> tuple[IntArray, FloatArray, FloatArray]:
+    """Of each run of (point, edge) pairs `_groups` gives, the pair at[k]
+    and the edge from starts[k] to ends[k] of least key[k], as GEOS chooses
+    a geometry's nearest segment; the offset to the point from that edge's
+    nearest point, (n, 2), and its length, as GEOS measures it."""
+    best = _nearest_in_groups(key, first, group)
+    nearest = _closest_points(at[best], starts[best], ends[best])
+    offset = np.column_stack([at[best].real, at[best].imag]) - nearest
+    return best, offset, np.linalg.norm(offset, axis=1)
 
 
 def _segment_distances(
@@ -970,7 +1138,8 @@ def _obstacle_ids(items: Sequence[Obstacle]) -> IntArray:
     Centrelines of two inflations stay two obstacles where they meet, as
     at a width change, and so does a centreline whose end lands on the
     middle of another, a T-junction: opposite its stem a point reads up to
-    τ·ln 2 nearer than it is."""
+    τ·ln 2 nearer than it is. A clearance check joins them again
+    (`_clearance_ids`)."""
     parent = list(range(len(items)))
 
     def root(k: int) -> int:
@@ -1331,6 +1500,19 @@ def pairs_inside(
     along[k], inflated by inflations[k], by more than `tolerance`."""
     gap = _segment_gaps(a, ab, starts, along)
     return gap < inflations - tolerance - ROUND_OFF
+
+
+def pair_depths(
+    a: ComplexArray,
+    ab: ComplexArray,
+    starts: ComplexArray,
+    along: ComplexArray,
+    inflations: FloatArray,
+) -> FloatArray:
+    """The signed distance between each pair of `pairs_inside`: the gap
+    between the segment and the edge, less the edge's inflation; negative
+    inside, and least, -inflation, where the two cross."""
+    return _segment_gaps(a, ab, starts, along) - inflations
 
 
 def nearest_of_pairs(
@@ -1732,48 +1914,88 @@ def _copper_items(
     of the layer's vias, holes left out; `via_keeper` gives the keeper of
     each via's ring, `keeper` by default."""
     keeper_of: Callable[[Via], _Keeper] = via_keeper or (lambda _: keeper)
-    candidates: list[tuple[str, BaseGeometry, float | None]] = []
-    for pad in snapshot.pads:
-        if pad.shape is not None:
-            clearance = (
-                pad.clearance_override
-                if pad.clearance_override is not None
-                else snapshot.clearance(pad.net)
-            )
-            candidates.append(
-                (f"pad {pad.name}", pad.shape, keeper.copper(pad.net, 0.0, clearance))
-            )
-    candidates += [
-        (
+    pads = [
+        _kept(
+            keeper,
+            snapshot.layer,
+            f"pad {pad.name}",
+            pad.shape,
+            pad.net,
+            0.0,
+            pad.clearance_override
+            if pad.clearance_override is not None
+            else snapshot.clearance(pad.net),
+        )
+        for pad in snapshot.pads
+        if pad.shape is not None
+    ]
+    tracks = [
+        _kept(
+            keeper,
+            snapshot.layer,
             f"track {t.id}",
             t.centreline,
-            keeper.copper(t.net, t.width / 2, snapshot.clearance(t.net)),
+            t.net,
+            t.width / 2,
+            snapshot.clearance(t.net),
         )
         for t in snapshot.tracks
     ]
-    candidates += _via_rings(snapshot, vias, keeper_of)
-    candidates += [
-        (
+    graphics = [
+        _kept(
+            keeper,
+            snapshot.layer,
             g.description,
             g.geometry,
-            keeper.copper(g.net, 0.0, snapshot.clearance(g.net)),
+            g.net,
+            0.0,
+            snapshot.clearance(g.net),
         )
         for g in snapshot.graphics
     ]
-    candidates += [("track keepout", k, keeper.radius) for k in snapshot.track_keepouts]
-    return [Obstacle(d, g, i) for d, g, i in candidates if i is not None]
+    items = [
+        *pads,
+        *tracks,
+        *_via_rings(snapshot, vias, keeper_of),
+        *graphics,
+        *(Obstacle("track keepout", k, keeper.radius) for k in snapshot.track_keepouts),
+    ]
+    return [item for item in items if item is not None]
+
+
+def _kept(
+    keeper: _Keeper,
+    layer: str,
+    description: str,
+    geometry: BaseGeometry,
+    net: str,
+    extent: float,
+    clearance: float,
+) -> Obstacle | None:
+    """Copper of `net` on `layer` reaching `extent` mm beyond `geometry`,
+    with `clearance` its own, as an obstacle to what `keeper` keeps, or
+    None for copper of its own net."""
+    inflation = keeper.copper(net, extent, clearance)
+    if inflation is None:
+        return None
+    return Obstacle(description, geometry, inflation, net, extent, layer)
 
 
 def _via_rings(
     snapshot: LayerSnapshot, vias: Iterable[Via], keeper_of: Callable[[Via], _Keeper]
-) -> list[tuple[str, BaseGeometry, float | None]]:
+) -> list[Obstacle | None]:
     """The rings of `vias`, each kept from by the keeper `keeper_of` gives,
-    at the clearances `snapshot` gives their nets."""
+    at the clearances `snapshot` gives their nets, None for one of the
+    keeper's net."""
     return [
-        (
+        _kept(
+            keeper_of(v),
+            snapshot.layer,
             f"via {v.id}",
             Point(v.position),
-            keeper_of(v).copper(v.net, v.diameter / 2, snapshot.clearance(v.net)),
+            v.net,
+            v.diameter / 2,
+            snapshot.clearance(v.net),
         )
         for v in vias
     ]
@@ -1952,7 +2174,7 @@ def split_via_obstacles(
     rings = _via_rings(found.spanned[0], picked, found.via_keeper(zones))
     return field, Obstacles(
         [
-            *(Obstacle(d, g, i) for d, g, i in rings if i is not None),
+            *(ring for ring in rings if ring is not None),
             *_hole_items((), picked, found.keeper),
         ]
     )
