@@ -194,6 +194,51 @@ class TestSeveralChains:
         assert not any(line.startswith("WARNING") for line in log)
 
 
+BUMP = 0.005
+"""How far a chain's middle vertex lies off its chord, mm: within
+WIDE_TOLERANCE."""
+
+
+@pytest.mark.parametrize(
+    ("below", "kept"),
+    [(scenarios.PAIR_INFLATION / 2, 3), (2 * scenarios.PAIR_INFLATION, 2)],
+)
+def test_a_neighbour_beside_a_chain_s_box_blocks_a_merge_within_clearance(
+    below: float, kept: int
+) -> None:
+    # The chord lies on the box's lower side; the other track runs `below`
+    # it, outside the box, so only its clearance reaches the chord.
+    def given(name: str, line: FloatArray) -> ChainInput:
+        return ChainInput(
+            ChainCentreline(name, name, PAIR_WIDTH, PAIR_CLEARANCE, line),
+            "F.Cu",
+            free(len(line)),
+            FreeSpace(),
+        )
+
+    bumped = path((0.0, 0.0), (2.5, BUMP), (5.0, 0.0))
+    other = path((0.0, -below), (5.0, -below))
+    chains = [given("A", bumped), given("B", other)]
+    run = RunResult(
+        tuple(
+            ChainResult(
+                c.centreline.points,
+                c.fixed,
+                0,
+                measure(c.centreline.points, SPACING),
+                no_contacts(c.centreline.points),
+            )
+            for c in chains
+        ),
+        Termination.CONVERGED,
+        1,
+    )
+
+    result, _ = simplify_chains(chains, run, WIDE_TOLERANCE)
+
+    assert len(result) == kept
+
+
 BEND = 1.0
 """Radius of a coupled section's arc, mm."""
 BEND_STEP = 0.02
