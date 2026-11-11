@@ -20,7 +20,7 @@ from shapely.geometry import LineString
 from kibends.bursts import INSIDE_TOLERANCE, OptimizerSettings
 from kibends.contacts import no_contacts
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline
+from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.optimize import optimize, optimize_chains
 from kibends.pair_blocks import pair_block
 from kibends.polylines import measure
@@ -194,45 +194,63 @@ class TestSeveralChains:
         assert not any(line.startswith("WARNING") for line in log)
 
 
+def unmoved(*lines: tuple[FloatArray, BoolArray]) -> RunResult:
+    """A run that left each of `lines`, its points and fixed vertices, as
+    it was."""
+    return RunResult(
+        tuple(
+            ChainResult(points, fixed, 0, measure(points, SPACING), no_contacts(points))
+            for points, fixed in lines
+        ),
+        Termination.CONVERGED,
+        1,
+    )
+
+
 BUMP = 0.005
 """How far a chain's middle vertex lies off its chord, mm: within
 WIDE_TOLERANCE."""
+NEAR = 0.002
+"""How far inside a distance kept something lies, mm."""
+WIDE = 3 * PAIR_WIDTH
+LARGE_CLEARANCE = 2.5 * PAIR_CLEARANCE
 
 
 @pytest.mark.parametrize(
-    ("below", "kept"),
-    [(scenarios.PAIR_INFLATION / 2, 3), (2 * scenarios.PAIR_INFLATION, 2)],
+    ("width", "clearance", "beyond", "kept"),
+    [
+        (PAIR_WIDTH, PAIR_CLEARANCE, -NEAR, 3),
+        (PAIR_WIDTH, PAIR_CLEARANCE, scenarios.PAIR_INFLATION, 2),
+        (WIDE, PAIR_CLEARANCE, -NEAR, 3),
+        (PAIR_WIDTH, LARGE_CLEARANCE, -NEAR, 3),
+    ],
+    ids=["near", "far", "wide", "large clearance"],
 )
 def test_a_neighbour_beside_a_chain_s_box_blocks_a_merge_within_clearance(
-    below: float, kept: int
+    width: float, clearance: float, beyond: float, kept: int
 ) -> None:
-    # The chord lies on the box's lower side; the other track runs `below`
-    # it, outside the box, so only its clearance reaches the chord.
-    def given(name: str, line: FloatArray) -> ChainInput:
+    # The chord lies on the box's lower side; the other track runs `beyond`
+    # the distance kept from it below it, outside the box, so only its
+    # clearance reaches the chord. The layer holds both kinds of track, so
+    # the box must reach as far as the wider of the two distances.
+    def given(
+        name: str, line: FloatArray, width: float, clearance: float
+    ) -> ChainInput:
         return ChainInput(
-            ChainCentreline(name, name, PAIR_WIDTH, PAIR_CLEARANCE, line),
+            ChainCentreline(name, name, width, clearance, line),
             "F.Cu",
             free(len(line)),
             FreeSpace(),
         )
 
+    below = track_inflation(PAIR_WIDTH, PAIR_CLEARANCE, width, clearance) + beyond
     bumped = path((0.0, 0.0), (2.5, BUMP), (5.0, 0.0))
     other = path((0.0, -below), (5.0, -below))
-    chains = [given("A", bumped), given("B", other)]
-    run = RunResult(
-        tuple(
-            ChainResult(
-                c.centreline.points,
-                c.fixed,
-                0,
-                measure(c.centreline.points, SPACING),
-                no_contacts(c.centreline.points),
-            )
-            for c in chains
-        ),
-        Termination.CONVERGED,
-        1,
-    )
+    chains = [
+        given("A", bumped, PAIR_WIDTH, PAIR_CLEARANCE),
+        given("B", other, width, clearance),
+    ]
+    run = unmoved(*((c.centreline.points, c.fixed) for c in chains))
 
     result, _ = simplify_chains(chains, run, WIDE_TOLERANCE)
 
