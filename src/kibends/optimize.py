@@ -46,8 +46,10 @@ track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
 check, a burst moves back what `polylines.SelfCheck` finds: a centreline
 newly bent below its limit. A held member (`ChainInput.held`), such as a held
-section, is fully pinned and not resampled, which is how `run` repeats a
-run with the sections that ended too tight held.
+section, is fully pinned and not resampled. A section the run would end
+bent too tightly is held so within the run: its problem is built again with
+the section as drawn and goes on from its best state, with what would come
+too close to the section put back where it started (`_Problem.go_on_from`).
 
 A moving via (`kibends.via_moves`) is two more variables, its centre. The
 ends of the chains it joins are not variables of their own: each is the
@@ -180,8 +182,16 @@ checks and the guard as any, and it settles nothing. Each problem keeps
 its best state either way (`optimize_chains`). A run in which some
 problem settled on abnormal bursts gave up: it keeps the best state if
 that is lower in energy than the inputs, and ends abnormally if not.
+
+Where it would stop, for whatever reason, the run holds the sections bent
+too tightly and goes on, unless the time is up. The hold is judged there
+rather than as a bend stays too tight, since a burst may still round it.
+The problem built again measures its guard, its energy and its inputs'
+energy with the sections held, so the best state is never compared with
+one that had them moving.
 """
 
+import itertools
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -224,7 +234,7 @@ from kibends.members import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
-from kibends.pair_blocks import PairBlock, PairInput, pair_block
+from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.polylines import (
     SelfCheck,
     count_violations,
@@ -345,8 +355,8 @@ def optimize_chains(
     pairs: Sequence[PairInput] = (),
     clock: Callable[[], float] = time.monotonic,
     started: float | None = None,
-    again: bool = False,
     static_vias: Sequence[StaticVia] = (),
+    to_hold: Callable[[Sequence[PairResult]], Sequence[int]] | None = None,
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -377,22 +387,23 @@ def optimize_chains(
     ends at its next L-BFGS-B iteration, and its state goes through the
     checks and the guard as any burst's.
 
-    A run `again`, which repeats an earlier one on the same clock with
-    sections held, starts from its inputs as any run and completes its
-    first outer iteration before it looks at the time limit.
+    Whenever the run would end, `to_hold` is given each section's best
+    state and names the sections to hold (`Hold.CROWDING`). Each problem
+    with such a section takes it back to its drawn shape and goes on from
+    its best state (`_Problem.go_on_from`), with the members and vias that
+    would come too close to the section, or to what was put back, put back
+    where they started; the others keep their progress. The iteration cap
+    counts again from the hold. A run that would end at the time limit
+    ends with the hold, without another burst.
 
-    It logs at INFO when setup begins and, once the problems are built,
-    the setup time and the starting length and energy, saying "again" for
-    a run `again`. Each outer iteration
+    It logs at INFO when setup begins, once the problems are built, the
+    setup time and the starting length and energy, and at each hold what
+    it put back. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since `started` or the last INFO line. Each burst logs what it
     cost at DEBUG only (`_Problem.step`).
     """
-    logger.info(
-        "Setting up the optimizer again, with held sections"
-        if again
-        else "Setting up the optimizer"
-    )
+    logger.info("Setting up the optimizer")
     set_up = clock()
     junctions(chains)
     blocks = [pair_block(pair, settings.spacing) for pair in pairs]
@@ -401,6 +412,17 @@ def optimize_chains(
     placed = _problems(chains, blocks, moving_vias, params, settings, static_vias)
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
+    # A problem given up on before a hold stays given up on, though the
+    # problem that replaces it converges.
+    gave_up: dict[str, int] = {}
+
+    def sections(*, best: bool) -> tuple[PairResult, ...]:
+        by_section = {
+            i: p.problem.pair_result(len(p.chains) + k, best=best)
+            for p in placed
+            for k, i in enumerate(p.sections)
+        }
+        return tuple(by_section[k] for k in range(len(blocks)))
 
     def result(termination: Termination, iterations: int, *, best: bool) -> RunResult:
         by_index = {
@@ -408,25 +430,22 @@ def optimize_chains(
             for p in placed
             for k, i in enumerate(p.chains)
         }
-        by_section = {
-            i: p.problem.pair_result(len(p.chains) + k, best=best)
-            for p in placed
-            for k, i in enumerate(p.sections)
-        }
         by_via = {
             v: p.problem.via_result(k, best=best)
             for p in placed
             for k, v in enumerate(p.vias)
         }
+        given_up = dict(gave_up)
+        for p in problems:
+            if p.gave_up:
+                given_up.setdefault(p.description, p.abnormal_streak)
         return RunResult(
             tuple(by_index[i] for i in range(len(chains))),
             termination,
             iterations,
             vias=tuple(by_via[v] for v in range(len(vias))),
-            pairs=tuple(by_section[k] for k in range(len(blocks))),
-            gave_up=tuple(
-                (p.description, p.abnormal_streak) for p in problems if p.gave_up
-            ),
+            pairs=sections(best=best),
+            gave_up=tuple(given_up.items()),
             abnormal=tuple(
                 (p.description, p.abnormal_bursts)
                 for p in problems
@@ -437,7 +456,7 @@ def optimize_chains(
     if not moving:
         return result(Termination.NOTHING_TO_DO, 0, best=False)
     begun = clock()
-    logger.info(_starting(moving, begun - set_up, again=again))
+    logger.info(_starting(moving, begun - set_up))
     origin = begun if started is None else started
     deadline = None if settings.time_limit is None else origin + settings.time_limit
     last_shown = begun
@@ -445,39 +464,80 @@ def optimize_chains(
     def expired() -> bool:
         return deadline is not None and clock() >= deadline
 
-    termination = Termination.ITERATION_CAP
     iteration = 0
-    for iteration in range(1, settings.max_iterations + 1):
-        # A repeated run starts over when the time may have run out already.
-        timed = deadline is not None and (not again or iteration > 1)
-        out_of_time = False
-        change = 0.0
-        for problem in moving:
-            if problem.settled:
-                continue
-            change = max(change, problem.step(expired if timed else None))
-            if timed and expired():
-                out_of_time = True
+    cap = settings.max_iterations
+    while True:
+        termination = Termination.ITERATION_CAP
+        while iteration < cap:
+            iteration += 1
+            out_of_time = False
+            change = 0.0
+            for problem in moving:
+                if problem.settled:
+                    continue
+                change = max(
+                    change, problem.step(None if deadline is None else expired)
+                )
+                if expired():
+                    out_of_time = True
+                    break
+            now = clock()
+            message = _progress(moving, iteration, now - origin, change)
+            if now - last_shown >= PROGRESS_INTERVAL:
+                logger.info(message)
+                last_shown = now
+            else:
+                logger.debug(message)
+            if all(p.settled for p in moving):
+                if iteration == 1 and not any(p.moved for p in moving):
+                    return result(Termination.NOTHING_TO_DO, 1, best=False)
+                termination = (
+                    Termination.GAVE_UP
+                    if gave_up or any(p.gave_up for p in moving)
+                    else Termination.CONVERGED
+                )
                 break
-        now = clock()
-        message = _progress(moving, iteration, now - origin, change)
-        if now - last_shown >= PROGRESS_INTERVAL:
-            logger.info(message)
-            last_shown = now
-        else:
-            logger.debug(message)
-        if all(p.settled for p in moving):
-            if iteration == 1 and not any(p.moved for p in moving):
-                return result(Termination.NOTHING_TO_DO, 1, best=False)
-            termination = (
-                Termination.GAVE_UP
-                if any(p.gave_up for p in moving)
-                else Termination.CONVERGED
+            if out_of_time:
+                termination = Termination.TIME_LIMIT
+                break
+        held = [] if to_hold is None else list(to_hold(sections(best=True)))
+        if not held:
+            break
+        for k in held:
+            blocks[k] = pair_block(
+                replace(blocks[k].given, hold=Hold.CROWDING), settings.spacing
             )
+        for n, p in enumerate(placed):
+            here = [k for k in held if k in p.sections]
+            if not here:
+                continue
+            if p.problem.gave_up:
+                gave_up.setdefault(p.problem.description, p.problem.abnormal_streak)
+            problem = _problem(
+                p.layers,
+                p.chains,
+                p.sections,
+                p.vias,
+                chains,
+                blocks,
+                moving_vias,
+                params,
+                settings,
+                static_vias,
+            )
+            members, vias_back = problem.go_on_from(p.problem)
+            logger.info(
+                f"Holding {len(here)} coupled section{'' if len(here) == 1 else 's'} "
+                f"of {problem.description} as drawn and going on; put back as "
+                f"they started: {members} other member{'' if members == 1 else 's'} "
+                f"and {vias_back} via{'' if vias_back == 1 else 's'}"
+            )
+            placed[n] = replace(p, problem=problem)
+        problems = [p.problem for p in placed]
+        moving = [p for p in problems if p.moving]
+        if termination is Termination.TIME_LIMIT:
             break
-        if out_of_time:
-            termination = Termination.TIME_LIMIT
-            break
+        cap = iteration + settings.max_iterations
     final = result(termination, iteration, best=True)
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
         p.input_energy for p in moving
@@ -492,9 +552,39 @@ class _Placed:
     those of the run."""
 
     problem: _Problem
+    layers: list[str]
     chains: list[int]
     sections: list[int]
     vias: list[int]
+
+
+def _problem(
+    layers: Sequence[str],
+    on: Sequence[int],
+    sections: Sequence[int],
+    joined: Sequence[int],
+    chains: Sequence[ChainInput],
+    blocks: Sequence[PairBlock],
+    vias: MovingVias,
+    params: EnergyParams,
+    settings: OptimizerSettings,
+    static_vias: Sequence[StaticVia],
+) -> _Problem:
+    """The problem of `layers`: the chains `on` them, the `sections` and
+    the `joined` vias, by their indices in `chains`, `blocks` and `vias`."""
+    members = [*on, *(len(chains) + k for k in sections)]
+    local = {i: n for n, i in enumerate(members)}
+    return _Problem(
+        layers,
+        [chains[i] for i in on],
+        [blocks[k] for k in sections],
+        [_problem_via(vias, v, local, joined) for v in joined],
+        params,
+        settings,
+        static_vias,
+        hole_clearance=vias.hole_clearance,
+        hole_to_hole=vias.hole_to_hole,
+    )
 
 
 def _problems(
@@ -519,27 +609,26 @@ def _problems(
     groups += [[layer] for layer in layers if layer not in tied]
     placed: list[_Placed] = []
     for group in groups:
-        on = [i for i, c in enumerate(chains) if c.layer in group]
-        sections = [k for k, b in enumerate(blocks) if b.given.layer in group]
-        members = [*on, *(len(chains) + k for k in sections)]
-        local = {i: n for n, i in enumerate(members)}
         joined = [
             v
             for v, via in enumerate(vias.vias)
             if group is tied or any(via.via.reaches(layer) for layer in group)
         ]
-        problem = _Problem(
+        on = [i for i, c in enumerate(chains) if c.layer in group]
+        sections = [k for k, b in enumerate(blocks) if b.given.layer in group]
+        problem = _problem(
             group,
-            [chains[i] for i in on],
-            [blocks[k] for k in sections],
-            [_problem_via(vias, v, local, joined) for v in joined],
+            on,
+            sections,
+            joined,
+            chains,
+            blocks,
+            vias,
             params,
             settings,
             static_vias,
-            hole_clearance=vias.hole_clearance,
-            hole_to_hole=vias.hole_to_hole,
         )
-        placed.append(_Placed(problem, on, sections, joined))
+        placed.append(_Placed(problem, group, on, sections, joined))
     return placed
 
 
@@ -624,13 +713,11 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     return list(groups.values())
 
 
-def _starting(problems: Sequence[_Problem], setup: float, *, again: bool) -> str:
-    """One line on the run about to start, after `setup` seconds of setup,
-    `again` when it repeats an earlier run, from the inputs, with sections
-    held."""
+def _starting(problems: Sequence[_Problem], setup: float) -> str:
+    """One line on the run about to start, after `setup` seconds of setup."""
     count = len(problems)
     return (
-        f"Optimizer set up{' again' if again else ''} in {setup:.1f} s: "
+        f"Optimizer set up in {setup:.1f} s: "
         f"{count} problem{'' if count == 1 else 's'}, "
         f"length {sum(p.length() for p in problems):.3f} mm, "
         f"energy {sum(p.energy for p in problems):.3f}"
@@ -774,6 +861,40 @@ class _ProblemBurst:
     """Seconds those evaluations took."""
     cut: bool = False
     """Whether the time limit ended it early (`bursts.Burst.cut`)."""
+
+
+class _State(NamedTuple):
+    """The members' shapes and the vias' centres of a problem."""
+
+    points: list[FloatArray]
+    masks: list[BoolArray]
+    contact_of: list[IntArray]
+    positions: list[FloatArray]
+
+
+def _units(
+    count: int, groups: Sequence[Sequence[End]], vias: Sequence[_Via]
+) -> IntArray:
+    """For each of a problem's `count` members, then each of its `vias`,
+    the unit it goes back with: a junction's branches share their loose
+    end, and a via carries the ends of its chains."""
+    root = list(range(count + len(vias)))
+
+    def find(n: int) -> int:
+        while root[n] != n:
+            n = root[n]
+        return n
+
+    def join(a: int, b: int) -> None:
+        root[find(a)] = find(b)
+
+    for group in groups:
+        for (i, _), (j, _) in itertools.pairwise(group):
+            join(i, j)
+    for k, via in enumerate(vias):
+        for i, _, _ in via.carried:
+            join(count + k, i)
+    return np.array([find(n) for n in range(len(root))], dtype=np.intp)
 
 
 class _Problem:
@@ -949,6 +1070,125 @@ class _Problem:
         """What each member sees of the others and of the vias with the
         members at `polylines` (`members.seen_parts`)."""
         return seen_parts(self.members, polylines, self.rings)
+
+    def go_on_from(self, earlier: _Problem) -> tuple[int, int]:
+        """Take `earlier`'s best state, `earlier` being this problem with
+        fewer sections held, but keep the sections held only here as drawn,
+        and put back where they started the members and vias that would
+        then come too close: each that would fail the guard (`guard`), or
+        whose edges or clearance would enter a member or via they did not
+        enter at the start, and what that entered, each with what moves
+        with it (`_units`), until none would. The state that is left is
+        the best, its energy measured with the sections held. If it fails
+        the guard still, as a member put back that a neighbour's violation
+        count hides may leave it, everything goes back to the start.
+
+        The counts of rejected edges and abnormal bursts carry over. Returns
+        how many members that move and how many vias went back."""
+        count = len(self.members)
+        ahead = [
+            not body.held or before.held
+            for body, before in zip(self.bodies, earlier.bodies, strict=True)
+        ]
+        unit = _units(count, self.groups, self.vias)
+        at_start = self.entered(self.points, self.positions, self.seen)
+        start = _State(self.points, self.masks, self.contact_of, self.positions)
+
+        def state(back: BoolArray) -> _State:
+            points, masks = list(start.points), list(start.masks)
+            contact_of = list(start.contact_of)
+            for i in range(count):
+                if ahead[i] and not back[unit[i]]:
+                    points[i] = earlier.best[i]
+                    masks[i] = earlier.best_masks[i]
+                    contact_of[i] = earlier.best_contact_of[i]
+            positions = [
+                self.start_positions[k] if back[unit[count + k]] else at
+                for k, at in enumerate(earlier.best_positions)
+            ]
+            return _State(points, masks, contact_of, positions)
+
+        back = np.zeros(len(unit), dtype=bool)
+        while True:
+            now = state(back)
+            seen = self.seeing(now.points)
+            failing = np.unique(unit[self.failing(now, seen, at_start)])
+            failing = failing[~back[failing]]
+            if not len(failing):
+                break
+            back[failing] = True
+        if not self.guard(now.points, now.masks, now.positions, seen):
+            back[:] = True
+            now = state(back)
+            seen = self.seeing(now.points)
+        self.points, self.masks = now.points, now.masks
+        self.contact_of, self.positions, self.seen = now.contact_of, now.positions, seen
+        self.resampled = [not ahead[i] or bool(back[unit[i]]) for i in range(count)]
+        self.moved = earlier.moved
+        self.energy = self.energy_of(self.points, self.positions, self.seen)
+        self.best, self.best_masks = list(self.points), list(self.masks)
+        self.best_contact_of = list(self.contact_of)
+        self.best_positions = list(self.positions)
+        self.best_energy = self.energy
+        self.lowest = [self.energy]
+        self.lengths = [self.length()]
+        self.rejected_edges = list(earlier.rejected_edges)
+        self.via_rejected = list(earlier.via_rejected)
+        self.abnormal_bursts = earlier.abnormal_bursts
+        members = sum(ahead[i] and bool(back[unit[i]]) for i in self.free)
+        return members, int(np.count_nonzero(back[unit[count:]]))
+
+    def entered(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
+    ) -> set[tuple[int, int]]:
+        """Each (member, member or via) whose clearance the member's edges
+        at `polylines` enter, the vias at `positions`, numbered after the
+        members. `seen` is what the members see at `polylines`."""
+        count = len(self.members)
+        flat = shown_flat(self.members, polylines, positions)
+        member_of, _ = _shown_vertices(self.members, polylines)
+        # Each via is its centre twice in `flat`.
+        of = np.concatenate(
+            [member_of, count + np.repeat(np.arange(len(self.vias)), 2)]
+        )
+        return {
+            (i, int(j))
+            for i, edges in enumerate(
+                seen.segments_clear(polylines, flat, INSIDE_TOLERANCE)
+            )
+            for j in np.unique(of[edges.vertex])
+        }
+
+    def failing(
+        self, state: _State, seen: Seen, at_start: set[tuple[int, int]]
+    ) -> BoolArray:
+        """For each member, then each via, whether at `state` it has more
+        violations than `allowed`, enters a member or via that it did not
+        enter at the start, `at_start` (`entered`), or is entered so, or,
+        for a via, is newly or deeper inside its clearance of an obstacle
+        or its stops than it started, or is a member or via a via is so
+        inside. `seen` is what the members see at `state`."""
+        count = len(self.members)
+        failing = np.zeros(count + len(self.vias), dtype=bool)
+        violations = self.violations(state.points, state.masks, state.positions, seen)
+        failing[:count] = np.array(violations) > np.array(self.allowed)
+        for pair in self.entered(state.points, state.positions, seen) - at_start:
+            failing[list(pair)] = True
+        for now, start in (
+            (self.via_distances(state.points, state.positions), self.inside),
+            (self.stop_distances(state.points, state.positions), self.stopped),
+        ):
+            static, inside = newly_inside(
+                now, start, INSIDE_TOLERANCE, DEEPER_ROUND_OFF
+            )
+            failing[count + now.static.via[static]] = True
+            failing[count + now.by_obstacle.via[inside]] = True
+            # A member by its index, a via after the members, as here.
+            failing[now.by_obstacle.obstacle[inside]] = True
+        return failing
 
     def guard(
         self,

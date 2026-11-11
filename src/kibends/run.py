@@ -13,10 +13,10 @@ pinning. When a selected via may move and attraction is on, it finds the
 ground nets, logs them and classes every via by them; with attraction off
 nothing is classed, and the optimizer's energy is the one without ground
 vias. It then builds the fields, optimizes, simplifies and commits. A
-coupled section the run leaves bent too tightly is held, and the optimizer
-runs again from the inputs, on the same clock and time limit. A chain whose
-result equals its selected tracks, and that shares no split track with a
-changed chain, is left out of the commit; nothing is committed when every
+coupled section the run would leave bent too tightly is held as drawn, and
+the optimizer goes on in the same run (`optimize.optimize_chains`). A chain
+whose result equals its selected tracks, and that shares no split track with
+a changed chain, is left out of the commit; nothing is committed when every
 chain is unchanged and no via moved. A selected arc thus stays an arc only
 in a chain left exactly as drawn; simplification merges its pieces and the
 optimizer shortens it, so it is nearly always replaced.
@@ -556,55 +556,21 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         read.movable, read.snapshots, options, read.ground_nets, static
     )
     started = monotonic()
-    again = False
-    iterations = 0
-    abnormal: dict[str, int] = {}
-    gave_up: dict[str, int] = {}
-    while True:
-        run = optimize_chains(
-            layout.inputs,
-            options.params,
-            options.settings,
-            vias=_laid_out_vias(layout, via_inputs),
-            hole_clearance=options.hole_clearance,
-            pairs=layout.sections,
-            clock=monotonic,
-            started=started,
-            again=again,
-            static_vias=tuple(static.values()),
-        )
-        iterations += run.iterations
-        for description, count in run.abnormal:
-            abnormal[description] = abnormal.get(description, 0) + count
-        for description, streak in run.gave_up:
-            gave_up.setdefault(description, streak)
-        held = _bent_too_tightly(layout.sections, run.pairs)
-        if not held:
-            # A problem given up on stopped on abnormal bursts; a later run
-            # converging does not make that stop a convergence.
-            termination = (
-                Termination.GAVE_UP
-                if gave_up and run.termination is Termination.CONVERGED
-                else run.termination
-            )
-            run = replace(
-                run,
-                termination=termination,
-                iterations=iterations,
-                abnormal=tuple(abnormal.items()),
-                gave_up=tuple(gave_up.items()),
-            )
-            _log_gave_up(run.gave_up)
-            elapsed = monotonic() - started
-            return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
-        # The other chains were smoothed around the sections' results, so
-        # the sections cannot simply keep their own tracks; the run starts
-        # over with these sections held.
-        again = True
-        sections = list(layout.sections)
-        for k in held:
-            sections[k] = replace(sections[k], hold=Hold.CROWDING)
-        layout = replace(layout, sections=sections)
+    run = optimize_chains(
+        layout.inputs,
+        options.params,
+        options.settings,
+        vias=_laid_out_vias(layout, via_inputs),
+        hole_clearance=options.hole_clearance,
+        pairs=layout.sections,
+        clock=monotonic,
+        started=started,
+        static_vias=tuple(static.values()),
+        to_hold=_bent_too_tightly,
+    )
+    _log_gave_up(run.gave_up)
+    elapsed = monotonic() - started
+    return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
 
 
 def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
@@ -615,21 +581,20 @@ def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
         )
 
 
-def _bent_too_tightly(
-    sections: Sequence[PairInput], results: Sequence[PairResult]
-) -> list[int]:
+def _bent_too_tightly(results: Sequence[PairResult]) -> list[int]:
     """The sections the run moved but could not keep within the bend-radius
     limit, by index: the copper around them kept them from rounding a
     corner that resampling cut too tightly. Each logged at debug."""
     held: list[int] = []
-    for k, (given, result) in enumerate(zip(sections, results, strict=True)):
+    for k, result in enumerate(results):
         bend = result.bend
         if result.block.held or bend is None or not bend.too_tight:
             continue
+        given = result.block.given
         logger.debug(
             f"Kept {given.a.description} and {given.b.description} as they are: "
             f"{Hold.CROWDING.value} (a radius of {bend.radius:.3f} mm); "
-            "optimizing again with them held"
+            "holding them and going on"
         )
         held.append(k)
     return held
