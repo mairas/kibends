@@ -5,7 +5,7 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -88,19 +88,61 @@ class BurstClock:
         return float(self.bursts)
 
 
-@pytest.fixture(autouse=True)
-def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Fails any test in which a burst's check reaches the fallback of
-    `bursts.revert_until_clear`, unless marked `fallback`."""
-    warned: list[str] = []
-    sink = logger.add(
+def _fallback_sink(warned: list[str]) -> int:
+    """A loguru sink that adds each `FALLBACK_WARNING` to `warned`."""
+    return logger.add(
         lambda m: warned.append(str(m)),
         level="WARNING",
         filter=lambda record: record["message"] == FALLBACK_WARNING,
     )
+
+
+_FALLBACK_FIXTURES: list[tuple[str, object]] = []
+"""Each fixture value whose setup reached the fallback, by its fixture's
+name; held, so that its identity names the setup it came from: of which
+parameter, or of which of fixtures that share a name."""
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_fixture_setup(
+    fixturedef: pytest.FixtureDef[object],
+) -> Generator[None, object, object]:
+    """Records a fixture whose setup reaches the fallback, which a fixture
+    shared by several tests sets up before `no_burst_moved_back_whole`
+    listens."""
+    warned: list[str] = []
+    sink = _fallback_sink(warned)
+    try:
+        value = yield
+    finally:
+        logger.remove(sink)
+    if warned:
+        _FALLBACK_FIXTURES.append((fixturedef.argname, value))
+    return value
+
+
+def _uses_a_fallback_fixture(node: pytest.Item | pytest.Collector) -> bool:
+    """Whether the test `node` got a fixture value whose setup reached the
+    fallback."""
+    if not isinstance(node, pytest.Function):
+        return False
+    return any(
+        name in node.funcargs and node.funcargs[name] is value
+        for name, value in _FALLBACK_FIXTURES
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fails any test in which a burst's check reaches the fallback of
+    `bursts.revert_until_clear`, or that uses a fixture whose setup did,
+    unless marked `fallback`."""
+    warned: list[str] = []
+    sink = _fallback_sink(warned)
     yield
     logger.remove(sink)
-    if warned and request.node.get_closest_marker("fallback") is None:
+    reached = warned or _uses_a_fallback_fixture(request.node)
+    if reached and request.node.get_closest_marker("fallback") is None:
         pytest.fail("a burst reached the fallback that moves it all back")
 
 
