@@ -738,6 +738,19 @@ class _ViaPart:
     curvature: Curvature
 
 
+class _ViaField(NamedTuple):
+    """What one of `via_parts` sees of each moving via."""
+
+    near: ViaSmooth
+    """What its sight finds."""
+    distance: FloatArray
+    """The smooth distance over that and the part's static field."""
+    direction: FloatArray
+    """The distance's gradient."""
+    seen_share: FloatArray
+    """The sight's share of it."""
+
+
 def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     """The chain ends that are neither fixed nor keep a contact, grouped by
     the point, layer and net they share; raises ValueError for one that
@@ -1394,14 +1407,16 @@ class _Problem:
             return 0.0, gradients, via_gradients
         at = np.array(positions)
         value = 0.0
-        for part, (near, distance, direction, seen_share) in zip(
+        for part, field in zip(
             self.via_parts, self.via_fields(polylines, positions, statics), strict=True
         ):
-            term, slope = part.integrand(distance)
+            term, slope = part.integrand(field.distance)
             value += float(self.via_diameters @ term)
             weighted = self.via_diameters * slope
-            via_gradients += weighted[:, None] * direction
-            pull_answers(near, weighted * seen_share, at, gradients, via_gradients)
+            via_gradients += weighted[:, None] * field.direction
+            pull_answers(
+                field.near, weighted * field.seen_share, at, gradients, via_gradients
+            )
         return value, gradients, via_gradients
 
     def via_fields(
@@ -1409,13 +1424,11 @@ class _Problem:
         polylines: Sequence[FloatArray],
         positions: Sequence[FloatArray],
         statics: StaticList | None = None,
-    ) -> list[tuple[ViaSmooth, FloatArray, FloatArray, FloatArray]]:
-        """For each of `via_parts`, what its sight finds of each moving via,
-        the smooth distance over that and the part's static field, the
-        distance's gradient and the sight's share of it. `statics` is as
+    ) -> list[_ViaField]:
+        """What each of `via_parts` sees of each moving via. `statics` is as
         for `via_statics`."""
         distances, directions = self.via_statics(np.array(positions), statics)
-        fields: list[tuple[ViaSmooth, FloatArray, FloatArray, FloatArray]] = []
+        fields: list[_ViaField] = []
         for part, static, toward in zip(
             self.via_parts, distances, directions, strict=True
         ):
@@ -1424,7 +1437,7 @@ class _Problem:
             direction = (
                 static_share[:, None] * toward + seen_share[:, None] * near.gradient
             )
-            fields.append((near, distance, direction, seen_share))
+            fields.append(_ViaField(near, distance, direction, seen_share))
         return fields
 
     def via_stiffness(
@@ -1439,11 +1452,11 @@ class _Problem:
         stiffness = np.zeros((len(self.vias), 2))
         if not self.vias:
             return stiffness[:, 0]
-        for part, (_, distance, direction, _) in zip(
+        for part, field in zip(
             self.via_parts, self.via_fields(polylines, positions, statics), strict=True
         ):
             stiffness += self.via_diameters[:, None] * point_stiffness(
-                distance, direction, part.integrand, part.curvature
+                field.distance, field.direction, part.integrand, part.curvature
             )
         return stiffness.max(axis=1)
 
