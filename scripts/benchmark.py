@@ -41,7 +41,8 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   0.5: ten Z-shaped tracks at 0.6 mm pitch, each as far from one neighbour
   as from the other; the same with each track up to 0.03 mm off its pitch;
   262 chains of 5 mm for one outer iteration, to time setup and the
-  work around a burst among many chains; and the same chains all of one
+  work around a burst among many chains, then simplified, timed in its
+  note and counted in its wall time; and the same chains all of one
   net with one of another net far from them. The last runs
   end to end
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
@@ -115,6 +116,7 @@ from kibends.energy import EnergyParams, FloatArray, IntArray  # noqa: E402
 from kibends.neighbours import ChainInput  # noqa: E402
 from kibends.optimize import optimize, optimize_chains  # noqa: E402
 from kibends.seen import Pairs, Seen  # noqa: E402
+from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
 
@@ -723,17 +725,29 @@ def bus_note(
     )
 
 
-def bus_run(chains: Sequence[ChainInput], settings: OptimizerSettings) -> Case:
+def bus_run(
+    chains: Sequence[ChainInput],
+    settings: OptimizerSettings,
+    *,
+    simplified: bool = False,
+) -> Case:
+    """The chains through the optimizer, and, if `simplified`, through
+    simplification after it, timed in the note."""
     params = replace(scenarios.PARAMS, repulsion=BUS_REPULSION)
 
     def go() -> tuple[int, str]:
         result = optimize_chains(chains, params, settings)
-        return result.iterations, bus_note(
+        note = bus_note(
             result.termination.value,
             sum(length(c.centreline.points) for c in chains),
             sum(length(c.polyline) for c in result.chains),
             result.abnormal,
         )
+        if simplified:
+            began = time.perf_counter()
+            simplify_chains(chains, result)
+            note += f"; simplified in {time.perf_counter() - began:.2f} s"
+        return result.iterations, note
 
     return go
 
@@ -762,7 +776,7 @@ def bus_cases() -> dict[str, Case]:
             z_bus(BUS_JITTER), settings
         ),
         "262 chains of 5 mm, 1 iteration": bus_run(
-            short_chains(), replace(settings, max_iterations=1)
+            short_chains(), replace(settings, max_iterations=1), simplified=True
         ),
         "262 chains of one net and one far off, 1 iteration": bus_run(
             one_net_chains(), replace(settings, max_iterations=1)
