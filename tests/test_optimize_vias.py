@@ -2430,12 +2430,9 @@ def split_from(given: ViaInput, static: Sequence[StaticVia]) -> ViaInput:
         replace(layer(name), vias=tuple(s.via for s in static))
         for name in given.via.span
     ]
-    by_id = {s.via.id: s for s in static}
+    split = {s.via.id for s in static if pairs_with(given.via, given.ground, s)}
     field, static_vias = split_via_obstacles(
-        layers,
-        given.via,
-        lambda other: pairs_with(given.via, given.ground, by_id[other.id]),
-        zones=given.zones,
+        layers, given.via, split, zones=given.zones
     )
     return replace(given, field=field, static_vias=static_vias)
 

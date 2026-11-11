@@ -47,15 +47,17 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
 
+import numpy as np
 from loguru import logger
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
+from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
-from kibends.obstacles import CompositeField, containment
+from kibends.obstacles import CompositeField, containment, plain_shapes
 from kibends.pairs import in_diff_pair
 from kibends.snapshot import (
     Disc,
@@ -331,8 +333,7 @@ def _zones(names: Sequence[str]) -> str:
 
 
 def _depth(area: BaseGeometry, point: Point) -> float:
-    """How far `point` lies inside `area`, negative outside it."""
-    if area.is_empty:
-        return -math.inf
-    to_edge = area.boundary.distance(point)
-    return to_edge if area.covers(point) else -to_edge
+    """How far `point` lies inside `area`, negative outside it, as the
+    containment field judges it (`_core.zone_depth`)."""
+    at = np.array([[point.x, point.y]])
+    return float(_core.zone_depth(plain_shapes([area]), at)[0])

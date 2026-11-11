@@ -21,9 +21,18 @@ impl V2 {
         Self { x, y }
     }
 
-    /// The length as numpy's `abs` of a complex number takes it.
+    /// The length as numpy's `abs` of a complex number takes it on arm64:
+    /// the larger part times √(1 + r²), r the smaller over the larger, with
+    /// 1 + r² fused. It differs from libm's `hypot` in the last bit of a
+    /// third of lengths, which the optimizer's iterates amplify.
     pub fn hypot(self) -> f64 {
-        self.x.hypot(self.y)
+        let (x, y) = (self.x.abs(), self.y.abs());
+        let (larger, smaller) = if x >= y { (x, y) } else { (y, x) };
+        if larger == 0.0 || larger.is_infinite() || smaller.is_nan() {
+            return larger + smaller;
+        }
+        let r = smaller / larger;
+        larger * r.mul_add(r, 1.0).sqrt()
     }
 
     /// The length as `numpy.linalg.norm` takes it.

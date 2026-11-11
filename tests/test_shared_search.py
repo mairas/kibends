@@ -32,6 +32,7 @@ from scenarios import (
 from shapely.geometry import LineString, Point, Polygon, box
 
 import kibends.optimize as optimize_module
+import kibends.seen as seen_module
 from kibends.bursts import DEFAULT_SETTINGS, point_distance
 from kibends.energy import (
     BoolArray,
@@ -57,7 +58,6 @@ from kibends.members import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
-    DEEP_MARGIN,
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     ChainField,
@@ -991,13 +991,18 @@ def test_a_static_list_searches_again_only_past_its_skin(
     them crossing into a pad; moved farther, they are searched again;
     either way the answers are those of a search at the points."""
     searches: list[int] = []
-    search = StaticEdges.search
+    search = seen_module.search_parts
 
-    def counted(self: StaticEdges, *args: float | FloatArray) -> Found:
+    def counted(
+        parts: Sequence[tuple[StaticEdges, int]],
+        coords: FloatArray,
+        reach: float,
+        slack: float,
+    ) -> Found:
         searches.append(1)
-        return search(self, *args)  # pyright: ignore[reportArgumentType]
+        return search(parts, coords, reach, slack)
 
-    monkeypatch.setattr(StaticEdges, "search", counted)
+    monkeypatch.setattr(seen_module, "search_parts", counted)
     points = _pad_row_points()
     statics = StaticList([PAD_ROW], PAD_ROW_REACH)
     moves = ((0.0, True), (0.8 * STATIC_SKIN, False), (2 * STATIC_SKIN, True))
@@ -1073,6 +1078,9 @@ def _random_copper(rng: np.random.Generator) -> list[Obstacle]:
 
 RANDOM_BOARD = box(-0.5, -0.5, 6.5, 6.5)
 RANDOM_EDGE_INFLATION = 0.3
+BESIDE_DEEP = 0.01
+"""How much deeper than the board edge's reach the points beside it
+start, mm: just past where a search finds the edge."""
 
 
 def _random_field(rng: np.random.Generator, trial: int) -> ObstacleField:
@@ -1111,7 +1119,7 @@ def test_a_static_list_answers_as_a_search_on_random_copper() -> None:
         reach = [0.2, 0.5, math.inf][trial // 2 % 3]
         # Just outside where the board edge is skipped as deep inside,
         # moving toward the left edge; with no finite reach, none is.
-        skipped = RANDOM_EDGE_INFLATION + smooth_reach(reach) + DEEP_MARGIN
+        skipped = RANDOM_EDGE_INFLATION + smooth_reach(reach) + BESIDE_DEEP
         depth = skipped + rng.uniform(0.0, 0.03, 40 if math.isfinite(reach) else 0)
         beside = np.column_stack([-0.5 + depth, rng.uniform(0.5, 5.5, len(depth))])
         points = np.vstack([rng.uniform(-1.0, 7.0, (200, 2)), beside])

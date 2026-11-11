@@ -341,7 +341,7 @@ def build_via_obstacles(
     field, _ = split_via_obstacles(
         layers,
         via,
-        lambda _: False,
+        (),
         moving=moving,
         edge_clearance=edge_clearance,
         hole_clearance=hole_clearance,

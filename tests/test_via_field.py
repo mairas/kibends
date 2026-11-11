@@ -1029,9 +1029,11 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
     via = via_of(snaps)
     zones = (zone({"In1.Cu": box(-3, -3, 3, 3)}, min_width=0.25),)
 
-    def split(other: Via) -> bool:
-        return pairs_with(via, via.net in SPLIT_GROUND, standing(snaps, other))
-
+    split = {
+        other.id
+        for other in snaps[0].vias
+        if pairs_with(via, via.net in SPLIT_GROUND, standing(snaps, other))
+    }
     own = own_net_stops(snaps, via)
     field, static_vias = split_via_obstacles(snaps, via, split, zones=zones)
     whole = ViaInput(
@@ -1115,9 +1117,7 @@ class TestStaticViasSplit:
         assert static
 
         for s in static:
-            _, alone = split_via_obstacles(
-                snaps, via, lambda o, s=s: o.id == s.via.id, zones=apart.zones
-            )
+            _, alone = split_via_obstacles(snaps, via, {s.via.id}, zones=apart.zones)
             assert alone is not None
             distance, _ = alone.signed_distance(at)
             kept = math.dist(via.position, s.via.position) - float(distance[0])
@@ -1128,4 +1128,4 @@ class TestStaticViasSplit:
         snaps = slices(split_board("SIG"))
         via = via_of(snaps)
 
-        assert split_via_obstacles(snaps, via, lambda _: False)[1] is None
+        assert split_via_obstacles(snaps, via, ())[1] is None

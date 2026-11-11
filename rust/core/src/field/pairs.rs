@@ -45,14 +45,18 @@ impl SmoothAnswer {
 }
 
 /// The direction away from a segment along `along` at `offset` from it;
-/// its normal, a quarter turn of its tangent, on the segment.
+/// its normal, a quarter turn of its tangent, on the segment. Scaled by the
+/// reciprocal of the length, as numpy divides a complex number by a real
+/// one, which differs from dividing in the last bit.
 pub fn unit_gradient(offset: V2, length: f64, along: V2) -> V2 {
     if length >= DEGENERATE_DISTANCE {
-        return V2::new(offset.x / length, offset.y / length);
+        let scale = 1.0 / length;
+        return V2::new(offset.x * scale, offset.y * scale);
     }
     let norm = along.hypot();
     if norm > 0.0 {
-        V2::new(-along.y / norm, along.x / norm)
+        let scale = 1.0 / norm;
+        V2::new(-along.y * scale, along.x * scale)
     } else {
         FALLBACK_DIRECTION
     }

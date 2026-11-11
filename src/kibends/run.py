@@ -791,11 +791,11 @@ def _via_inputs(
     inputs: list[ViaInput] = []
     for m in movable:
         grounded = m.via.net in ground
-
-        def split(other: Via, via: Via = m.via, grounded: bool = grounded) -> bool:
-            standing = static.get(other.id)
-            return standing is not None and pairs_with(via, grounded, standing)
-
+        split = {
+            via_id
+            for via_id, standing in static.items()
+            if pairs_with(m.via, grounded, standing)
+        }
         field, static_vias = split_via_obstacles(
             layers,
             m.via,
