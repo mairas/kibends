@@ -137,7 +137,9 @@ class _Neighbours:
             }
             for layer, members in on.items()
         }
-        self._layer = [layers[chain.layer] for chain in chains]
+        self._layer_mates = [layers[chain.layer] for chain in chains]
+        """Per chain, the indices of the chains on its layer, its own among
+        them."""
         self._reach: list[float] = []
         """Per chain, the widest inflation it keeps from a track on its layer."""
         for i, chain in enumerate(chains):
@@ -159,7 +161,7 @@ class _Neighbours:
         """Chain i's field, with the others as they are now, for questions
         about `points` and the segments between them."""
         low, high = points.min(axis=0), points.max(axis=0)
-        on, reach = self._layer[i], self._reach[i]
+        on, reach = self._layer_mates[i], self._reach[i]
         near = on[
             (on != i)
             & (self._low[on] <= high + reach).all(axis=1)
