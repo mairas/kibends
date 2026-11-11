@@ -185,11 +185,15 @@ class TestMovableVias:
             kipy_track("b", "SIG", (4, 0), (VIA[0], VIA[1] - gap)),
         ]
         v = kipy_via("v", "SIG", *VIA)
+        # A plane of its net, so that the via is valid with one end too.
+        zone = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(3, 3, 5, 5), [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        )
 
-        movable, _ = judge([*short, *back(), v], [*short, *back()], [v])
+        movable, _ = judge([*short, *back(), v], [*short, *back()], [v], zones=[zone])
 
-        assert [len(m.ends) for m in movable] == ([2] if joins else [])
-        assert len(warnings(log)) == int(not joins)
+        assert [len(m.ends) for m in movable] == [2 if joins else 1]
+        assert warnings(log) == []
 
     def test_locked_via_stays_fixed(self, log: list[str]) -> None:
         assert "it is locked" in fixed(log, kipy_via("v", "SIG", *VIA, locked=True))
@@ -485,14 +489,23 @@ class TestMovableVias:
             "reaches it"
         )
 
-    def test_via_ending_one_selected_chain_stays_fixed(self, log: list[str]) -> None:
+    def test_via_ending_one_selected_chain_in_a_zone_of_its_net_moves(
+        self, log: list[str]
+    ) -> None:
+        # A pad's fan-out to a plane: one track down to the via, the plane
+        # on the inner layers.
         v = kipy_via("v", "SIG", *VIA)
+        zone = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(3, 3, 5, 5), [BL.BL_In1_Cu, BL.BL_In2_Cu]
+        )
 
-        movable, _ = judge([*front(), v], front(), [v])
+        movable, _ = judge([*front(), v], front(), [v], zones=[zone])
 
-        assert movable == []
-        (warning,) = warnings(log)
-        assert "only one selected track ends at it" in warning
+        (via,) = movable
+        assert via.ends == (ChainEnd(chain=0, last=True),)
+        (inside,) = via.zones
+        assert inside.description == "zone plane on In1.Cu and In2.Cu"
+        assert warnings(log) == []
 
     def test_via_a_selected_chain_passes_moves_carrying_both_sides(
         self, log: list[str]

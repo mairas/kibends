@@ -83,10 +83,12 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
-   when it is unlocked, it is not on a net of a differential pair, at least
-   two selected chain ends meet it, and no
+   when it is unlocked, it is not on a net of a differential pair, a
+   selected chain end meets it or a zone of its net reaches it, and no
    other copper touches it or those chain ends on a layer it spans, except a
-   zone of its net. Selected tracks that run through it count: where two of
+   zone of its net. One chain end is enough: a pad's fan-out via moves
+   along its track toward the pad until the pad stops it, unless
+   `--allow-via-in-pad` is given. Selected tracks that run through it count: where two of
    them meet at its centre, the chain is cut there into two that end at it,
    both carried, but a selected track that passes over it with no vertex at
    its centre holds it like other copper. Through, blind, buried and micro
@@ -137,8 +139,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    no vertex at its centre, a pad, a copper shape or another via of its
    net, on a layer it spans), it sits at the edge of a zone's region
    (closer to it than that margin, so moving might lose a connection it has
-   now), only one selected track ends at it, or none does and no zone of its net
-   reaches it. A moving via that
+   now), or no selected track ends at it and no zone of its net reaches
+   it. A moving via that
    starts closer to other copper than its clearance moves out of it like any
    other (see below). Teardrops are ignored: KiCad reapplies them on the
    next refill. Selected pads and other items are ignored.
