@@ -4278,6 +4278,20 @@ class TestPairs:
         (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
         assert "0.150" in warning and "0.200" in warning
 
+    def test_a_diff_pair_cut_by_a_stub_counts_and_warns_once(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        foot = (STUB_AT, PAIR_HALF_PITCH)
+        stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
+        board = pair_board(diff_pair_gap=0.2, extra=[stub])
+        board.selection = [*board.selection, stub]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert "INFO Optimizing 4 chains, 1 differential pair among them\n" in log
+        assert len([w for w in log if w.startswith("WARNING") and "netclass" in w]) == 1
+
     def test_via_where_a_coupled_section_ends_stays_fixed(
         self, connect: Connector, log: list[str]
     ) -> None:

@@ -795,7 +795,9 @@ def _optimize(
 
     layout = lay_out(whole, parts, pairs, section_field)
     if earlier is None:
-        logger.info(_optimizing(len(read.chains), len(pairs), len(read.movable)))
+        logger.info(
+            _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
+        )
     # One classing of the vias standing still both splits the moving vias'
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
@@ -1316,13 +1318,17 @@ def _pair_reports(
     chains: Sequence[FloatArray],
     tracks: Sequence[tuple[FloatArray, FloatArray]],
 ) -> tuple[PairReport, ...]:
-    """A report per diff pair, from `chains` and `tracks` as simplified,
-    warning where its gap is not its netclass's."""
+    """A report per pair of parts, from `chains` and `tracks` as simplified,
+    warning once per diff pair where the gap of its first pair of parts is
+    not its netclass's."""
     layout, results = optimized.layout, optimized.run.pairs
+    for group in layout.diff_pairs:
+        pair = optimized.pairs[group[0]]
+        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
+        _check_netclass_gap(read.snapshots[a.layer], a, b, pair.pair.gap)
     pair_reports: list[PairReport] = []
     for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
         a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
-        _check_netclass_gap(read.snapshots[a.layer], a, b, pair.pair.gap)
         gaps = [gap_range(*tracks[k], a.width) for k in sections]
         ours = [results[k] for k in sections]
         before = (_length(np.array(a.points)), _length(np.array(b.points)))

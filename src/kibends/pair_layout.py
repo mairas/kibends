@@ -324,7 +324,10 @@ class Layout:
     parts: list[list[int]]
     """For each selected chain, the indices of its parts, in order along it."""
     pair_sections: list[range]
-    """For each diff pair, the indices of its sections."""
+    """For each pair of parts, the indices of its sections."""
+    diff_pairs: list[list[int]]
+    """For each diff pair, the indices of its pairs of parts: those whose
+    selected chains pair with each other, directly or through another."""
 
     def whole_polylines(
         self,
@@ -468,7 +471,23 @@ def lay_out(
         given = part_input(i, track.points, track.pinned)
         inputs.append(_piece_input(given, track, piece, part.cut))
     inputs = _pinned_where_fixed(inputs, sections)
-    return Layout(inputs, sections, slots, stretches, of_chain, pair_sections)
+    joined = [(parts[p.a].selected, parts[p.b].selected) for p in pairs]
+    diff_pairs = _diff_pairs(joined)
+    return Layout(
+        inputs, sections, slots, stretches, of_chain, pair_sections, diff_pairs
+    )
+
+
+def _diff_pairs(pairs: Sequence[tuple[int, int]]) -> list[list[int]]:
+    """The indices of `pairs` of selected chains, grouped by the chains they
+    join, each group in order and the groups by their first."""
+    groups: list[tuple[set[int], list[int]]] = []
+    for i, ends in enumerate(pairs):
+        joined = [g for g in groups if g[0] & set(ends)]
+        chains = set(ends).union(*(g[0] for g in joined))
+        members = sorted([i, *(m for g in joined for m in g[1])])
+        groups = [g for g in groups if g not in joined] + [(chains, members)]
+    return sorted((members for _, members in groups), key=min)
 
 
 def _pinned_where_fixed(
