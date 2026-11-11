@@ -76,10 +76,9 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    may come off it: draw a T to end on the track, or check the ratsnest
    after the run. A closed loop is cut where copper of its net touches it,
    a junction, another track, a pad or a via, and smoothed from there; one
-   that nothing of its net touches, or that surrounds nothing and would
-   shrink to a point or fold flat, is left as drawn. Should such a loop
-   shrink all the same, the optimizer goes on from where it was with the
-   loop held, and `--time-limit` covers both runs. A
+   that nothing of its net touches is cut at its first point. A loop that
+   surrounds nothing shrinks: to nothing, and its tracks are deleted, when
+   it is held at one point, or to a line when held at two. A
    route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both

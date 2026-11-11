@@ -7,19 +7,14 @@ it hands over; it prints nothing.
 selected via that may move, and, if any of them stays fixed, extracts them
 again with the chains through that via whole and its copper pinning. A diff
 pair's vias never move (`vias.may_move`), so no moving via carries a paired
-chain. Selected tracks that form no chain, a loop nothing of its net touches
-or a stray zero-length track, stay on the board as unselected copper, and
-the chains are extracted again with them pinning. When a
-selected via may move and attraction is on, it finds the ground nets, logs
-them and classes every via by them; with attraction off nothing is classed,
-and the optimizer's energy is the one without ground vias. It then builds
-the fields, optimizes, simplifies and commits. A coupled section the run
-leaves bent too tightly is held, and the optimizer runs again from the
-previous run's best state. A loop that surrounds nothing would shrink to no
-area, to a point or a line doubled back: one that nothing holds open is held
-as drawn from the start (`_collapsing`), with the junction it hangs off if
-any, and one that shrinks all the same (`_shrunk`) is held as drawn in a run
-that resumes from the previous one's best state, on the same clock and time
+chain. Selected tracks that form no chain, stray zero-length tracks, stay on
+the board as unselected copper, and the chains are extracted again with them
+pinning. When a selected via may move and attraction is on, it finds the
+ground nets, logs them and classes every via by them; with attraction off
+nothing is classed, and the optimizer's energy is the one without ground
+vias. It then builds the fields, optimizes, simplifies and commits. A
+coupled section the run leaves bent too tightly is held, and the optimizer
+runs again from the previous run's best state, on the same clock and time
 limit. A chain whose result equals its selected tracks, and that shares no
 split track with a changed chain, is left out of the commit; nothing is
 committed when every chain is unchanged and no via moved. A selected arc
@@ -40,10 +35,8 @@ what messages print positions in.
 """
 
 import importlib
-import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from itertools import combinations
 from pathlib import Path
 from time import monotonic
 from typing import NamedTuple
@@ -51,16 +44,12 @@ from typing import NamedTuple
 import kipy
 import kipy.board
 import numpy as np
-import shapely
 from kipy.errors import ApiError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
-from shapely.geometry import LineString, Point
-from shapely.geometry.base import BaseGeometry
 
 from kibends.bursts import DEFAULT_SETTINGS, OptimizerSettings
 from kibends.chain import (
-    PIN_MERGE_TOLERANCE_MM,
     Chain,
     Point2,
     SameNetCopper,
@@ -103,8 +92,8 @@ from kibends.pair_layout import (
     find_pairs,
     lay_out,
 )
-from kibends.pairs import GAP_TOLERANCE, diff_pair_nets, gap_range
-from kibends.polylines import enclosed_area, measure
+from kibends.pairs import GAP_TOLERANCE, gap_range
+from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
     PairResult,
@@ -308,8 +297,6 @@ class _Optimized:
     via_inputs: list[ViaInput]
     """With the selected chains' ends."""
     run: RunResult
-    started: float
-    """When the optimize stage started, on `monotonic`'s clock."""
     elapsed: float
     """Wall time of the optimize stage, s."""
 
@@ -366,7 +353,8 @@ def run_smooth(
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
-    read, optimized, outcome = _smooth(read, options)
+    optimized = _optimize(read, options)
+    outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
     if options.plot is not None:
         if read.chains:
@@ -514,71 +502,6 @@ def _leave_out(
     )
 
 
-def _shrunk(read: _Read, simplified: Sequence[FloatArray]) -> list[int]:
-    """The loops among the chains whose results enclose nothing, by index,
-    each logged at debug.
-
-    A loop round any copper keeps its centreline at least half its width
-    from it, so it encloses at least a circle of that radius. One that
-    encloses less surrounds nothing: it is on its way to a point, or, held
-    at two points, to a line doubled back on itself."""
-    shrunk: list[int] = []
-    for k, (chain, polyline) in enumerate(zip(read.chains, simplified, strict=True)):
-        if chain.points[0] != chain.points[-1] or all(chain.pinned):
-            continue
-        if enclosed_area(polyline) >= math.pi * (chain.width / 2) ** 2:
-            continue
-        logger.debug(
-            f"Leaving the closed loop {', '.join(chain.segment_ids)} through "
-            f"{read.frame.point(chain.points[0])} as drawn: it surrounds "
-            "nothing and shrinks to no area; optimizing again with it held"
-        )
-        shrunk.append(k)
-    return shrunk
-
-
-def _hold(read: _Read, held: Collection[int]) -> tuple[_Read, list[int]]:
-    """`read` with the loops `held` pinned whole, and the moving vias that
-    carry an end of one, by index, which stay fixed now and hold every end
-    they carried, each logged at debug.
-
-    The other branches of a junction a loop hangs off are pinned there with
-    it, as `lay_out` pins every loose end that meets a fixed one."""
-    released = [
-        v for v, m in enumerate(read.movable) if any(e.chain in held for e in m.ends)
-    ]
-    ends = {
-        (end.chain, -1 if end.last else 0)
-        for v in released
-        for end in read.movable[v].ends
-    }
-    for v in released:
-        via = read.movable[v].via
-        loops = "; ".join(
-            ", ".join(read.chains[k].segment_ids)
-            for k in dict.fromkeys(e.chain for e in read.movable[v].ends)
-            if k in held
-        )
-        logger.debug(
-            f"Via {via.id} at {read.frame.point(via.position)} stays fixed: the "
-            f"closed loop {loops} it ends is held as drawn"
-        )
-
-    def pinned(k: int, chain: Chain) -> Chain:
-        if k in held:
-            return replace(chain, pinned=(True,) * len(chain.points), slides=())
-        last = len(chain.points) - 1
-        pins = tuple(
-            pin or (i in (0, last) and (k, -1 if i == last else 0) in ends)
-            for i, pin in enumerate(chain.pinned)
-        )
-        return replace(chain, pinned=pins)
-
-    chains = [pinned(k, chain) for k, chain in enumerate(read.chains)]
-    movable = [m for v, m in enumerate(read.movable) if v not in released]
-    return replace(read, chains=chains, movable=movable), released
-
-
 def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]:
     """The ground nets `whole.ground_nets` finds, logged with where they come
     from, warning of each of `given` without copper."""
@@ -607,171 +530,10 @@ def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]
     return found.nets
 
 
-def _smooth(read: _Read, options: SmoothOptions) -> tuple[_Read, _Optimized, _Outcome]:
-    """Optimize, simplify and report, each loop that would collapse held as
-    drawn: one that nothing holds open (`_collapsing`) from the start, and
-    one whose result shrank to nothing all the same (`_shrunk`) in a run
-    that resumes from the last, on its clock and time limit and with its
-    counts."""
-    fields = _StaticFields(options)
-    collapsing = _collapsing(read, fields)
-    if collapsing:
-        read, _ = _hold(read, collapsing)
-    optimized = _optimize(read, options, fields)
-    outcome = _simplify_and_report(read, optimized, options)
-    while shrunk := _shrunk(read, outcome.simplified):
-        read, released = _hold(read, shrunk)
-        optimized = _optimize(
-            read,
-            options,
-            fields,
-            earlier=optimized,
-            held_loops=shrunk,
-            released=released,
-        )
-        outcome = _simplify_and_report(read, optimized, options)
-    return read, optimized, outcome
-
-
-class _StaticFields:
-    """The obstacles of each layer, net and width over the vias that stand
-    still, built once for each set of moving vias."""
-
-    def __init__(self, options: SmoothOptions) -> None:
-        self._options = options
-        self._built: dict[tuple[str, str, float, frozenset[str]], Obstacles] = {}
-
-    def __call__(
-        self, snapshot: LayerSnapshot, chain: Chain, moving: Collection[str]
-    ) -> Obstacles:
-        key = (chain.layer, chain.net, chain.width, frozenset(moving))
-        if key not in self._built:
-            self._built[key] = _static_field(snapshot, chain, self._options, moving)
-        return self._built[key]
-
-
-def _collapsing(read: _Read, fields: _StaticFields) -> list[int]:
-    """The loops among the chains that would shrink to no area, by index,
-    each logged at debug: what they are held by cannot keep them open
-    (`_held_open`), and they surround nothing they keep clear of."""
+def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
+    """Optimize the chains of `read`."""
     moving = {m.via.id for m in read.movable}
-    collapsing: list[int] = []
-    for k, chain in enumerate(read.chains):
-        if (
-            chain.points[0] != chain.points[-1]
-            or all(chain.pinned)
-            or _held_open(chain)
-            or _surrounds_something(chain, read, fields, moving)
-        ):
-            continue
-        logger.debug(
-            f"Leaving the closed loop {', '.join(chain.segment_ids)} through "
-            f"{read.frame.point(chain.points[0])} as drawn: it surrounds "
-            "nothing, and nothing holds it open"
-        )
-        collapsing.append(k)
-    return collapsing
-
-
-def _held_open(chain: Chain) -> bool:
-    """Whether what holds a loop may keep it from shrinking to no area.
-
-    The shortest loop through its pins, in order, is the polygon they make,
-    which encloses the area `_shrunk` measures. Its contacts let it pick a
-    point in each region instead: it can fold flat when one straight line
-    passes through every pin and region. A loose junction goes where the
-    other branches let it, so with it, only a loop held at one other point
-    or region surely shrinks to nothing."""
-    pins = list(
-        dict.fromkeys(
-            p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin
-        )
-    )
-    regions = [region for _, region in chain.slides]
-    loose = not chain.pinned[0]
-    if len(pins) + len(regions) + loose <= 2:
-        return False
-    if loose:
-        return True
-    if regions:
-        return not _on_one_line(pins, regions)
-    loop = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
-    return enclosed_area(np.array(loop)) >= math.pi * (chain.width / 2) ** 2
-
-
-def _on_one_line(points: Sequence[Point2], regions: Sequence[BaseGeometry]) -> bool:
-    """Whether one straight line passes through all `points` and `regions`.
-
-    If one does, one passes through two of their corners too, so those
-    lines are all there is to try."""
-    corners = [
-        *points,
-        *(
-            (float(x), float(y))
-            for region in regions
-            for x, y in shapely.get_coordinates(region)
-        ),
-    ]
-    x0, y0, x1, y1 = shapely.MultiPoint(corners).bounds
-    reach = math.hypot(x1 - x0, y1 - y0)
-    for a, b in combinations(corners, 2):
-        length = math.dist(a, b)
-        if length == 0.0:
-            continue
-        dx, dy = (b[0] - a[0]) / length * reach, (b[1] - a[1]) / length * reach
-        line = LineString([(a[0] - dx, a[1] - dy), (a[0] + dx, a[1] + dy)])
-        if all(
-            line.distance(Point(p)) <= PIN_MERGE_TOLERANCE_MM for p in points
-        ) and all(line.intersects(region) for region in regions):
-            return True
-    return False
-
-
-def _surrounds_something(
-    chain: Chain, read: _Read, fields: _StaticFields, moving: Collection[str]
-) -> bool:
-    """Whether the area a loop encloses as drawn reaches anything it keeps
-    clear of: the static copper, holes and keepouts of its field, the
-    board's edge, a selected chain of a net other than its own and its
-    diff pair's other net, or another net's moving via."""
-    interior = shapely.make_valid(shapely.Polygon(chain.points))
-    ignored = diff_pair_nets(chain.net)
-    field = fields(read.snapshots[chain.layer], chain, moving)
-    if field.board_outline is not None and not field.board_outline.covers(interior):
-        return True
-    others = [
-        *(o.geometry for o in field.items),
-        *(
-            LineString(c.points)
-            for c in read.chains
-            if c.layer == chain.layer and c.net not in ignored
-        ),
-        *(
-            Point(m.via.position)
-            for m in read.movable
-            if m.via.net != chain.net and m.via.reaches(chain.layer)
-        ),
-    ]
-    return any(interior.intersects(other) for other in others)
-
-
-def _optimize(
-    read: _Read,
-    options: SmoothOptions,
-    fields: _StaticFields,
-    *,
-    earlier: _Optimized | None = None,
-    held_loops: Collection[int] = (),
-    released: Collection[int] = (),
-) -> _Optimized:
-    """Optimize the chains of `read`, again after `earlier` if given, with
-    the loops `held_loops` held since and the vias `released` fixed since,
-    by their index in that run: the run resumes from its result
-    (`_resumed_holding`), its start stays the stage's start, which the time
-    limit counts from, and its iterations, abnormal bursts and give-ups
-    count in."""
-    moving = {m.via.id for m in read.movable}
-    whole = _chain_inputs(read.chains, read.snapshots, fields, moving, read.frame)
+    whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
     # A diff pair's tracks keep their contacts where they are.
     parts = cut_parts(
         [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
@@ -795,28 +557,20 @@ def _optimize(
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
-    if earlier is None:
-        logger.info(
-            _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
-        )
+    logger.info(
+        _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
+    )
     # One classing of the vias standing still both splits the moving vias'
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
     via_inputs = _via_inputs(
         read.movable, read.snapshots, options, read.ground_nets, static
     )
-    started = monotonic() if earlier is None else earlier.started
-    previous = (
-        None
-        if earlier is None
-        else _resumed_holding(earlier.run, layout, held_loops, released)
-    )
-    held_label = "loops"
-    iterations = 0 if earlier is None else earlier.run.iterations
-    abnormal = {} if earlier is None else dict(earlier.run.abnormal)
-    # The earlier run logged its own.
-    logged = {} if earlier is None else dict(earlier.run.gave_up)
-    gave_up = dict(logged)
+    started = monotonic()
+    previous: RunResult | None = None
+    iterations = 0
+    abnormal: dict[str, int] = {}
+    gave_up: dict[str, int] = {}
     while True:
         run = optimize_chains(
             layout.inputs,
@@ -828,7 +582,6 @@ def _optimize(
             clock=monotonic,
             started=started,
             start=previous,
-            held_label=held_label,
             static_vias=tuple(static.values()),
         )
         iterations += run.iterations
@@ -853,58 +606,17 @@ def _optimize(
                 abnormal=tuple(abnormal.items()),
                 gave_up=tuple(gave_up.items()),
             )
-            _log_gave_up([(d, streak) for d, streak in run.gave_up if d not in logged])
+            _log_gave_up(run.gave_up)
             elapsed = monotonic() - started
-            return _Optimized(
-                whole, parts, pairs, layout, via_inputs, run, started, elapsed
-            )
+            return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
         # the sections cannot simply keep their own tracks; the run goes on
         # from where this one left them, with these sections held.
         previous = run
-        held_label = "sections"
         sections = list(layout.sections)
         for k, hold in held.items():
             sections[k] = replace(sections[k], hold=hold)
         layout = replace(layout, sections=sections)
-
-
-def _resumed_holding(
-    start: RunResult,
-    layout: Layout,
-    held: Collection[int],
-    released: Collection[int],
-) -> RunResult | None:
-    """`start`, the result of a run on `layout`'s inputs, with each chain
-    `held` since back as drawn and pinned, every chain end pinned since,
-    at a junction one hangs off or a via `released` since, back where it
-    was drawn, and those vias left out; None when a held chain is paired,
-    and the run starts over."""
-    slots = [layout.slots[k] for k in held]
-    reset = {slot for slot in slots if slot is not None}
-    if len(reset) < len(slots):
-        return None
-    chains: list[ChainResult] = []
-    for i, (given, result) in enumerate(zip(layout.inputs, start.chains, strict=True)):
-        points = given.centreline.points
-        if i in reset:
-            chains.append(
-                replace(
-                    result,
-                    polyline=points,
-                    fixed=given.fixed,
-                    contact_of=no_contacts(points),
-                )
-            )
-            continue
-        polyline, fixed = result.polyline.copy(), result.fixed.copy()
-        # A pinned end is where it was drawn, unless something carried it.
-        for end in (0, -1):
-            if given.fixed[end]:
-                polyline[end], fixed[end] = points[end], True
-        chains.append(replace(result, polyline=polyline, fixed=fixed))
-    vias = tuple(via for v, via in enumerate(start.vias) if v not in released)
-    return replace(start, chains=tuple(chains), vias=vias)
 
 
 def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
@@ -1065,7 +777,7 @@ def _extract_chains(
 def _chain_inputs(
     chains: Sequence[Chain],
     snapshots: Mapping[str, LayerSnapshot],
-    fields: _StaticFields,
+    options: SmoothOptions,
     moving: Collection[str],
     frame: UserFrame,
 ) -> list[ChainInput]:
@@ -1073,9 +785,13 @@ def _chain_inputs(
     `moving` vias, which the optimizer adds where they are; chains of one
     layer, net and width share a field. Descriptions give positions in
     `frame`."""
+    fields: dict[tuple[str, str, float], Obstacles] = {}
     inputs: list[ChainInput] = []
     for chain in chains:
         snapshot = snapshots[chain.layer]
+        key = (chain.layer, chain.net, chain.width)
+        if key not in fields:
+            fields[key] = _static_field(snapshot, chain, options, moving)
         centreline = ChainCentreline(
             f"{chain.net} on {chain.layer} from {frame.point(chain.points[0])}",
             chain.net,
@@ -1088,7 +804,7 @@ def _chain_inputs(
                 centreline,
                 chain.layer,
                 np.array(chain.pinned),
-                fields(snapshot, chain, moving),
+                fields[key],
                 tuple((i, Obstacles((), region)) for i, region in chain.slides),
                 held=chain.held,
             )

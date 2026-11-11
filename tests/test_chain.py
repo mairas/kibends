@@ -857,18 +857,19 @@ def square_loop() -> list[Segment]:
 
 
 def test_left_out_tracks_are_logged_at_debug_in_the_frame(log: list[str]) -> None:
-    segments = [*square_loop(), seg("z", (50, 50), (50, 50), net="G")]
+    segments = [seg("a", (0, 0), (10, 0)), seg("z", (50, 50), (50, 50), net="G")]
 
-    assert extract_chains(segments, frame=GRID_FRAME) == []
+    (chain,) = extract_chains(segments, frame=GRID_FRAME)
 
-    assert [line.split(" ")[0] for line in log] == ["DEBUG", "DEBUG"]
-    assert any("a, b, c, d" in line and "(-10.000, -20.000) mm" in line for line in log)
-    assert any("z" in line and "(40.000, 30.000) mm" in line for line in log)
+    assert chain.segment_ids == ("a",)
+    (line,) = log
+    assert line.startswith("DEBUG")
+    assert "z" in line and "(40.000, 30.000) mm" in line
 
 
 class TestLoops:
-    """A closed loop is cut where copper of its net touches it, and left
-    out where none does."""
+    """A closed loop is cut where copper of its net touches it, and at its
+    first vertex where none does."""
 
     def test_a_pad_on_a_corner_cuts_the_loop_there(self) -> None:
         pad = contact(box(9.5, -0.5, 10.5, 0.5))
@@ -946,15 +947,13 @@ class TestLoops:
         assert chain.pinned == (True, False, False, False, True)
         assert chain.slides == ()
 
-    def test_a_loop_nothing_touches_is_left_out_beside_other_chains(self) -> None:
-        segments = [*square_loop(), seg("other", (20, 0), (30, 0))]
+    def test_a_loop_nothing_touches_is_cut_and_pinned_at_its_first_vertex(
+        self,
+    ) -> None:
+        chain = one_chain(square_loop(), frame=BOARD_FRAME)
 
-        (chain,) = extract_chains(segments, frame=BOARD_FRAME)
-
-        assert chain.segment_ids == ("other",)
-
-    def test_a_loop_nothing_touches_is_no_chain(self) -> None:
-        assert extract_chains(square_loop(), frame=BOARD_FRAME) == []
+        assert chain.points[0] == chain.points[-1] == (0, 0)
+        assert chain.pinned == (True, False, False, False, True)
 
 
 def cut_at(

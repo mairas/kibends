@@ -9,8 +9,7 @@ the best state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
 bend an edge newly below the limit, or bring its parts beyond a turn
-closer than they may (`close_to_itself`). `enclosed_area` is the area a
-closed polyline goes round.
+closer than they may (`close_to_itself`).
 """
 
 import math
@@ -18,7 +17,6 @@ from dataclasses import dataclass
 from itertools import pairwise
 
 import numpy as np
-import shapely
 from scipy.spatial import cKDTree
 
 from kibends.bursts import INSIDE_TOLERANCE
@@ -37,9 +35,6 @@ from kibends.results import PolylineStats
 # A span only slightly longer than a multiple of the spacing gets no extra
 # vertex, so float noise in re-measured lengths does not change the count.
 RESAMPLE_SLACK = 1e-6
-
-# A ring encloses an area only with three corners, its first repeated last.
-RING_COORDS = 4
 
 # Below this turning angle a vertex counts as straight (infinite radius).
 STRAIGHT_TURN = 1e-9
@@ -307,11 +302,3 @@ class SelfCheck:
             close = int(closer.sum())
             count += close
         return back, count, close
-
-
-def enclosed_area(loop: FloatArray) -> float:
-    """The area a closed polyline encloses, each lobe of a crossed one
-    counted once, mm^2."""
-    if len(loop) < RING_COORDS:
-        return 0.0
-    return shapely.make_valid(shapely.Polygon(loop)).area

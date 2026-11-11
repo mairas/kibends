@@ -358,7 +358,6 @@ def optimize_chains(
     started: float | None = None,
     start: RunResult | None = None,
     static_vias: Sequence[StaticVia] = (),
-    held_label: str = "sections",
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -400,15 +399,14 @@ def optimize_chains(
 
     It logs at INFO when setup begins and, once the problems are built,
     the setup time and the starting length and energy, saying "again" when
-    it repeats a run from `start`, with what it holds named by
-    `held_label`, a label for the log only. Each outer iteration
+    it repeats a run from `start` with sections held. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since `started` or the last INFO line. Each burst logs what it
     cost at DEBUG only (`_Problem.step`).
     """
     again = start is not None
     logger.info(
-        f"Setting up the optimizer again, with held {held_label}"
+        "Setting up the optimizer again, with held sections"
         if again
         else "Setting up the optimizer"
     )

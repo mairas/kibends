@@ -13,9 +13,9 @@ into another selected track may join it there (`_join_mid_track_ends`,
 
 A closed loop is cut where its net touches it, into a chain whose two ends
 share the cut: at the junction it hangs off, else at a point other copper
-pins, else at the vertex that keeps a pad or via it passes, which is then
-pinned (`_cut_loop`). A loop nothing of its net touches, and zero-length
-tracks that touch no selected track of their width, form no chain; the run
+pins, else at the vertex that keeps a pad or via it passes, else at its
+first vertex, either of which is then pinned (`_cut_loop`). Zero-length
+tracks that touch no selected track of their width form no chain; the run
 leaves them on the board as unselected copper. A track shorter than
 `JUNCTION_TOLERANCE_NM` counts as zero-length, its ends merged into one
 point (`_short_tracks_merged`), so it adds no vertex to a chain, which
@@ -183,10 +183,10 @@ def extract_chains(
 
     Selected segments are grouped by layer, net and width, and each group is
     split into connected pieces. A closed loop is cut where its net touches
-    it; one nothing of its net touches, and zero-length segments that touch
-    no other of their width, form no chain and are logged at debug. A
-    segment shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends
-    merged into one point (`_short_tracks_merged`). Two
+    it, or else at its first vertex; zero-length segments that touch no
+    other of their width form no chain and are logged at debug. A segment
+    shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends merged
+    into one point (`_short_tracks_merged`). Two
     widths that overlap along a span stay a chain each, held where the end
     of one reaches the other. A point where three or more selected tracks of
     one net on one layer end, or tracks of more than one width that do not
@@ -525,14 +525,7 @@ def _chain(
         walked, slides, half_width, loose, closed=closed
     )
     if closed:
-        cut = _cut_loop(points, pinned, within)
-        if cut is None:
-            left_out(
-                f"Leaving out the closed loop {ids} through "
-                f"{_fmt(min(adjacency), frame)}: no copper of its net touches it"
-            )
-            return None
-        points, pinned, within = cut
+        points, pinned, within = _cut_loop(points, pinned, within)
     return Chain(
         points=tuple(points),
         pinned=tuple(pinned),
@@ -850,10 +843,10 @@ def _cut_loop(
     points: Sequence[Point2],
     pinned: Sequence[bool],
     within: Sequence[BaseGeometry | None],
-) -> tuple[list[Point2], list[bool], list[BaseGeometry | None]] | None:
+) -> tuple[list[Point2], list[bool], list[BaseGeometry | None]]:
     """A loop, whose first and last vertex are one, cut at its first pinned
-    vertex, or else at its first sliding one, which is then pinned; None
-    when it has neither.
+    vertex, or else at its first sliding one, or else at its first vertex,
+    which is then pinned.
 
     The cut loop starts and ends at the cut and goes first toward the
     smaller of its neighbours there."""
@@ -863,9 +856,7 @@ def _cut_loop(
     regions += within[1:count]
     cut = next((i for i, pin in enumerate(pins) if pin), None)
     if cut is None:
-        cut = next((i for i, region in enumerate(regions) if region is not None), None)
-        if cut is None:
-            return None
+        cut = next((i for i, region in enumerate(regions) if region is not None), 0)
         pins[cut], regions[cut] = True, None
     order = [*range(cut, count), *range(cut + 1)]
     if points[order[1]] > points[order[-2]]:
