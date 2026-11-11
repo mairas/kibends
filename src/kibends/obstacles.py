@@ -725,6 +725,50 @@ class StaticEdges:
         kept = first & (distance < below)
         return StaticDistances(point[kept], obstacle[kept], distance[kept])
 
+    def entered(
+        self, starts: FloatArray, ends: FloatArray, tolerance: float
+    ) -> tuple[IntArray, IntArray]:
+        """(segment, obstacle) pairs, by segment, each obstacle once and as
+        a clearance check judges it (`clearance_obstacles`): the obstacles
+        each segment from starts[i] to ends[i] comes nearer to the edges of
+        than their inflation less `tolerance`, or starts inside the area of
+        (`inside`), which takes a segment lying wholly inside an area.
+        Measures every edge of each item near a segment, which is meant for
+        the few segments that do not stay clear."""
+        none = np.empty(0, dtype=np.intp)
+        if not len(starts):
+            return none, none
+        a, b = complex_points(starts), complex_points(ends)
+        half = float(np.abs(b - a).max()) / 2
+        point, item = self._near((starts + ends) / 2, half, 0.0)
+        self._split(item)
+        slot = self._slot[item]
+        counts = self._count[slot]
+        pair = np.repeat(np.arange(len(point)), counts)
+        edge = np.repeat(self._first[slot] - (np.cumsum(counts) - counts), counts)
+        edge += np.arange(len(pair))
+        segment = point[pair]
+        inside = pairs_inside(
+            a[segment],
+            b[segment] - a[segment],
+            self._starts[edge],
+            self._ends[edge] - self._starts[edge],
+            self.inflations[item[pair]],
+            tolerance,
+        )
+        within = self.inside(item, starts[point])
+        key = np.unique(
+            np.concatenate(
+                [
+                    segment[inside] * self.obstacle_count
+                    + self.clearance_obstacles[item[pair[inside]]],
+                    point[within] * self.obstacle_count
+                    + self.clearance_obstacles[item[within]],
+                ]
+            )
+        )
+        return key // self.obstacle_count, key % self.obstacle_count
+
     def inside(self, items: IntArray, coords: FloatArray) -> BoolArray:
         """Whether each point lies inside its item, items[i] of coords[i]:
         in an `AREA`'s area or outside an `OUTSIDE`'s, never for a `LINE`.
@@ -1000,6 +1044,25 @@ def static_distances(
     return StaticDistances(
         point[order], obstacle[order], np.concatenate(distances)[order]
     )
+
+
+def static_entered(
+    parts: Sequence[StaticEdges],
+    starts: FloatArray,
+    ends: FloatArray,
+    tolerance: float,
+) -> tuple[IntArray, IntArray]:
+    """`StaticEdges.entered` over several parts, their obstacles numbered
+    one part after another, as `static_distances` numbers them."""
+    segments: list[IntArray] = [np.empty(0, dtype=np.intp)]
+    obstacles: list[IntArray] = [np.empty(0, dtype=np.intp)]
+    first = 0
+    for part in parts:
+        segment, obstacle = part.entered(starts, ends, tolerance)
+        segments.append(segment)
+        obstacles.append(obstacle + first)
+        first += part.obstacle_count
+    return np.concatenate(segments), np.concatenate(obstacles)
 
 
 def parts_smooth_distance(

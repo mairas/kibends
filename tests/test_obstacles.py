@@ -51,6 +51,7 @@ from kibends.obstacles import (
     build_pair_obstacles,
     containment,
     static_distances,
+    static_entered,
 )
 from kibends.snapshot import ViaZone
 
@@ -1327,6 +1328,89 @@ class TestStaticDistances:
         got = static_distances([first.static_edges, second.static_edges], at, 0.0)
 
         assert got.obstacle.tolist() == [3]
+
+
+ENTERED_TOLERANCE = 1e-6
+"""How far a segment may enter an obstacle and stay clear, mm."""
+LONGEST_SEGMENT = 1.5
+
+
+def _scene_segments(
+    field: Obstacles, seed: int, *, clear: bool = True
+) -> tuple[FloatArray, FloatArray]:
+    """Segments around and between the field's items, of random lengths up
+    to LONGEST_SEGMENT, with `clear` only those with both ends clear of
+    every item."""
+    rng = np.random.default_rng(seed)
+    starts = rng.uniform((-4.0, -4.0), (10.0, 5.0), (2000, 2))
+    angle = rng.uniform(0.0, 2 * np.pi, len(starts))
+    length = rng.uniform(0.0, LONGEST_SEGMENT, len(starts))
+    ends = starts + length[:, None] * np.column_stack([np.cos(angle), np.sin(angle)])
+    if not clear:
+        return starts, ends
+    kept = (field.signed_distance(starts)[0] > 0.0) & (
+        field.signed_distance(ends)[0] > 0.0
+    )
+    return starts[kept], ends[kept]
+
+
+SCENE_INFLATED = [item for item in SCENE if item.inflation > 0.0]
+"""`SCENE` but the keepout of no inflation, which shapely's segment check
+finds clear even for a segment inside it."""
+
+
+class TestStaticEntered:
+    """Which obstacles a segment enters, item by item."""
+
+    @pytest.mark.parametrize("clear", [True, False], ids=["clear ends", "any ends"])
+    @pytest.mark.parametrize("seed", [1, 2])
+    def test_matches_shapely_item_by_item(self, seed: int, clear: bool) -> None:
+        field = Obstacles(SCENE_INFLATED, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        starts, ends = _scene_segments(field, seed, clear=clear)
+        alone = [Obstacles([item]) for item in SCENE_INFLATED]
+        alone.append(Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION))
+
+        segment, obstacle = static_entered(
+            [field.static_edges], starts, ends, ENTERED_TOLERANCE
+        )
+
+        expected = {
+            (int(s), o)
+            for o, item in enumerate(alone)
+            for s in np.flatnonzero(
+                ~item.segments_clear(starts, ends, ENTERED_TOLERANCE)
+            )
+        }
+        assert len(expected) > len(SCENE_INFLATED)
+        assert set(zip(segment.tolist(), obstacle.tolist(), strict=True)) == expected
+
+    def test_a_many_edged_item_matches_shapely(self) -> None:
+        # Small enough that segments with clear ends can cross it.
+        disc = Point(3.0, 0.5).buffer(0.3, quad_segs=256)
+        assert len(disc.exterior.coords) - 1 > INDEXED_EDGES
+        field = Obstacles([Obstacle("logo", disc, 0.3)])
+        starts, ends = _scene_segments(field, 3)
+
+        segment, obstacle = static_entered(
+            [field.static_edges], starts, ends, ENTERED_TOLERANCE
+        )
+
+        cutting = np.flatnonzero(~field.segments_clear(starts, ends, ENTERED_TOLERANCE))
+        assert len(cutting)
+        assert segment.tolist() == cutting.tolist()
+        assert set(obstacle.tolist()) == {0}
+
+    def test_numbers_obstacles_one_part_after_another(self) -> None:
+        first = Obstacles(SCENE[:2])
+        second = Obstacles(SCENE[2:3], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
+        # Out of the board and back across its corner.
+        starts, ends = np.array([[8.9, 3.0]]), np.array([[8.0, 3.9]])
+
+        segment, obstacle = static_entered(
+            [first.static_edges, second.static_edges], starts, ends, 0.0
+        )
+
+        assert (segment.tolist(), obstacle.tolist()) == ([0], [3])
 
 
 JOINT_EXTENT = 0.1
