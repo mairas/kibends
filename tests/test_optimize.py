@@ -545,7 +545,10 @@ def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
 
 
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
-    polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
+    # Straight and off the walls' midline, the chain is as short as it can
+    # be, so every step the misleading gradient takes, towards the nearer
+    # wall, raises the energy, however a burst scales its variables.
+    polyline, fixed = chain((0.0, 0.3), (5.0, 0.3), (10.0, 0.3))
     params = replace(PARAMS, repulsion=5.0)
 
     result = optimize(polyline, fixed, MisleadingWalls(1.0), params)

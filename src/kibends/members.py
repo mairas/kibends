@@ -16,10 +16,13 @@ term pulls on another's edge, each obstacle's share of the gradient
 reaches the ends of its edge nearest the point, and through a section's
 offset its centreline (`PairBlock.offset_pullback`). `pull_answers` takes
 a via's push back to what answers it, by the same shares.
+`members_stiffness` gives each vertex's stiffness under its obstacle term,
+by which a burst scales its variables (`optimize._scale`).
 """
 
 import math
 from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 import numpy as np
 
@@ -27,16 +30,19 @@ from kibends.energy import (
     BoolArray,
     EnergyParams,
     FloatArray,
+    IntArray,
     bend_radius_energy,
     combine_fields,
+    edge_curvature,
     edge_integral,
+    obstacle_curvature,
     obstacle_integrand,
     obstacle_reach,
     quadrature_points,
     shape_energy,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, track_inflation
+from kibends.obstacles import ChainCentreline, SmoothAnswer, track_inflation
 from kibends.pair_blocks import PairBlock
 from kibends.pairs import diff_pair_nets
 from kibends.seen import (
@@ -80,7 +86,6 @@ def members_energy(
     lists; with `statics`, made for the members' static fields with the
     energy's reach, the static fields answer from it, by default from one
     search each."""
-    reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge
     lines = [
@@ -90,23 +95,10 @@ def members_energy(
     at_shown = np.zeros_like(flat)
     gradients: list[FloatArray] = []
     value = 0.0
-    every_query = [quadrature_points(points, k) for points in polylines]
-    answers = seen.smooth_answers(every_query, flat, reach, listed)
-    if statics is None:
-        statics = static_list(members, reach, listed=False)
-    static = statics.smooth(every_query)
-    # Every member's points at once, one after another.
-    bounds = np.cumsum([0, *(len(queries) for queries in every_query)])
-    distance, (static_share, seen_share) = combine_fields(
-        _joined_rows([d for d, _ in static], np.empty(0)),
-        _joined_rows([near.distance for near in answers], np.empty(0)),
+    every_query, answers, bounds, distance, direction, seen_share = _fields(
+        members, polylines, params, seen, flat, listed, statics
     )
     no_points = np.empty((0, 2))
-    direction = static_share[:, None] * _joined_rows(
-        [g for _, g in static], no_points
-    ) + seen_share[:, None] * _joined_rows(
-        [near.gradient for near in answers], no_points
-    )
     slopes = np.empty(len(distance))
     for i, (member, points) in enumerate(zip(members, polylines, strict=True)):
         mine = slice(bounds[i], bounds[i + 1])
@@ -162,6 +154,90 @@ def members_energy(
     for g, mask in zip(gradients, masks, strict=True):
         g[mask] = 0.0
     return value, gradients, via_gradients
+
+
+def members_stiffness(
+    members: Sequence[Member],
+    polylines: Sequence[FloatArray],
+    params: EnergyParams,
+    seen: Seen,
+    positions: Sequence[FloatArray],
+    listed: NeighbourList | None = None,
+    statics: StaticList | None = None,
+) -> list[FloatArray]:
+    """Per member, each vertex's stiffness under its obstacle term at
+    `polylines` (`energy.edge_curvature`), with what it sees of its static
+    field and the others as `members_energy` finds it, `listed` and
+    `statics` as there. Only the member's own quadrature points count:
+    where its edges are what another member's term sees, the curvature of
+    that pull is left out."""
+    flat = shown_flat(members, polylines, positions)
+    _, _, bounds, distance, direction, _ = _fields(
+        members, polylines, params, seen, flat, listed, statics
+    )
+    integrand = obstacle_integrand(params)
+    curvature = obstacle_curvature(params)
+    return [
+        edge_curvature(
+            points,
+            distance[bounds[i] : bounds[i + 1]],
+            direction[bounds[i] : bounds[i + 1]],
+            integrand,
+            curvature,
+            params.points_per_edge,
+        )
+        for i, points in enumerate(polylines)
+    ]
+
+
+class _Fields(NamedTuple):
+    """What every member's quadrature points see, one member after another."""
+
+    queries: list[FloatArray]
+    """Per member, its quadrature points."""
+    answers: list[SmoothAnswer]
+    """Per member, what its points see of the others."""
+    bounds: IntArray
+    """Where each member's points start, and where the last one's end."""
+    distance: FloatArray
+    """The smooth minimum over the static field and the others."""
+    direction: FloatArray
+    """Its gradient."""
+    seen_share: FloatArray
+    """The others' share of it."""
+
+
+def _fields(
+    members: Sequence[Member],
+    polylines: Sequence[FloatArray],
+    params: EnergyParams,
+    seen: Seen,
+    flat: FloatArray,
+    listed: NeighbourList | None,
+    statics: StaticList | None,
+) -> _Fields:
+    """The distances of every member's quadrature points at `polylines`,
+    the others shown as `flat`, for `members_energy` and
+    `members_stiffness`."""
+    reach = obstacle_reach(params)
+    k = params.points_per_edge
+    every_query = [quadrature_points(points, k) for points in polylines]
+    answers = seen.smooth_answers(every_query, flat, reach, listed)
+    if statics is None:
+        statics = static_list(members, reach, listed=False)
+    static = statics.smooth(every_query)
+    bounds = np.cumsum([0, *(len(queries) for queries in every_query)])
+    distance, (static_share, seen_share) = combine_fields(
+        _joined_rows([d for d, _ in static], np.empty(0)),
+        _joined_rows([near.distance for near in answers], np.empty(0)),
+    )
+    no_points = np.empty((0, 2))
+    direction = static_share[:, None] * _joined_rows(
+        [g for _, g in static], no_points
+    ) + seen_share[:, None] * _joined_rows(
+        [near.gradient for near in answers], no_points
+    )
+    return _Fields(every_query, answers, bounds, distance, direction, seen_share)
 
 
 def static_list(

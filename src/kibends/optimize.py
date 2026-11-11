@@ -25,6 +25,21 @@ which resampling keeps where they are (`_Problem.pressed`), run L-BFGS-B
 (`bursts.run_burst`) over every free vertex without bounds, and move back
 what the checks reject.
 
+A burst scales each variable by 1/sqrt of its stiffness at the burst's
+start, relative to that of a vertex between two edges of the spacing in
+free space, and never above 1 (`_scale`, `bursts.ScaledObjective`).
+L-BFGS-B builds one curvature model for the whole problem: unscaled, it
+fits the stiffest members, such as tracks pressed together at clearance,
+and a far chain that could settle in a few bursts moves 3 to 10 times
+less per burst (https://github.com/mairas/kibends/issues/170). The
+stiffness is the diagonal second derivative of the energy, the larger
+over x and y, from the length term, each member's obstacle term at its
+own quadrature points (`members.members_stiffness`) and the moving vias'
+own terms, without the distance field's own curvature
+(`energy.edge_curvature`). It leaves out the pull of a member's obstacle
+term on another member's edges, the pairwise via term, the contact stops
+and a section's bend-radius hinge.
+
 Copper of one net does not interact: a chain sees nothing of the chains,
 tracks and vias of its net (`members.seen_parts`), and its static
 field holds none of its net's copper, so chains of one net may come close,
@@ -206,28 +221,36 @@ from kibends.bursts import (
     DEEPER_ROUND_OFF,
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
+    Objective,
     OptimizerSettings,
+    ScaledObjective,
     Stop,
     revert_until_clear,
     run_burst,
 )
 from kibends.contacts import contact_stops, contacts_left, no_contacts
 from kibends.energy import (
+    MIN_EDGE_LENGTH,
     BoolArray,
+    Curvature,
     EnergyParams,
     FloatArray,
     IntArray,
     Integrand,
     ObstacleField,
     combine_fields,
+    hinge_curvature,
     hinge_integrand,
+    obstacle_curvature,
     obstacle_integrand,
     obstacle_reach,
+    point_stiffness,
 )
 from kibends.members import (
     Member,
     body_of,
     members_energy,
+    members_stiffness,
     pull_answers,
     seen_parts,
     shown,
@@ -252,7 +275,14 @@ from kibends.results import (
     Termination,
     ViaResult,
 )
-from kibends.seen import EdgesClear, NeighbourList, Seen, StaticList, ViaSight
+from kibends.seen import (
+    EdgesClear,
+    NeighbourList,
+    Seen,
+    StaticList,
+    ViaSight,
+    ViaSmooth,
+)
 from kibends.via_moves import (
     FreeDistances,
     MovingVias,
@@ -688,6 +718,14 @@ class _StaticLists(NamedTuple):
     vias: StaticList
 
 
+class _Lookups(NamedTuple):
+    """What one objective's evaluations search through, or None for a
+    search of their own each time."""
+
+    neighbours: NeighbourList | None
+    statics: _StaticLists | None
+
+
 @dataclass(frozen=True)
 class _ViaPart:
     """One of each moving via's two terms: the integrand applied to the
@@ -697,6 +735,7 @@ class _ViaPart:
     static: Callable[[ViaInput], ObstacleField | None]
     sight: ViaSight
     integrand: Integrand
+    curvature: Curvature
 
 
 def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
@@ -835,6 +874,37 @@ class _Layout:
             np.add.at(gradient, i[free], g[free])
         np.add.at(gradient, self.via_index, via_gradients)
         return gradient.ravel()
+
+
+REFERENCE_EDGES = 2
+"""A variable with this many edges of the spacing at its vertex, and
+nothing else, scales by 1: a vertex inside a resampled chain in free
+space."""
+
+
+def _length_stiffness(layout: _Layout) -> FloatArray:
+    """Each of `layout`'s variables' stiffness under the length term at its
+    start: Σ 1/l over the edges at the vertices it moves, each edge's
+    largest curvature by one end."""
+    stiffness = np.zeros(layout.count)
+    for points, index in zip(layout.starts, layout.index, strict=True):
+        lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        inverse = 1.0 / np.maximum(lengths, MIN_EDGE_LENGTH)
+        for ends in (index[:-1], index[1:]):
+            free = ends >= 0
+            np.add.at(stiffness, ends[free], inverse[free])
+    return stiffness
+
+
+def _scale(stiffness: FloatArray, spacing: float) -> FloatArray:
+    """Each flat coordinate's scale for a burst (`bursts.ScaledObjective`):
+    1/sqrt of its variable's `stiffness` relative to a free chain vertex's
+    between edges of the `spacing`, so that L-BFGS-B sees the variables
+    about equally stiff. No variable scales above 1: a via carrying no
+    ends has no length stiffness, and its curvature in free space, near 0,
+    would scale it by tens and throw it across obstacles."""
+    reference = REFERENCE_EDGES / spacing
+    return np.repeat(np.sqrt(reference / np.maximum(stiffness, reference)), 2)
 
 
 @dataclass(frozen=True)
@@ -989,8 +1059,18 @@ class _Problem:
         self.integrand = obstacle_integrand(params)
         self.limit = hinge_integrand(params)
         self.via_parts = (
-            _ViaPart(lambda given: given.field, self.via_repel, self.integrand),
-            _ViaPart(lambda given: given.stops, self.via_stop, self.limit),
+            _ViaPart(
+                lambda given: given.field,
+                self.via_repel,
+                self.integrand,
+                obstacle_curvature(params),
+            ),
+            _ViaPart(
+                lambda given: given.stops,
+                self.via_stop,
+                self.limit,
+                hinge_curvature(params),
+            ),
         )
         self.originals = [body.centreline.points for body in self.bodies]
         self.start_positions = [
@@ -1313,8 +1393,29 @@ class _Problem:
         if not self.vias:
             return 0.0, gradients, via_gradients
         at = np.array(positions)
-        distances, directions = self.via_statics(at, statics)
         value = 0.0
+        for part, (near, distance, direction, seen_share) in zip(
+            self.via_parts, self.via_fields(polylines, positions, statics), strict=True
+        ):
+            term, slope = part.integrand(distance)
+            value += float(self.via_diameters @ term)
+            weighted = self.via_diameters * slope
+            via_gradients += weighted[:, None] * direction
+            pull_answers(near, weighted * seen_share, at, gradients, via_gradients)
+        return value, gradients, via_gradients
+
+    def via_fields(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        statics: StaticList | None = None,
+    ) -> list[tuple[ViaSmooth, FloatArray, FloatArray, FloatArray]]:
+        """For each of `via_parts`, what its sight finds of each moving via,
+        the smooth distance over that and the part's static field, the
+        distance's gradient and the sight's share of it. `statics` is as
+        for `via_statics`."""
+        distances, directions = self.via_statics(np.array(positions), statics)
+        fields: list[tuple[ViaSmooth, FloatArray, FloatArray, FloatArray]] = []
         for part, static, toward in zip(
             self.via_parts, distances, directions, strict=True
         ):
@@ -1323,12 +1424,28 @@ class _Problem:
             direction = (
                 static_share[:, None] * toward + seen_share[:, None] * near.gradient
             )
-            term, slope = part.integrand(distance)
-            value += float(self.via_diameters @ term)
-            weighted = self.via_diameters * slope
-            via_gradients += weighted[:, None] * direction
-            pull_answers(near, weighted * seen_share, at, gradients, via_gradients)
-        return value, gradients, via_gradients
+            fields.append((near, distance, direction, seen_share))
+        return fields
+
+    def via_stiffness(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        statics: StaticList | None = None,
+    ) -> FloatArray:
+        """Each moving via's stiffness under its own obstacle terms: the
+        larger over x and y of their `energy.point_stiffness` summed.
+        `statics` is as for `via_statics`."""
+        stiffness = np.zeros((len(self.vias), 2))
+        if not self.vias:
+            return stiffness[:, 0]
+        for part, (_, distance, direction, _) in zip(
+            self.via_parts, self.via_fields(polylines, positions, statics), strict=True
+        ):
+            stiffness += self.via_diameters[:, None] * point_stiffness(
+                distance, direction, part.integrand, part.curvature
+            )
+        return stiffness.max(axis=1)
 
     def via_statics(
         self, at: FloatArray, statics: StaticList | None = None
@@ -1611,25 +1728,35 @@ class _Problem:
             list(starts), list(self.positions), index, offsets, via_index, count
         )
 
+    def lookups(self, seen: Seen) -> _Lookups:
+        """A `NeighbourList` made for `seen` and the `StaticList`s, for the
+        evaluations of one objective."""
+        return _Lookups(
+            NeighbourList(seen, self.reach),
+            _StaticLists(static_list(self.members, self.reach), self.via_static_list()),
+        )
+
     def objective(
         self,
         layout: _Layout,
         seen: Seen | None = None,
         listed: bool = True,
-    ) -> Callable[[FloatArray], tuple[float, FloatArray]]:
+    ) -> Objective:
         """The problem's energy as a function of `layout`'s variables, with
         what each member sees of the others measured at the layout's start
         unless given, through a `NeighbourList` and `StaticList`s unless
         not `listed`."""
         if seen is None:
             seen = self.seeing(layout.starts)
+        lookups = self.lookups(seen) if listed else _Lookups(None, None)
+        return self.objective_from(layout, seen, lookups)
+
+    def objective_from(
+        self, layout: _Layout, seen: Seen, lookups: _Lookups
+    ) -> Objective:
+        """`objective`, searching through `lookups`."""
         masks = self.masks
-        neighbours = NeighbourList(seen, self.reach) if listed else None
-        statics = (
-            _StaticLists(static_list(self.members, self.reach), self.via_static_list())
-            if listed
-            else None
-        )
+        neighbours, statics = lookups
 
         def objective(x: FloatArray) -> tuple[float, FloatArray]:
             polylines, positions = layout.unflatten(x)
@@ -1639,6 +1766,33 @@ class _Problem:
             return value, layout.gradient(gradients, via_gradients)
 
         return objective
+
+    def stiffness(self, layout: _Layout, seen: Seen, lookups: _Lookups) -> FloatArray:
+        """Each of `layout`'s variables' stiffness at its start: that of
+        the length term (`_length_stiffness`), of the members' obstacle
+        terms (`members.members_stiffness`) and of the moving vias' own
+        (`via_stiffness`), summed over the vertices it moves. `seen` and
+        `lookups` are as for `objective_from`."""
+        neighbours, statics = lookups
+        per_member = members_stiffness(
+            self.members,
+            layout.starts,
+            self.params,
+            seen,
+            layout.positions,
+            neighbours,
+            None if statics is None else statics.members,
+        )
+        stiffness = _length_stiffness(layout)
+        for per_vertex, index in zip(per_member, layout.index, strict=True):
+            free = index >= 0
+            np.add.at(stiffness, index[free], per_vertex[free])
+        stiffness[layout.via_index] += self.via_stiffness(
+            layout.starts,
+            layout.positions,
+            None if statics is None else statics.vias,
+        )
+        return stiffness
 
     def burst(
         self, starts: list[FloatArray], stop: Stop | None = None
@@ -1655,7 +1809,9 @@ class _Problem:
         index, count = layout.index, layout.count
         free = [i >= 0 for i in index]
         seen = self.seeing(starts)
-        objective = self.objective(layout, seen)
+        lookups = self.lookups(seen)
+        objective = self.objective_from(layout, seen, lookups)
+        scale = _scale(self.stiffness(layout, seen, lookups), self.settings.spacing)
         x0 = layout.x0
         flat_start = shown_flat(members, starts, positions)
         static_before = [
@@ -1765,7 +1921,9 @@ class _Problem:
             evaluating += time.perf_counter() - began
             return answer
 
-        result = run_burst(timed, x0, revert, self.settings, stop)
+        result = run_burst(
+            ScaledObjective(timed, scale), x0, revert, self.settings, stop
+        )
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
         if result.abnormal or not found:
