@@ -4980,8 +4980,13 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
     for i, block in call.sections.items():
         a, b = call.tracks(i)
         assert len(a) == len(b)
-        # The end edges take up any difference of the ends' own gaps.
-        for k in range(1, len(a) - 2):
+        line = call.result[i]
+        # An uneven end's edge takes up the difference of its own gap.
+        first, last = (
+            int(np.hypot(*(block.uneven - pin).T).min(initial=np.inf) <= NM_ROUNDING)
+            for pin in (line[1], line[-2])
+        )
+        for k in range(first, len(a) - 1 - last):
             turn = unit(a[k + 1] - a[k]) @ unit(b[k + 1] - b[k])
             assert math.acos(min(float(turn), 1.0)) <= PARALLEL
         for track, net in ((a, block.given.a.net), (b, block.given.b.net)):
