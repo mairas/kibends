@@ -2,7 +2,8 @@
 after it outside L-BFGS-B, outer iterations, bursts, energy evaluations, the
 times a layer's neighbour list found its pairs (`seen.NeighbourList`) and
 the farthest move in one burst on stitched ground planes, on the synthetic
-scenarios and on buses of parallel tracks, and where return vias settle.
+scenarios and on buses of parallel tracks, how a lone track settles in one
+problem with a cluster of others, and where return vias settle.
 
 Usage: ./run bench [--tree DIR]
                    [--only grid|crossed|scenarios|bus|return|joint]
