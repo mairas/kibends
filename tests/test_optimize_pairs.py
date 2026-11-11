@@ -596,10 +596,10 @@ def hausdorff(a: FloatArray, b: FloatArray) -> float:
     return float(LineString(a).hausdorff_distance(LineString(b)))
 
 
-def hold_unheld(results: Sequence[PairResult]) -> list[int]:
-    """Every section not held yet, as run.py names a section bent too
-    tightly."""
-    return [k for k, result in enumerate(results) if not result.block.held]
+def hold_every(results: Sequence[PairResult]) -> list[int]:
+    """Every section, as if each had ended bent too tightly; the run holds
+    those not held yet."""
+    return list(range(len(results)))
 
 
 def hold_once(
@@ -614,7 +614,7 @@ def hold_once(
         settings,
         pairs=scenario.pairs,
         clock=clock,
-        to_hold=hold_unheld,
+        to_hold=hold_every,
     )
 
 
@@ -702,6 +702,30 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     )
 
 
+def test_a_section_named_again_once_held_is_not_held_again() -> None:
+    scenario = scenarios.pair_tent()
+    asked = 0
+
+    def every_section(results: Sequence[PairResult]) -> list[int]:
+        nonlocal asked
+        asked += 1
+        # Holding it again would rebuild the problem every time it settles.
+        assert asked <= 2
+        return list(range(len(results)))
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        to_hold=every_section,
+    )
+
+    assert asked == 2
+    assert result.termination is Termination.CONVERGED
+    assert result.pairs[0].block.hold is Hold.CROWDING
+
+
 def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -719,9 +743,9 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
         return replace(burst, abnormal=not holds)
 
     def counted(results: Sequence[PairResult]) -> list[int]:
-        held = hold_unheld(results)
-        holds.extend(held)
-        return held
+        named = hold_every(results)
+        holds.extend(named)
+        return named
 
     monkeypatch.setattr(optimize_module, "run_burst", fails_until_held)
     scenario = scenarios.pair_tent_under_roof()
@@ -734,7 +758,8 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
         to_hold=counted,
     )
 
-    assert holds == [0]
+    # Named when the run gave up, and again, held, when it converged.
+    assert holds == [0, 0]
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
 

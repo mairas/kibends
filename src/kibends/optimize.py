@@ -500,7 +500,8 @@ def optimize_chains(
             if out_of_time:
                 termination = Termination.TIME_LIMIT
                 break
-        held = [] if to_hold is None else list(to_hold(sections(best=True)))
+        named: Sequence[int] = () if to_hold is None else to_hold(sections(best=True))
+        held = [k for k in named if not blocks[k].held]
         if not held:
             break
         for k in held:
