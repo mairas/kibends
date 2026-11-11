@@ -1056,11 +1056,7 @@ class _Problem:
         self.resampled = [True] * count
         self.energy = self.energy_of(self.points, self.positions, self.seen)
         self.input_energy = self.energy
-        self.best_energy = self.energy
-        self.best = list(self.points)
-        self.best_masks = list(self.masks)
-        self.best_contact_of = list(self.contact_of)
-        self.best_positions = list(self.positions)
+        self.keep()
         self.lowest = [self.energy]
         self.lengths = [self.length()]
         self.rejected_edges = [0] * count
@@ -1068,6 +1064,13 @@ class _Problem:
         self.abnormal_bursts = 0
         self.abnormal_streak = 0
         self.settled = not self.moving
+
+    def keep(self) -> None:
+        """Take the current state as the best."""
+        self.best, self.best_masks = list(self.points), list(self.masks)
+        self.best_contact_of = list(self.contact_of)
+        self.best_positions = list(self.positions)
+        self.best_energy = self.energy
 
     @property
     def gave_up(self) -> bool:
@@ -1134,14 +1137,13 @@ class _Problem:
         self.resampled = [not ahead[i] or bool(back[unit[i]]) for i in range(count)]
         self.moved = earlier.moved
         self.energy = self.energy_of(self.points, self.positions, self.seen)
-        self.best, self.best_masks = list(self.points), list(self.masks)
-        self.best_contact_of = list(self.contact_of)
-        self.best_positions = list(self.positions)
-        self.best_energy = self.energy
+        self.keep()
         self.lowest = [self.energy]
         self.lengths = [self.length()]
         self.rejected_edges = list(earlier.rejected_edges)
         self.via_rejected = list(earlier.via_rejected)
+        # The streak starts over, so that the problem built again is not
+        # given up on at once; `optimize_chains` keeps the give-up.
         self.abnormal_bursts = earlier.abnormal_bursts
         members = sum(ahead[i] and bool(back[unit[i]]) for i in self.free)
         return members, int(np.count_nonzero(back[unit[count:]]))
@@ -1535,10 +1537,7 @@ class _Problem:
         if self.energy <= self.best_energy and self.guard(
             self.points, self.masks, self.positions, self.seen
         ):
-            self.best, self.best_masks = list(self.points), list(self.masks)
-            self.best_contact_of = list(self.contact_of)
-            self.best_positions = list(self.positions)
-            self.best_energy = self.energy
+            self.keep()
         self.lowest.append(min(self.lowest[-1], self.energy))
         self.lengths.append(self.length())
         if burst.abnormal:
