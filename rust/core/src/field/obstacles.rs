@@ -80,7 +80,13 @@ impl Obstacles {
             copper.extent.push(0.0);
         }
         Self {
-            edges: Arc::new(StaticEdges::new(shapes, kinds, inflations, ids, Some(copper))),
+            edges: Arc::new(StaticEdges::new(
+                shapes,
+                kinds,
+                inflations,
+                ids,
+                Some(copper),
+            )),
             items: count,
             outline: has_outline,
             edge_inflation,
@@ -224,7 +230,10 @@ enum Key {
 }
 
 fn geometry_key(shape: &Shape) -> Vec<u64> {
-    let mut key = vec![u64::from(shape.type_id.unsigned_abs()), shape.parts.len() as u64];
+    let mut key = vec![
+        u64::from(shape.type_id.unsigned_abs()),
+        shape.parts.len() as u64,
+    ];
     let points = |points: &[V2], key: &mut Vec<u64>| {
         key.push(points.len() as u64);
         for p in points {

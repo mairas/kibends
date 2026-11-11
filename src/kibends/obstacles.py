@@ -83,6 +83,7 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
+from kibends import _core
 from kibends.chain import Point2
 from kibends.energy import (
     SMOOTH_REACH,
@@ -140,6 +141,45 @@ MAX_EDGE_LENGTH = 0.5
 # its exact distance; far more than a buffer's chord error at 16 segments per
 # quarter circle on any realistic reach.
 DEEP_MARGIN = 0.01
+
+
+POLYGON_TYPE = 3
+"""shapely's type id of a Polygon."""
+
+
+def plain_shapes(geometries: Iterable[BaseGeometry]) -> _core.Shapes:
+    """shapely geometries as the plain coordinates the Rust field takes:
+    each geometry's parts, a polygon's rings exterior first, a line's or a
+    point's coordinates as one ring."""
+    shapes: ObjectArray = np.empty(0, dtype=object)
+    listed = list(geometries)
+    if listed:
+        shapes = np.empty(len(listed), dtype=object)
+        shapes[:] = listed
+    parts, part_of = shapely.get_parts(shapes, return_index=True)
+    # Untyped **kwargs in types-shapely, as in Obstacles.__init__.
+    types: NDArray[np.int32] = shapely.get_type_id(parts)  # pyright: ignore[reportUnknownMemberType]
+    polygon = types == POLYGON_TYPE
+    polygons = np.flatnonzero(polygon)
+    rings, ring_of = shapely.get_rings(parts[polygons], return_index=True)
+    ring_part = np.concatenate([polygons[ring_of], np.flatnonzero(~polygon)])
+    order = np.argsort(ring_part, kind="stable")
+    every_ring = np.concatenate([rings, parts[~polygon]])[order]
+    coords, coord_ring = shapely.get_coordinates(every_ring, return_index=True)
+    return _core.Shapes(
+        np.asarray(coords, dtype=float).reshape(-1, 2),
+        _ends(coord_ring, len(every_ring)),
+        _ends(ring_part[order], len(parts)),
+        polygon,
+        _ends(part_of, len(shapes)),
+        shapely.get_type_id(shapes).astype(np.int32),  # pyright: ignore[reportUnknownMemberType]
+    )
+
+
+def _ends(owner: IntArray, count: int) -> IntArray:
+    """Where each of `count` runs ends, of items each of the run `owner`
+    gives, ascending."""
+    return np.cumsum(np.bincount(owner, minlength=count)).astype(np.intp)
 
 
 @dataclass(frozen=True)

@@ -165,8 +165,11 @@ pub fn nearest_then_smooth(
     let at: Vec<usize> = best.iter().map(|&k| point[k]).collect();
     let nearest: Vec<f64> = best.iter().map(|&k| distance[k]).collect();
     let (smooth, share) = smooth_minimum(&at, &nearest, count);
-    let (best, share): (Vec<usize>, Vec<f64>) =
-        best.into_iter().zip(share).filter(|&(_, s)| s > 0.0).unzip();
+    let (best, share): (Vec<usize>, Vec<f64>) = best
+        .into_iter()
+        .zip(share)
+        .filter(|&(_, s)| s > 0.0)
+        .unzip();
     (best, smooth, share)
 }
 
@@ -243,7 +246,13 @@ pub fn pairs_inside(
 /// The signed distance between each pair of `pairs_inside`: the gap
 /// between the segment and the edge, less the edge's inflation; negative
 /// inside, and least, -inflation, where the two cross.
-pub fn pair_depths(a: &[V2], ab: &[V2], starts: &[V2], along: &[V2], inflations: &[f64]) -> Vec<f64> {
+pub fn pair_depths(
+    a: &[V2],
+    ab: &[V2],
+    starts: &[V2],
+    along: &[V2],
+    inflations: &[f64],
+) -> Vec<f64> {
     (0..a.len())
         .map(|k| segment_gap(a[k], ab[k], starts[k], along[k]) - inflations[k])
         .collect()
@@ -305,7 +314,12 @@ impl PointTree {
 /// (point, segment) index pairs, by point then segment, among them every
 /// pair whose segment from starts[k] to ends[k] comes within `radius` of
 /// points[i], found with one tree over the segments' middles.
-pub fn near_segments(starts: &[V2], ends: &[V2], points: &[V2], radius: f64) -> (Vec<usize>, Vec<usize>) {
+pub fn near_segments(
+    starts: &[V2],
+    ends: &[V2],
+    points: &[V2],
+    radius: f64,
+) -> (Vec<usize>, Vec<usize>) {
     let mut point = Vec::new();
     let mut segment = Vec::new();
     if starts.is_empty() || points.is_empty() {
@@ -359,7 +373,10 @@ mod tests {
             unit_gradient(V2::default(), 0.0, V2::new(2.0, 0.0)),
             V2::new(-0.0, 1.0)
         );
-        assert_eq!(unit_gradient(V2::default(), 0.0, V2::default()), FALLBACK_DIRECTION);
+        assert_eq!(
+            unit_gradient(V2::default(), 0.0, V2::default()),
+            FALLBACK_DIRECTION
+        );
     }
 
     #[test]

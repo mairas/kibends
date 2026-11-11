@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
+use super::DEGENERATE_DISTANCE;
 use super::edges::{Found, StaticDistances, StaticEdges};
 use super::pairs::{nearest_in_runs, nearest_then_smooth};
 use super::smooth::{smooth_reach, weighted_sum};
-use super::DEGENERATE_DISTANCE;
 use crate::geometry::{V2, closest_point, segment_distance};
 
 /// The items of several `StaticEdges`, numbered one part after another,
@@ -38,24 +38,34 @@ impl StaticItems {
     /// The part of `item` and its number there; None past the last.
     fn part_of(&self, item: usize) -> Option<(&StaticEdges, usize)> {
         let p = self.starts.partition_point(|&s| s <= item).checked_sub(1)?;
-        self.parts.get(p).map(|part| (part.as_ref(), item - self.starts[p]))
+        self.parts
+            .get(p)
+            .map(|part| (part.as_ref(), item - self.starts[p]))
     }
 
     /// `StaticEdges::inside` of an item numbered across the parts.
     pub fn inside(&self, item: usize, p: V2) -> bool {
-        self.part_of(item).is_some_and(|(part, k)| part.inside(k, p))
+        self.part_of(item)
+            .is_some_and(|(part, k)| part.inside(k, p))
     }
 
     /// `StaticEdges::normal` of an item numbered across the parts.
     pub fn normal(&self, item: usize, p: V2) -> V2 {
         self.part_of(item)
-            .map_or(crate::geometry::FALLBACK_DIRECTION, |(part, k)| part.normal(k, p))
+            .map_or(crate::geometry::FALLBACK_DIRECTION, |(part, k)| {
+                part.normal(k, p)
+            })
     }
 }
 
 /// `StaticEdges::search` over several parts, each with the number its items
 /// start at, their obstacles numbered one part after another.
-pub fn search_parts(parts: &[(&StaticEdges, usize)], coords: &[V2], reach: f64, slack: f64) -> Found {
+pub fn search_parts(
+    parts: &[(&StaticEdges, usize)],
+    coords: &[V2],
+    reach: f64,
+    slack: f64,
+) -> Found {
     let mut joined = Found::default();
     let mut obstacles = 0;
     for &(part, first) in parts {
@@ -91,7 +101,11 @@ pub fn static_distances(parts: &[&StaticEdges], coords: &[V2], below: f64) -> St
 }
 
 /// The smooth distance over the obstacles of `parts`, from one search.
-pub fn parts_smooth_distance(parts: &[Arc<StaticEdges>], points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>) {
+pub fn parts_smooth_distance(
+    parts: &[Arc<StaticEdges>],
+    points: &[V2],
+    reach: f64,
+) -> (Vec<f64>, Vec<V2>) {
     let items = StaticItems::new(parts.to_vec());
     let numbered: Vec<(&StaticEdges, usize)> = parts
         .iter()

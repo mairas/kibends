@@ -316,7 +316,10 @@ impl Shape {
                 }
             }
         }
-        let mut cuts: Vec<f64> = cuts.into_iter().filter(|t| (0.0..=1.0).contains(t)).collect();
+        let mut cuts: Vec<f64> = cuts
+            .into_iter()
+            .filter(|t| (0.0..=1.0).contains(t))
+            .collect();
         cuts.sort_by(f64::total_cmp);
         cuts.windows(2)
             .filter(|w| w[1] > w[0])
@@ -695,9 +698,18 @@ mod tests {
     fn segments_measure_as_geos_measures_them() {
         let a = V2::new(0.0, 0.0);
         let b = V2::new(2.0, 0.0);
-        assert_eq!(segment_to_segment(a, b, V2::new(1.0, -1.0), V2::new(1.0, 1.0)), 0.0);
-        assert_eq!(segment_to_segment(a, b, V2::new(3.0, 0.0), V2::new(4.0, 0.0)), 1.0);
-        assert_eq!(segment_to_segment(a, a, V2::new(0.0, 2.0), V2::new(0.0, 2.0)), 2.0);
+        assert_eq!(
+            segment_to_segment(a, b, V2::new(1.0, -1.0), V2::new(1.0, 1.0)),
+            0.0
+        );
+        assert_eq!(
+            segment_to_segment(a, b, V2::new(3.0, 0.0), V2::new(4.0, 0.0)),
+            1.0
+        );
+        assert_eq!(
+            segment_to_segment(a, a, V2::new(0.0, 2.0), V2::new(0.0, 2.0)),
+            2.0
+        );
     }
 
     #[test]
@@ -733,6 +745,9 @@ mod tests {
     #[test]
     fn a_point_has_no_tangent() {
         let point = Shape::line(vec![V2::new(1.0, 1.0)]);
-        assert_eq!(outward_normal(&point, V2::new(1.0, 1.0), false), FALLBACK_DIRECTION);
+        assert_eq!(
+            outward_normal(&point, V2::new(1.0, 1.0), false),
+            FALLBACK_DIRECTION
+        );
     }
 }

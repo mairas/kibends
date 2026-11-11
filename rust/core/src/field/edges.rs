@@ -25,7 +25,9 @@ use super::pairs::PointTree;
 use super::smooth::SMOOTH_REACH;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, MAX_EDGE_LENGTH, TOUCH_TOLERANCE};
-use crate::geometry::{Shape, V2, closest_point, offset, outward_normal, segment_distance, segment_to_segment};
+use crate::geometry::{
+    Shape, V2, closest_point, offset, outward_normal, segment_distance, segment_to_segment,
+};
 
 /// (point, edge) pairs of static fields that can answer points, as
 /// `search::static_smooth` takes them: by point, then obstacle, then edge,
@@ -79,7 +81,8 @@ impl Found {
         self.ends.extend(other.ends);
         self.inflation.extend(other.inflation);
         self.limit.extend(other.limit);
-        self.obstacle.extend(other.obstacle.iter().map(|o| o + obstacle));
+        self.obstacle
+            .extend(other.obstacle.iter().map(|o| o + obstacle));
         self.item.extend(other.item.iter().map(|i| i + item));
         self.inside.extend(other.inside);
         self.unsure.extend(other.unsure);
@@ -176,7 +179,9 @@ impl StaticEdges {
             .map(|k| inflations[k])
             .fold(0.0, f64::max);
         Self {
-            outside: (0..shapes.len()).filter(|&k| kinds[k] == Kind::Outside).collect(),
+            outside: (0..shapes.len())
+                .filter(|&k| kinds[k] == Kind::Outside)
+                .collect(),
             obstacle_count: obstacles.iter().max().map_or(0, |&m| m + 1),
             pieces: (0..shapes.len()).map(|_| OnceLock::new()).collect(),
             tree: RTree::bulk_load(boxed),
@@ -198,7 +203,12 @@ impl StaticEdges {
 
     /// Edges from starts[i] to ends[i], each an item of its own inflated by
     /// inflations[i] and part of obstacle obstacles[i].
-    pub fn from_segments(starts: &[V2], ends: &[V2], inflations: Vec<f64>, obstacles: Vec<usize>) -> Self {
+    pub fn from_segments(
+        starts: &[V2],
+        ends: &[V2],
+        inflations: Vec<f64>,
+        obstacles: Vec<usize>,
+    ) -> Self {
         let shapes = starts
             .iter()
             .zip(ends)
@@ -400,7 +410,11 @@ impl StaticEdges {
         let boxed = self.bounds[item]
             .is_some_and(|[x0, y0, x1, y1]| p.x >= x0 && p.y >= y0 && p.x <= x1 && p.y <= y1);
         let within = boxed && self.shapes[item].contains(p);
-        if kind == Kind::Outside { !within } else { within }
+        if kind == Kind::Outside {
+            !within
+        } else {
+            within
+        }
     }
 
     /// The unit gradient at a point lying on the item's edges, where the
@@ -423,6 +437,8 @@ impl StaticEdges {
     }
 
     /// The item of the tree nearest `p` by its geometry, and that distance.
+    /// Of equally near items, the least inflated, whose inflation leaves
+    /// the widest search around the point.
     pub fn nearest_item(&self, p: V2) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
         for (found, d2) in self.tree.nearest_neighbor_iter_with_distance_2(p.array()) {
@@ -431,9 +447,13 @@ impl StaticEdges {
             {
                 break;
             }
-            let d = self.item_distance(found.data, p);
-            if best.is_none_or(|(_, least)| d < least) {
-                best = Some((found.data, d));
+            let item = found.data;
+            let d = self.item_distance(item, p);
+            let nearer = best.is_none_or(|(other, least)| {
+                d < least || d == least && self.inflations[item] < self.inflations[other]
+            });
+            if nearer {
+                best = Some((item, d));
             }
         }
         best
@@ -485,7 +505,15 @@ impl StaticEdges {
                 d - self.inflations[item] + self.inflation + SMOOTH_REACH + 2.0 * slack
             })
         };
-        let mut items = self.items_within(p, radius + DEGENERATE_DISTANCE);
+        let within = radius + DEGENERATE_DISTANCE;
+        let mut items = self.items_within(p, within);
+        if !reach.is_finite() {
+            // Within a finite reach every item past it is farther than the
+            // reach from the point once inflated, which each caller drops;
+            // without one, nothing else drops the items the box only
+            // brings in.
+            items.retain(|&item| self.item_distance(item, p) <= within);
+        }
         items.extend(&self.outside);
         items
     }
@@ -525,9 +553,17 @@ impl StaticEdges {
             let edges: Vec<(usize, f64)> = self
                 .item_edges_near(item, p, slack)
                 .into_iter()
-                .map(|e| (e, offset(p, self.starts[e], self.ends[e] - self.starts[e]).hypot()))
+                .map(|e| {
+                    (
+                        e,
+                        offset(p, self.starts[e], self.ends[e] - self.starts[e]).hypot(),
+                    )
+                })
                 .collect();
-            let nearest = edges.iter().map(|&(_, raw)| raw).fold(f64::INFINITY, f64::min);
+            let nearest = edges
+                .iter()
+                .map(|&(_, raw)| raw)
+                .fold(f64::INFINITY, f64::min);
             let limit = reach
                 + if kind == Kind::Outside {
                     self.inflations[item]
@@ -535,7 +571,8 @@ impl StaticEdges {
                     self.inflation
                 };
             let distance = if inside { -nearest } else { nearest } - self.inflations[item];
-            let unsure = slack > 0.0 && kind != Kind::Line && nearest <= slack + DEGENERATE_DISTANCE;
+            let unsure =
+                slack > 0.0 && kind != Kind::Line && nearest <= slack + DEGENERATE_DISTANCE;
             // Distance changes no faster than the point moves, so an item
             // that stays in reach bounds how far the point's nearest can lie.
             if (inside && !unsure) || nearest + slack <= limit {
@@ -662,7 +699,10 @@ mod tests {
         let ring = (0..=edges)
             .map(|k| {
                 let angle = std::f64::consts::TAU * (k % edges) as f64 / edges as f64;
-                V2::new(centre.x + radius * angle.cos(), centre.y + radius * angle.sin())
+                V2::new(
+                    centre.x + radius * angle.cos(),
+                    centre.y + radius * angle.sin(),
+                )
             })
             .collect();
         Shape::polygon(vec![ring])
@@ -673,10 +713,14 @@ mod tests {
         // be spread, not random.
         let mut state = seed;
         let mut next = || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (state >> 11) as f64 / (1u64 << 53) as f64
         };
-        (0..n).map(|_| V2::new(-1.5 + 9.0 * next(), -1.5 + 9.0 * next())).collect()
+        (0..n)
+            .map(|_| V2::new(-1.5 + 9.0 * next(), -1.5 + 9.0 * next()))
+            .collect()
     }
 
     fn scene(indexed: usize) -> StaticEdges {
@@ -689,9 +733,21 @@ mod tests {
             Shape::line(vec![V2::new(5.0, 5.0)]),
             outline,
         ];
-        let kinds = vec![Kind::Area, Kind::Area, Kind::Line, Kind::Line, Kind::Outside];
-        StaticEdges::new(shapes, kinds, vec![0.3, 0.2, 0.35, 0.4, 0.3], vec![0, 1, 2, 3, 4], None)
-            .with_indexed_edges(indexed)
+        let kinds = vec![
+            Kind::Area,
+            Kind::Area,
+            Kind::Line,
+            Kind::Line,
+            Kind::Outside,
+        ];
+        StaticEdges::new(
+            shapes,
+            kinds,
+            vec![0.3, 0.2, 0.35, 0.4, 0.3],
+            vec![0, 1, 2, 3, 4],
+            None,
+        )
+        .with_indexed_edges(indexed)
     }
 
     #[test]

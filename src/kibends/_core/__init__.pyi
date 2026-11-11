@@ -2,12 +2,243 @@
 # ruff: noqa: E501, F401, F403, F405
 
 import builtins
+import numpy
+import numpy.typing
+import typing
 __all__ = [
+    "AREA",
+    "INDEXED_EDGES",
+    "LINE",
+    "OUTSIDE",
+    "Obstacles",
+    "Shapes",
+    "StaticEdges",
+    "StaticItems",
+    "candidate_pairs",
+    "near_segments",
+    "nearest_of_pairs",
+    "obstacle_order",
+    "pair_depths",
+    "pairs_inside",
+    "parts_smooth_distance",
+    "search_parts",
+    "smooth_of_pairs",
+    "static_distances",
+    "static_smooth",
     "version",
+    "zone_depth",
 ]
+
+AREA: builtins.int = 1
+INDEXED_EDGES: builtins.int = 128
+LINE: builtins.int = 0
+OUTSIDE: builtins.int = 2
+@typing.final
+class Obstacles:
+    r"""
+    Signed distance to the nearest inflated obstacle, and segment checks:
+    the board's items and its edge (`kibends_core::field::obstacles`).
+    """
+    @property
+    def static_edges(self) -> StaticEdges:
+        r"""
+        The field as edges, its items in order, then the board edge.
+        """
+    def __new__(cls, shapes: Shapes, inflations: numpy.typing.NDArray[numpy.float64], nets: typing.Sequence[typing.Optional[builtins.str]], extents: numpy.typing.NDArray[numpy.float64], layers: typing.Sequence[typing.Optional[builtins.str]], outline: typing.Optional[Shapes], edge_inflation: builtins.float) -> Obstacles:
+        r"""
+        The items of `shapes`, each with its inflation and, for copper, its
+        net, extent and layer; and the outside of `outline`, inflated by
+        `edge_inflation`, as the board edge.
+        """
+    def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
+        """
+    def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        `signed_distance` as the energy takes it: the smooth minimum over the
+        obstacles, from the field's edges.
+        """
+    def segments_clear(self, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each segment from starts[i] to ends[i] stays out of every
+        inflated obstacle, by at most `tolerance`, and inside the inflated
+        board edge.
+        """
+
+@typing.final
+class Shapes:
+    r"""
+    Geometries as plain coordinates: each shape's parts, each part a polygon
+    of rings, its exterior first, or a line, a point a line of one
+    coordinate. Built from shapely's arrays (`obstacles.plain_shapes`):
+    the coordinates, and where each ring ends in them, each part in the
+    rings, and each shape in the parts; whether each part is a polygon, and
+    each shape's shapely type id.
+    """
+    def __new__(cls, coords: numpy.typing.NDArray[numpy.float64], ring_ends: numpy.typing.NDArray[numpy.intp], part_ends: numpy.typing.NDArray[numpy.intp], part_polygon: numpy.typing.NDArray[numpy.bool_], shape_ends: numpy.typing.NDArray[numpy.intp], type_ids: numpy.typing.NDArray[numpy.int32]) -> Shapes: ...
+    def __len__(self) -> builtins.int: ...
+
+@typing.final
+class StaticEdges:
+    r"""
+    A static field's obstacles as edges, with the search that finds the
+    edges near points (`kibends_core::field::edges`).
+    """
+    @property
+    def obstacles(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Each item's obstacle.
+        """
+    @property
+    def kinds(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Each item's kind: `LINE`, `AREA` or `OUTSIDE`.
+        """
+    @property
+    def inflations(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def obstacle_count(self) -> builtins.int:
+        r"""
+        How many obstacles the items make.
+        """
+    @property
+    def clearance_obstacles(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Each item's obstacle as a clearance check judges it, numbered below
+        `obstacle_count`: its obstacle, or for an `Obstacles` field its
+        connected copper of one net on one layer.
+        """
+    @staticmethod
+    def from_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> StaticEdges:
+        r"""
+        Edges from starts[i] to ends[i], (m, 2) in mm, each an item of its
+        own, a `LINE`, inflated by inflations[i] and part of obstacle
+        obstacles[i].
+        """
+    def __len__(self) -> builtins.int: ...
+    def search(self, coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
+        r"""
+        The pairs that can answer the points `coords` within `reach` once
+        each has moved at most `slack` mm, as `obstacles.Found`'s fields.
+        """
+    def distances(self, coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Each point's exact signed distance to each obstacle nearer than
+        `below`, as a clearance check judges obstacles: point, obstacle and
+        distance, by point then obstacle.
+        """
+    def inside(self, items: numpy.typing.NDArray[numpy.intp], coords: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each point lies inside its item, items[i] of coords[i]: in
+        an `AREA`'s area or outside an `OUTSIDE`'s, never for a `LINE`.
+        """
+    def normal(self, item: builtins.int, x: builtins.float, y: builtins.float) -> tuple[builtins.float, builtins.float]:
+        r"""
+        The unit gradient at a point lying on the item's edges.
+        """
+
+@typing.final
+class StaticItems:
+    r"""
+    The items of several `StaticEdges`, numbered one part after another.
+    """
+    @property
+    def starts(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Where each part's items start, and then their count.
+        """
+    def __new__(cls, parts: typing.Sequence[StaticEdges]) -> StaticItems: ...
+    def inside(self, items: numpy.typing.NDArray[numpy.intp], coords: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each point lies inside its item, numbered across the parts.
+        """
+    def normal(self, item: builtins.int, x: builtins.float, y: builtins.float) -> tuple[builtins.float, builtins.float]:
+        r"""
+        The unit gradient at a point lying on an item's edges, numbered
+        across the parts.
+        """
+
+def candidate_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], within: numpy.typing.NDArray[numpy.float64], slack: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
+    r"""
+    Which (point, segment) pairs can answer their point within within[k]
+    once the distance from each point to each segment has changed by at most
+    `slack`, mm.
+    """
+
+def near_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], points: numpy.typing.NDArray[numpy.float64], radius: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp]]:
+    r"""
+    (point, segment) index pairs, by point then segment, among them every
+    pair whose segment from starts[k] to ends[k] comes within `radius` of
+    points[i].
+    """
+
+def nearest_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp]]:
+    r"""
+    The nearest inflated segment at each point of `query` over (point,
+    segment) pairs: distance, gradient, and the pair that answers, -1 where
+    none does.
+    """
+
+def obstacle_order(point: numpy.typing.NDArray[numpy.intp], obstacle: numpy.typing.NDArray[numpy.intp], tiebreak: numpy.typing.NDArray[numpy.intp]) -> numpy.typing.NDArray[numpy.intp]:
+    r"""
+    The order of (point, segment) pairs by point, then obstacle, then
+    tiebreak.
+    """
+
+def pair_depths(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    The gap between each segment and edge of `pairs_inside` less the
+    edge's inflation.
+    """
+
+def pairs_inside(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
+    r"""
+    Whether the segment from a[k] along ab[k] enters the edge from
+    starts[k] along along[k], inflated by inflations[k], by more than
+    `tolerance`.
+    """
+
+def parts_smooth_distance(parts: typing.Sequence[StaticEdges], points: numpy.typing.NDArray[numpy.float64], reach: builtins.float) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The smooth distance over the obstacles of `parts`, from one search.
+    """
+
+def search_parts(parts: typing.Sequence[tuple[StaticEdges, builtins.int]], coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
+    r"""
+    `StaticEdges.search` over several parts, each with the number its items
+    start at, their obstacles numbered one part after another.
+    """
+
+def smooth_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64], obstacle: numpy.typing.NDArray[numpy.intp]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The smooth distance at each point of `query` over (point, segment)
+    pairs, each of an obstacle: distance, gradient, and per answering
+    obstacle the point, the pair, its share and its unit gradient.
+    """
+
+def static_distances(parts: typing.Sequence[StaticEdges], coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    `StaticEdges.distances` over several parts, their obstacles numbered one
+    part after another.
+    """
+
+def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], ends: numpy.typing.NDArray[numpy.complex128], inflation: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64], obstacle: numpy.typing.NDArray[numpy.intp], item: numpy.typing.NDArray[numpy.intp], inside: numpy.typing.NDArray[numpy.bool_], unsure: numpy.typing.NDArray[numpy.bool_], items: StaticItems) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The smooth distance at each point of `query` and its gradient over the
+    pairs of `obstacles.Found`'s fields, their items numbered as `items`
+    numbers them.
+    """
 
 def version() -> builtins.str:
     r"""
     The version of the extension module, which is kibends' version.
+    """
+
+def zone_depth(area: Shapes, points: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    How far each point lies inside `area`, one shape, negative outside it,
+    -inf for an empty area: the zone depth both `vias._depth` and the
+    containment field judge by.
     """
 
