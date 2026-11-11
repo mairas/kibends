@@ -77,19 +77,18 @@ def simplify_chains(
     seen = _Neighbours(chains, optimised, sections or {})
     neighbours = same_layer_neighbours(chains)
     current = list(optimised)
-    kept = [list(range(len(polyline))) for polyline in optimised]
     for i in range(len(chains)):
         result = run.chains[i]
         field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
         fixed = result.fixed
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
-            kept[i] = kept_vertices(result.polyline, fixed, field, allowed)
-            loose = seen.loose_corners(i, kept[i], field)
+            kept = kept_vertices(result.polyline, fixed, field, allowed)
+            loose = seen.loose_corners(i, kept, field)
             if not loose.any():
                 break
             fixed = fixed | loose
-        current[i] = result.polyline[kept[i]]
+        current[i] = result.polyline[kept]
     return current
 
 
