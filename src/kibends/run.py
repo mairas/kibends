@@ -956,8 +956,7 @@ def _simplify(
         sections=blocks,
     )
     return simplified[:count], [
-        block.offset_kept(results[i].polyline, simplified[i])
-        for i, block in blocks.items()
+        block.offset(simplified[i]) for i, block in blocks.items()
     ]
 
 

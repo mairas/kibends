@@ -100,7 +100,7 @@ class PairResult:
     """Of the starting centreline."""
     bend: BendCheck | None
     """The centreline's bend radius against the limit of the section's
-    widest gap: its routing's for a section held because that bends too
+    gap: its routing's for a section held because that bends too
     tightly, its result's for one the run moved; else None."""
 
     def kept(self) -> tuple[FloatArray, FloatArray]:

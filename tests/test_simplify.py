@@ -243,31 +243,8 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
 
     assert len(centreline) < len(line)
     keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
-    for track in block.offset_kept(line, centreline):
+    for track in block.offset(centreline):
         assert LineString(track).distance(LineString(wall.points)) >= keep
-
-
-def test_only_an_end_routed_at_another_gap_bounds_a_taper() -> None:
-    uneven = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
-    even = pair_block(scenarios.pair_over_pad().pairs[0], SPACING)
-
-    bounds = uneven.taper_bounds(uneven.chain.centreline.points)
-
-    (bound,) = np.flatnonzero(bounds)
-    assert bound > len(bounds) / 2
-    assert not even.taper_bounds(even.chain.centreline.points).any()
-
-
-def test_kept_vertices_offset_at_their_optimised_gaps() -> None:
-    block = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
-    line = block.chain.centreline.points
-    every = block.offset_kept(line, line)
-    kept = line[[0, len(line) // 2, -1]]
-
-    for whole, track in zip(block.offset(line), every, strict=True):
-        np.testing.assert_array_equal(track, whole)
-    for track in block.offset_kept(line, kept):
-        assert len(track) == len(kept)
 
 
 WAVE_STEP = 0.05
@@ -288,7 +265,7 @@ def test_kept_vertices_offset_into_tracks_parallel_segment_for_segment() -> None
     last = len(line) - 1
     kept = line[sorted({0, 1, *range(1, last, KEEP_EVERY), last - 1, last})]
 
-    a, b = block.offset_kept(line, kept)
+    a, b = block.offset(kept)
 
     assert len(a) == len(b) == len(kept)
     along_a, along_b = (np.diff(t, axis=0) for t in (a, b))

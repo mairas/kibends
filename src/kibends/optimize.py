@@ -1346,7 +1346,7 @@ class _Problem:
         return PairResult(
             block=block,
             centreline=points,
-            fixed=mask & ~block.direction_pins(points) if moved else mask,
+            fixed=mask & ~block.mergeable_pins(points) if moved else mask,
             a=a,
             b=b,
             rejected_edges=self.rejected_edges[k],

@@ -217,7 +217,7 @@ WIDER_END = 0.012
 mm, within what still pairs."""
 
 
-def test_a_section_s_field_is_as_wide_as_its_widest_end() -> None:
+def test_a_section_s_field_is_at_its_gap_whatever_its_ends() -> None:
     wide = HALF_PITCH + WIDER_END
     chains = [
         fanned("USB_D+", -1),
@@ -242,7 +242,7 @@ def test_a_section_s_field_is_as_wide_as_its_widest_end() -> None:
 
     lay_out(whole, parts, pairs, field)
 
-    assert gaps == [pytest.approx(GAP + WIDER_END)]
+    assert gaps == [pytest.approx(GAP)]
 
 
 SECOND_PAIR = 5.0

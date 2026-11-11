@@ -294,9 +294,10 @@ covers both runs.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
-followed the optimised one: at the gap, tapering to an end's own gap near
-an end routed at another, segment for segment in parallel outside such a
-taper, and meeting the fan-outs in the direction they did. kibends does
+followed the optimised one: at the gap, segment for segment in parallel,
+and meeting the fan-outs in the direction they did. Where an end was
+routed at another gap, one track's end edge, about a spacing long, takes up
+the difference and turns slightly off the direction it had. kibends does
 not check the committed tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
 than their clearance.
 Both nets' tracks go into the one commit.

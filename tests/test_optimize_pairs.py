@@ -193,8 +193,8 @@ def test_offset_pullback_matches_finite_differences(
 
     analytic = block.offset_pullback(points, at_a, at_b)
 
-    # A gap's taper starts at its end's direction pin: at the pinned end
-    # edges the gaps have a kink, which no free vertex reaches.
+    # The tracks' end points are the section's own, which no free vertex
+    # moves.
     free = np.flatnonzero(~fixed)
     numeric = np.zeros_like(points)
     for k in free:
@@ -327,8 +327,7 @@ class TestPairOverPad:
     def test_simplified_tracks_stay_parallel_segment_for_segment(
         self, over_pad: RunResult
     ) -> None:
-        # As run.py simplifies a section: its centreline vertices must come
-        # back exactly as the run offset them for `offset_kept` to find them.
+        # As run.py simplifies a section.
         (pair,) = over_pad.pairs
         block = pair.block
         result = ChainResult(
@@ -345,7 +344,7 @@ class TestPairOverPad:
             scenarios.DP_CHORD_TOLERANCE,
             sections={0: block},
         )
-        a, b = block.offset_kept(pair.centreline, centreline)
+        a, b = block.offset(centreline)
 
         assert 2 < len(centreline) < len(pair.centreline)
         along_a, along_b = (np.diff(t, axis=0) for t in (a, b))
@@ -512,17 +511,30 @@ class TestTightCorner:
         assert_within_extent(pair, given, CORNER)
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [scenarios.pair_uneven_end(), scenarios.pair_chamfered()],
-    ids=lambda s: s.name,
-)
-def test_ends_keep_both_tracks_directions(scenario: PairsScenario) -> None:
+def test_chamfered_ends_keep_both_tracks_directions() -> None:
+    scenario = scenarios.pair_chamfered()
     (given,) = scenario.pairs
 
     (pair,) = run(scenario).pairs
 
     assert_meets_its_ends(pair, given)
+    assert_gap_kept(pair)
+    assert length(pair.centreline) < pair.before.length
+
+
+def test_track_b_s_end_edge_takes_up_an_uneven_end_s_gap() -> None:
+    scenario = scenarios.pair_uneven_end()
+    (given,) = scenario.pairs
+
+    (pair,) = run(scenario).pairs
+
+    for track, original in ((pair.a, given.a.points), (pair.b, given.b.points)):
+        np.testing.assert_array_equal(track[[0, -1]], original[[0, -1]])
+    a = given.a.points
+    for points, before in ((pair.a, a), (pair.a[::-1], a[::-1])):
+        np.testing.assert_allclose(
+            heading(points), heading(before), atol=DIRECTION_TOLERANCE
+        )
     assert_gap_kept(pair)
     assert length(pair.centreline) < pair.before.length
 

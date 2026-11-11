@@ -34,7 +34,7 @@ from kibends.coords import UserFrame
 from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.pair_blocks import Hold, PairInput, end_gaps
+from kibends.pair_blocks import Hold, PairInput
 from kibends.pairs import (
     Opposite,
     Pair,
@@ -246,13 +246,7 @@ def split_pair(
                 pinned_b,
                 s.gap,
                 a.layer,
-                # As wide as its widest, where an end's gap is wider.
-                field(
-                    a.layer,
-                    track_a,
-                    track_b,
-                    max(s.gap, *end_gaps(points_a, points_b, a.centreline.width)),
-                ),
+                field(a.layer, track_a, track_b, s.gap),
                 Hold.GROUP if a.held or b.held else None,
             )
         )

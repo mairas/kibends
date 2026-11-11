@@ -763,10 +763,9 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
 
 
 def offset_pair(
-    centreline: FloatArray, gap: float | FloatArray, width: float
+    centreline: FloatArray, gap: float, width: float
 ) -> tuple[FloatArray, FloatArray]:
-    """The two tracks of a pair at ±(gap + width)/2 from `centreline`, with
-    `gap` one for the whole pair or one per vertex.
+    """The two tracks of a pair at ±(gap + width)/2 from `centreline`.
 
     The first track lies to the right of the direction of travel as seen with
     y down, the second to the left. Vertices are mitred, so every offset
@@ -774,21 +773,20 @@ def offset_pair(
     The centreline must have no repeated points, and neither track folds
     while `check_bend_radius` passes.
     """
-    half_pitch = np.broadcast_to((gap + width) / 2, len(centreline))
-    shift = half_pitch[:, None] * _miters(centreline)
+    shift = (gap + width) / 2 * _miters(centreline)
     return centreline + shift, centreline - shift
 
 
 def offset_pair_pullback(
     centreline: FloatArray,
-    gap: FloatArray,
+    gap: float,
     width: float,
     right: FloatArray,
     left: FloatArray,
-) -> tuple[FloatArray, FloatArray]:
+) -> FloatArray:
     """The gradient of a function of `offset_pair`'s two tracks, `right` and
     `left` at each of their vertices, taken back to the centreline's
-    vertices and to each vertex's gap."""
+    vertices."""
     half_pitch = (gap + width) / 2
     delta = np.diff(centreline, axis=0)
     lengths = np.hypot(delta[:, 0], delta[:, 1])
@@ -799,9 +797,7 @@ def offset_pair_pullback(
     total = before + after
     one_plus_cos = 1.0 + np.sum(before * after, axis=1)
     scale = np.maximum(one_plus_cos, MITER_FLOOR)
-    apart = right - left
-    miter = total / scale[:, None]
-    at_miter = half_pitch[:, None] * apart
+    at_miter = half_pitch * (right - left)
     # The miter (b + a) / max(1 + b·a, MITER_FLOOR) of the normals b before
     # and a after a vertex, differentiated in each.
     weight = np.where(
@@ -823,7 +819,7 @@ def offset_pair_pullback(
     gradient = right + left
     gradient[1:] += at_delta
     gradient[:-1] -= at_delta
-    return gradient, np.sum(apart * miter, axis=1) / 2
+    return gradient
 
 
 def _miters(polyline: FloatArray) -> FloatArray:

@@ -4640,7 +4640,7 @@ class Simplified:
 
     def tracks(self, i: int) -> tuple[FloatArray, FloatArray]:
         """Section i's tracks as simplified."""
-        return self.sections[i].offset_kept(self.run.chains[i].polyline, self.result[i])
+        return self.sections[i].offset(self.result[i])
 
 
 def spy_simplify(monkeypatch: pytest.MonkeyPatch) -> list[Simplified]:
@@ -4902,10 +4902,10 @@ STUB = 1.0
 STUBBED_LENGTH = 10.0
 STUB_JOG = 0.1
 """How long, along the pair, each track takes to step between the gaps."""
-TAPER_REACH = 2.0
-TAPER_SAMPLES = 50
+END_REACH = 2.0
+END_SAMPLES = 50
 """mm from each end within which the gap may still follow the stubs':
-the stub, the jog and the taper the optimizer turns the step into."""
+the stub, the jog and the end edge that takes up the step."""
 
 
 def stubbed_pair_board() -> CommitBoard:
@@ -4935,7 +4935,7 @@ def stubbed_pair_board() -> CommitBoard:
     )
 
 
-def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
+def test_end_gaps_give_way_to_the_pair_s_gap_at_the_ends(
     connect: Connector,
 ) -> None:
     board = connect.to(stubbed_pair_board())
@@ -4943,12 +4943,12 @@ def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
     run()
 
     p, n = (unary_union(lines) for lines in by_net(board).values())
-    middle = box(TAPER_REACH, -FAR, STUBBED_LENGTH - TAPER_REACH, FAR)
+    middle = box(END_REACH, -FAR, STUBBED_LENGTH - END_REACH, FAR)
     inner = p.intersection(middle)
     assert not inner.is_empty
     gaps = [
         n.distance(inner.interpolate(d)) - PAIR_WIDTH
-        for d in np.linspace(0.0, inner.length, TAPER_SAMPLES)
+        for d in np.linspace(0.0, inner.length, END_SAMPLES)
     ]
     assert gaps == pytest.approx([PAIR_GAP] * len(gaps), abs=NM_ROUNDING)
 
@@ -5017,14 +5017,8 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
     for i, block in call.sections.items():
         a, b = call.tracks(i)
         assert len(a) == len(b)
-        optimised = call.run.chains[i].polyline
-        gaps = block.gaps.at(optimised)[
-            [
-                int(np.flatnonzero((optimised == v).all(axis=1))[0])
-                for v in call.result[i]
-            ]
-        ]
-        for k in np.flatnonzero(np.diff(gaps) == 0.0):
+        # The end edges take up any difference of the ends' own gaps.
+        for k in range(1, len(a) - 2):
             turn = unit(a[k + 1] - a[k]) @ unit(b[k + 1] - b[k])
             assert math.acos(min(float(turn), 1.0)) <= PARALLEL
         for track, net in ((a, block.given.a.net), (b, block.given.b.net)):
@@ -5070,11 +5064,7 @@ def test_a_pair_whose_tracks_cross_is_committed_for_the_drc_to_report(
                 kept
                 for j, k in itertools.permutations(range(1, last), 2)
                 if LineString(
-                    (
-                        tracks := block.offset_kept(
-                            optimised, kept := optimised[[0, j, k, last]]
-                        )
-                    )[0]
+                    (tracks := block.offset(kept := optimised[[0, j, k, last]]))[0]
                 ).intersects(LineString(tracks[1]))
             )
         return result

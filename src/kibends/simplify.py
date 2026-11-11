@@ -62,14 +62,12 @@ def simplify_chains(
 
     Each of `sections` stands in for the chain of its index, its polyline
     a coupled section's centreline. A section merges within its block's
-    tolerance, never across the vertices that bound its ends' gap tapers,
-    and keeps its merged edges clear of its field as the block's `facing`,
+    tolerance and keeps its merged edges clear of its field as the block's `facing`,
     which leaves out the chains of its two nets. Its tracks' mitred corners
     at kept vertices next to a merged edge reach farther out than the
     edges: where one enters the field, the vertices on either side of it
     are kept and the section merged again. The others see its two tracks,
-    offset from its centreline at its latest shape with each kept vertex at
-    its optimised gap.
+    offset from its centreline at its latest shape.
     """
     if len(run.chains) != len(chains):
         raise ValueError(
@@ -83,7 +81,7 @@ def simplify_chains(
     for i in range(len(chains)):
         result = run.chains[i]
         field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
-        fixed = result.fixed | seen.bounds(i)
+        fixed = result.fixed
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
             kept[i] = kept_vertices(result.polyline, fixed, field, allowed)
@@ -141,27 +139,19 @@ class _Neighbours:
         # Each corner keeps the clearance of a track, half the pair's
         # extent less half a track width inside the centreline's.
         inside = (block.facing.centreline.width - block.given.a.width) / 2
-        for track in block.offset_kept(polyline, polyline[at]):
+        for track in block.offset(polyline[at]):
             distance, _ = field.signed_distance(track[1:-1])
             entering = beside & (distance < -inside - INSIDE_TOLERANCE)
             for vertex in at[1:-1][entering]:
                 loose[[vertex - 1, vertex + 1]] = True
         return loose
 
-    def bounds(self, i: int) -> BoolArray:
-        """The vertices of chain i that merging must keep beyond its fixed
-        ones: a section's taper bounds."""
-        block = self.sections.get(i)
-        if block is None:
-            return np.zeros(len(self.optimised[i]), dtype=bool)
-        return block.taper_bounds(self.optimised[i])
-
     def shown(self, j: int, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
         """What the others see of chain j at `points`: a section's tracks."""
         block = self.sections.get(j)
         if block is None:
             return [(self.chains[j], points)]
-        tracks = block.offset_kept(self.optimised[j], points)
+        tracks = block.offset(points)
         return list(zip(block.tracks, tracks, strict=True))
 
     def fields(
