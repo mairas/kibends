@@ -406,7 +406,7 @@ def _read(
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
     replaced = {s.id for s in selected if not s.locked}
-    may = [v for v in selection.vias if may_move(v)]
+    may = [v for v in selection.vias if may_move(v, selection.nets)]
     kept, locked = split_locked(selected)
     # Selected vias without tracks that can be modified leave no chains: only
     # the stitching vias among them move.
@@ -452,6 +452,7 @@ def _read(
         chains,
         frame=frame,
         zones=whole.via_zones,
+        nets=selection.nets,
     )
     chains, snapshots, movable = _settle(
         _Extracted(kept, locked, snapshots, chains, notes),

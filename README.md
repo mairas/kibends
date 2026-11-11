@@ -84,7 +84,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
    sides. Select a via with its tracks to let it move with them: it moves
-   when it is unlocked, at least two selected chain ends meet it, and no
+   when it is unlocked, it is not on a net of a differential pair, at least
+   two selected chain ends meet it, and no
    other copper touches it or those chain ends on a layer it spans, except a
    zone of its net. Selected tracks that run through it count: where two of
    them meet at its centre, the chain is cut there into two that end at it,
@@ -130,15 +131,13 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    zone the refill leaves out, in a gap of a hatch, or connected only
    through a neck, which only KiCad's DRC
    sees. Any other selected via stays where it is; a debug log line names it
-   and the reason: it is locked, other copper touches it or a chain end it
+   and the reason: it is locked, it is on a net of a differential pair (see
+   [Differential pairs](#differential-pairs)), other copper touches it or a chain end it
    would carry (an unselected track, a selected track that passes it with
    no vertex at its centre, a pad, a copper shape or another via of its
    net, on a layer it spans), it sits at the edge of a zone's region
    (closer to it than that margin, so moving might lose a connection it has
-   now), a coupled section of a differential pair ends at it, cutting a
-   pair's track there would leave a piece running coupled beside its
-   partner unpaired (see [Differential pairs](#differential-pairs)), only
-   one selected track ends at it, or none does and no zone of its net
+   now), only one selected track ends at it, or none does and no zone of its net
    reaches it. A moving via that
    starts closer to other copper than its clearance moves out of it like any
    other (see below). Teardrops are ignored: KiCad reapplies them on the
@@ -328,10 +327,17 @@ different widths, when a chain runs coupled with one of its pair net that
 pairs with another chain, and when a pair's measured gap differs by more
 than a tenth from its netclass's differential pair gap. Each of these is
 smoothed as separate chains, or, for the last, at its measured gap. A pair
-is paired on each layer separately. A selected via at the end of a fan-out
-moves with it as with any chain; one at which a coupled section itself
-ends, with no fan-out between, stays fixed, since a section's ends do not
-move. kibends does not route uncoupled fan-outs into coupling.
+is paired on each layer separately. kibends does not route uncoupled
+fan-outs into coupling.
+
+A diff pair's vias do not move. A selected via on either net of a diff
+pair stays where it is, whether or not the selection pairs its tracks. As
+in KiCad, a net is of a diff pair when its name ends in `+`, `-`, `P` or
+`N`, before any trailing digits and underscores, and the net with the
+opposite suffix exists on the board: a via on `VIN` moves when the board has
+no `VIP`. The tracks that end at a diff pair's via keep their ends there:
+moving the two nets' vias one by one would break the symmetry of the diff
+pair's via structure and its length tuning.
 
 ### Return vias
 
