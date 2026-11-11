@@ -32,9 +32,6 @@ STEP = 1e-6
 GRADIENT_AGREEMENT = 1e-3
 """Relative difference allowed between the analytic gradient and the
 finite difference at STEP, whose truncation error is far below it here."""
-RESUMED_MOVE = 0.5
-"""mm a resumed run moves a sliding vertex, at least, from where a run cut
-short after one short burst left it (there 0.84 mm)."""
 WEAK_STOP = 0.5
 """A clearance weight at which the stop cannot hold a vertex against the
 length's pull: the length pulls with up to 2, the stop with this times the
@@ -132,19 +129,6 @@ def test_a_vertex_beyond_the_tolerance_outside_its_contact_has_left_it(
     left = contacts_left(points, contact_of, [Obstacles((), OVER)])
 
     assert left.tolist() == [False, outside, False]
-
-
-def test_a_run_resumed_from_another_slides_its_vertices_again() -> None:
-    chain = passing_over()
-    short = replace(SETTINGS, max_iterations=1, burst_maxiter=1)
-    first = optimize_chains([chain], scenarios.PARAMS, short)
-
-    again = optimize_chains([chain], scenarios.PARAMS, SETTINGS, start=first)
-
-    (before,) = kept(first.chains[0])
-    (after,) = kept(again.chains[0])
-    assert OVER.covers(Point(after))
-    assert before[1] - after[1] >= RESUMED_MOVE
 
 
 def test_a_sliding_vertex_inside_another_net_s_clearance_keeps_its_contact() -> None:

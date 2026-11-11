@@ -274,7 +274,7 @@ def _problems(
         everything, list(getattr(scenario, "vias", ())), HOLE_CLEARANCE, HOLE_TO_HOLE
     )
     placed = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
-        chains, blocks, vias, params, DEFAULT_SETTINGS, None
+        chains, blocks, vias, params, DEFAULT_SETTINGS
     )
     return [p.problem for p in placed if p.problem.moving]
 
@@ -812,9 +812,6 @@ def test_the_checks_are_those_each_members_own_field_gives(
                 np.testing.assert_array_equal(got.clear, expected)
                 pairs = zip(got.edge.tolist(), got.vertex.tolist(), strict=True)
                 assert set(pairs) == entered
-            assert problem.edges_across(polylines, positions, seen) == [
-                int(np.count_nonzero(~c)) for c in clear
-            ]
             masks = problem.masks
             assert problem.violations(polylines, masks, positions, seen) == [
                 violations(points, mask, CompositeField([body.field, field]))

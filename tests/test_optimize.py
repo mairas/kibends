@@ -327,7 +327,7 @@ def test_the_guard_takes_no_more_violations_than_the_start(
         ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, GUARDED_DISC
     )
     (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
-        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE, None
+        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE
     )
     problem = placed.problem
     moved = problem.points[0].copy()

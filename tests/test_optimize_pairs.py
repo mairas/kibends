@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import scenarios
 from conftest import Ticking
-from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
+from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
     DP_PAD,
@@ -73,13 +73,9 @@ DIRECTION_TOLERANCE = 1e-9
 EXTENT_SLACK = 1e-9
 
 
-def run(
-    scenario: PairsScenario,
-    settings: OptimizerSettings = COARSE,
-    start: RunResult | None = None,
-) -> RunResult:
+def run(scenario: PairsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
     return optimize_chains(
-        scenario.chains, scenario.params, settings, pairs=scenario.pairs, start=start
+        scenario.chains, scenario.params, settings, pairs=scenario.pairs
     )
 
 
@@ -607,129 +603,32 @@ def hausdorff(a: FloatArray, b: FloatArray) -> float:
     return float(LineString(a).hausdorff_distance(LineString(b)))
 
 
-@pytest.fixture(scope="module")
-def held_tent() -> RunResult:
-    """`pair_tent` with its section held, from its inputs."""
-    return run(held(scenarios.pair_tent()))
+def test_a_repeated_run_gives_every_problem_a_burst_before_its_time_limit() -> None:
+    scenario = scenarios.pair_tent()
+    back = replace(
+        selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+        layer="B.Cu",
+    )
+    chains = (*scenario.chains, back)
+    limited = replace(COARSE, time_limit=0.0)
+    resampled = resample(back.centreline.points, back.fixed, COARSE.spacing)[0]
 
-
-class TestResume:
-    def test_a_held_section_stays_and_the_others_go_on_from_the_best_state(
-        self, tent: RunResult, held_tent: RunResult
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        first = tent
-
-        again = run(held(scenario), start=first)
-
-        (pair,) = again.pairs
-        (given,) = scenario.pairs
-        np.testing.assert_array_equal(pair.a, given.a.points)
-        np.testing.assert_array_equal(pair.b, given.b.points)
-        (bar,), (before,) = again.chains, first.chains
-        assert again.iterations <= COARSE.stall_window + 1
-        assert hausdorff(bar.polyline, before.polyline) < 10 * COARSE.settled_change
-        assert not np.array_equal(bar.polyline, held_tent.chains[0].polyline)
-
-    def test_a_start_that_adds_violations_is_not_taken(
-        self, tent: RunResult, held_tent: RunResult
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        first = tent
-        (bar,) = first.chains
-        # Through the arch's tracks, which the bar never reached.
-        crossing = bar.polyline.copy()
-        crossing[len(crossing) // 2, 1] = 3.0
-        start = replace(first, chains=(replace(bar, polyline=crossing),))
-
-        again = run(held(scenario), start=start)
-
-        np.testing.assert_array_equal(
-            again.chains[0].polyline, held_tent.chains[0].polyline
-        )
-
-    def test_a_start_across_a_held_section_is_not_taken(self, tent: RunResult) -> None:
-        scenario = scenarios.pair_tent()
-        (bar,) = scenario.chains
-        # The bar starts inside this disc, so a start with one violation is
-        # no more than its inputs had.
-        scenario = replace(
-            scenario, chains=(replace(bar, field=Disc(5.0, 1.695, 0.2)),)
-        )
-        (best,) = tent.chains
-        across = best.polyline.copy()
-        across[1] = (3.05, 2.95)
-        start = replace(tent, chains=(replace(best, polyline=across),))
-
-        again = run(held(scenario), start=start)
-
-        (pair,) = again.pairs
-        bar_after = LineString(again.chains[0].polyline)
-        for track in (pair.a, pair.b):
-            assert LineString(track).distance(bar_after) >= (
-                PAIR_WIDTH + PAIR_CLEARANCE - INSIDE_TOLERANCE
-            )
-
-    def test_a_section_resumes_from_its_best_centreline(
-        self, over_pad: RunResult
-    ) -> None:
-        scenario = scenarios.pair_over_pad()
-        first = over_pad
-
-        again = run(scenario, start=first)
-
-        (pair,), (before,) = again.pairs, first.pairs
-        assert again.iterations <= COARSE.stall_window + 1
-        assert (
-            hausdorff(pair.centreline, before.centreline) < 10 * COARSE.settled_change
-        )
-        assert_gap_kept(pair)
-
-    def test_a_resumed_run_gives_every_problem_a_burst_before_its_time_limit(
-        self,
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        back = replace(
-            selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
-            layer="B.Cu",
-        )
-        chains = (*scenario.chains, back)
-        # Stopped early, so that the resumed run's problems have work left.
-        first = optimize_chains(
-            chains,
-            scenario.params,
-            replace(COARSE, max_iterations=1),
-            pairs=scenario.pairs,
-        )
-        limited = replace(COARSE, time_limit=0.0)
-
-        again = optimize_chains(
+    def repeated(again: bool) -> RunResult:
+        return optimize_chains(
             chains,
             scenario.params,
             limited,
             pairs=held(scenario).pairs,
             clock=Ticking(),
-            start=first,
+            again=again,
         )
 
-        # The first iteration ran whole; the second stopped after its first
-        # burst.
-        assert again.termination is Termination.TIME_LIMIT
-        assert again.iterations == 2
-        cut = optimize_chains(
-            chains,
-            scenario.params,
-            limited,
-            pairs=held(scenario).pairs,
-            clock=Ticking(),
-        )
-        # Without a start, the back layer never got its burst.
-        assert cut.iterations == 1
-        np.testing.assert_array_equal(
-            cut.chains[1].polyline,
-            resample(back.centreline.points, back.fixed, COARSE.spacing)[0],
-        )
-        assert not np.array_equal(again.chains[1].polyline, first.chains[1].polyline)
+    # Repeated, the first iteration runs whole, so the back layer gets its
+    # burst; a first run stops after the first problem's.
+    assert not np.array_equal(repeated(again=True).chains[1].polyline, resampled)
+    cut = repeated(again=False)
+    assert cut.iterations == 1
+    np.testing.assert_array_equal(cut.chains[1].polyline, resampled)
 
 
 def gap(a: FloatArray, b: FloatArray) -> float:

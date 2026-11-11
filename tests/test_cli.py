@@ -165,10 +165,6 @@ RETURN_TRADED = 0.01
 the run without attraction."""
 
 
-def path_length(points: FloatArray) -> float:
-    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-
-
 def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
     """`optimize_chains` at `settings`, but the time limit the run gives it."""
     real: Callable[..., RunResult] = optimize_chains
@@ -4333,7 +4329,7 @@ class TestPairs:
         assert line.startswith("DEBUG")
         assert Hold.CROWDING.value in line and "again" in line
 
-    def test_time_limit_keeps_the_first_runs_work_in_a_second_run(
+    def test_time_limit_covers_a_second_run_that_starts_over(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
@@ -4355,16 +4351,7 @@ class TestPairs:
 
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
-        board = pair_board()
-        # Two Ls of other nets beside the pair, which the first run shortens.
-        bend = [
-            kipy_track(f"{net}{k}", net, start, end, width=WIDTH)
-            for net, y in (("SIG", 10), ("SIG2", 20))
-            for k, (start, end) in enumerate([((0, y), (4, y)), ((4, y), (4, y + 4))])
-        ]
-        board.selection = [*board.selection, *bend]
-        board.tracks = [*board.tracks, *bend]
-        connect.to(board)
+        connect.to(pair_board())
 
         run("--dry-run", "--time-limit=1.5")
 
@@ -4373,15 +4360,6 @@ class TestPairs:
         # Past the limit, the second run still completes one outer iteration,
         # then stops at the first burst of the next.
         assert second.iterations <= 2
-        # The first run shortened both Ls, and the second kept that.
-        shortened = [
-            k
-            for k, c in enumerate(first.chains)
-            if path_length(c.polyline) < c.before.length - KEPT
-        ]
-        assert len(shortened) == 2
-        for before, after in zip(first.chains, second.chains, strict=True):
-            assert path_length(after.polyline) <= path_length(before.polyline) + KEPT
         total = first.iterations + second.iterations
         assert f"after {total} iterations" in capsys.readouterr().out
 
@@ -4396,7 +4374,7 @@ class TestPairs:
 
         def first_gives_up(*args: object, **kwargs: object) -> RunResult:
             result = real(*args, **kwargs)
-            if kwargs["start"] is None:
+            if not kwargs["again"]:
                 pairs = tuple(
                     replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
                     for p in result.pairs
@@ -4424,7 +4402,15 @@ class TestPairs:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         runs = self.first_run_gives_up(monkeypatch)
-        connect.to(pair_board())
+        # Another net's L, so that the second run, which starts over with the
+        # section held, has work to do.
+        bend = [
+            kipy_track("l1", "SIG", (0, 10), (4, 10), width=WIDTH),
+            kipy_track("l2", "SIG", (4, 10), (4, 14), width=WIDTH),
+        ]
+        board = pair_board(extra=bend)
+        board.selection = [*board.selection, *bend]
+        connect.to(board)
 
         run("--dry-run")
 

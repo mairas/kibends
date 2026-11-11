@@ -14,13 +14,12 @@ ground nets, logs them and classes every via by them; with attraction off
 nothing is classed, and the optimizer's energy is the one without ground
 vias. It then builds the fields, optimizes, simplifies and commits. A
 coupled section the run leaves bent too tightly is held, and the optimizer
-runs again from the previous run's best state, on the same clock and time
-limit. A chain whose result equals its selected tracks, and that shares no
-split track with a changed chain, is left out of the commit; nothing is
-committed when every chain is unchanged and no via moved. A selected arc
-thus stays an arc only in a chain left exactly as drawn; simplification
-merges its pieces and the optimizer shortens it, so it is nearly always
-replaced.
+runs again from the inputs, on the same clock and time limit. A chain whose
+result equals its selected tracks, and that shares no split track with a
+changed chain, is left out of the commit; nothing is committed when every
+chain is unchanged and no via moved. A selected arc thus stays an arc only
+in a chain left exactly as drawn; simplification merges its pieces and the
+optimizer shortens it, so it is nearly always replaced.
 
 The run checks no clearance of its own after optimizing: what the
 optimizer and simplification leave is committed, and the user's KiCad DRC
@@ -562,7 +561,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         read.movable, read.snapshots, options, read.ground_nets, static
     )
     started = monotonic()
-    previous: RunResult | None = None
+    again = False
     iterations = 0
     abnormal: dict[str, int] = {}
     gave_up: dict[str, int] = {}
@@ -576,7 +575,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             pairs=layout.sections,
             clock=monotonic,
             started=started,
-            start=previous,
+            again=again,
             static_vias=tuple(static.values()),
         )
         iterations += run.iterations
@@ -587,8 +586,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
             # A problem given up on stopped on abnormal bursts; a later run
-            # converging from its best state does not make that stop a
-            # convergence.
+            # converging does not make that stop a convergence.
             termination = (
                 Termination.GAVE_UP
                 if gave_up and run.termination is Termination.CONVERGED
@@ -605,9 +603,9 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
             elapsed = monotonic() - started
             return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
-        # the sections cannot simply keep their own tracks; the run goes on
-        # from where this one left them, with these sections held.
-        previous = run
+        # the sections cannot simply keep their own tracks; the run starts
+        # over with these sections held.
+        again = True
         sections = list(layout.sections)
         for k in held:
             sections[k] = replace(sections[k], hold=Hold.CROWDING)

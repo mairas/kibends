@@ -584,11 +584,10 @@ def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
         np.testing.assert_array_equal(chain.polyline, start)
 
 
-def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(
+def test_a_repeated_run_past_its_time_limit_runs_its_first_bursts_whole(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = bumps()
-    first = run(scenario, replace(COARSE, max_iterations=1))
     bursts = recorded_bursts(monkeypatch)
 
     again = optimize_chains(
@@ -596,10 +595,10 @@ def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(
         scenario.params,
         replace(COARSE, time_limit=0.0),
         clock=Ticking(),
-        start=first,
+        again=True,
     )
 
-    assert again.iterations == 1
+    assert again.termination is Termination.TIME_LIMIT
     assert not bursts[0].cut
     assert bursts[0].iterations > 1
 
@@ -966,39 +965,6 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
 
     assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
-
-
-ZIGZAG = 0.1
-"""mm every other free vertex of a stuck burst moves sideways, which
-lengthens the chains."""
-
-
-def test_a_resumed_run_that_gives_up_keeps_the_earlier_run_s_progress(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = bumps()
-    first = run(scenario)
-
-    def stuck(
-        objective: Objective,
-        start: FloatArray,
-        revert: Revert,
-        settings: OptimizerSettings,
-        stop: Stop | None = None,
-    ) -> Burst:
-        zigzag = start.copy()
-        zigzag[1::4] += ZIGZAG
-        return Burst(zigzag, abnormal=True)
-
-    monkeypatch.setattr(optimize_module, "run_burst", stuck)
-
-    again = optimize_chains(scenario.chains, scenario.params, COARSE, start=first)
-
-    # No burst was taken, but where it resumed is below its inputs.
-    assert again.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    assert again.termination is Termination.GAVE_UP
-    for chain in again.chains:
-        assert length(chain.polyline) < chain.before.length
 
 
 def test_a_normal_burst_ends_an_abnormal_streak(
