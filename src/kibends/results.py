@@ -23,10 +23,10 @@ class Termination(Enum):
     TIME_LIMIT = "time limit reached"
     GAVE_UP = "stopped on abnormal bursts"
     """Every problem settled, some of them only after
-    `optimize.MAX_ABNORMAL_BURSTS` abnormal bursts in a row, and the run's
-    best state is lower in energy than its inputs; or, for the whole stage
-    (`run.OptimizerReport`), the last run converged after an earlier one gave
-    up. The best state is used, though it may be short of the minimum."""
+    `optimize.MAX_ABNORMAL_BURSTS` abnormal bursts in a row, before or
+    after a hold built the problem again (`optimize.optimize_chains`), and
+    the run's best state is lower in energy than its inputs. The best state
+    is used, though it may be short of the minimum."""
     ABNORMAL = "L-BFGS-B terminated abnormally"
     """Some problem stopped after `optimize.MAX_ABNORMAL_BURSTS` abnormal
     bursts in a row and the run's best state is no lower in energy than its

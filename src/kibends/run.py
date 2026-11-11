@@ -156,7 +156,7 @@ class SmoothOptions:
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
-    """Its time limit covers the whole optimize stage, re-runs included.
+    """Its time limit covers the whole optimize stage, holds included.
     Its settle threshold should be half `chord_tolerance` at most, as
     `cli.smooth_options` sets it; the default suits the default tolerance."""
     ground_nets: tuple[str, ...] = ()
@@ -230,17 +230,17 @@ class OptimizerReport:
     pairs: tuple[PairReport, ...]
     """The differential pairs among the chains."""
     termination: Termination
-    """How the last run ended, but `Termination.GAVE_UP` where it converged
-    after an earlier run gave up on some problem."""
+    """How the run ended, `Termination.GAVE_UP` also where it converged
+    after giving up on a problem that a hold then built again."""
     iterations: int
     """Outer iterations, each giving every problem that has not settled
-    one burst, summed over the runs."""
+    one burst, holds included."""
     elapsed: float
-    """Wall time of the optimize stage, re-runs included, s."""
+    """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
     """The problems, each the chains of a layer or of the layers moving
     vias tie together, whose bursts L-BFGS-B ended abnormally, by
-    description, and how many there were, summed over the runs."""
+    description, and how many there were, before and after any hold."""
     frame: UserFrame
     """The frame to print positions in. The report's positions stay in the
     board frame; its descriptions are text already formatted in this
