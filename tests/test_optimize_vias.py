@@ -14,7 +14,13 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import build_via_obstacles, neutral_distance
+from conftest import (
+    CURVATURE_ATOL,
+    CURVATURE_RTOL,
+    CURVATURE_STEP,
+    build_via_obstacles,
+    neutral_distance,
+)
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
 from shapely.geometry import LineString, Point, box
@@ -1877,6 +1883,83 @@ def test_the_guard_refuses_a_via_deep_outside_its_zone_entering_another_s_holes(
     moved = [left + np.array((TOWARD, 0.0)), right]
 
     assert not problem.guard(problem.points, problem.masks, moved, problem.seen)
+
+
+ALONE_Y = 3.0
+"""Where a lone stitching via stands, mm: beyond every term's reach of the
+pinned chain at y = 0."""
+OPEN_TOP = ALONE_Y + 5.0
+"""Where its zone's region ends, mm: beyond every term's reach of it."""
+COPPER_RADIUS = 1.0
+"""The radius of the static copper beside it, inflated for it, mm."""
+WITHIN_STANDOFF = STITCH_PARAMS.standoff / 2
+WITHIN_FALLOFF = STITCH_PARAMS.falloff_range / 2
+"""Beyond the standoff: only the repulsion is curved there."""
+PRESSED_VIA_SCALE = 0.5
+
+
+def alone(*, gap: float | None = None, top: float = OPEN_TOP) -> ViasScenario:
+    """A stitching via at ALONE_Y in `stitched`'s zone ending at `top`, with
+    static copper `gap` mm right of its clearance unless None."""
+    scenario = stitched(ALONE_Y, top=top)
+    if gap is None:
+        return scenario
+    (given,) = scenario.vias
+    copper = Disc(STITCH_X + COPPER_RADIUS + gap, ALONE_Y, COPPER_RADIUS)
+    return replace(scenario, vias=(replace(given, field=copper),))
+
+
+def alone_problem(scenario: ViasScenario) -> optimize_module._Problem:
+    (placed,) = optimize_module._problems(
+        scenario.chains, [], moving_vias(scenario), scenario.params, DEFAULT_SETTINGS
+    )
+    return placed.problem
+
+
+def via_scale(scenario: ViasScenario) -> float:
+    """The scale of the lone via's variable in the first burst."""
+    problem = alone_problem(scenario)
+    layout = problem.layout(problem.points)
+    seen = problem.seeing(layout.starts)
+    stiffness = problem.stiffness(layout, seen, problem.lookups(seen))
+    scale = optimize_module._scale(stiffness, DEFAULT_SETTINGS.spacing)
+    (variable,) = layout.via_index
+    return float(scale[2 * variable])
+
+
+class TestViaStiffness:
+    def test_a_free_via_scales_by_one(self) -> None:
+        assert via_scale(alone()) == 1.0
+
+    def test_a_via_pressed_at_clearance_against_static_copper_scales_down(
+        self,
+    ) -> None:
+        assert via_scale(alone(gap=0.0)) < PRESSED_VIA_SCALE
+
+    @pytest.mark.parametrize("gap", [WITHIN_STANDOFF, WITHIN_FALLOFF])
+    @pytest.mark.parametrize("pushing", ["copper", "zone"])
+    def test_is_the_curvature_along_the_push(self, pushing: str, gap: float) -> None:
+        # One obstacle with a flat face toward the via, so that the push has
+        # one direction and the diagonal curvature along it is exactly the
+        # integrand's f'' (static copper, the repulsion's term) or the
+        # hinge's alone (the zone's edge, a stop).
+        if pushing == "copper":
+            scenario, axis = alone(gap=gap), 0
+        else:
+            scenario, axis = alone(top=ALONE_Y + STITCH_MARGIN + gap), 1
+        problem = alone_problem(scenario)
+        polylines, (at,) = problem.points, problem.positions
+
+        (stiffness,) = problem.via_stiffness(polylines, [at])
+
+        step = np.zeros(2)
+        step[axis] = CURVATURE_STEP
+        up = problem.via_energy(polylines, [at + step])[2][0, axis]
+        down = problem.via_energy(polylines, [at - step])[2][0, axis]
+        numeric = (up - down) / (2 * CURVATURE_STEP)
+        assert stiffness == pytest.approx(
+            numeric, rel=CURVATURE_RTOL, abs=CURVATURE_ATOL
+        )
 
 
 class TestStitchingVia:

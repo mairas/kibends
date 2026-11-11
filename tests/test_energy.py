@@ -4,7 +4,13 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from conftest import obstacle_energy, total_energy
+from conftest import (
+    CURVATURE_ATOL,
+    CURVATURE_RTOL,
+    CURVATURE_STEP,
+    obstacle_energy,
+    total_energy,
+)
 from distance_fields import Box, Disc, FloatArray, Walls
 from numpy.typing import NDArray
 
@@ -566,9 +572,6 @@ def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
     assert down == pytest.approx(gradient[2, 1], abs=scale)
 
 
-CURVATURE_STEP = 1e-7
-CURVATURE_RTOL = 1e-5
-CURVATURE_ATOL = 1e-6
 WIDE = 5.0
 """Half the gap of a channel whose far wall is beyond every term's reach, mm."""
 NARROW = 0.1
