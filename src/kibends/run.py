@@ -614,8 +614,8 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         # from where this one left them, with these sections held.
         previous = run
         sections = list(layout.sections)
-        for k, hold in held.items():
-            sections[k] = replace(sections[k], hold=hold)
+        for k in held:
+            sections[k] = replace(sections[k], hold=Hold.CROWDING)
         layout = replace(layout, sections=sections)
 
 
@@ -629,24 +629,21 @@ def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
 
 def _bent_too_tightly(
     sections: Sequence[PairInput], results: Sequence[PairResult]
-) -> dict[int, Hold]:
+) -> list[int]:
     """The sections the run moved but could not keep within the bend-radius
-    limit, by index, and why: its own parts beyond the turn, if they came
-    too close to each other, else the copper around it, kept it from
-    rounding a corner that resampling cut too tightly. Each logged at
-    debug."""
-    held: dict[int, Hold] = {}
+    limit, by index: the copper around them kept them from rounding a
+    corner that resampling cut too tightly. Each logged at debug."""
+    held: list[int] = []
     for k, (given, result) in enumerate(zip(sections, results, strict=True)):
         bend = result.bend
         if result.block.held or bend is None or not bend.too_tight:
             continue
-        hold = Hold.FOLDING if result.too_close else Hold.CROWDING
         logger.debug(
             f"Kept {given.a.description} and {given.b.description} as they are: "
-            f"{hold.value} (a radius of {bend.radius:.3f} mm); "
+            f"{Hold.CROWDING.value} (a radius of {bend.radius:.3f} mm); "
             "optimizing again with them held"
         )
-        held[k] = hold
+        held.append(k)
     return held
 
 

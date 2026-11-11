@@ -8,16 +8,13 @@ counts where it enters its static clearance away from its anchors, which
 the best state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
-bend an edge newly below the limit, or bring its parts beyond a turn
-closer than they may (`close_to_itself`).
+bend an edge newly below the limit.
 """
 
-import math
 from dataclasses import dataclass
 from itertools import pairwise
 
 import numpy as np
-from scipy.spatial import cKDTree
 
 from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import (
@@ -230,75 +227,24 @@ def _arc_fractions(points: FloatArray) -> FloatArray:
     return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
 
 
-def close_to_itself(points: FloatArray, apart: float) -> tuple[IntArray, FloatArray]:
-    """The pairs of vertices closer than `apart` that lie more than half a
-    circle `apart` across from each other along the polyline, and their
-    distances: there it comes back onto itself rather than turning, as a
-    turn tighter than that circle would."""
-    pairs = cKDTree(points).query_pairs(apart, output_type="ndarray")
-    if not len(pairs):
-        return pairs, np.empty(0)
-    arc = arc_lengths(points)
-    i, j = pairs[:, 0], pairs[:, 1]
-    beyond = np.abs(arc[i] - arc[j]) > math.pi / 2 * apart
-    pairs = pairs[beyond]
-    i, j = pairs[:, 0], pairs[:, 1]
-    return pairs, np.hypot(*(points[i] - points[j]).T)
-
-
 @dataclass(frozen=True)
 class SelfCheck:
     """What a burst may not do to a coupled section's centreline, measured
-    against `original`, where the burst started: with a `bend_limit`, bend
-    an edge newly below it; with `apart`, bring vertices closer than that
-    to its parts beyond a turn (`close_to_itself`), or than either started
-    from them where it started closer, but never than the two started."""
+    against `original`, where the burst started: bend an edge newly below
+    `bend_limit`."""
 
-    original: FloatArray
-    bend_limit: float | None
-    apart: float | None
-    tight_before: BoolArray | None
-    nearest: FloatArray
-    """Per vertex, how close it started to its parts beyond a turn, at most
-    `apart`."""
+    bend_limit: float
+    tight_before: BoolArray
 
     @staticmethod
-    def of(
-        original: FloatArray,
-        bend_limit: float | None = None,
-        apart: float | None = None,
-    ) -> SelfCheck:
-        tight_before = (
-            None if bend_limit is None else too_tight(bend_radii(original), bend_limit)
-        )
-        nearest = np.full(len(original), apart or 0.0)
-        if apart is not None:
-            pairs, distance = close_to_itself(original, apart)
-            np.minimum.at(nearest, pairs[:, 0], distance)
-            np.minimum.at(nearest, pairs[:, 1], distance)
-        return SelfCheck(original, bend_limit, apart, tight_before, nearest)
+    def of(original: FloatArray, bend_limit: float) -> SelfCheck:
+        return SelfCheck(bend_limit, too_tight(bend_radii(original), bend_limit))
 
-    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int, int]:
-        """The vertices to move back, how many edges newly bent too tightly
-        and vertex pairs came too close, and how many of those were pairs."""
+    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int]:
+        """The vertices to move back, and how many edges newly bent too
+        tightly."""
         back = np.zeros(len(candidate), dtype=bool)
-        count = close = 0
-        if self.bend_limit is not None and self.tight_before is not None:
-            tight = too_tight(bend_radii(candidate), self.bend_limit)
-            tight &= ~self.tight_before
-            around = np.flatnonzero(tight)[:, None] + BEND_REACH
-            back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
-            count += int(tight.sum())
-        if self.apart is not None:
-            pairs, distance = close_to_itself(candidate, self.apart)
-            i, j = pairs[:, 0], pairs[:, 1]
-            # At most the pair's own starting distance, so a pair moved back
-            # whole is never too close, even one that lies beyond a turn only
-            # along the candidate.
-            started = np.hypot(*(self.original[i] - self.original[j]).T)
-            floor = np.minimum(np.maximum(self.nearest[i], self.nearest[j]), started)
-            closer = distance < floor - INSIDE_TOLERANCE
-            back[i[closer]] = back[j[closer]] = True
-            close = int(closer.sum())
-            count += close
-        return back, count, close
+        tight = too_tight(bend_radii(candidate), self.bend_limit) & ~self.tight_before
+        around = np.flatnonzero(tight)[:, None] + BEND_REACH
+        back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
+        return back, int(tight.sum())

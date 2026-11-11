@@ -4304,16 +4304,11 @@ class TestPairs:
         assert "a net of a diff pair" in line
         assert not any("moving via" in line for line in log)
 
-    @pytest.mark.parametrize(
-        ("too_close", "hold"), [(0, Hold.CROWDING), (1, Hold.FOLDING)]
-    )
     def test_section_left_bent_too_tightly_is_held_in_a_second_run(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
-        too_close: int,
-        hold: Hold,
     ) -> None:
         real: Callable[..., RunResult] = pipeline.optimize_chains
         held: list[list[Hold | None]] = []
@@ -4328,7 +4323,6 @@ class TestPairs:
                 else replace(
                     p,
                     bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True),
-                    too_close=too_close,
                 )
                 for p in result.pairs
             )
@@ -4339,8 +4333,8 @@ class TestPairs:
 
         run()
 
-        assert held == [[None], [hold]]
-        assert any(hold.value in line for line in log)
+        assert held == [[None], [Hold.CROWDING]]
+        assert any(Hold.CROWDING.value in line for line in log)
         # The repeated run says it repeats, rather than seeming to start over.
         assert log.count("INFO Setting up the optimizer\n") == 1
         assert "INFO Setting up the optimizer again, with held sections\n" in log
@@ -4360,7 +4354,7 @@ class TestPairs:
                 )
         (line,) = [w for w in log if "too tight" in w]
         assert line.startswith("DEBUG")
-        assert hold.value in line and "again" in line
+        assert Hold.CROWDING.value in line and "again" in line
 
     def test_time_limit_keeps_the_first_runs_work_in_a_second_run(
         self,

@@ -1499,7 +1499,6 @@ def test_a_via_moved_back_keeps_its_problem_from_settling(
             list(starts),
             list(self.positions),
             [0] * count,
-            [0] * count,
             [moved_back] * len(self.vias),
             False,
         )

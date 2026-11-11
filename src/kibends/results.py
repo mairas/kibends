@@ -96,9 +96,6 @@ class PairResult:
     """The two tracks along `centreline`, b running the same way as a; the
     section's own tracks when the run did nothing."""
     rejected_edges: int
-    too_close: int
-    """Of `rejected_edges`, the vertex pairs that came closer than the
-    section keeps its parts beyond a turn (`polylines.close_to_itself`)."""
     before: PolylineStats
     """Of the starting centreline."""
     bend: BendCheck | None

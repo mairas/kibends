@@ -88,10 +88,6 @@ class Hold(Enum):
         "the copper around it kept it from rounding a corner too tight for "
         "the inner track"
     )
-    FOLDING = (
-        "rounding a corner too tight for the inner track would bring its "
-        "parts beyond the corner closer together than they are routed"
-    )
 
 
 @dataclass(frozen=True, eq=False)
@@ -279,14 +275,6 @@ class PairBlock:
     @property
     def held(self) -> bool:
         return self.hold is not None
-
-    @property
-    def apart(self) -> float:
-        """How far apart, mm, the centreline keeps its own parts beyond a
-        turn: the pair's outer extent plus the larger of its clearances, so
-        that one part's tracks keep clear of the other's."""
-        facing = self.facing.centreline
-        return facing.width + facing.clearance
 
     def offset(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
         """Tracks a and b along the centreline at `points`, through the

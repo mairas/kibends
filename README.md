@@ -285,10 +285,10 @@ ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
 already bends tighter keeps its own tracks; a jog or sliver of less than a
-micrometre, such as KiCad leaves on its nanometre grid, does not count. So does one whose corner the
-copper around it keeps from rounding, such as a pad inside a sharp corner,
-or its own parts beyond the corner: the run is repeated with that section
-held, so that the other chains keep clear of its tracks. The repeat goes on from
+micrometre, such as KiCad leaves on its nanometre grid, does not count. So
+does one whose corner the copper around it keeps from rounding, such as a
+pad inside a sharp corner: the run is repeated with that section held, so
+that the other chains keep clear of its tracks. The repeat goes on from
 where the first run left every other chain and via, and `--time-limit`
 covers both runs.
 
@@ -296,12 +296,8 @@ A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
 followed the optimised one: at the gap, tapering to an end's own gap near
 an end routed at another, segment for segment in parallel outside such a
-taper, and meeting the fan-outs in the direction they did. While
-optimising, a section's parts more than a turn apart along it, such as the
-legs of a U or the laps of a spiral, do not move closer to each other than
-the pair's outer extent plus the larger clearance, and parts that already
-lie closer do not move closer still. kibends does not check the committed
-tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
+taper, and meeting the fan-outs in the direction they did. kibends does
+not check the committed tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
 than their clearance.
 Both nets' tracks go into the one commit.
 

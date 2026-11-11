@@ -45,8 +45,7 @@ centreline at each evaluation (`members.shown`), so where the obstacle term pull
 track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
 check, a burst moves back what `polylines.SelfCheck` finds: a centreline
-newly bent below its limit, or brought closer to its own parts beyond a
-turn than it may. A held member (`ChainInput.held`), such as a held
+newly bent below its limit. A held member (`ChainInput.held`), such as a held
 section, is fully pinned and not resampled; a run
 given an earlier one's result resumes from it (`optimize_chains`), which
 is how `run` repeats a run with the sections that ended too tight held.
@@ -117,8 +116,7 @@ A section moves as its centreline and is seen as its two tracks, which
 the others' edge checks see where the burst leaves them; its own edges
 are checked as the pair's outer extent. A burst also moves back what
 `polylines.SelfCheck` finds on a section: an edge newly bent below its
-limit, or its parts beyond a turn brought closer than they may
-(`polylines.close_to_itself`).
+limit.
 
 A moving via is a member whose one vertex is its centre, inflated by
 `via_chain_inflation` against a member of another net and seen by it so,
@@ -375,19 +373,18 @@ def optimize_chains(
     its clearance or its stops than it started.
 
     A problem settles when its burst moved no shape or via by
-    `settled_change` and moved nothing back but for a section's parts that
-    came too close to each other, or when the lowest energy its bursts
-    reached, whether or not the guard took them as its best state, and its
-    tracks' length stalled over `stall_window` bursts (`stalled`), or after
-    MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
-    every problem has, and gives up (`Termination.GAVE_UP`) if some problem
-    settled on abnormal bursts. A run that gave up on some problem and
-    whose best states sum to no less energy than its inputs, not where it
-    resumed, ends `Termination.ABNORMAL`, whatever stopped it. With a time
-    limit in `settings`, the run stops once `clock` reads the limit or more
-    past `started`, by default when the run starts: the running burst ends
-    at its next L-BFGS-B iteration, and its state goes through the checks
-    and the guard as any burst's.
+    `settled_change` and moved nothing back, or when the lowest energy its
+    bursts reached, whether or not the guard took them as its best state,
+    and its tracks' length stalled over `stall_window` bursts (`stalled`),
+    or after MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges
+    when every problem has, and gives up (`Termination.GAVE_UP`) if some
+    problem settled on abnormal bursts. A run that gave up on some problem
+    and whose best states sum to no less energy than its inputs, not where
+    it resumed, ends `Termination.ABNORMAL`, whatever stopped it. With a
+    time limit in `settings`, the run stops once `clock` reads the limit or
+    more past `started`, by default when the run starts: the running burst
+    ends at its next L-BFGS-B iteration, and its state goes through the
+    checks and the guard as any burst's.
 
     A run given the result of an earlier one on the same inputs as `start`
     starts each problem from that run's best state, the sections held in
@@ -808,12 +805,12 @@ class _Layout:
 @dataclass(frozen=True)
 class _Round:
     """What one check of a burst found: per member, its edges that newly
-    crossed and, of those, a section's vertex pairs too close; per via, the
+    crossed; per via, the
     edges at the ends it carries that newly crossed, and the times it ended
     newly or deeper inside its clearance. A crossing is counted on the side
     that found it, once, though both sides move back."""
 
-    members: list[tuple[int, int]]
+    members: list[int]
     vias: list[int]
 
 
@@ -822,11 +819,7 @@ class _ProblemBurst:
     polylines: list[FloatArray]
     positions: list[FloatArray]
     rejected_edges: list[int]
-    """Per member, its edges whose moves were undone, and a section's
-    vertex pairs."""
-    too_close: list[int]
-    """Per member, of `rejected_edges`, a section's vertex pairs that came
-    too close to each other (`polylines.close_to_itself`)."""
+    """Per member, its edges whose moves were undone."""
     via_rejected: list[int]
     """Per via, the edges at the ends it carries that newly crossed, and
     the times it ended newly inside its clearance."""
@@ -1008,7 +1001,6 @@ class _Problem:
         self.lowest = [self.energy]
         self.lengths = [self.length()]
         self.rejected_edges = [0] * count
-        self.too_close = [0] * count
         self.via_rejected = [0] * len(vias)
         self.abnormal_bursts = 0
         self.abnormal_streak = 0
@@ -1358,7 +1350,6 @@ class _Problem:
             a=a,
             b=b,
             rejected_edges=self.rejected_edges[k],
-            too_close=self.too_close[k],
             before=self.before[k],
             bend=block.bend(points) if moved else block.tight_start,
         )
@@ -1421,11 +1412,8 @@ class _Problem:
         self.moved |= change > NOTHING_MOVED
         self.points, self.positions = burst.polylines, burst.positions
         self.seen = self.seeing(self.points)
-        for i, (count, close) in enumerate(
-            zip(burst.rejected_edges, burst.too_close, strict=True)
-        ):
+        for i, count in enumerate(burst.rejected_edges):
             self.rejected_edges[i] += count
-            self.too_close[i] += close
         for k, count in enumerate(burst.via_rejected):
             self.via_rejected[k] += count
         self.energy = self.energy_of(self.points, self.positions, self.seen)
@@ -1449,13 +1437,8 @@ class _Problem:
             self.abnormal_streak = 0
         # An abnormal burst may have stopped anywhere, so only the streak
         # settles it. A burst cut short by moves back changed little because
-        # of them, not because the shapes settled; but a section pressed
-        # onto its own parts beyond a turn has moves to undo in every burst,
-        # which no energy term pushes back.
-        cut_short = any(burst.via_rejected) or any(
-            count > close
-            for count, close in zip(burst.rejected_edges, burst.too_close, strict=True)
-        )
+        # of them, not because the shapes settled.
+        cut_short = any(burst.via_rejected) or any(burst.rejected_edges)
         self.settled = self.gave_up or (
             not burst.abnormal
             and not burst.cut
@@ -1549,8 +1532,8 @@ class _Problem:
         """One L-BFGS-B run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
         copper, or newly or more deeply another member's new shape, a
-        section newly bent below its limit or brought its parts beyond a
-        turn too close (`polylines.SelfCheck`) or a via ended newly or
+        section newly bent below its limit (`polylines.SelfCheck`) or a via
+        ended newly or
         deeper inside its clearance of an obstacle."""
         members = self.members
         positions = self.positions
@@ -1573,9 +1556,7 @@ class _Problem:
         # moving back always ends.
         left_before = [self.left(i, s) for i, s in enumerate(starts)]
         checks = [
-            SelfCheck.of(s, member.limit, member.apart)
-            if isinstance(member, PairBlock)
-            else None
+            SelfCheck.of(s, member.limit) if isinstance(member, PairBlock) else None
             for member, s in zip(members, starts, strict=True)
         ]
         free_before = self.via_distances(starts, positions)
@@ -1590,7 +1571,7 @@ class _Problem:
             polylines, centres = layout.unflatten(x)
             flat = shown_flat(members, polylines, centres)
             back = np.zeros(count, dtype=bool)
-            counts: list[tuple[int, int]] = []
+            counts: list[int] = []
             via_counts = [0] * len(self.vias)
             others = seen.segments_clear(polylines, flat)
             for i, points in enumerate(polylines):
@@ -1618,13 +1599,13 @@ class _Problem:
                     via_counts[k] += int(ends[end])
                 outside = self.left(i, points) & ~left_before[i]
                 ends |= outside
-                rejected, close = int(crossing.sum()) + int(outside.sum()), 0
+                rejected = int(crossing.sum()) + int(outside.sum())
                 check = checks[i]
                 if check is not None:
-                    own, more, close = check(points)
+                    own, more = check(points)
                     ends |= own
                     rejected += more
-                counts.append((rejected, close))
+                counts.append(rejected)
                 back[index[i][ends & free[i]]] = True
             entering = np.zeros(len(self.vias), dtype=bool)
             for now, before in (
@@ -1656,7 +1637,7 @@ class _Problem:
             found_now, back = crossings(candidate)
             if not found:
                 found.append(found_now)
-            return sum(r for r, _ in found_now.members) + sum(found_now.vias), back
+            return sum(found_now.members) + sum(found_now.vias), back
 
         def revert(x: FloatArray) -> int:
             return revert_until_clear(x, x0, check)[1]
@@ -1674,14 +1655,13 @@ class _Problem:
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
         if result.abnormal or not found:
-            counted = _Round([(0, 0)] * len(starts), [0] * len(self.vias))
+            counted = _Round([0] * len(starts), [0] * len(self.vias))
         else:
             counted = found[0]
         return _ProblemBurst(
             polylines,
             centres,
-            [rejected for rejected, _ in counted.members],
-            [close for _, close in counted.members],
+            list(counted.members),
             list(counted.vias),
             result.abnormal,
             result.iterations,
