@@ -4,14 +4,16 @@ times a layer's neighbour list found its pairs (`seen.NeighbourList`) and
 the farthest move in one burst on stitched ground planes, on the synthetic
 scenarios and on buses of parallel tracks, and where return vias settle.
 
-Usage: ./run bench [--tree DIR] [--only grid|crossed|scenarios|bus|return]
-                   [--case TEXT]
+Usage: ./run bench [--tree DIR]
+                   [--only grid|crossed|scenarios|bus|return|joint]
+                   [--case TEXT] [--plot DIR]
                    [-- SMOOTH_ARGS]
 
 `--tree` measures another checkout's source and tests, such as an older
 commit unpacked with `git archive`, so that two versions can be compared
-on one machine. `--case` runs only the planes, grids and buses whose names
-contain TEXT.
+on one machine. `--case` runs only the planes, grids, buses and joint
+cases whose names contain TEXT. `--plot` saves each joint case's
+per-chain length against outer iteration as a PNG in DIR.
 Arguments after `--` go to `kibends smooth` for the runs through a fake
 KiCad and give the crossed grids' energy parameters and optimizer settings
 and the buses' optimizer settings, a `--time-limit` among them overriding
@@ -49,6 +51,11 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
   rows of pads at 1 mm pitch, whose distance field every energy evaluation
   queries.
+- joint: a lone free track, run alone and in one problem with a cluster of
+  chains pressed against each other at clearance far from it on its layer,
+  so that the two cannot interact. Each burst records every chain's length
+  and its shape change (`polylines.shape_change`); the table gives the lone
+  track's length when the alone run settled and when the joint run did.
 - return: a signal via and a ground via settling together, at default
   settings and without repulsion; skipped for a tree without return-via
   attraction or without the test helpers it builds its boards with.
@@ -71,9 +78,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the optimizer.")
     parser.add_argument("--tree", type=Path, default=ROOT)
     parser.add_argument(
-        "--only", choices=("grid", "crossed", "scenarios", "bus", "return")
+        "--only", choices=("grid", "crossed", "scenarios", "bus", "return", "joint")
     )
     parser.add_argument("--case", default="", help="run only the cases naming this")
+    parser.add_argument(
+        "--plot", type=Path, help="directory for the joint cases' length plots"
+    )
     parser.add_argument("smooth", nargs="*", help="arguments for kibends smooth")
     return parser.parse_args()
 
@@ -116,6 +126,7 @@ from kibends.chain import NM_PER_MM  # noqa: E402
 from kibends.energy import EnergyParams, FloatArray, IntArray  # noqa: E402
 from kibends.neighbours import ChainInput  # noqa: E402
 from kibends.optimize import optimize, optimize_chains  # noqa: E402
+from kibends.polylines import shape_change  # noqa: E402
 from kibends.seen import Pairs, Seen  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
@@ -796,6 +807,212 @@ def bus() -> None:
             measure(name, case)
 
 
+LONE = "lone"
+"""The lone track's description."""
+LONE_OFFSET = 50.0
+"""How far below the cluster the lone track lies, mm: beyond any reach."""
+PRESSED_PITCH = scenarios.PAIR_WIDTH + scenarios.PAIR_CLEARANCE
+"""Centre to centre at exactly the clearance, mm."""
+
+
+@dataclass
+class ChainTrace:
+    """One chain's length and shape change after each burst of its problem,
+    mm, and the run's seconds when the burst ended."""
+
+    lengths: list[float]
+    moves: list[float]
+    seconds: list[float]
+
+
+@contextmanager
+def traced() -> Generator[dict[str, ChainTrace]]:
+    """Record every free member's length and shape change after each burst."""
+    problem_class = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
+    real = problem_class.step
+    traces: dict[str, ChainTrace] = {}
+    began = time.perf_counter()
+
+    def step(
+        problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        stop: Callable[[], bool] | None = None,
+    ) -> float:
+        before = list(problem.points)
+        change = real(problem, stop)
+        now = time.perf_counter() - began
+        for i in problem.free:
+            name = problem.bodies[i].centreline.description
+            trace = traces.setdefault(name, ChainTrace([], [], []))
+            trace.lengths.append(length(problem.points[i]))
+            trace.moves.append(shape_change(before[i], problem.points[i]))
+            trace.seconds.append(now)
+        return change
+
+    setattr(problem_class, "step", step)  # noqa: B010
+    try:
+        yield traces
+    finally:
+        setattr(problem_class, "step", real)  # noqa: B010
+
+
+def lone_track() -> ChainInput:
+    """A Z track 30 mm across with a diagonal 6 mm down, in free space."""
+    y = -LONE_OFFSET
+    return scenarios.selected(
+        LONE,
+        LONE,
+        FreeSpace(),
+        (0.0, y),
+        (10.0, y),
+        (16.0, y + 6.0),
+        (30.0, y + 6.0),
+    )
+
+
+def pressed_bus(count: int) -> list[ChainInput]:
+    """`count` nested Z tracks as `z_bus` lays them, but PRESSED_PITCH
+    apart, so that every one is at clearance to its neighbours."""
+    return [
+        scenarios.selected(
+            f"S{i}",
+            f"S{i}",
+            FreeSpace(),
+            (0.0, y),
+            (10.0 - y, y),
+            (16.0 - y, y + 6.0),
+            (30.0, y + 6.0),
+        )
+        for i, y in enumerate(i * PRESSED_PITCH for i in range(count))
+    ]
+
+
+@dataclass(frozen=True)
+class JointCase:
+    chains: Callable[[], list[ChainInput]]
+    params: EnergyParams
+
+
+JOINT_PARAMS = replace(scenarios.PARAMS, repulsion=BUS_REPULSION)
+
+
+def joint_cases() -> dict[str, JointCase]:
+    return {
+        "lone alone": JointCase(lambda: [lone_track()], JOINT_PARAMS),
+        "lone beside its copy": JointCase(
+            lambda: [lone_track(), replace_net(lone_track(), "copy", LONE_OFFSET)],
+            JOINT_PARAMS,
+        ),
+        "lone beside 10 Z tracks at 0.6 mm": JointCase(
+            lambda: [lone_track(), *z_bus(0.0)], JOINT_PARAMS
+        ),
+        **{
+            f"lone beside {n} pressed Z tracks": JointCase(
+                lambda n=n: [lone_track(), *pressed_bus(n)], JOINT_PARAMS
+            )
+            for n in (3, 5, 10)
+        },
+    }
+
+
+def replace_net(chain: ChainInput, net: str, shift: float) -> ChainInput:
+    """`chain` as a chain of `net`, `shift` mm lower in y."""
+    points = chain.centreline.points + np.array([0.0, shift])
+    centreline = replace(chain.centreline, description=net, net=net, points=points)
+    return replace(chain, centreline=centreline)
+
+
+def joint_run(case: JointCase, traces: dict[str, dict[str, ChainTrace]]) -> Case:
+    settings = smooth_options().settings
+
+    def go() -> tuple[int, str]:
+        with traced() as trace:
+            result = optimize_chains(case.chains(), case.params, settings)
+        traces[""] = trace
+        lone = trace[LONE]
+        return result.iterations, (
+            f"{result.termination.value}; lone {lone.lengths[-1]:.4f} mm "
+            f"after {len(lone.lengths)} bursts, {lone.seconds[-1]:.2f} s; "
+            f"all {sum(length(c.polyline) for c in result.chains):.4f} mm"
+        )
+
+    return go
+
+
+REACHED = 1e-3
+"""How near the alone run's final length the lone track counts as there, mm:
+`OptimizerSettings.stall_tolerance`."""
+
+
+def plot_traces(
+    name: str, alone: ChainTrace, trace: dict[str, ChainTrace], directory: Path
+) -> Path:
+    """The lone track's length and shape change per outer iteration, alone
+    and in the case, and the case's other chains' lengths, as a PNG."""
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(8, 10))
+    lone_lengths, moves, others = figure.subplots(3, 1, sharex=True)
+    final = alone.lengths[-1]
+    runs = (("alone", alone, "C0"), ("in the case", trace[LONE], "C3"))
+    for label, t, colour in runs:
+        rounds = range(1, len(t.lengths) + 1)
+        lone_lengths.plot(
+            rounds, [x - final for x in t.lengths], color=colour, label=label
+        )
+        moves.semilogy(rounds, t.moves, color=colour, label=label)
+    lone_lengths.set_yscale("symlog", linthresh=REACHED)
+    lone_lengths.set_ylabel("lone track above its alone length, mm")
+    lone_lengths.legend()
+    moves.set_ylabel("lone track's shape change, mm")
+    for chain, t in trace.items():
+        if chain != LONE:
+            rounds = range(1, len(t.lengths) + 1)
+            others.plot(rounds, [x - t.lengths[0] for x in t.lengths], linewidth=0.8)
+    others.set_ylabel("other chains' length change, mm")
+    others.set_xlabel("outer iteration")
+    lone_lengths.set_title(name)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name.replace(' ', '-')}.png"
+    figure.savefig(path, dpi=100)  # pyright: ignore[reportUnknownMemberType]
+    return path
+
+
+def reached(trace: ChainTrace, target: float) -> str:
+    """The first burst after which the track is within REACHED of `target`."""
+    for k, x in enumerate(trace.lengths):
+        if x <= target + REACHED:
+            return f"burst {k + 1}, {trace.seconds[k]:.2f} s"
+    return "never"
+
+
+def joint() -> None:
+    print(HEADER)
+    alone: ChainTrace | None = None
+    lines: list[str] = []
+    for name, case in joint_cases().items():
+        if alone is not None and ARGS.case not in name:
+            continue
+        traces: dict[str, dict[str, ChainTrace]] = {}
+        measure(name, joint_run(case, traces))
+        trace = traces[""]
+        lone = trace[LONE]
+        if alone is None:
+            alone = lone
+            continue
+        settled = len(alone.lengths)
+        at = min(settled, len(lone.lengths)) - 1
+        lines.append(
+            f"- {name}: lone {lone.lengths[at] - alone.lengths[at]:+.4f} mm against "
+            f"alone at burst {at + 1} (alone settled at {settled}, "
+            f"{alone.lengths[-1]:.4f} mm); within {REACHED:g} mm of it at "
+            f"{reached(lone, alone.lengths[-1])}; alone at "
+            f"{reached(alone, alone.lengths[-1])}"
+        )
+        if ARGS.plot is not None:
+            lines.append(f"  plot: {plot_traces(name, alone, trace, ARGS.plot)}")
+    print("\n".join(lines))
+
+
 RETURN_CASES = {
     "unselected GND via 1.5 mm across the route": ((5.0, 1.5), False),
     "unselected GND via 1.5 mm diagonally": ((6.06, 1.06), False),
@@ -862,6 +1079,9 @@ def main() -> None:
         print()
     if ARGS.only in (None, "bus"):
         bus()
+        print()
+    if ARGS.only in (None, "joint"):
+        joint()
         print()
     if ARGS.only in (None, "return"):
         fields = EnergyParams.__dataclass_fields__
