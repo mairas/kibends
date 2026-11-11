@@ -55,6 +55,7 @@ from kibends.pairs import (
 from kibends.polylines import SelfCheck, resample
 from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import simplify_chains
+from kibends.vias import ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 CORNER = OptimizerSettings(burst_maxiter=30)
@@ -852,6 +853,93 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     assert holds == [0, 0]
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
+    # The abnormal bursts were all before the hold.
+    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+
+
+def test_what_putting_back_misses_puts_the_whole_problem_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def nothing_fails(
+        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        state: object,
+        seen: object,
+        at_start: object,
+    ) -> BoolArray:
+        return np.zeros(len(self.members) + len(self.vias), dtype=bool)
+
+    monkeypatch.setattr(
+        optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        "failing",
+        nothing_fails,
+    )
+    scenario = scenarios.pair_tent_under_roof()
+
+    # The roof has come down across where the pair was drawn, which only
+    # the guard after putting back now finds.
+    result = hold_once(
+        scenario, replace(COARSE, time_limit=HOLD_BUDGET), BurstClock(monkeypatch)
+    )
+
+    assert_held_as_drawn(result, scenario)
+    for chain, given in zip(result.chains, scenario.chains, strict=True):
+        np.testing.assert_array_equal(
+            chain.polyline,
+            resample(given.centreline.points, given.fixed, COARSE.spacing)[0],
+        )
+
+
+JOINED_AT = (9.5, 5.0)
+"""Where `roof_parts` joins its two parts, right of the pair's arch, mm."""
+ROOF_FAR_END = (10.5, 5.0)
+
+
+def roof_parts(*, via: bool) -> tuple[PairsScenario, tuple[ViaInput, ...]]:
+    """`pair_tent` under a roof of two parts joined at `JOINED_AT`: the first
+    from beside the arch's left side, over the arch, the second on to the
+    right, clear of the arch. Once the pair comes down, the first part pulls
+    across where the pair was drawn; the second stays clear of it. Joined by
+    a moving via, with the second part on B.Cu, if `via`; else at a
+    junction."""
+    tent = scenarios.pair_tent()
+    eaves = (1.0, scenarios.ROOF_EAVES)
+    first = selected("roof", "R", FreeSpace(), eaves, (1.0, 4.5), JOINED_AT)
+    second = selected(
+        "roof end", "R", FreeSpace(), JOINED_AT, ROOF_FAR_END, layer="B.Cu"
+    )
+    vias: tuple[ViaInput, ...] = ()
+    if via:
+        vias = (scenarios.joining(scenarios.through_via("v", "R", JOINED_AT), 1),)
+    else:
+        loose = first.fixed.copy()
+        loose[-1] = False
+        first = replace(first, fixed=loose)
+        second = replace(second, layer="F.Cu", fixed=np.array([False, True]))
+    return replace(tent, chains=(*tent.chains, first, second)), vias
+
+
+@pytest.mark.parametrize("via", [False, True], ids=["junction", "via"])
+def test_what_moves_with_a_part_put_back_goes_back_with_it(
+    monkeypatch: pytest.MonkeyPatch, via: bool
+) -> None:
+    scenario, vias = roof_parts(via=via)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        replace(COARSE, time_limit=HOLD_BUDGET),
+        vias,
+        pairs=scenario.pairs,
+        clock=BurstClock(monkeypatch),
+        to_hold=hold_every,
+    )
+
+    assert_held_as_drawn(result, scenario)
+    _, first, second = result.chains
+    assert tuple(first.polyline[-1]) == JOINED_AT
+    assert tuple(second.polyline[0]) == JOINED_AT
+    if via:
+        assert result.vias[0].position == JOINED_AT
 
 
 def gap(a: FloatArray, b: FloatArray) -> float:
