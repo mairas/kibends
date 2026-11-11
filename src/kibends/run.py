@@ -654,7 +654,7 @@ def _simplify_and_report(
     reports = _chain_reports(
         read.chains,
         optimized.whole,
-        _whole_results(optimized, optimized.whole, unsimplified),
+        _whole_results(optimized, unsimplified),
         simplified,
     )
     pair_reports = _pair_reports(optimized, chains, final_tracks)
@@ -980,9 +980,7 @@ def _with_vias(
 
 
 def _whole_results(
-    optimized: _Optimized,
-    inputs: Sequence[ChainInput],
-    unsimplified: Sequence[FloatArray],
+    optimized: _Optimized, unsimplified: Sequence[FloatArray]
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
@@ -999,7 +997,7 @@ def _whole_results(
         results.append(
             _WholeResult(
                 unsimplified[k],
-                measure(inputs[k].centreline.points, DEFAULT_SETTINGS.spacing),
+                measure(optimized.whole[k].centreline.points, DEFAULT_SETTINGS.spacing),
                 sum(p.rejected_edges for p in pieces),
             )
         )
