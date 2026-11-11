@@ -103,8 +103,14 @@ the burst ends with where it started. An edge that starts clear of static
 copper and ends crossing it moves its free ends back to the burst's start,
 and the check repeats, as moving one member's vertex back can put another
 member's moved edge across it; moved back whole, every member is at its
-start, clear (`bursts.revert_until_clear`). A junction moves back when any
-of its branches' edges at it does. The other members are judged track by
+start, clear (`bursts.revert_until_clear`). An edge that starts across
+static copper is judged piece by piece, a piece as a moving via's
+clearance judges it, connected copper of one net on one layer
+(`obstacles.static_entered`): it moves back if it ends across a piece it
+did not cross at the start, so that a track squeezed inside one pad's
+clearance is still kept out of the next. A static field that gives no
+edges, such as the analytic test fields, is one piece. A junction moves
+back when any of its branches' edges at it does. The other members are judged track by
 track and via by via (`seen.EdgesClear.obstacle`): an edge that ends
 across one it did not cross at the start, or that takes its member
 deeper inside one than the member's deepest edge was there at the start
@@ -234,7 +240,14 @@ from kibends.members import (
     static_list,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
+from kibends.obstacles import (
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
+    ChainCentreline,
+    StaticEdges,
+    static_entered,
+    static_parts,
+)
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.polylines import (
     SelfCheck,
@@ -991,6 +1004,9 @@ class _Problem:
         # limited to no more violations per member than the resampled start,
         # and to no via newly or deeper inside its clearance of any obstacle,
         # or its stops, than it started.
+        self.static_parts = [static_parts(body.field) for body in self.bodies]
+        """Each member's static field as edges, None for a field that
+        gives none, whose items the burst check then judges as one."""
         self.seen = self.seeing(self.points)
         """What the members see of each other at `points`."""
         self.allowed = self.violations(
@@ -1557,10 +1573,11 @@ class _Problem:
     ) -> _ProblemBurst:
         """One L-BFGS-B run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
-        copper, or newly or more deeply another member's new shape, a
-        section newly bent below its limit or brought its parts beyond a
-        turn too close (`polylines.SelfCheck`) or a via ended newly or
-        deeper inside its clearance of an obstacle."""
+        copper, or a piece of it they did not cross at the start, or newly
+        or more deeply another member's new shape, a section newly bent
+        below its limit or brought its parts beyond a turn too close
+        (`polylines.SelfCheck`) or a via ended newly or deeper inside its
+        clearance of an obstacle."""
         members = self.members
         positions = self.positions
         layout = self.layout(starts)
@@ -1573,6 +1590,12 @@ class _Problem:
         static_before = [
             body.field.segments_clear(s[:-1], s[1:])
             for body, s in zip(self.bodies, starts, strict=True)
+        ]
+        static_across = [
+            _static_entered(parts, s, np.flatnonzero(~clear))
+            for parts, s, clear in zip(
+                self.static_parts, starts, static_before, strict=True
+            )
         ]
         others_before = seen.segments_clear(starts, flat_start)
         stride = int(seen.obstacle.max(initial=-1)) + 1
@@ -1608,9 +1631,15 @@ class _Problem:
                 new = _new_or_deeper(edges, stride, crossed_before[i])
                 newly = np.zeros(len(a), dtype=bool)
                 newly[edges.edge[new]] = True
-                crossing = (
-                    static_before[i] & ~self.bodies[i].field.segments_clear(a, b)
-                ) | newly
+                static_now = self.bodies[i].field.segments_clear(a, b)
+                crossing = (static_before[i] & ~static_now) | newly
+                still = np.flatnonzero(~static_before[i] & ~static_now)
+                if len(still):
+                    # Across one static piece at the start, newly across another.
+                    entered = _static_entered(self.static_parts[i], points, still)
+                    crossing[
+                        entered.edge[~np.isin(entered.key, static_across[i].key)]
+                    ] = True
                 # A via's piece is its first vertex in `flat`.
                 entered = edges.vertex[new]
                 via = entered >= vias_from
@@ -1743,6 +1772,30 @@ def _new_or_deeper(edges: EdgesClear, stride: int, before: _Crossed) -> BoolArra
         before.deepest[edges.obstacle] - DEEPER_ROUND_OFF, -INSIDE_TOLERANCE
     )
     return new | deeper
+
+
+class _StaticEntered(NamedTuple):
+    """(edge, piece) pairs of a member's edges and the pieces of static
+    copper they enter, each pair as one number, `key`, the pieces numbered
+    below a stride."""
+
+    edge: IntArray
+    key: IntArray
+
+
+def _static_entered(
+    parts: Sequence[StaticEdges] | None, points: FloatArray, edges: IntArray
+) -> _StaticEntered:
+    """What the `edges` of the polyline at `points` enter of its static
+    copper given as `parts`, each piece as a clearance check judges it
+    (`obstacles.static_entered`); of a field that gives no edges, the whole
+    field, as one piece."""
+    if parts is None:
+        return _StaticEntered(edges, edges)
+    stride = sum(part.obstacle_count for part in parts)
+    segment, piece = static_entered(parts, points[edges], points[edges + 1], 0.0)
+    edge = edges[segment]
+    return _StaticEntered(edge, edge * stride + piece)
 
 
 def _shown_vertices(

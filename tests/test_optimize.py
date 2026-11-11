@@ -335,6 +335,63 @@ def test_the_guard_takes_no_more_violations_than_the_start(
     assert problem.guard([moved], problem.masks, problem.positions, seen) is taken
 
 
+TRACK_INFLATION = 0.35
+"""A 0.3 mm dot's radius, 0.1 mm clearance and a 0.2 mm track's half width."""
+
+
+def dot(x: float, y: float) -> Obstacle:
+    return Obstacle(f"dot at ({x}, {y})", shapely.Point(x, y), TRACK_INFLATION)
+
+
+def edge_depth(points: FloatArray, item: Obstacle) -> float:
+    """How far the polyline's edges keep from the item's clearance, mm,
+    negative inside it."""
+    edges = shapely.linestrings(np.stack([points[:-1], points[1:]], axis=1))
+    # types-shapely leaves **kwargs untyped on the vectorised functions.
+    gaps = np.asarray(shapely.distance(edges, item.geometry), dtype=float)  # pyright: ignore[reportUnknownMemberType]
+    return float(gaps.min() - item.inflation)
+
+
+GAP_DOT_Y = 0.33
+"""Where two dots either side of y = 0 sit, mm: their clearances overlap
+by 20 µm, so no track passes between them clear of both."""
+GAP_SHORT = ((0.0, 0.0), (5.0, -0.1), (10.0, 0.0))
+"""Through the gap at x = 5, 80 µm clear of the upper dot and 0.12 mm
+inside the lower one's clearance."""
+GAP_ZIGZAG = ((0.0, 0.0), (2.0, 2.0), (4.0, 0.0), (11.0, -0.12), (16.0, 0.0))
+"""A bump to straighten, then through the gap at x = 11, about 90 µm
+clear of the upper dot."""
+
+
+# https://github.com/mairas/kibends/issues/14: an edge that started across
+# one dot's clearance was free to move into the other's, since the burst
+# judged static copper as a whole for an edge not clear at its start.
+# The zigzag straightens elsewhere all the same.
+@pytest.mark.parametrize(
+    ("vertices", "gap_x", "dot_y", "shortened"),
+    [(GAP_SHORT, 5.0, GAP_DOT_Y, 1.0), (GAP_ZIGZAG, 11.0, 0.32, 0.95)],
+    ids=["short", "zigzag"],
+)
+def test_a_chain_inside_one_dot_s_clearance_does_not_enter_the_other_s(
+    vertices: tuple[tuple[float, float], ...],
+    gap_x: float,
+    dot_y: float,
+    shortened: float,
+) -> None:
+    upper, lower = dot(gap_x, dot_y), dot(gap_x, -dot_y)
+    field = Obstacles([upper, lower])
+    polyline, fixed = chain(*vertices)
+    assert edge_depth(polyline, upper) > 0.0
+
+    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+
+    assert edge_depth(result.polyline, upper) >= -INSIDE_TOLERANCE
+    assert edge_depth(result.polyline, lower) >= edge_depth(polyline, lower) - (
+        INSIDE_TOLERANCE
+    )
+    assert result.after.length <= shortened * result.before.length
+
+
 NARROW = 0.05
 """How far each wall of the slot reaches past the middle, mm: no line
 through it is clear."""
