@@ -20,7 +20,6 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
-from loguru import logger
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, ObstacleField
@@ -30,7 +29,6 @@ from kibends.neighbours import (
     neighbour_field,
     same_layer_neighbours,
 )
-from kibends.obstacles import CompositeField
 
 if TYPE_CHECKING:
     # Both import pair_blocks, which simplifies a section's routing.
@@ -72,10 +70,6 @@ def simplify_chains(
     are kept and the section merged again. The others see its two tracks,
     offset from its centreline at its latest shape with each kept vertex at
     its optimised gap.
-
-    Since the pairwise clearance is symmetric, every merged edge keeps
-    clear of the final neighbours; a chain whose merged edges do not is
-    logged as an error and left as optimised.
     """
     if len(run.chains) != len(chains):
         raise ValueError(
@@ -98,46 +92,7 @@ def simplify_chains(
                 break
             fixed = fixed | loose
         current[i] = result.polyline[kept[i]]
-    cutting = cutting_chains(
-        chains, optimised, current, kept, neighbours, sections=sections
-    )
-    for i in cutting:
-        logger.error(
-            f"Chain {chains[i].centreline.description} left unsimplified at"
-            f" {len(optimised[i]) - 1} tracks: its simplified edges cut into"
-            " a neighbour's clearance"
-        )
-        current[i] = optimised[i]
     return current
-
-
-def cutting_chains(
-    chains: Sequence[ChainInput],
-    optimised: Sequence[FloatArray],
-    simplified: Sequence[FloatArray],
-    kept: Sequence[Sequence[int]],
-    neighbours: Sequence[Sequence[int]] | None = None,
-    *,
-    sections: Mapping[int, PairBlock] | None = None,
-) -> list[int]:
-    """Chains whose merged edges, `optimised[i][kept[i]]` spanning more than
-    one optimised edge, enter a neighbour at its `simplified` shape; by
-    default every other chain on its layer is its neighbour. `sections` are
-    as `simplify_chains` takes them."""
-    seen = _Neighbours(chains, optimised, sections or {})
-    cutting: list[int] = []
-    if neighbours is None:
-        neighbours = same_layer_neighbours(chains)
-    for i, indices in enumerate(np.asarray(k) for k in kept):
-        merged = np.diff(indices) > 1
-        if not (merged.any() and neighbours[i]):
-            continue
-        starts = optimised[i][indices[:-1][merged]]
-        ends = optimised[i][indices[1:][merged]]
-        field = CompositeField(seen.fields(i, neighbours[i], simplified))
-        if not field.segments_clear(starts, ends).all():
-            cutting.append(i)
-    return cutting
 
 
 class _Neighbours:

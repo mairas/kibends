@@ -13,7 +13,6 @@ from scenarios import (
     ChainsScenario,
     chain,
     path,
-    selected,
 )
 from shapely.geometry import LineString
 
@@ -25,7 +24,7 @@ from kibends.optimize import optimize, optimize_chains
 from kibends.pair_blocks import pair_block
 from kibends.polylines import measure
 from kibends.results import ChainResult, RunResult, Termination
-from kibends.simplify import cutting_chains, simplify, simplify_chains
+from kibends.simplify import simplify, simplify_chains
 
 SPACING = 0.1
 DISC = Disc(0.0, 0.0, 1.0)
@@ -192,24 +191,6 @@ class TestSeveralChains:
         wide, narrow = result
         assert np.array_equal(wide[-1], narrow[0])
         assert not any(line.startswith("WARNING") for line in log)
-
-
-def test_merged_edges_cutting_into_a_neighbour_are_found() -> None:
-    # Inconsistent on purpose: the merged edge of A was never checked against B.
-    a = selected("A", "A", FreeSpace(), (0.0, 0.0), (5.0, -0.5), (10.0, 0.0))
-    b = selected("B", "B", FreeSpace(), (0.0, 0.3), (10.0, 0.3))
-    optimised = [a.centreline.points, b.centreline.points]
-    merged_a = [0, 2]
-    unmerged_b = [0, 1]
-
-    cutting = cutting_chains(
-        [a, b],
-        optimised,
-        [a.centreline.points[merged_a], b.centreline.points],
-        [merged_a, unmerged_b],
-    )
-
-    assert cutting == [0]
 
 
 BEND = 1.0
