@@ -214,7 +214,7 @@ def runs_coupled(a: Chain, b: Chain, chord_tolerance: float) -> bool:
 
 
 def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
-    """Find the coupled sections of two chains whose nets pair.
+    """Find the coupled sections of two chains on one layer whose nets pair.
 
     A coupled section is a stretch, however short, where each track runs
     parallel to the other within a band around the pair's pitch, edge
@@ -229,11 +229,6 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     """
     if not nets_pair(a.net, b.net):
         raise PairError(f"nets {a.net} and {b.net} do not form a differential pair")
-    if a.layer != b.layer:
-        raise PairError(
-            f"differential pair {a.net}/{b.net} is on two layers: "
-            f"{a.layer} and {b.layer}"
-        )
     if a.width != b.width:
         raise PairError(
             f"differential pair {a.net}/{b.net} has two track widths: "
