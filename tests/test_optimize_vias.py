@@ -1203,6 +1203,172 @@ def test_an_edge_slid_along_a_pinned_member_it_crosses_moves_back(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+ALONGSIDE = 0.2
+"""How far from a pinned chain of net B a free chain of net A runs, mm:
+inside their clearance of each other, 0.4 mm between centrelines."""
+
+
+def alongside(slope: float = 0.0) -> ViasScenario:
+    """A free chain of net A ALONGSIDE a pinned chain of net B, both
+    rising by `slope` along x."""
+    free = FreeSpace()
+    return ViasScenario(
+        "alongside",
+        (
+            selected("A", "A", free, (0.0, ALONGSIDE), (10.0, ALONGSIDE + 10 * slope)),
+            pinned(selected("B", "B", free, (0.0, 0.0), (10.0, 10 * slope))),
+        ),
+        (),
+    )
+
+
+def test_an_edge_moved_deeper_into_a_member_it_started_inside_moves_back(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # A's edges start inside B's clearance, so only their depth finds the
+    # move; B, pinned, cannot move back.
+    revert, start = first_revert(monkeypatch, alongside())
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    middle = int(np.argmin(np.abs(vertices[:, 0] - 5.0)))
+    vertices[middle, 1] = ALONGSIDE / 2
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert reverted.reshape(-1, 2)[middle].all()
+    assert np.array_equal(candidate, start)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+SLID = 0.1
+"""How far along the chains the tangential move slides A's vertex, mm."""
+
+
+@pytest.mark.parametrize("slope", [0.0, 1.7], ids=["along-x", "sloping"])
+def test_an_edge_slid_along_inside_a_member_s_clearance_stays(
+    monkeypatch: pytest.MonkeyPatch, log: list[str], slope: float
+) -> None:
+    # A's vertex slides along B at the same depth: only round-off in its
+    # edges' depth changes, which sloping chains show.
+    revert, start = first_revert(monkeypatch, alongside(slope))
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    middle = int(np.argmin(np.abs(vertices[:, 0] - 5.0)))
+    vertices[middle] += SLID * np.array([1.0, slope]) / math.hypot(1.0, slope)
+    moved = candidate.copy()
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert not reverted.any()
+    assert np.array_equal(candidate, moved)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+DIVERGING = 0.05
+"""How much a free chain of net A rises along x away from a pinned chain
+of net B that runs along x, starting inside their clearance."""
+
+
+@pytest.mark.parametrize("slide", [-SLID, SLID], ids=["back", "forward"])
+def test_an_edge_slid_along_an_oblique_chain_inside_a_member_s_clearance_stays(
+    monkeypatch: pytest.MonkeyPatch, log: list[str], slide: float
+) -> None:
+    # A's vertex slides along A, which runs at an angle to B: the edge it
+    # lengthens takes over part of its neighbour at that part's depth, and
+    # A's deepest inside B stays where it was.
+    free = FreeSpace()
+    scenario = ViasScenario(
+        "diverging",
+        (
+            selected(
+                "A",
+                "A",
+                free,
+                (0.0, ALONGSIDE / 2),
+                (10.0, ALONGSIDE / 2 + 10 * DIVERGING),
+            ),
+            pinned(selected("B", "B", free, (0.0, 0.0), (10.0, 0.0))),
+        ),
+        (),
+    )
+    revert, start = first_revert(monkeypatch, scenario)
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    middle = int(np.argmin(np.abs(vertices[:, 0] - 3.0)))
+    vertices[middle] += slide * np.array([1.0, DIVERGING]) / math.hypot(1.0, DIVERGING)
+    moved = candidate.copy()
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert not reverted.any()
+    assert np.array_equal(candidate, moved)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+def test_a_member_edge_beside_the_nearest_moved_deeper_into_a_via_s_ring_stays(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # The chain's vertex beside the via, slid toward it along the chain,
+    # takes the next edge deeper into the via's ring, but the edge under
+    # the via stays the deepest at the same depth: the chain's copper in
+    # the ring is where it was.
+    chain = selected(
+        "P",
+        "P",
+        FreeSpace(),
+        (0.0, INSIDE_LEVEL),
+        (10.0, INSIDE_LEVEL),
+        layer="In1.Cu",
+    )
+    revert, start = first_revert(monkeypatch, stitching_inside(chain))
+    candidate = start.copy()
+    vertices = candidate[:-2].reshape(-1, 2)
+    x = scenarios.DETOUR_VIA[0]
+    beside = int(np.flatnonzero(vertices[:, 0] > x)[0])
+    assert vertices[beside - 1, 0] <= x
+    vertices[beside, 0] = (vertices[beside, 0] + x) / 2
+    moved = candidate.copy()
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert not reverted.any()
+    assert np.array_equal(candidate, moved)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
+@pytest.mark.parametrize(
+    "away", [0.0, INSIDE_PINNED / 4], ids=["at-the-same-depth", "shallower"]
+)
+def test_a_via_slid_along_inside_a_pinned_chain_s_clearance_stays(
+    monkeypatch: pytest.MonkeyPatch, log: list[str], away: float
+) -> None:
+    # The via slides along the chain no deeper inside it, so that the chain's
+    # edges beside the one under it go deeper into its ring while the
+    # chain's deepest stays as deep.
+    count = 25
+    points = np.column_stack(
+        [np.linspace(2.0, 8.0, count), np.full(count, INSIDE_LEVEL)]
+    )
+    chain = ChainInput(
+        ChainCentreline(
+            "inner", "P", scenarios.PAIR_WIDTH, scenarios.PAIR_CLEARANCE, points
+        ),
+        "In1.Cu",
+        np.ones(count, dtype=bool),
+        FreeSpace(),
+    )
+    revert, start = first_revert(monkeypatch, stitching_inside(chain))
+    candidate = start.copy()
+    candidate[-2:] += (SLID, -away)
+    moved = candidate.copy()
+
+    reverted = reverted_by(monkeypatch, revert, candidate)
+
+    assert not reverted.any()
+    assert np.array_equal(candidate, moved)
+    assert not any(FALLBACK_WARNING in line for line in log)
+
+
 def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:

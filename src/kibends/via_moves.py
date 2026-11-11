@@ -274,7 +274,7 @@ def _static_free(fields: StaticParts, at: FloatArray, below: float) -> _ViaStati
     )
 
 
-def _deeper(
+def deeper_inside(
     now_key: IntArray,
     now: FloatArray,
     start_key: IntArray,
@@ -305,7 +305,7 @@ def newly_inside(
     may move deeper while the nearest stays the deepest. `start` holds
     every pair inside by more than `tolerance`."""
     return (
-        _deeper(
+        deeper_inside(
             now.static.key,
             now.static.distance,
             start.static.key,
@@ -313,7 +313,7 @@ def newly_inside(
             tolerance,
             slack,
         ),
-        _deeper(
+        deeper_inside(
             now.by_obstacle.key,
             now.by_obstacle.distance,
             start.by_obstacle.key,

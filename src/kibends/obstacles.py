@@ -1502,6 +1502,19 @@ def pairs_inside(
     return gap < inflations - tolerance - ROUND_OFF
 
 
+def pair_depths(
+    a: ComplexArray,
+    ab: ComplexArray,
+    starts: ComplexArray,
+    along: ComplexArray,
+    inflations: FloatArray,
+) -> FloatArray:
+    """The signed distance between each pair of `pairs_inside`: the gap
+    between the segment and the edge, less the edge's inflation; negative
+    inside, and least, -inflation, where the two cross."""
+    return _segment_gaps(a, ab, starts, along) - inflations
+
+
 def nearest_of_pairs(
     query: ComplexArray,
     point: IntArray,

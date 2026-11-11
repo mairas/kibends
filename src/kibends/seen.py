@@ -62,6 +62,7 @@ from kibends.obstacles import (
     near_segments,
     nearest_of_pairs,
     obstacle_order,
+    pair_depths,
     pairs_inside,
     search_parts,
     smooth_of_pairs,
@@ -460,6 +461,7 @@ class Seen:
             segment = np.empty(0, dtype=np.intp)
             vertex = np.empty(0, dtype=np.intp)
             obstacle = np.empty(0, dtype=np.intp)
+            depth = np.empty(0)
             reach = float(self.within[layer.members].max()) - tolerance
             if len(layer.edges) and len(a) and reach > 0.0:
                 ca, cb = complex_points(a), complex_points(b)
@@ -476,10 +478,17 @@ class Seen:
                     inflation,
                     tolerance,
                 )
-                order = np.argsort(segment[inside], kind="stable")
-                segment = segment[inside][order]
-                entered = piece[inside][order]
+                taken = np.flatnonzero(inside)
+                taken = taken[np.argsort(segment[taken], kind="stable")]
+                segment, entered = segment[taken], piece[taken]
                 vertex, obstacle = self.vertex[entered], self.obstacle[entered]
+                depth = pair_depths(
+                    ca[segment],
+                    cb[segment] - ca[segment],
+                    starts[taken],
+                    along[taken],
+                    inflation[taken],
+                )
                 crossing[segment] = True
             for i, (first, last) in zip(layer.members, bounds, strict=True):
                 low, high = np.searchsorted(segment, [first, last])
@@ -488,6 +497,7 @@ class Seen:
                     segment[low:high] - first,
                     vertex[low:high],
                     obstacle[low:high],
+                    depth[low:high],
                 )
         return _complete(answers)
 
@@ -604,13 +614,15 @@ class EdgesClear(NamedTuple):
     """Whether each edge of a member stays out of the pieces it sees, and
     what those that do not enter: per (edge, piece) pair, the edge, the
     first vertex of the piece's edge, numbered as `Track.first`, so that a
-    via's is its first vertex in `members.shown_flat`, and the piece's
-    obstacle, its track or its via (`Seen.obstacle`)."""
+    via's is its first vertex in `members.shown_flat`, the piece's
+    obstacle, its track or its via (`Seen.obstacle`), and how deep the edge
+    is inside the piece (`obstacles.pair_depths`)."""
 
     clear: BoolArray
     edge: IntArray
     vertex: IntArray
     obstacle: IntArray
+    depth: FloatArray
 
 
 class Pairs(NamedTuple):

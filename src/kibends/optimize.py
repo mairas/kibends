@@ -106,10 +106,19 @@ member's moved edge across it; moved back whole, every member is at its
 start, clear (`bursts.revert_until_clear`). A junction moves back when any
 of its branches' edges at it does. The other members are judged track by
 track and via by via (`seen.EdgesClear.obstacle`): an edge that ends
-across one it did not cross at the start moves back, with the edge or via
-it entered, so that an edge across one member is still kept out of the
-others. An edge that stays across what it started across is not checked;
-the violation guard on the best state counts it.
+across one it did not cross at the start, or that takes its member
+deeper inside one than the member's deepest edge was there at the start
+(`seen.EdgesClear.depth`), moves back with the edge or via it entered, so
+that an edge across one member is still kept out of the others. Depth is
+judged by member, not by edge: an edge that takes over part of its
+neighbour, as a vertex sliding along inside a clearance does, leaves the
+member's copper and its deepest point where they were, and an edge other
+than the deepest going deeper while the deepest stays so does not worsen
+the clearance. An edge across a centreline is as deep inside it as an
+edge can be, so its depth does not show it sliding along that track; the
+track's edges it newly enters do. The violation guard on the best state
+counts the rest. Resampling renumbers the edges, so the guard compares
+counts, not edges.
 
 A section moves as its centreline and is seen as its two tracks, which
 the others' edge checks see where the burst leaves them; its own edges
@@ -141,8 +150,8 @@ via carries are of its net, so it does not see them, nor they it.
 A crossing between two members, a via and a member or two vias moves
 back both sides: a member or via that a via newly or more deeply enters
 moves back too, the member's edge nearest the via, and a member's edge or
-a moving via whose copper a member's edge newly enters moves back with
-that edge. A crossing whose
+a moving via whose copper a member's edge newly or more deeply enters
+moves back with that edge. A crossing whose
 moving sides are all back already, as some that start inside something
 can be, moves the whole burst back (`bursts.revert_until_clear`).
 
@@ -1548,10 +1557,10 @@ class _Problem:
     ) -> _ProblemBurst:
         """One L-BFGS-B run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
-        copper or another member's new shape, a section newly bent below its
-        limit or brought its parts beyond a turn too close
-        (`polylines.SelfCheck`) or a via ended newly or deeper inside its
-        clearance of an obstacle."""
+        copper, or newly or more deeply another member's new shape, a
+        section newly bent below its limit or brought its parts beyond a
+        turn too close (`polylines.SelfCheck`) or a via ended newly or
+        deeper inside its clearance of an obstacle."""
         members = self.members
         positions = self.positions
         layout = self.layout(starts)
@@ -1567,7 +1576,7 @@ class _Problem:
         ]
         others_before = seen.segments_clear(starts, flat_start)
         stride = int(seen.obstacle.max(initial=-1)) + 1
-        crossed_before = [_crossing_keys(edges, stride) for edges in others_before]
+        crossed_before = [_crossed(edges, stride) for edges in others_before]
         member_of, vertex_of = _shown_vertices(members, starts)
         # Only a vertex that newly leaves its contact moves back, so that
         # moving back always ends.
@@ -1596,7 +1605,7 @@ class _Problem:
             for i, points in enumerate(polylines):
                 a, b = points[:-1], points[1:]
                 edges = others[i]
-                new = ~np.isin(_crossing_keys(edges, stride), crossed_before[i])
+                new = _new_or_deeper(edges, stride, crossed_before[i])
                 newly = np.zeros(len(a), dtype=bool)
                 newly[edges.edge[new]] = True
                 crossing = (
@@ -1701,10 +1710,39 @@ def _description(layers: Sequence[str], vias: bool) -> str:
     return f"the chains and vias on {named}" if vias else f"the chains on {named}"
 
 
-def _crossing_keys(edges: EdgesClear, stride: int) -> IntArray:
-    """Each (edge, obstacle) pair of `edges` as one number, the obstacles
+class _Crossed(NamedTuple):
+    """What a member's edges cross: each (edge, obstacle) pair as one
+    number, the obstacles numbered below the stride, and the member's
+    depth in each obstacle at its deepest edge, +inf in those it does not
+    cross."""
+
+    key: IntArray
+    deepest: FloatArray
+
+
+def _crossed(edges: EdgesClear, stride: int) -> _Crossed:
+    """What the edges of one member in `edges` cross, the obstacles
     numbered below `stride`."""
-    return edges.edge * stride + edges.obstacle
+    deepest = np.full(stride, np.inf)
+    np.minimum.at(deepest, edges.obstacle, edges.depth)
+    return _Crossed(edges.edge * stride + edges.obstacle, deepest)
+
+
+def _new_or_deeper(edges: EdgesClear, stride: int, before: _Crossed) -> BoolArray:
+    """Which crossing pieces of `edges` cross for their edge an obstacle it
+    did not cross in `before`, or take the member deeper inside one than
+    its deepest edge was there in `before`, beyond round-off.
+
+    An edge newly across an obstacle is new copper inside it even where
+    the member is deeper elsewhere, so it is judged by edge; depth is
+    judged by member, since an edge taking over part of its neighbour,
+    such as a vertex sliding along inside a clearance, leaves the copper
+    and its deepest point where they were."""
+    new = ~np.isin(edges.edge * stride + edges.obstacle, before.key)
+    deeper = edges.depth < np.minimum(
+        before.deepest[edges.obstacle] - DEEPER_ROUND_OFF, -INSIDE_TOLERANCE
+    )
+    return new | deeper
 
 
 def _shown_vertices(
