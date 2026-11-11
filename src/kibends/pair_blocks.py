@@ -14,19 +14,14 @@ two beyond that end's direction pin. The centreline is a little wider than
 the pair, by as far as the outer track's mitred corners reach beyond half
 the pitch at the bend-radius limit, so that its clearance covers them.
 
-The other blocks see the two tracks at the centreline's current shape, a
-chain of one of the pair's nets only the track of the other, as copper of
-one net does not interact. The centreline sees every other chain, and every
-track of another pair, as a track of the pair's outer extent would, the
-pair's own nets included, since a chain of one of them must keep clear of
-the other track and the centreline cannot tell its sides apart. Where a
-chain of either net touches it, at a fan-out, that chain is left out near
-the touch (`neighbours.kept_spans`), far enough that the rest keeps the
-clearance.
+The other blocks see the two tracks at the centreline's current shape. The
+centreline sees every other chain, and every track of another diff pair,
+as a track of the diff pair's outer extent would. The section and the chains of its
+two nets ignore each other, as chains of one net and the two nets of a diff
+pair do (`neighbours.neighbour_field`), so its fan-outs leave it freely.
 """
 
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import NamedTuple
@@ -210,8 +205,6 @@ class PairBlock:
     """The centreline as wide as the pair's outer extent, as it keeps clear
     of the other selected chains. Their own clearance from its tracks, and
     the run's guard on their violations, cover the corners."""
-    as_net: Mapping[str, ChainInput]
-    """`facing` as a chain of either of the pair's nets."""
     a_on_right: bool
     hold: Hold | None
     """Why it is pinned throughout and stays as it is, if it is."""
@@ -224,7 +217,8 @@ class PairBlock:
 
     @property
     def nets(self) -> frozenset[str]:
-        return frozenset(self.as_net)
+        """Its two nets, whose chains it ignores."""
+        return frozenset({self.given.a.net, self.given.b.net})
 
     @property
     def held(self) -> bool:
@@ -342,10 +336,6 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
         chain,
         (track_a, track_b),
         facing,
-        as_net={
-            net: replace(facing, centreline=replace(facing.centreline, net=net))
-            for net in (given.a.net, given.b.net)
-        },
         a_on_right=a_on_right,
         hold=hold,
         tight_start=tight_start,

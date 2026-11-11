@@ -3,11 +3,12 @@ for all of them at once.
 
 A member sees the edges the others show (`members.shown`) by a rule with
 sparse exceptions (`Seen`). By the rule it sees every edge, on its layer,
-of a track of another net, whole, inflated by the distance the two kinds
-keep, a kind being a width and a clearance (`Seen.table`). The exceptions
-are pieces of edges, each inflated by its own amount (`Pieces`): a coupled
-section sees the tracks of its own two nets only in the stretches it keeps
-clear of, and a member sees the vias near it with their rings.
+of a track of a net it does not ignore, inflated by the distance the two
+kinds keep, a kind being a width and a clearance (`Seen.table`). A chain
+ignores its own net and the other net of its diff pair, a coupled section
+its two nets (`members.viewer_of`). The exceptions are edges, each inflated
+by its own amount (`Pieces`): a member sees the vias near it with their
+rings.
 
 Every question about what the members see, the smooth distance from a
 point for the energy, each track and each via an obstacle
@@ -92,18 +93,16 @@ class Viewer(NamedTuple):
     net: int
     kind: int
     exempt: tuple[int, ...]
-    """The nets whose tracks it sees only as its exceptions give them. Its
-    own tracks are of its net or of these."""
+    """The nets besides its own whose tracks it does not see: the other
+    net of a chain's diff pair, a section's two. Its own tracks are of its
+    net or of these."""
 
 
 class Pieces(NamedTuple):
-    """Pieces of edges, each inflated by its own amount."""
+    """Edges, each inflated by its own amount."""
 
     vertex: IntArray
     """Each piece's edge's first vertex, numbered as `Track.first`."""
-    start: FloatArray
-    """Where along its edge each piece starts, from 0 to 1."""
-    end: FloatArray
     inflation: FloatArray
 
 
@@ -129,8 +128,8 @@ class SeenLayer:
     """Per member, its net."""
     viewer_kind: IntArray
     exempt: IntArray
-    """Per member, a row of the nets it sees only by its exceptions, padded
-    with NO_NET."""
+    """Per member, a row of the nets besides its own whose tracks it does
+    not see, padded with NO_NET."""
     slot: IntArray
     """The members' exceptions, each at member * len(edges) + the position
     of its edge, ascending."""
@@ -177,8 +176,6 @@ class Seen:
         self.within: FloatArray = np.zeros(len(viewers))
         """Each member's largest inflation."""
         vertex: list[IntArray] = [np.empty(0, dtype=np.intp)]
-        start: list[FloatArray] = [np.empty(0)]
-        end: list[FloatArray] = [np.empty(0)]
         on: dict[str, list[int]] = {}
         for i, viewer in enumerate(viewers):
             on.setdefault(viewer.layer, []).append(i)
@@ -211,8 +208,6 @@ class Seen:
             ex_piece = pieces + count + np.arange(len(ex_vertex), dtype=np.intp)
             ex_inflation = np.concatenate([np.empty(0), *(p.inflation for p in own)])
             vertex += [edges, ex_vertex]
-            start += [np.zeros(count), *(p.start for p in own)]
-            end += [np.ones(count), *(p.end for p in own)]
             width = max([0, *(len(v.exempt) for v in seeing)])
             exempt = np.full((len(members), width), NO_NET, dtype=np.intp)
             for row, v in zip(exempt, seeing, strict=True):
@@ -255,8 +250,6 @@ class Seen:
                 )
         self.vertex: IntArray = np.concatenate(vertex)
         """Each piece's edge's first vertex, numbered as `Track.first`."""
-        self.start: FloatArray = np.concatenate(start)
-        self.end: FloatArray = np.concatenate(end)
         self.obstacle: IntArray = obstacle[self.vertex]
         """Each piece's obstacle for the smooth minimum: its track, or its
         via."""
@@ -267,11 +260,7 @@ class Seen:
         """Where each of `pieces` starts and ends, with what the members
         show at `flat`."""
         a = flat[self.vertex[pieces]]
-        along = flat[self.vertex[pieces] + 1] - a
-        return (
-            a + self.start[pieces, None] * along,
-            a + self.end[pieces, None] * along,
-        )
+        return a, a + (flat[self.vertex[pieces] + 1] - a)
 
     def smooth_answers(
         self,
@@ -373,11 +362,12 @@ class Seen:
         looking only at what its member sees.
 
         A member's exceptions form a field of their own. The tracks a member
-        sees by the rule are those of every net but its own, or but a
-        section's: a section's are a field per distinct set of nets left out.
-        A chain's are the union, over the bits of the nets' numbers, of the
-        tracks whose net differs from its own in that bit, so each edge is
-        in one field per bit and every other net in one field at least."""
+        sees by the rule are those of every net but its own and those it
+        ignores besides: a member that ignores more than its own net has a
+        field per distinct set of nets left out. The others' are the union,
+        over the bits of the nets' numbers, of the tracks whose net differs
+        from its own in that bit, so each edge is in one field per bit and
+        every other net in one field at least."""
         distance = np.full(len(points), np.inf)
         if not len(points):
             return distance

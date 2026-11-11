@@ -6,18 +6,17 @@ see a chain as itself and a section as its two tracks (`shown`), laid one
 after another, then each via's centre twice (`shown_flat`). `seen_parts`
 gives what each member sees of the others on its layer, by the rule
 `neighbours.neighbour_field` builds its field by, as a `seen.Seen`: the
-rule by net and kind, and as exceptions only a section's view of its own
-nets' tracks and the vias, so that it grows with the members, not with
-pairs of them. `members_energy` sums each member's energy in its static
-field plus what it sees of the others, the distance its obstacle term
-takes the smooth minimum over both (`energy.smooth_minimum`), each track
-and each via an obstacle, and gives its gradient at every vertex and via
-centre: where a member's obstacle term pulls on another's edge, each
-obstacle's share of the gradient reaches the ends of its edge nearest the
-point, and through a section's offset its centreline
-(`PairBlock.offset_pullback`). `layer_energy` is its form for one layer
-without vias, and `pull_answers` takes a via's push back to what answers
-it, by the same shares.
+rule by net and kind, and as exceptions only the vias, so that it grows
+with the members, not with pairs of them. `members_energy` sums each
+member's energy in its static field plus what it sees of the others, the
+distance its obstacle term takes the smooth minimum over both
+(`energy.smooth_minimum`), each track and each via an obstacle, and gives
+its gradient at every vertex and via centre: where a member's obstacle
+term pulls on another's edge, each obstacle's share of the gradient
+reaches the ends of its edge nearest the point, and through a section's
+offset its centreline (`PairBlock.offset_pullback`). `layer_energy` is
+its form for one layer without vias, and `pull_answers` takes a via's push
+back to what answers it, by the same shares.
 """
 
 import math
@@ -29,8 +28,6 @@ from kibends.energy import (
     BoolArray,
     EnergyParams,
     FloatArray,
-    IntArray,
-    arc_lengths,
     bend_radius_energy,
     combine_fields,
     edge_integral,
@@ -39,9 +36,10 @@ from kibends.energy import (
     quadrature_points,
     shape_energy,
 )
-from kibends.neighbours import ChainInput, obstacle_spans
+from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.pair_blocks import PairBlock
+from kibends.pairs import diff_pair_nets
 from kibends.seen import (
     NeighbourList,
     Pieces,
@@ -76,7 +74,7 @@ def layer_energy(
     gradient is taken back through the offset (`PairBlock.offset_pullback`).
     """
     if seen is None:
-        seen = seen_parts(chains, polylines, obstacle_reach(params))
+        seen = seen_parts(chains, polylines)
     value, gradients, _ = members_energy(
         chains, polylines, masks, params, short_edge, seen, ()
     )
@@ -161,10 +159,9 @@ def members_energy(
         start = seen.vertex[piece]
         at = _joined_rows(every_query, no_points)[point[pulled]]
         along = _parameters(at, *seen.segments(piece, flat))
-        t = seen.start[piece] + along * (seen.end[piece] - seen.start[piece])
         push = pull[pulled, None] * toward[pulled]
-        np.add.at(at_shown, start, -push * (1 - t)[:, None])
-        np.add.at(at_shown, start + 1, -push * t[:, None])
+        np.add.at(at_shown, start, -push * (1 - along)[:, None])
+        np.add.at(at_shown, start + 1, -push * along[:, None])
     first = 0
     for member, points, gradient, parts in zip(
         members, polylines, gradients, lines, strict=True
@@ -216,12 +213,13 @@ def body_of(member: Member) -> ChainInput:
     return member.chain if isinstance(member, PairBlock) else member
 
 
-def viewer_of(member: Member) -> tuple[ChainInput, Mapping[str, ChainInput] | None]:
-    """The chain a member keeps clear of the others as, and, for a section,
-    that chain under each of its nets, as `neighbours.obstacle_spans` takes them."""
+def viewer_of(member: Member) -> tuple[ChainInput, frozenset[str]]:
+    """The chain a member keeps clear of the others as, and the nets whose
+    tracks it ignores, as `neighbours.neighbour_field` takes them: a
+    chain's own and the other net of its diff pair, a section's two."""
     if isinstance(member, PairBlock):
-        return member.facing, member.as_net
-    return member, None
+        return member.facing, member.nets
+    return member, diff_pair_nets(member.centreline.net)
 
 
 def shown_flat(
@@ -253,21 +251,18 @@ def _flat(
 def seen_parts(
     chains: Sequence[Member],
     polylines: Sequence[FloatArray],
-    reach: float,
     rings: Sequence[Mapping[int, float]] = (),
 ) -> Seen:
     """For each chain or section at its polyline, the others on its layer at
-    theirs as `neighbours.obstacle_spans` shows them to it, the rule
-    `neighbours.neighbour_field` builds its field by. A section sees as its
-    centreline of the pair's outer extent under either of its nets
-    (`PairBlock.as_net`), and is seen as its two tracks. Each
-    via of `rings` is seen by the members it names, inflated by the distance
-    it gives.
+    theirs as `neighbours.neighbour_field` shows them to it. A section sees
+    as its centreline of the diff pair's outer extent, and is seen as its two
+    tracks. Each via of `rings` is seen by the members it names, inflated
+    by the distance it gives.
 
-    The tracks of another net than a member's are seen whole, by the rule
-    `seen.Seen` applies; only a section's view of its own nets' tracks and
-    the vias are listed, as its exceptions, so the work grows with the
-    members and their edges, not with pairs of members."""
+    The tracks of the nets a member does not ignore (`viewer_of`) are seen
+    whole, by the rule `seen.Seen` applies; only the vias are listed, as
+    its exceptions, so the work grows with the members and their edges, not
+    with pairs of members."""
     nets: dict[str, int] = {}
     kinds: dict[tuple[float, float], int] = {}
 
@@ -282,45 +277,24 @@ def seen_parts(
     ]
     first = np.cumsum([0, *(len(points) for parts in lines for _, points in parts)])
     tracks: list[Track] = []
-    owned: dict[tuple[str, str], list[tuple[int, ChainInput, FloatArray, int]]] = {}
-    for j, parts in enumerate(lines):
+    for parts in lines:
         for other, points in parts:
             them, start = other.centreline, int(first[len(tracks)])
-            owned.setdefault((other.layer, them.net), []).append(
-                (j, other, points, start)
-            )
             tracks.append(
                 Track(start, len(points), other.layer, net(them.net), kind(them))
             )
     viewers: list[Viewer] = []
-    exceptions: list[list[Pieces]] = [[] for _ in chains]
-    for i, member in enumerate(chains):
-        own, as_net = viewer_of(member)
+    for member in chains:
+        own, ignored = viewer_of(member)
         me = own.centreline
-        viewers.append(
-            Viewer(
-                own.layer, net(me.net), kind(me), tuple(net(n) for n in as_net or {})
-            )
-        )
-        for name in as_net or {}:
-            for j, other, points, start in owned.get((own.layer, name), []):
-                if j == i:
-                    continue
-                kept = obstacle_spans(
-                    own, other, points, reach, polylines[i], as_net=as_net
-                )
-                if kept is None:
-                    continue
-                edge, begin, end = _pieces(points, kept.spans)
-                exceptions[i].append(
-                    Pieces(start + edge, begin, end, np.full(len(edge), kept.inflation))
-                )
+        # A net no member shows has no tracks to ignore.
+        exempt = tuple(sorted(nets[n] for n in ignored if n != me.net and n in nets))
+        viewers.append(Viewer(own.layer, net(me.net), kind(me), exempt))
+    exceptions: list[list[Pieces]] = [[] for _ in chains]
     for k, ring in enumerate(rings):
         at = np.array([first[-1] + 2 * k], dtype=np.intp)
         for i, inflation in ring.items():
-            exceptions[i].append(
-                Pieces(at, np.zeros(1), np.ones(1), np.array([inflation]))
-            )
+            exceptions[i].append(Pieces(at, np.array([inflation])))
     every = list(kinds)
     table = np.array(
         [[track_inflation(*a, *b) for b in every] for a in every], dtype=float
@@ -332,32 +306,8 @@ def _joined(pieces: Sequence[Pieces]) -> Pieces:
     """`pieces` one after another."""
     return Pieces(
         np.concatenate([np.empty(0, dtype=np.intp), *(p.vertex for p in pieces)]),
-        np.concatenate([np.empty(0), *(p.start for p in pieces)]),
-        np.concatenate([np.empty(0), *(p.end for p in pieces)]),
         np.concatenate([np.empty(0), *(p.inflation for p in pieces)]),
     )
-
-
-def _pieces(
-    points: FloatArray, spans: Sequence[tuple[float, float]] | None
-) -> tuple[IntArray, FloatArray, FloatArray]:
-    """The edges of `points` that the arc-length `spans` cover, by default
-    all of them, and where along each the cover starts and ends."""
-    edges = np.arange(len(points) - 1, dtype=np.intp)
-    if spans is None:
-        return edges, np.zeros(len(edges)), np.ones(len(edges))
-    arc = arc_lengths(points)
-    lengths = np.diff(arc)
-    found: list[IntArray] = [np.empty(0, dtype=np.intp)]
-    starts: list[FloatArray] = [np.empty(0)]
-    ends: list[FloatArray] = [np.empty(0)]
-    for left, right in spans:
-        k = np.flatnonzero((arc[:-1] < right) & (arc[1:] > left))
-        length = np.where(lengths[k] > 0.0, lengths[k], 1.0)
-        found.append(k)
-        starts.append(np.clip((left - arc[k]) / length, 0.0, 1.0))
-        ends.append(np.clip((right - arc[k]) / length, 0.0, 1.0))
-    return np.concatenate(found), np.concatenate(starts), np.concatenate(ends)
 
 
 def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> FloatArray:

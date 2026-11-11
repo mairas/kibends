@@ -1783,13 +1783,14 @@ def _split_edges(vertices: FloatArray) -> tuple[FloatArray, FloatArray]:
 
 
 def chain_inflation(
-    net: str, width: float, clearance: float, other: ChainCentreline
+    ignored: frozenset[str], width: float, clearance: float, other: ChainCentreline
 ) -> float | None:
-    """The distance a track of `net`, `width` and netclass `clearance` (mm)
-    keeps its centreline from `other`'s, mm: both half widths and the larger
-    of both clearances, as from an unselected track; None for a chain of its
-    net, since copper of one net may come close, overlap or cross."""
-    if other.net == net:
+    """The distance a track of `width` and netclass `clearance` (mm) keeps
+    its centreline from `other`'s, mm: both half widths and the larger of
+    both clearances, as from an unselected track; None for a chain of a net
+    in `ignored`, the track's own and the other net of its diff pair, which
+    may come close, overlap or cross."""
+    if other.net in ignored:
         return None
     return track_inflation(width, clearance, other.width, other.clearance)
 

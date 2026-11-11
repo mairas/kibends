@@ -20,7 +20,6 @@ from kibends.pairs import (
     complementary_net,
     find_pair,
     gap_range,
-    gaps_across,
     nets_pair,
     offset_pair,
     offset_pair_pullback,
@@ -737,67 +736,6 @@ def test_offset_pair_takes_a_gap_per_vertex() -> None:
     np.testing.assert_allclose(right[:2, 1], (0.2 + WIDTH) / 2)
     _, uniform = offset_pair(centreline, 0.15, WIDTH)
     np.testing.assert_allclose(left[2:], uniform[2:])
-
-
-def u_turn(legs: float) -> FloatArray:
-    """A pair's centreline running 10 mm out and back `legs` apart."""
-    return array((0.0, 0.0), (10.0, 0.0), (10.0, legs), (0.0, legs))
-
-
-LEGS = 1.0
-TURN = math.pi / 2 * LEGS
-"""mm along the pair within which its tracks lie side by side: half a circle
-as wide as the legs are apart, as a run takes it."""
-
-
-def test_a_straight_pair_s_tracks_lie_only_side_by_side() -> None:
-    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
-    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
-
-    beside, beyond = gaps_across(a, b, WIDTH, TURN, reach=LEGS)
-
-    assert beside == pytest.approx(GAP)
-    assert beyond == math.inf
-
-
-def test_a_u_turn_s_tracks_face_each_other_across_its_legs() -> None:
-    a, b = offset_pair(u_turn(LEGS), GAP, WIDTH)
-
-    beside, beyond = gaps_across(a, b, WIDTH, TURN, reach=LEGS)
-
-    assert beside == pytest.approx(GAP)
-    # Both legs' inner tracks are one net: each faces the other leg's outer
-    # track, of the other net, as far across as the legs' centrelines.
-    assert beyond == pytest.approx(LEGS - WIDTH)
-
-
-def test_parts_beyond_reach_are_not_measured() -> None:
-    a, b = offset_pair(u_turn(LEGS), GAP, WIDTH)
-
-    _, beyond = gaps_across(a, b, WIDTH, TURN, reach=LEGS / 2)
-
-    assert beyond == math.inf
-
-
-SPIKE = 0.05
-"""How far a sharp vertex of one track reaches toward the other, mm."""
-
-
-@pytest.mark.parametrize("spiked", ["a", "b"])
-def test_the_closest_point_may_be_a_vertex_of_either_track(spiked: str) -> None:
-    straight = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
-    spike = array(
-        (0.0, HALF_PITCH),
-        (5.02, HALF_PITCH),
-        (5.025, HALF_PITCH - SPIKE),
-        (5.03, HALF_PITCH),
-        (10.0, HALF_PITCH),
-    )
-    a, b = (spike, straight) if spiked == "a" else (straight, spike)
-
-    beside, _ = gaps_across(a, b, WIDTH, TURN, reach=LEGS)
-
-    assert beside == pytest.approx(GAP - SPIKE)
 
 
 def pinned(net: str, points: FloatArray, *at: int) -> Chain:

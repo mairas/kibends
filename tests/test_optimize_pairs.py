@@ -45,12 +45,11 @@ from kibends.energy import (
     ObstacleField,
     TermValue,
     arc_lengths,
-    obstacle_reach,
     total_energy,
 )
 from kibends.members import Member, layer_energy, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import ChainCentreline, ChainField
+from kibends.obstacles import ChainCentreline
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import find_pairs, lay_out
@@ -136,7 +135,6 @@ def reference_energy(
     """The energy at `polylines`, built member by member: each chain and
     section in its static field plus the others as `neighbour_field` shows
     them, a section with its bend-radius hinge."""
-    reach = obstacle_reach(params)
     value = 0.0
     for i, (member, points, mask) in enumerate(
         zip(members, polylines, masks, strict=True)
@@ -148,12 +146,10 @@ def reference_energy(
             for part in shown(other, polylines[j])
         ]
         if isinstance(member, PairBlock):
-            near = neighbour_field(
-                member.facing, others, reach, points, as_net=member.as_net
-            )
+            near = neighbour_field(member.facing, others, ignored=member.nets)
             static, limit = member.chain.field, member.limit
         else:
-            near = neighbour_field(member, others, reach, points)
+            near = neighbour_field(member, others)
             static, limit = member.field, None
         field: ObstacleField = chain_field(static, [near])
         value += total_energy(points, mask, field, params, settings.short_edge, limit)[
@@ -240,7 +236,7 @@ class TestEnergy:
         self, scenario: PairsScenario
     ) -> None:
         # pair_split's detours touch its sections' ends: they are their own
-        # nets' fan-outs, left out near the touch both ways.
+        # nets' fan-outs, which the sections ignore and which ignore them.
         members, polylines, masks = self.state(scenario)
 
         value, _ = layer_energy(members, polylines, masks, self.params(), 0.01)
@@ -257,7 +253,7 @@ class TestEnergy:
         scenario = replace(scenarios.pair_tent(), chains=(bar,))
         members, polylines, masks = self.state(scenario)
         params = self.params()
-        seen = seen_parts(members, polylines, obstacle_reach(params))
+        seen = seen_parts(members, polylines)
         _, gradients = layer_energy(members, polylines, masks, params, 0.01, seen)
         apart = layer_energy(members[1:], polylines[1:], masks[1:], params, 0.01)[1]
         assert not np.allclose(apart[0], gradients[1])
@@ -276,55 +272,25 @@ class TestEnergy:
                     )
 
     @pytest.mark.parametrize("net", ["P", "N"])
-    def test_a_chain_of_one_of_the_pair_s_nets_repels_the_whole_section(
+    def test_a_chain_of_one_of_the_diff_pair_s_nets_and_the_section_add_nothing(
         self, net: str
     ) -> None:
-        # The section cannot tell which track faces the bar, so it keeps its
-        # whole extent clear of it, its own net's track included; the bar
-        # keeps clear of the other net's track alone.
+        # The bar lies under the tent's tracks, where a bar of another net
+        # repels them (`test_gradient_reaches_through_the_tracks`).
         bar = selected("bar", net, FreeSpace(), (4.0, 2.2), (5.0, 2.4), (6.0, 2.2))
         scenario = replace(scenarios.pair_tent(), chains=(bar,))
         members, polylines, masks = self.state(scenario)
-        block = members[1]
-        assert isinstance(block, PairBlock)
         params = self.params()
-        points, mask = polylines[1], masks[1]
-        bar_points = polylines[0]
 
         value, gradients = layer_energy(members, polylines, masks, params, 0.01)
 
-        def edges(line: FloatArray, inflation: float) -> ChainField:
-            """`line` as one obstacle."""
-            count = len(line) - 1
-            return ChainField(
-                line[:-1],
-                line[1:],
-                np.full(count, inflation),
-                np.zeros(count, dtype=np.intp),
+        for k in range(len(members)):
+            alone, alone_gradient = layer_energy(
+                [members[k]], [polylines[k]], [masks[k]], params, 0.01
             )
-
-        facing = block.facing.centreline
-        seeing_bar = chain_field(
-            block.chain.field,
-            [edges(bar_points, (facing.width + PAIR_WIDTH) / 2 + PAIR_CLEARANCE)],
-        )
-        section = total_energy(points, mask, seeing_bar, params, 0.01, block.limit)[0]
-        (other,) = [
-            line
-            for track, line in zip(block.tracks, block.offset(points), strict=True)
-            if track.centreline.net != net
-        ]
-        seeing_track = chain_field(
-            bar.field, [edges(other, PAIR_WIDTH + PAIR_CLEARANCE)]
-        )
-        own = total_energy(bar_points, bar.fixed, seeing_track, params, 0.01)[0]
-        alone = total_energy(
-            points, mask, block.chain.field, params, 0.01, block.limit
-        )[0]
-        assert section > alone
-        assert value == pytest.approx(section + own, rel=1e-12)
-        apart = layer_energy(members[1:], polylines[1:], masks[1:], params, 0.01)[1]
-        assert not np.allclose(apart[0], gradients[1])
+            value -= alone
+            np.testing.assert_allclose(gradients[k], alone_gradient[0], atol=1e-12)
+        assert value == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.fixture(scope="module")
@@ -377,7 +343,6 @@ class TestPairOverPad:
         (centreline,) = simplify_chains(
             [block.facing],
             replace(over_pad, chains=(result,), pairs=()),
-            scenarios.PARAMS,
             scenarios.DP_CHORD_TOLERANCE,
             sections={0: block},
         )
@@ -1283,6 +1248,33 @@ def test_a_pair_pinned_only_in_its_end_pads_moves_as_an_unpinned_one() -> None:
     for chain, line, free_line in zip(chains, out.joined, unpinned.joined, strict=True):
         assert hausdorff(line, np.array(chain.points)) >= ROUNDED
         assert hausdorff(line, free_line) <= LIKE_UNPINNED
+
+
+FAN_OUT_SPREAD = 0.2
+"""mm each track of a diff pair moves outwards over its 6 mm fan-out: about
+2°, so the two stay within each other's clearance for the first 0.1 mm."""
+
+
+def test_a_diff_pair_fanning_out_at_a_sharp_angle_keeps_its_fan_outs() -> None:
+    # Coupled, then straight to pads; nothing but each other could bend them.
+    p, n = scenarios.tracks((0.0, 0.0), (6.0, 0.0))
+
+    def fanning(net: str, track: FloatArray) -> Chain:
+        y = track[-1, 1]
+        points = (
+            *((float(a), float(b)) for a, b in track),
+            (12.0, float(y + math.copysign(FAN_OUT_SPREAD, y))),
+        )
+        pinned = (True, *[False] * (len(points) - 2), True)
+        return Chain(points, pinned, PAIR_WIDTH, "F.Cu", net, ())
+
+    chains = [fanning("USB_D+", p), fanning("USB_D-", n)]
+
+    out = smoothed(chains)
+
+    assert len(out.result.pairs) == 1
+    for chain, line in zip(chains, out.joined, strict=True):
+        assert hausdorff(line, np.array(chain.points)) < COARSE.settled_change
 
 
 SHORT_PART = ((0.0, -5.0), (0.2, -5.0), (0.4, -4.8))

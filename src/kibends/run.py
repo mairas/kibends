@@ -31,12 +31,9 @@ thus stays an arc only in a chain left exactly as drawn; simplification
 merges its pieces and the optimizer shortens it, so it is nearly always
 replaced.
 
-Before the commit it checks every moving via where the run leaves it, with
-the chains as simplified, against where it started (`_crowded`), and
-refuses the run if one ends newly or deeper inside its clearance of any
-chain, via, item of its static copper or of its stops: the
-optimizer keeps vias so, and this catches a gap in its checks before it
-reaches the board.
+The run checks no clearance of its own after optimizing: what the
+optimizer and simplification leave is committed, and the user's KiCad DRC
+reports any violation. It refuses only an abnormal optimizer stop.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
@@ -65,9 +62,8 @@ from loguru import logger
 from shapely.geometry import LineString, Point
 from shapely.geometry.base import BaseGeometry
 
-from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE, OptimizerSettings
+from kibends.bursts import DEFAULT_SETTINGS, OptimizerSettings
 from kibends.chain import (
-    NM_PER_MM,
     PIN_MERGE_TOLERANCE_MM,
     Chain,
     Point2,
@@ -84,7 +80,6 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     ObstacleField,
-    obstacle_reach,
 )
 from kibends.neighbours import (
     ChainInput,
@@ -110,7 +105,7 @@ from kibends.pair_layout import (
     lay_out,
     pairs_and_partners_taken,
 )
-from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
+from kibends.pairs import GAP_TOLERANCE, diff_pair_nets, gap_range
 from kibends.polylines import enclosed_area, measure
 from kibends.results import (
     ChainResult,
@@ -130,7 +125,7 @@ from kibends.snapshot import (
     read_selection,
     read_user_frame,
 )
-from kibends.via_moves import Crowding, MovingVias, crowded
+from kibends.via_moves import MovingVias
 from kibends.vias import (
     ChainEnd,
     MovableVia,
@@ -147,15 +142,6 @@ from kibends.vias import (
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
 KICAD_TIMEOUT_MS = 30_000
-
-# How much closer rounding two vias to KiCad's 1 nm grid can bring them, mm.
-GRID_ROUNDING = math.sqrt(2) / NM_PER_MM
-
-# The whole tolerance of the check before the commit, mm: how far inside
-# its clearance a via may end where it started clear, the guard's
-# tolerance plus the grid's rounding. A via that started inside may end up
-# to GRID_ROUNDING deeper than it started.
-COMMIT_ROUNDING = INSIDE_TOLERANCE + GRID_ROUNDING
 
 PLOT_EXTRA_MESSAGE = (
     "--plot needs matplotlib, which comes with the `plot` extra: "
@@ -285,7 +271,9 @@ class OptimizerReport:
 class RunReport(OptimizerReport):
     committed: bool
     refusal: str | None
-    """Why nothing was committed, when that is a failure of the run."""
+    """Why nothing was committed, when the optimizer stopped abnormally
+    (`ABNORMAL_MESSAGE`). The run checks no clearance after optimizing;
+    the user's KiCad DRC does."""
 
     @property
     def changes(self) -> bool:
@@ -355,11 +343,6 @@ class _Outcome:
     reports: tuple[ChainReport, ...]
     via_reports: tuple[ViaReport, ...]
     pair_reports: tuple[PairReport, ...]
-    pinched: str | None
-    """Why a coupled section's tracks may not be committed, if one's may
-    not."""
-    crowded: str | None
-    """Why the moved vias may not be committed, if they may not."""
 
 
 def run_smooth(
@@ -370,9 +353,8 @@ def run_smooth(
 
     `on_optimized` gets the optimizer's report before the commit, which may
     raise. Raises on failures that leave nothing to report (no board, a bad
-    selection, a refused commit); an abnormal optimizer stop, a pinched
-    pair or a crowded via comes back as the report's `refusal`, with
-    nothing committed.
+    selection, a refused commit); an abnormal optimizer stop comes back as
+    the report's `refusal`, with nothing committed.
     """
     if options.plot is not None:
         _require_plot()
@@ -804,8 +786,10 @@ def _surrounds_something(
 ) -> bool:
     """Whether the area a loop encloses as drawn reaches anything it keeps
     clear of: the static copper, holes and keepouts of its field, the
-    board's edge, or another net's selected chain or moving via."""
+    board's edge, a selected chain of a net other than its own and its
+    diff pair's other net, or another net's moving via."""
     interior = shapely.make_valid(shapely.Polygon(chain.points))
+    ignored = diff_pair_nets(chain.net)
     field = fields(read.snapshots[chain.layer], chain, moving)
     if field.board_outline is not None and not field.board_outline.covers(interior):
         return True
@@ -814,7 +798,7 @@ def _surrounds_something(
         *(
             LineString(c.points)
             for c in read.chains
-            if c.layer == chain.layer and c.net != chain.net
+            if c.layer == chain.layer and c.net not in ignored
         ),
         *(
             Point(m.via.position)
@@ -1020,9 +1004,8 @@ def _simplify_and_report(
     reports = _chain_reports(
         read.chains,
         final_inputs,
-        _whole_results(optimized, final_inputs, unsimplified, options.params),
+        _whole_results(optimized, final_inputs, unsimplified),
         simplified,
-        options.params,
     )
     pair_reports = _pair_reports(
         read, optimized.pairs, layout, run.pairs, final_tracks, reports
@@ -1034,104 +1017,7 @@ def _simplify_and_report(
         reports,
         via_reports,
         pair_reports,
-        _pinched(layout.sections, [p.block.apart for p in run.pairs], final_tracks),
-        _crowded(
-            optimized.whole,
-            optimized.via_inputs,
-            simplified,
-            via_reports,
-            options.hole_clearance,
-            read.frame,
-        ),
     )
-
-
-def _pinched(
-    sections: Sequence[PairInput],
-    aparts: Sequence[float],
-    tracks: Sequence[tuple[FloatArray, FloatArray]],
-) -> str | None:
-    """Why the first section whose tracks come closer to each other than
-    both its nets' clearance and its routing did, where they run side by
-    side or more than a turn apart along it (`PairBlock.apart`), may not be
-    committed."""
-    for given, apart, (a, b) in zip(sections, aparts, tracks, strict=True):
-        if np.array_equal(a, given.a.points) and np.array_equal(b, given.b.points):
-            continue
-        width = given.a.width
-        clearance = max(given.a.clearance, given.b.clearance)
-        turn = math.pi / 2 * apart
-        reach = clearance + width
-        routed = gaps_across(given.a.points, given.b.points, width, turn, reach)
-        found = gaps_across(a, b, width, turn, reach)
-        # The run keeps each section clear of itself; should its tracks still
-        # come too close, committing them would short or crowd the pair.
-        for smallest, was, where in zip(
-            found, routed, ("", " across a turn"), strict=True
-        ):
-            floor = min(clearance, was)
-            if smallest < floor - INSIDE_TOLERANCE:
-                return (
-                    f"The tracks of the differential pair {given.a.net} and "
-                    f"{given.b.net} come within {smallest:.4f} mm of each "
-                    f"other{where}, below the {floor:.4f} mm they keep; "
-                    "nothing committed"
-                )
-    return None
-
-
-def _crowded(
-    chains: Sequence[ChainInput],
-    via_inputs: Sequence[ViaInput],
-    simplified: Sequence[FloatArray],
-    vias: Sequence[ViaReport],
-    hole_clearance: float,
-    frame: UserFrame,
-) -> str | None:
-    """Why the first via that ends, with the selected chains at
-    `simplified`, newly or deeper inside its clearance of other nets'
-    copper or its stops than it started (`via_moves.crowded`) may not be
-    committed. The optimizer already keeps vias so; this checks what
-    reaches the board, after simplification and on KiCad's grid, so that
-    a gap in its checks fails the run instead of committing a violation."""
-    if not via_inputs:
-        return None
-    found = crowded(
-        MovingVias(chains, via_inputs, hole_clearance, HOLE_TO_HOLE),
-        [c.centreline.points for c in chains],
-        simplified,
-        [np.array(r.start, dtype=float) for r in vias],
-        [np.array(r.end, dtype=float) for r in vias],
-        COMMIT_ROUNDING,
-        GRID_ROUNDING,
-    )
-    for given, report, crowding in zip(via_inputs, vias, found, strict=True):
-        if crowding is not None:
-            where = (
-                f"moved from {frame.point(report.start)} to {frame.point(report.end)}"
-                if report.moved
-                else f"at {frame.point(report.start)}"
-            )
-            return (
-                f"The via of {given.via.net} {where} would end "
-                f"{_crowding_text(crowding)} than it started; nothing committed"
-            )
-    return None
-
-
-def _crowding_text(crowding: Crowding) -> str:
-    """Where a crowded via ends, to follow "would end" in the refusal."""
-    match crowding.kind:
-        case "copper":
-            return "deeper inside its clearance of the copper standing still"
-        case "zones":
-            return "farther outside its zones"
-        case "own net":
-            return "deeper inside its net's pads and holes"
-        case "chain":
-            return f"deeper inside its clearance of the track of {crowding.net}"
-        case "via":
-            return f"deeper inside its clearance of the via of {crowding.net}"
 
 
 def _commit(
@@ -1165,10 +1051,6 @@ def _commit(
 
     if run.termination is Termination.ABNORMAL:
         return report(refusal=ABNORMAL_MESSAGE)
-    if outcome.pinched is not None:
-        return report(refusal=outcome.pinched)
-    if outcome.crowded is not None:
-        return report(refusal=outcome.crowded)
     if options.dry_run or not report().changes:
         return report()
     changed = [
@@ -1464,7 +1346,6 @@ def _simplify(
             options,
         ),
         replace(run, chains=tuple(results)),
-        options.params,
         tolerance=options.chord_tolerance,
         sections=blocks,
     )
@@ -1511,7 +1392,6 @@ def _whole_results(
     optimized: _Optimized,
     inputs: Sequence[ChainInput],
     unsimplified: Sequence[FloatArray],
-    params: EnergyParams,
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
@@ -1519,7 +1399,6 @@ def _whole_results(
     run, layout = optimized.run, optimized.layout
     originals = [given.centreline.points for given in inputs]
     neighbours = same_layer_neighbours(inputs)
-    reach = obstacle_reach(params)
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
         if slot is not None:
@@ -1531,7 +1410,7 @@ def _whole_results(
         ]
         field = chain_field(
             inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals, reach),
+            neighbour_fields(inputs, k, neighbours[k], originals),
         )
         results.append(
             _WholeResult(
@@ -1592,10 +1471,8 @@ def _chain_reports(
     inputs: Sequence[ChainInput],
     results: Sequence[_WholeResult],
     simplified: Sequence[FloatArray],
-    params: EnergyParams,
 ) -> tuple[ChainReport, ...]:
     neighbours = same_layer_neighbours(inputs)
-    reach = obstacle_reach(params)
     reports: list[ChainReport] = []
     changes = _changed_with_shared_tracks(
         chains,
@@ -1609,7 +1486,7 @@ def _chain_reports(
     ):
         given_points = given.centreline.points
         field = chain_field(
-            given.field, neighbour_fields(inputs, i, neighbours[i], simplified, reach)
+            given.field, neighbour_fields(inputs, i, neighbours[i], simplified)
         )
         # An unchanged chain stays on the board as it is.
         after = simplified[i] if changed else given_points

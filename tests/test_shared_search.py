@@ -2,11 +2,10 @@
 shared between members, and the checks on what the members see of each
 other, against a reference that builds a field of its own for each member
 and each via. The reference decides itself what each
-member and each via sees, by net and layer, with copper of one net left
-out, so that copper of one net interacting in what the members and the
-moving vias see of each other fails it; only the distances, the vias'
-rings and a section's leave-out near its fan-outs (`kept_spans`, which
-test_neighbours checks) come from the code under test.
+member and each via sees, by net and layer, with copper of one net and the
+tracks of a diff pair's other net left out, so that either interacting in
+what the members and the moving vias see of each other fails it; only the
+distances and the vias' rings come from the code under test.
 
 The energy takes the smooth minimum over obstacles, so two obstacles
 equally near a point share its gradient whatever order a tree lists them
@@ -15,7 +14,7 @@ the same distance, which one does depends on that order, so the gradient
 may go to either: the states here have no such point."""
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -59,7 +58,7 @@ from kibends.members import (
     shown_flat,
     static_list,
 )
-from kibends.neighbours import ChainInput, kept_spans
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     DEEP_MARGIN,
     HOLE_CLEARANCE,
@@ -80,6 +79,7 @@ from kibends.obstacles import (
 )
 from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
+from kibends.pairs import complementary_net
 from kibends.polylines import measure, violations
 from kibends.seen import (
     SKIN_LEAST,
@@ -232,7 +232,7 @@ def _pair_tent_over(net: str) -> PairsScenario:
 
 def _pair_tent_fanning_out() -> PairsScenario:
     """`scenarios.pair_tent` with a fan-out of each net leaving its track's
-    end, so that the section leaves each out near where it touches it."""
+    end, which the section and the other fan-out ignore."""
     scenario = scenarios.pair_tent()
     (section,) = scenario.pairs
     fans = (
@@ -290,43 +290,16 @@ def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> Flo
     return np.clip(projection / np.where(squared > 0.0, squared, 1.0), 0.0, 1.0)
 
 
-def _covered(
-    points: FloatArray, spans: Sequence[tuple[float, float]] | None
-) -> tuple[IntArray, FloatArray, FloatArray]:
-    """Each edge of `points` and where along it, from 0 to 1, the arc-length
-    `spans` cover it, by default all of it."""
-    count = len(points) - 1
-    if spans is None:
-        return np.arange(count, dtype=np.intp), np.zeros(count), np.ones(count)
-    arc = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(points, axis=0).T))])
-    edges: list[int] = []
-    starts: list[float] = []
-    ends: list[float] = []
-    for left, right in spans:
-        for e in range(count):
-            a, b = float(arc[e]), float(arc[e + 1])
-            if a < right and b > left:
-                span = b - a if b > a else 1.0
-                edges.append(e)
-                starts.append(min(max((left - a) / span, 0.0), 1.0))
-                ends.append(min(max((right - a) / span, 0.0), 1.0))
-    return (
-        np.array(edges, dtype=np.intp),
-        np.array(starts, dtype=float),
-        np.array(ends, dtype=float),
-    )
-
-
 def _reference_parts(
     problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
     polylines: Sequence[FloatArray],
 ) -> list[tuple[Pieces, IntArray]]:
-    """What each member sees, as copper of one net does not interact: every
-    track of another net on its layer, inflated by both half widths and the
-    larger clearance, and every via spanning its layer of another net,
-    inflated by its ring. A chain sees each track whole; a section sees as
-    its centreline of the pair's outer extent, and leaves a track of either
-    of its nets out near where it touches it (`kept_spans`). With them, each
+    """What each member sees, as copper of one net does not interact, nor
+    the tracks of a diff pair's two nets: every track on its layer of a net
+    other than a chain's own and its diff pair's other, or a section's two,
+    whole, inflated by both half widths and the larger clearance, and every
+    via spanning its layer of another net, inflated by its ring. A section
+    sees as its centreline of the diff pair's outer extent. With them, each
     piece's obstacle: each track shown, a section's two apart, and each via
     is one."""
     members = problem.members
@@ -337,38 +310,23 @@ def _reference_parts(
     parts: list[tuple[Pieces, IntArray]] = []
     for i, member in enumerate(members):
         own = member.facing if isinstance(member, PairBlock) else member
-        nets: Mapping[str, ChainInput] = (
-            member.as_net if isinstance(member, PairBlock) else {}
-        )
         me = own.centreline
+        ignored = (
+            {member.given.a.net, member.given.b.net}
+            if isinstance(member, PairBlock)
+            else {me.net, complementary_net(me.net)}
+        )
         vertex = [np.empty(0, dtype=np.intp)]
-        start = [np.empty(0)]
-        end = [np.empty(0)]
         inflation = [np.empty(0)]
         obstacle = [np.empty(0, dtype=np.intp)]
         track = 0
         for j, tracks in enumerate(lines):
             for other, points in tracks:
                 them = other.centreline
-                if j != i and other.layer == own.layer and them.net != me.net:
+                if j != i and other.layer == own.layer and them.net not in ignored:
                     margin = max(me.clearance, them.clearance)
-                    viewer = nets.get(them.net)
-                    spans = (
-                        None
-                        if viewer is None
-                        else kept_spans(
-                            viewer,
-                            other,
-                            points,
-                            problem.reach,
-                            polylines[i],
-                            margin=margin,
-                        )
-                    )
-                    edge, a, b = _covered(points, spans)
+                    edge = np.arange(len(points) - 1, dtype=np.intp)
                     vertex.append(firsts[track] + edge)
-                    start.append(a)
-                    end.append(b)
                     inflation.append(
                         np.full(len(edge), (me.width + them.width) / 2 + margin)
                     )
@@ -379,18 +337,11 @@ def _reference_parts(
             given = via.given.via
             if given.reaches(body.layer) and given.net != body.centreline.net:
                 vertex.append(np.array([vias_from + 2 * k]))
-                start.append(np.zeros(1))
-                end.append(np.ones(1))
                 inflation.append(np.array([via.rings[i]]))
                 obstacle.append(np.array([len(lengths) + k], dtype=np.intp))
         parts.append(
             (
-                Pieces(
-                    np.concatenate(vertex),
-                    np.concatenate(start),
-                    np.concatenate(end),
-                    np.concatenate(inflation),
-                ),
+                Pieces(np.concatenate(vertex), np.concatenate(inflation)),
                 np.concatenate(obstacle),
             )
         )
@@ -427,8 +378,7 @@ def _reference_members(
         static, static_direction = body.field.smooth_distance(queries, reach)
         part, obstacles = seen[i]
         a, b = flat[part.vertex], flat[part.vertex + 1]
-        starts = a + part.start[:, None] * (b - a)
-        ends = a + part.end[:, None] * (b - a)
+        starts, ends = a, a + (b - a)
         near = ChainField(starts, ends, part.inflation, obstacles).smooth_answers(
             queries, reach
         )
@@ -454,10 +404,9 @@ def _reference_members(
         edge = near.edge
         start = part.vertex[edge]
         along = _parameters(queries[point], starts[edge], ends[edge])
-        t = part.start[edge] + along * (part.end[edge] - part.start[edge])
         push = (slopes * seen_share)[point, None] * near.share[:, None] * near.direction
-        np.add.at(at_shown, start, -push * (1 - t)[:, None])
-        np.add.at(at_shown, start + 1, -push * t[:, None])
+        np.add.at(at_shown, start, -push * (1 - along)[:, None])
+        np.add.at(at_shown, start + 1, -push * along[:, None])
     first = 0
     for member, points, gradient, parts in zip(
         members, polylines, gradients, lines, strict=True
@@ -641,7 +590,7 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
     rng = np.random.default_rng(0)
     for problem in problems:
         layout = problem.layout(problem.points)
-        seen = seen_parts(problem.members, layout.starts, problem.reach, problem.rings)
+        seen = seen_parts(problem.members, layout.starts, problem.rings)
         masks = problem.energy_masks(problem.masks)
         listed = NeighbourList(seen, problem.reach)
         statics = static_list(problem.members, problem.reach)
@@ -776,13 +725,7 @@ def _reference_fields(
     fields: list[ChainField] = []
     for part, _ in _reference_parts(problem, polylines):
         a, b = flat[part.vertex], flat[part.vertex + 1]
-        fields.append(
-            _exact_field(
-                a + part.start[:, None] * (b - a),
-                a + part.end[:, None] * (b - a),
-                part.inflation,
-            )
-        )
+        fields.append(_exact_field(a, a + (b - a), part.inflation))
     return fields
 
 
@@ -799,8 +742,8 @@ def _reference_entered(
         _reference_parts(problem, polylines), polylines, strict=True
     ):
         a, b = flat[part.vertex], flat[part.vertex + 1]
-        starts = complex_points(a + part.start[:, None] * (b - a))
-        along = complex_points(a + part.end[:, None] * (b - a)) - starts
+        starts = complex_points(a)
+        along = complex_points(a + (b - a)) - starts
         ca, cb = complex_points(points[:-1]), complex_points(points[1:])
         edge = np.repeat(np.arange(len(ca)), len(starts))
         piece = np.tile(np.arange(len(starts)), len(ca))
@@ -830,11 +773,11 @@ def test_the_checks_are_those_each_members_own_field_gives(
 ) -> None:
     """What the guard, resampling and the edge checks judge, searched for
     every member at once, is what a field of each member's own pieces
-    gives, with copper of one net left out: the distance from each member's
-    points and from points around them, whether its edges stay clear, its
-    violations with its static copper, its pressed vertices and its edges
-    across the others, at the start and moved, a section's leave-out near
-    its own nets' chains included."""
+    gives, with copper of one net and the tracks of a diff pair's other net
+    left out: the distance from each member's points and from points around
+    them, whether its edges stay clear, its violations with its static
+    copper, its pressed vertices and its edges across the others, at the
+    start and moved."""
     scenario = make()
     rng = np.random.default_rng(0)
     problems = _problems(scenario, scenario.params)
@@ -940,7 +883,7 @@ def test_the_exact_distance_looks_only_at_what_each_member_sees(
     ]
     chains.append(selected("far", "X", FreeSpace(), *((x, -FAR_AWAY) for x in xs)))
     polylines = [chain.centreline.points for chain in chains]
-    seen = seen_parts(chains, polylines, obstacle_reach(scenarios.PARAMS))
+    seen = seen_parts(chains, polylines)
     looked = [0]
     near_segments = seen_module.near_segments
     each_within = obstacles_module._pairs_each_within  # pyright: ignore[reportPrivateUsage]
@@ -995,25 +938,23 @@ that each point's nearest piece is found beyond the first search. A point
 
 EXCEPTION_RING = 0.5
 """How far a chain keeps from the via it sees, mm: the widest inflation."""
-SPAN_INFLATION = 0.4
-"""How far a section keeps from the stretch of its own net's track it sees."""
+EDGE_INFLATION = 0.4
+"""How far a member keeps from the edge of a track its exceptions give."""
 
 
 def test_the_exact_distance_finds_exceptions_beyond_the_first_search() -> None:
-    """A chain whose nearest piece is a via, and a section whose nearest is
-    a stretch of a track of its own net, both much farther than twice the
-    widest inflation: only each member's own exceptions answer them, the
-    stretch as itself rather than its whole edge."""
+    """A chain whose nearest piece is a via, and a member that leaves out
+    two nets whose nearest is an edge of a track of one of them, both
+    much farther than twice the widest inflation: only each member's own
+    exceptions answer them."""
     flat = np.array(
         [[0.0, 0.0], [5.0, 0.0], [0.0, 8.0], [10.0, 8.0], [20.0, 0.0], [20.0, 0.0]]
     )
     tracks = [Track(0, 2, "F.Cu", 0, 0), Track(2, 2, "F.Cu", 1, 0)]
     viewers = [Viewer("F.Cu", 0, 0, ()), Viewer("F.Cu", 5, 0, (1, 2))]
-    via = Pieces(np.array([4]), np.zeros(1), np.ones(1), np.array([EXCEPTION_RING]))
-    stretch = Pieces(
-        np.array([2]), np.array([0.25]), np.array([0.5]), np.array([SPAN_INFLATION])
-    )
-    seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [via, stretch])
+    via = Pieces(np.array([4]), np.array([EXCEPTION_RING]))
+    edge = Pieces(np.array([2]), np.array([EDGE_INFLATION]))
+    seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [via, edge])
     queries = [np.array([[30.0, 0.0]]), np.array([[9.0, 20.0]])]
     fields = [
         _exact_field(
@@ -1022,15 +963,15 @@ def test_the_exact_distance_finds_exceptions_beyond_the_first_search() -> None:
             np.array([NUMBERED_INFLATION, EXCEPTION_RING]),
         ),
         _exact_field(
-            flat[[0, 2]] + np.array([[0.0, 0.0], [2.5, 0.0]]),
-            np.array([[5.0, 0.0], [5.0, 8.0]]),
-            np.array([NUMBERED_INFLATION, SPAN_INFLATION]),
+            flat[[0, 2]],
+            flat[[1, 3]],
+            np.array([NUMBERED_INFLATION, EDGE_INFLATION]),
         ),
     ]
 
     got = seen.distances(queries, flat)
 
-    widest = max(EXCEPTION_RING, SPAN_INFLATION)
+    widest = max(EXCEPTION_RING, EDGE_INFLATION)
     for distance, field, at in zip(got, fields, queries, strict=True):
         expected = field.signed_distance(at)[0]
         assert np.all(expected > 2 * widest)
@@ -1058,7 +999,7 @@ def test_the_exact_distance_asks_every_net_a_chain_sees() -> None:
         Viewer("F.Cu", 8, 0, (6, 9)),
         Viewer("F.Cu", 10, 0, (3, 9)),
     ]
-    none = Pieces(np.empty(0, dtype=np.intp), np.empty(0), np.empty(0), np.empty(0))
+    none = Pieces(np.empty(0, dtype=np.intp), np.empty(0))
     seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [none] * 3)
     queries = [np.array([[2.5, -1.0], [6.0, ROW], [2.5, 20.0]]) for _ in viewers]
 

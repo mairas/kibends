@@ -160,7 +160,9 @@ repel each other like other copper. Copper of one net does not interact,
 but for the vias of a ground net (below): chains of one net neither repel
 nor hold each other back, and may come
 close, overlap or cross, as may a chain and a via of its net, and a chain
-and the static copper of its net. Only selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
+and the static copper of its net. Nor do the selected tracks of the two
+nets of a differential pair keep clearance from each other (below). Only
+selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
 out vias on those layers, and the chains it joins move with it. A moving
 via that starts inside its clearance or inside such a rule area moves out
@@ -171,14 +173,10 @@ piece of static copper around it, the outside of its zones and each of its
 net's pads and holes. Static copper of one net that overlaps on one
 layer, such as two tracks meeting at a width change or a T-junction, is
 one piece, judged by the via's depth in the whole of it: inside one track
-of a piece, the via may move into another of its tracks no deeper. The run
-refuses, naming the via, to commit one that would end newly or deeper
-inside any of these.
-This check judges a differential pair's via against its partner track
-like any other net's track, while the optimizer judges it against the
-pair's coupled section, which it starts inside: where the pair's netclass
-clearance exceeds its gap, a run that leaves such a via deeper inside its
-clearance of the partner track is refused.
+of a piece, the via may move into another of its tracks no deeper. The
+optimizer keeps vias so while it runs; kibends does not check the result
+again before the commit, and KiCad's DRC reports any clearance violation
+left after the run.
 Two vias keep their clearances and hole-to-hole distance from each other
 only where their spans overlap; KiCad's DRC judges any stricter rule for
 blind, buried or micro vias.
@@ -236,7 +234,8 @@ run, or a run that commits nothing, leaves the selection as it was.
 A track or via edited in KiCad since the run read it stops the commit.
 kibends does not refill zones and does not run KiCad's DRC: refill the
 zones yourself (B), or run the DRC, which refills them and checks the result
-against every rule of the board.
+against every rule of the board. kibends checks no clearance of its own
+after optimizing: the DRC is the check for clearance after a run.
 
 Locked tracks in the selection are left untouched, and a locked track that
 splits a selected piece makes two chains. Each chain's two ends stay where
@@ -298,18 +297,19 @@ taper, and meeting the fan-outs in the direction they did. While
 optimising, a section's parts more than a turn apart along it, such as the
 legs of a U or the laps of a spiral, do not move closer to each other than
 the pair's outer extent plus the larger clearance, and parts that already
-lie closer do not move closer still. The run refuses, naming the pair, to commit
-a section whose tracks come closer to each other than both its nets'
-clearance and its routing kept them, where they run side by side or
-across a turn.
+lie closer do not move closer still. kibends does not check the committed
+tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
+than their clearance.
 Both nets' tracks go into the one commit.
 
-A chain of one of the pair's nets, such as a fan-out, keeps clear of the
-pair's track of the other net. The coupled section cannot tell which of its
-tracks faces the chain, so it keeps its whole width clear of the chain as of
-any other, except near where the two connect. In effect, beyond its fan-out
-such a chain keeps off the pair's track of its own net too: it neither comes
-close to it nor crosses it there.
+The selected tracks of a diff pair's two nets do not keep clearance from
+each other while optimising: a coupled section and the chains of its two
+nets, such as its fan-outs, ignore each other, and so do a chain of one net
+and a chain of the other, at the fan-outs and wherever the two tracks run
+apart, such as around a via. Nothing keeps one net's track from being
+pulled across the other's there; kibends does not check for it, and KiCad's
+DRC reports it. The diff pair's vias, and the copper of either net that is
+not selected, still keep clearance from the other net's tracks.
 
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which

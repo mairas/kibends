@@ -52,7 +52,7 @@ def test_the_listed_energy_is_the_searched_one(
     )
     problem = placed.problem
     layout = problem.layout(problem.points)
-    seen = seen_parts(problem.members, layout.starts, problem.reach, problem.rings)
+    seen = seen_parts(problem.members, layout.starts, problem.rings)
     searched = problem.objective(layout, seen, listed=False)
     listed = problem.objective(layout, seen)
     searches = 0
@@ -143,7 +143,7 @@ def _assert_listed_is_searched(
     answers every point as a search does."""
     searches = _counted(monkeypatch)
     polylines = [chain.centreline.points for chain in chains]
-    seen = seen_parts(chains, polylines, REACH)
+    seen = seen_parts(chains, polylines)
     listed = NeighbourList(seen, REACH)
 
     def answers(

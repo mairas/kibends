@@ -28,18 +28,20 @@ what the checks reject.
 Copper of one net does not interact: a chain sees nothing of the chains,
 tracks and vias of its net (`members.seen_parts`), and its static
 field holds none of its net's copper, so chains of one net may come close,
-overlap or cross. A selection that branches is split at each junction into
+overlap or cross. Nor do the tracks of a diff pair's two nets: a chain sees
+nothing of the chains and tracks of the other net of its diff pair, so
+those may come close, overlap or cross too, and KiCad's DRC reports it if
+they do. A selection that branches is split at each junction into
 chains that end there, loose (`junctions`): those ends are one shared
 variable, and the branches, of one net, do not see each other.
 
 A coupled section of a differential pair (`kibends.pair_blocks`) is a
 member of its layer's problem as its centreline: its free vertices are
 variables, its energy has the bend-radius hinge, and it keeps clear of the
-others as the pair's outer extent, its own nets' chains included but for
-near its fan-outs (`PairBlock.as_net`), since its other track must keep
-clear of them. The others see its two tracks, a chain of one of the pair's
-nets only the track of the other net, offset from the centreline at each
-evaluation (`members.shown`), so where the obstacle term pulls on a
+others as the diff pair's outer extent, but for the chains of its two nets,
+which it ignores and which ignore it (`PairBlock.nets`), so that its
+fan-outs leave it freely. The others see its two tracks, offset from the
+centreline at each evaluation (`members.shown`), so where the obstacle term pulls on a
 track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
 check, a burst moves back what `polylines.SelfCheck` finds: a centreline
@@ -84,16 +86,6 @@ of each other, the second keep clear, both at the distances the via's
 limits give, and the third repel each other beyond their rings and
 clearance while their stops keep hole-to-hole. Without such a pair the
 problem's energy is the one without ground vias, term for term.
-
-How much of a chain of one of its nets a section leaves out near a fan-out
-depends on the angles both leave it at. A burst fixes it, as pieces of the
-chain's edges, from the shapes the burst starts with, which keeps the
-energy smooth within the burst; the next burst measures it again. That
-errs safe: an angle that closes during the burst meets the chain's copper
-sooner than the start's leave-out expects, which repels and, at worst,
-moves edges back; one that opens leaves out more than needed of copper
-that keeps clear of the section's other track by itself. The energy that
-judges the best state measures the leave-out at the shapes it judges.
 
 What a burst checks
 -------------------
@@ -1065,7 +1057,7 @@ class _Problem:
     def seeing(self, polylines: Sequence[FloatArray]) -> Seen:
         """What each member sees of the others and of the vias with the
         members at `polylines` (`members.seen_parts`)."""
-        return seen_parts(self.members, polylines, self.reach, self.rings)
+        return seen_parts(self.members, polylines, self.rings)
 
     def start_statistics(
         self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]

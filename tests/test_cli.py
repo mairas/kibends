@@ -1,4 +1,3 @@
-import contextlib
 import itertools
 import math
 import re
@@ -38,7 +37,6 @@ from conftest import (
     return_via_board,
     via_ids,
 )
-from distance_fields import FreeSpace
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -68,7 +66,7 @@ from kibends.energy import (
     FloatArray,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import HOLE_CLEARANCE, ChainCentreline, Obstacles
+from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
 from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
@@ -1814,6 +1812,21 @@ class TestLoopsAndDots:
         assert held.startswith("DEBUG") and "a, b, c" in held
         assert not any("shrinks to no area" in line for line in log)
 
+    def test_a_diff_pair_loop_round_its_other_net_surrounds_nothing(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        loop = triangle_loop("D_P")
+        touch = kipy_track("t", "D_P", (-3, 0), (0, 0), width=WIDTH)
+        inside = kipy_track("n", "D_N", (6, 1), (8, 1.5), width=WIDTH)
+        connect.to(
+            CommitBoard(selection=[*loop, inside], tracks=[*loop, touch, inside])
+        )
+
+        run()
+
+        (held,) = [line for line in log if "holds it open" in line]
+        assert "a, b, c" in held
+
     def test_a_loop_through_three_pads_of_its_net_settles_into_their_triangle(
         self, connect: Connector
     ) -> None:
@@ -2597,24 +2610,8 @@ def through_via_board(
     )
 
 
-CROWDED = "The via is crowded; nothing committed"
-
-
 @pytest.mark.usefixtures("coarse_optimizer")
 class TestMovingVias:
-    def test_a_crowded_via_refuses_the_run(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = connect.to(moving_via_board())
-
-        def refuse(*_args: object) -> str:
-            return CROWDED
-
-        monkeypatch.setattr(pipeline, "_crowded", refuse)
-
-        assert CROWDED in exit_message(log)
-        assert board.calls == []
-
     def test_moves_the_via_with_its_chains_in_one_commit(
         self, connect: Connector
     ) -> None:
@@ -4068,8 +4065,8 @@ class TestPairs:
         before: float,
     ) -> None:
         # Same-net copper at P's inner corner, or just before it, closer
-        # than two pitches: the section stays as routed, while its fan-outs
-        # are smoothed.
+        # than two pitches: the section stays as routed, and so do its
+        # straight fan-outs, which nothing else repels.
         corner = 5.0 - math.tan(math.pi / 8) * PAIR_HALF_PITCH
         x = nm(corner - before) / NM_PER_MM
         stub = kipy_track(
@@ -4082,12 +4079,7 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.sections, pair.held) == (1, 1)
         assert not unexpected_warnings(log)
-        lines = by_net(board)
-        joined = linemerge(lines[USB[0]])
-        assert isinstance(joined, LineString)
-        assert (x, PAIR_HALF_PITCH) in joined.coords
-        low, high = coupled_gaps(*lines.values())
-        assert PAIR_GAP - GAP_SLACK <= low <= high <= PAIR_GAP + GAP_SLACK
+        assert not board.created
 
     def test_a_part_held_between_two_stubs_commits_the_rest(
         self,
@@ -4692,12 +4684,11 @@ def spy_simplify(monkeypatch: pytest.MonkeyPatch) -> list[Simplified]:
     def spy(
         chains: Sequence[ChainInput],
         run: RunResult,
-        params: EnergyParams,
         tolerance: float,
         *,
         sections: Mapping[int, PairBlock],
     ) -> list[FloatArray]:
-        result = real(chains, run, params, tolerance, sections=sections)
+        result = real(chains, run, tolerance, sections=sections)
         calls.append(Simplified(run, sections, tolerance, result))
         return result
 
@@ -4739,8 +4730,8 @@ SPLIT_DETOUR = 1.2
 
 def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
     """Pair USB_D+/USB_D- fanned out at both ends, coupled along y = 0 in
-    two straight sections, split by a detour of each track outward; the
-    second section at `second_gap`."""
+    two straight sections, split by a detour of each track outward around a
+    pad of another net; the second section at `second_gap`."""
     h, h2 = PAIR_HALF_PITCH, (second_gap + PAIR_WIDTH) / 2
     (start, split), (rejoin, end) = SPLIT_SECTIONS
     tracks: list[kbt.Track] = []
@@ -4763,6 +4754,7 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
+        pads=[kipy_pad("pad", "GND", (split + rejoin) / 2, 0.0)],
         netclasses={"USB_D+": usb, "USB_D-": usb},
     )
 
@@ -5091,7 +5083,7 @@ it bent: along a straight centreline no order of its vertices crosses."""
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
-def test_a_pair_whose_tracks_cross_is_not_committed(
+def test_a_pair_whose_tracks_cross_is_committed_for_the_drc_to_report(
     connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
     real = pipeline.simplify_chains
@@ -5099,12 +5091,11 @@ def test_a_pair_whose_tracks_cross_is_not_committed(
     def folded(
         chains: Sequence[ChainInput],
         run: RunResult,
-        params: EnergyParams,
         tolerance: float,
         *,
         sections: Mapping[int, PairBlock],
     ) -> list[FloatArray]:
-        result = real(chains, run, params, tolerance, sections=sections)
+        result = real(chains, run, tolerance, sections=sections)
         for i, block in sections.items():
             optimised = run.chains[i].polyline
             last = len(optimised) - 1
@@ -5125,10 +5116,10 @@ def test_a_pair_whose_tracks_cross_is_not_committed(
     monkeypatch.setattr(pipeline, "simplify_chains", folded)
     board = connect.to(pair_board(extra=FOLD_KEEPERS))
 
-    message = exit_message(log)
+    run()
 
-    assert "USB_D+ and USB_D-" in message and "come within" in message
-    assert board.calls == []
+    assert board.calls == COMMIT_CALLS
+    assert not any(line.startswith("ERROR") for line in log)
 
 
 V_REPULSION = "0.5"
@@ -5159,9 +5150,9 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     monkeypatch: pytest.MonkeyPatch,
     reports: list[pipeline.RunReport],
 ) -> None:
-    # Simplification and the gap check on a pair whose legs face each other,
-    # end to end, at coarse settings; test_optimize_pairs covers the
-    # optimizer on the same scenario.
+    # Simplification on a pair whose legs face each other, end to end, at
+    # coarse settings; test_optimize_pairs covers the optimizer on the same
+    # scenario.
     monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
     board = connect.to(v_board(150.0))
 
@@ -5173,156 +5164,11 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
     assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
 
 
-SPIRAL_GAP = 0.1
-SPIRAL_CLEARANCE = 0.2
-"""Above the pair's gap, as custom rules let a pair route closer than its
-nets' clearance."""
-SPIRAL_LAP = 2 * PAIR_WIDTH + SPIRAL_GAP + SPIRAL_CLEARANCE
-"""mm between the laps' centrelines: one lap's tracks keep exactly their
-clearance from the next's."""
-SPIRAL_SIDE = 6.0
-SPIRAL_ALONG = 5.0
-"""mm along the tracks within which they face each other as a pair, not
-across laps: well under a lap."""
-SPIRAL_SAMPLE = 0.02
-
-
-def spiral(lap: float) -> FloatArray:
-    """Two laps of a square spiral winding inwards, `lap` apart."""
-    corners = [(0.0, 0.0)]
-    for k in range(2):
-        near, far = k * lap, SPIRAL_SIDE - k * lap
-        corners += [(far, near), (far, far), (near, far), (near, near + lap)]
-    return np.array(corners)
-
-
-def spiral_board() -> CommitBoard:
-    """Pair USB_D+/USB_D- winding two laps of a square spiral inwards."""
-    tracks = [
-        kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
-        for net, track in zip(
-            USB, offset_pair(spiral(SPIRAL_LAP), SPIRAL_GAP, PAIR_WIDTH), strict=True
-        )
-        for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
-    ]
-    usb = netclass("USB", SPIRAL_CLEARANCE, SPIRAL_GAP)
-    return CommitBoard(
-        selection=list(tracks),
-        tracks=list(tracks),
-        netclasses={"USB_D+": usb, "USB_D-": usb},
-    )
-
-
-def across_laps(p: LineString, n: LineString) -> float:
-    """The smallest edge-to-edge gap between p and n where they lie more
-    than SPIRAL_ALONG apart along themselves, sampled."""
-    lines = [shapely.segmentize(line, SPIRAL_SAMPLE) for line in (p, n)]
-    a, b = (shapely.get_coordinates(line) for line in lines)
-    along_a, along_b = (
-        np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
-        for c in (a, b)
-    )
-    distance = np.hypot(*(a[:, None] - b[None]).transpose(2, 0, 1))
-    beyond = np.abs(along_a[:, None] - along_b[None]) > SPIRAL_ALONG
-    return float(distance[beyond].min()) - PAIR_WIDTH
-
-
-@pytest.mark.parametrize("chord", ["0.025", "0.1"])
-@pytest.mark.usefixtures("coarse_optimizer")
-def test_a_spiral_pair_keeps_its_clearance_across_laps(
-    connect: Connector, log: list[str], chord: str
-) -> None:
-    board = connect.to(spiral_board())
-
-    with contextlib.suppress(SystemExit):
-        run(f"--chord-tolerance={chord}")
-
-    # Refused, or held as routed, it commits nothing; which one depends on
-    # the platform's floating point.
-    committed = by_net(board)
-    if not any(committed.values()):
-        assert board.calls == []
-        return
-    p, n = (linemerge(lines) for lines in committed.values())
-    assert isinstance(p, LineString) and isinstance(n, LineString)
-    assert across_laps(p, n) >= SPIRAL_CLEARANCE - NM_ROUNDING
-
-
-PINCH_LEG = 10.0
-PINCH_APART = 2 * PAIR_WIDTH + SPIRAL_GAP + SPIRAL_CLEARANCE
-"""How far apart the run keeps a section's parts beyond a turn: its outer
-extent plus clearance."""
-PINCH_MARGIN = 0.001
-"""mm by which a result's gap misses its floor, well above round-off."""
-
-
-def section(
-    gap: float, clearance: float, other_clearance: float | None = None
-) -> PairInput:
-    """A straight section of pair USB_D+/USB_D- routed at `gap`."""
-    a, b = offset_pair(np.array([(0.0, 0.0), (PINCH_LEG, 0.0)]), gap, PAIR_WIDTH)
-    fixed = np.zeros(len(a), dtype=bool)
-    return PairInput(
-        ChainCentreline("P", USB[0], PAIR_WIDTH, clearance, a),
-        ChainCentreline("N", USB[1], PAIR_WIDTH, other_clearance or clearance, b),
-        fixed,
-        fixed,
-        gap,
-        "F.Cu",
-        FreeSpace(),
-    )
-
-
-def pinched(
-    given: PairInput, *centreline: tuple[float, float], gap: float
-) -> str | None:
-    tracks = offset_pair(np.array(centreline), gap, PAIR_WIDTH)
-    return pipeline._pinched([given], [PINCH_APART], [tracks])  # pyright: ignore[reportPrivateUsage]
-
-
-STRAIGHT = ((0.0, 0.0), (PINCH_LEG, 0.0))
-
-
-def test_a_pair_may_come_closer_than_routed_down_to_its_clearance() -> None:
-    given = section(PAIR_GAP, PAIR_CLEARANCE)
-
-    assert pinched(given, *STRAIGHT, gap=PAIR_CLEARANCE) is None
-
-
-def test_a_pair_may_not_come_closer_than_the_larger_of_its_clearances() -> None:
-    wide = SPIRAL_CLEARANCE + PAIR_GAP
-    given = section(wide, PAIR_CLEARANCE, SPIRAL_CLEARANCE)
-
-    message = pinched(given, *STRAIGHT, gap=SPIRAL_CLEARANCE - PINCH_MARGIN)
-
-    assert message is not None and f"{SPIRAL_CLEARANCE:.4f} mm" in message
-
-
-def test_a_pair_routed_below_its_clearance_may_not_come_closer_still() -> None:
-    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
-
-    message = pinched(given, *STRAIGHT, gap=SPIRAL_GAP - PINCH_MARGIN)
-
-    assert message is not None and f"{SPIRAL_GAP:.4f} mm" in message
-
-
-def test_a_pair_routed_below_its_clearance_keeps_it_across_a_turn() -> None:
-    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
-    # Each leg's inner track lies as far from the other leg's outer track,
-    # of the other net, as the legs' centrelines lie apart.
-    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - PINCH_MARGIN
-    u_turn = ((0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (0.0, legs))
-
-    message = pinched(given, *u_turn, gap=SPIRAL_GAP)
-
-    assert message is not None and "across a turn" in message
-
-
 @pytest.mark.parametrize(
     ("turn", "width", "gap", "clearance"),
     [(150.0, 0.2, 0.1, 0.2), (135.0, 0.1, 0.1, 0.3), (150.0, 0.1, 0.1, 0.3)],
 )
-def test_a_sharp_pair_held_as_routed_is_not_refused(
+def test_a_sharp_pair_held_as_routed_commits_nothing(
     connect: Connector,
     log: list[str],
     reports: list[pipeline.RunReport],
@@ -5357,149 +5203,6 @@ def test_a_sharp_pair_held_as_routed_is_not_refused(
     assert (pair.sections, pair.held) == (1, 1)
     assert not any(line.startswith("ERROR") for line in log)
     assert board.calls == []
-
-
-def test_a_pair_routed_closer_than_its_clearance_across_a_turn_may_stay_so() -> None:
-    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - PINCH_MARGIN
-    given, u_turn = u_section(legs, SPIRAL_GAP, SPIRAL_CLEARANCE)
-    shift = np.array([PINCH_MARGIN, 0.0])
-
-    assert pinched(given, *(u_turn + shift), gap=SPIRAL_GAP) is None
-
-
-def u_section(
-    legs: float, gap: float, clearance: float
-) -> tuple[PairInput, FloatArray]:
-    """A section routed as a 10 mm U with its legs `legs` apart, and that U."""
-    u_turn = np.array([(0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (0.0, legs)])
-    a, b = offset_pair(u_turn, gap, PAIR_WIDTH)
-    straight = section(gap, clearance)
-    return (
-        replace(
-            straight,
-            a=replace(straight.a, points=a),
-            b=replace(straight.b, points=b),
-        ),
-        u_turn,
-    )
-
-
-HOOK_BACK = 0.2
-"""mm a hook runs back beside itself before turning away."""
-HOOK_SHORT = 0.01
-"""mm by which the hook's legs fall short of clearance across."""
-
-
-def test_a_hook_s_turn_is_side_by_side_within_half_a_circle() -> None:
-    # Its two short legs lie farther apart along it than its outer extent
-    # plus clearance, but within the half circle of that width.
-    given = section(SPIRAL_GAP, SPIRAL_CLEARANCE)
-    legs = PAIR_WIDTH + SPIRAL_CLEARANCE - HOOK_SHORT
-    back = PINCH_LEG - HOOK_BACK
-    hook = ((0.0, 0.0), (PINCH_LEG, 0.0), (PINCH_LEG, legs), (back, legs), (back, 5.0))
-
-    assert pinched(given, *hook, gap=SPIRAL_GAP) is None
-
-
-def test_a_pair_keeps_its_side_by_side_gap_though_closer_across_a_turn() -> None:
-    wide = 3 * SPIRAL_GAP
-    clearance = 2 * wide
-    # One lap's tracks face the next's closer than each other.
-    laps = spiral(2 * PAIR_WIDTH + 2 * wide - SPIRAL_GAP)
-    a, b = offset_pair(laps, wide, PAIR_WIDTH)
-    straight = section(wide, clearance)
-    given = replace(
-        straight, a=replace(straight.a, points=a), b=replace(straight.b, points=b)
-    )
-
-    message = pinched(given, *laps, gap=wide - PINCH_MARGIN)
-
-    assert message is not None and "across" not in message
-
-
-def crowded(end: tuple[float, float]) -> str | None:
-    """Why the run refuses the via of `scenarios.via_over_pinned` moved to
-    `end`, with the chains as given, if it does."""
-    scenario = scenarios.via_over_pinned("P")
-    (given,) = scenario.vias
-    via = pipeline.ViaReport("v", given.via.position, end, rejected_edges=0)
-    return pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        scenario.chains,
-        scenario.vias,
-        [c.centreline.points for c in scenario.chains],
-        [via],
-        HOLE_CLEARANCE,
-        BOARD_FRAME,
-    )
-
-
-def test_a_via_ending_newly_inside_its_clearance_is_refused() -> None:
-    message = crowded((5.0, scenarios.PINNED_LEVEL))
-
-    assert message is not None
-    assert "N" in message and "(5.000, 1.500)" in message
-    assert "the track of P" in message
-    assert "nothing committed" in message
-
-
-def test_a_via_a_chain_moves_onto_is_refused_where_it_stays() -> None:
-    scenario = scenarios.via_over_pinned("P")
-    (given,) = scenario.vias
-    chains = [c.centreline.points.copy() for c in scenario.chains]
-    chains[2][:, 1] = scenarios.DETOUR_VIA[1]
-    via = pipeline.ViaReport("v", given.via.position, given.via.position, 0)
-
-    message = pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        scenario.chains, scenario.vias, chains, [via], HOLE_CLEARANCE, BOARD_FRAME
-    )
-
-    assert message is not None
-    assert "at (5.000, 3.000)" in message and "moved" not in message
-
-
-def test_a_via_ending_clear_is_not_refused() -> None:
-    assert crowded((5.5, scenarios.DETOUR_VIA[1])) is None
-
-
-PAIR_VIA = (5.0, 0.0)
-TIGHT_GAP = scenarios.PAIR_CLEARANCE / 2
-"""A pair's gap, edge to edge, below its netclass clearance."""
-
-
-def pair_via_crowded(end: tuple[float, float]) -> str | None:
-    """Why the run refuses the via of a pair's D+ track, moved to `end`,
-    beside its D- partner track TIGHT_GAP away, if it does. The via starts
-    inside the partner's clearance; the check judges the partner as any
-    other net's track, not as the pair's coupled section the optimizer
-    sees."""
-    partner = scenarios.selected(
-        "D-",
-        "D-",
-        FreeSpace(),
-        (0.0, scenarios.PAIR_WIDTH + TIGHT_GAP),
-        (10.0, scenarios.PAIR_WIDTH + TIGHT_GAP),
-    )
-    chains = (*scenarios.route("D+", PAIR_VIA), partner)
-    vias = (scenarios.joining(scenarios.through_via("v", "D+", PAIR_VIA), 0),)
-    via = pipeline.ViaReport("v", PAIR_VIA, end, rejected_edges=0)
-    return pipeline._crowded(  # pyright: ignore[reportPrivateUsage]
-        chains,
-        vias,
-        [c.centreline.points for c in chains],
-        [via],
-        HOLE_CLEARANCE,
-        BOARD_FRAME,
-    )
-
-
-def test_a_pair_via_ending_deeper_toward_its_partner_is_refused() -> None:
-    message = pair_via_crowded((PAIR_VIA[0], PAIR_VIA[1] + 0.001))
-
-    assert message is not None and "the track of D-" in message
-
-
-def test_a_pair_via_sliding_along_its_partner_is_not_refused() -> None:
-    assert pair_via_crowded((PAIR_VIA[0] + 0.5, PAIR_VIA[1])) is None
 
 
 def pad_inside(at: tuple[float, float]) -> BaseGeometry:
