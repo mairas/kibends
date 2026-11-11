@@ -10,7 +10,10 @@ x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS-B's
 one curvature model fits stiff and soft coordinates alike. The scale
 travels with the objective rather than as an argument of its own, so that
 whatever wraps `run_burst` and passes the objective on keeps it; the check
-and the burst's result stay in x.
+and the burst's result stay in x. Wrapping the objective itself in a plain
+function drops the scale without an error, and the burst runs unscaled: a
+wrapper of the objective must build a `ScaledObjective` again with the
+scale, as the bench's counting does.
 """
 
 from collections.abc import Callable
@@ -128,7 +131,9 @@ Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 class ScaledObjective:
     """An objective, answering as itself, and the scale of each coordinate
-    that a burst of it minimises over (`run_burst`)."""
+    that a burst of it minimises over (`run_burst`). A function wrapping it
+    is a plain objective, without the scale; to keep it, wrap `objective`
+    and build a `ScaledObjective` of the wrapper with `scale`."""
 
     def __init__(self, objective: Objective, scale: FloatArray) -> None:
         self.objective = objective
