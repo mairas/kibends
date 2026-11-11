@@ -7,16 +7,20 @@ two nets' clearances, in a static field from
 `energy.bend_radius_energy` keeps its inner track from folding. Each
 track's routing is first merged within a micrometre (`ROUTING_TOLERANCE`),
 through its ends and pins, as `simplify` merges a result, so that a jog or
-sliver too short to see bends nothing; a section whose routing still bends
-tighter is held as it is. Its two ends are
-pinned, and so is a vertex a spacing in from each, so that the pair meets
-its fan-outs in the direction it did. Same-net copper that touches a track
-between the ends pins the centreline where that puts the track through the
-point it touches, at the section's gap, with a vertex a spacing to either
-side, so that the track passes there in the direction it did; the rest of
-the section moves. Both tracks are the centreline offset by half the pitch,
-through their own ends and pins; where an end's own gap differs from the
-pair's, the gap tapers between the two beyond that end's direction pin. The
+sliver too short to see bends nothing. Its two ends are pinned, and so is
+a vertex a spacing in from each, so that the pair meets its fan-outs in the
+direction it did. Same-net copper that touches a track between the ends
+pins the centreline where that puts the track through the point it
+touches, at the section's gap, with a vertex a spacing to either side, so
+that the track passes there in the direction it did; the rest of the
+section moves. Such a direction pin stays on its pin's own straight,
+halfway along it where the straight is shorter, so that a corner beyond
+stays free to round. A section is held as it is where its routing, without
+its direction pins, already bends tighter than the limit, or where the
+turns its fixed vertices keep do. Both tracks are the centreline offset by
+half the pitch, through their own ends and pins; where an end's own gap
+differs from the pair's, the gap tapers between the two beyond that end's
+direction pin. The
 centreline is a little wider than the pair, by as far as the outer track's
 mitred corners reach beyond half the pitch at the bend-radius limit, so
 that its clearance covers them.
@@ -424,7 +428,16 @@ def _start(
     start = _moving_start(routed, spacing, a_on_right)
     if not _has_room(routed, start, spacing):
         return _held_start(given, a_on_right), Hold.SHORT, None
-    bend = check_bend_radius(start.line, start.gaps.widest, given.a.width)
+    held_a, held_b = start.pins.held(start.line)
+    # Its routing as drawn, whose straights its direction pins lie on, and
+    # the turns its fixed vertices keep, which nothing rounds.
+    routing = start.line[~start.fixed | held_a | held_b]
+    gap, width = start.gaps.widest, given.a.width
+    bend = min(
+        check_bend_radius(routing, gap, width),
+        check_bend_radius(start.line, gap, width, start.fixed),
+        key=lambda check: check.radius,
+    )
     if not bend.too_tight:
         return start, None, None
     return _held_start(given, a_on_right), Hold.ROUTING, bend
@@ -544,9 +557,11 @@ def _pin_directions(
 
     A direction pin is inserted a `spacing` along the edge where that
     leaves at least a spacing of the edge beyond it, and beyond the
-    direction pin from its other end if that is a pin too; on a shorter
-    edge, such as a chamfer, the edge's far vertex is the direction pin, so
-    that no sliver edge is left.
+    direction pin from its other end if that is a pin too. On a shorter
+    edge, such as one ending at a corner close to the pin, it is inserted
+    halfway, so that it stays on the pin's own straight and the corner
+    stays free to round; an edge between two pins too short for either
+    gets none, as both its ends are fixed.
     """
     points: list[FloatArray] = [line[0]]
     fixed = [bool(pins[0])]
@@ -555,17 +570,18 @@ def _pin_directions(
         start, end = line[k], line[k + 1]
         ends = (bool(pins[k]), bool(pins[k + 1]))
         length = float(np.hypot(*(end - start)))
-        room = length >= (STUB_SPACINGS + ends.count(True) - 1) * spacing
+        if length >= (STUB_SPACINGS + ends.count(True) - 1) * spacing:
+            reach = spacing
+        else:
+            reach = 0.0 if all(ends) else length / 2
         inserted = [
-            at + (toward - at) * (spacing / length)
+            at + (toward - at) * (reach / length)
             for at, toward, pin in ((start, end, ends[0]), (end, start, ends[1]))
-            if pin and room
+            if pin and reach > 0.0
         ]
         points += inserted
         fixed += [True] * len(inserted)
-        if ends[1] and not room:
-            fixed[-1] = True
         points.append(end)
-        fixed.append(ends[1] or (ends[0] and not room))
+        fixed.append(ends[1])
         kept.append(len(points) - 1)
     return np.array(points), np.array(fixed), np.array(kept, dtype=np.intp)

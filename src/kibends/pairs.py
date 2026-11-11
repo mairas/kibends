@@ -855,17 +855,24 @@ class BendCheck(NamedTuple):
     too_tight: bool
 
 
-def check_bend_radius(centreline: FloatArray, gap: float, width: float) -> BendCheck:
-    """The centreline's smallest bend radius and whether it is below the limit."""
-    radius = float(bend_radii(centreline).min())
+def check_bend_radius(
+    centreline: FloatArray,
+    gap: float,
+    width: float,
+    turning: BoolArray | None = None,
+) -> BendCheck:
+    """The centreline's smallest bend radius and whether it is below the
+    limit, counting the turns at the vertices `turning` (`bend_radii`)."""
+    radius = float(bend_radii(centreline, turning).min())
     return BendCheck(radius, bool(too_tight(radius, bend_radius_limit(gap, width))))
 
 
-def bend_radii(centreline: FloatArray) -> FloatArray:
+def bend_radii(centreline: FloatArray, turning: BoolArray | None = None) -> FloatArray:
     """Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
     beside a fold and for an edge of no length, where the centreline turns
     on the spot. For a dense arc of radius R with turn Δ per vertex it is
-    R·cos(Δ/2)."""
+    R·cos(Δ/2). Only the turns and folds at the vertices `turning` count,
+    every vertex by default."""
     delta = np.diff(centreline, axis=0)
     lengths = np.hypot(delta[:, 0], delta[:, 1])
     empty = lengths == 0.0
@@ -876,6 +883,9 @@ def bend_radii(centreline: FloatArray) -> FloatArray:
     one_plus_cos = 1.0 + np.sum(direction[:-1] * direction[1:], axis=1)
     folds = one_plus_cos <= FOLD_SLACK
     half_turns = np.divide(sine, one_plus_cos, out=np.zeros_like(sine), where=~folds)
+    if turning is not None:
+        folds &= turning[1:-1]
+        half_turns = np.where(turning[1:-1], half_turns, 0.0)
     radii, _ = edge_bend_radii(lengths, half_turns)
     radii[:-1][folds] = 0.0
     radii[1:][folds] = 0.0

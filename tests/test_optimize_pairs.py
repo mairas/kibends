@@ -758,14 +758,16 @@ def test_is_deterministic(tent: RunResult) -> None:
     assert again.iterations == tent.iterations
 
 
-def test_a_short_chamfer_at_an_end_gets_no_sliver() -> None:
+def test_a_short_chamfer_at_an_end_keeps_its_corner_free() -> None:
+    # A direction pin on the corner would keep the turn there from rounding.
     (given,) = scenarios.pair_chamfered().pairs
 
     block = pair_block(given, COARSE.spacing)
 
     points, fixed = block.chain.centreline.points, block.chain.fixed
-    assert len(points) == len(given.a.points)
+    assert len(points) == len(given.a.points) + 2
     assert fixed[[0, 1, -2, -1]].all()
+    assert not fixed[[2, -3]].any()
 
 
 def test_split_gives_two_sections_and_a_detour_on_each_track() -> None:
@@ -1280,10 +1282,10 @@ def test_a_diff_pair_fanning_out_at_a_sharp_angle_keeps_its_fan_outs() -> None:
         assert hausdorff(line, np.array(chain.points)) < COARSE.settled_change
 
 
-SHORT_PART = ((0.0, -5.0), (0.2, -5.0), (0.4, -4.8))
+SHORT_PART = ((0.0, -5.0), (0.15, -5.0), (0.3, -4.85))
 """A section's centreline whose end edges are shorter than the direction
-pins' room, so that every vertex is an end or a direction pin, none more
-than a spacing apart; clear of `pair_corner`."""
+pins' room, so that its direction pins, halfway along them, leave less
+than a spacing between them; clear of `pair_corner`."""
 
 
 def test_a_section_too_short_to_move_stays_as_routed() -> None:
@@ -1323,8 +1325,11 @@ DEFAULT_SPACING = replace(
 )
 """The default spacing, at which a section's direction pins and its starting
 bend are those of a real run, with short bursts to run fast."""
+COARSE_CAPPED = replace(COARSE, max_iterations=12)
+"""`COARSE`, stopped before rounding a corner close to a pin's direction
+pin settles fully, about 35 iterations, to run fast."""
 SPACINGS = [
-    pytest.param(COARSE, id="coarse"),
+    pytest.param(COARSE_CAPPED, id="coarse"),
     pytest.param(DEFAULT_SPACING, id="default"),
 ]
 PINNED_HOLDS = {None, Hold.SHORT, Hold.ROUTING}
@@ -1374,7 +1379,7 @@ def assert_kept_or_held(
 ) -> Smoothed:
     """Smooth `chains`: every pin stays, the joined tracks keep the pair's
     gap, so they neither narrow nor overlap, and no section is held after
-    the run for its bend."""
+    the run for its bend, nor ends it bending too tightly."""
     out = smoothed(chains, settings)
 
     assert_pins_kept(chains, out.joined)
@@ -1383,6 +1388,8 @@ def assert_kept_or_held(
     slack = GAP_TOLERANCE * gap
     assert gap - slack <= low <= high <= gap + slack
     assert {p.block.hold for p in out.result.pairs} <= PINNED_HOLDS
+    for pair in out.result.pairs:
+        assert pair.block.held or not (pair.bend is not None and pair.bend.too_tight)
     return out
 
 
@@ -1400,6 +1407,23 @@ def test_a_pin_near_a_corner_of_either_track_stays_on_it(
     out = assert_kept_or_held(chains, settings)
 
     assert len(out.result.pairs) == 1
+
+
+@pytest.mark.parametrize(
+    ("pinned", "offset"),
+    # Its direction pin a spacing short of the corner, which stays free.
+    [("P", 0.2), ("P", -0.2), ("N", 0.1), ("N", -0.1)],
+)
+def test_a_pin_near_a_corner_leaves_the_corner_to_round(
+    pinned: str, offset: float
+) -> None:
+    tracks = scenarios.tracks(*PINNED_PAIR)
+    track = tracks[0 if pinned == "P" else 1]
+    chains = pinned_near(tracks, pinned, [corner_arc(track, 2) + offset])
+
+    out = assert_kept_or_held(chains, DEFAULT_SPACING)
+
+    assert [p.block.hold for p in out.result.pairs] == [None]
 
 
 @pytest.mark.parametrize("settings", SPACINGS)
