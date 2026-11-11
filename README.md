@@ -211,8 +211,8 @@ with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
 iteration how long setup took, how many problems it split the selection into
 (the layers or groups of layers the moving tracks and vias tie together), and
-their starting summed length and energy. A run repeated to hold a
-differential pair's section reports both again, saying so.
+their starting summed length and energy. When it holds a differential
+pair's section, it says how many chains and vias it put back.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
 length, the energy it minimises, and how far the iteration moved any track or
@@ -287,10 +287,15 @@ allows, half the pitch plus half the track width. A section whose routing
 already bends tighter keeps its own tracks; a jog or sliver of less than a
 micrometre, such as KiCad leaves on its nanometre grid, does not count. So
 does one whose corner the copper around it keeps from rounding, such as a
-pad inside a sharp corner: the run is repeated with that section held, so
-that the other chains keep clear of its tracks. The repeat starts over from
-the selection as drawn, and `--time-limit` covers both runs: the repeat runs
-at least one round of bursts however little time is left.
+pad inside a sharp corner: when the run would end, that section goes back
+to its tracks and the run goes on with it held, so that the other chains
+keep clear of its tracks. Every other chain and via goes on from where the
+run had taken it, except those that had moved into the section's clearance,
+or into a chain or via that had to go back, which go back to where they
+started; with time left, the run then smooths them again. `--time-limit`
+still covers the whole run: if the time is up when the section is held, the
+run ends there, once it has also held any section that going back left bent
+too tightly.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
@@ -420,7 +425,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. When it must start over with a differential pair's section held as routed, it first completes one outer iteration, so it may run over by one outer iteration more. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |

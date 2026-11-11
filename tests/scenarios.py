@@ -766,6 +766,32 @@ def pair_tent() -> PairsScenario:
     )
 
 
+ROOF_EAVES = 2.5
+"""y of the ends of `pair_tent_under_roof`'s roof, mm: below the top of the
+pair's arch, outside its sides."""
+
+
+def pair_tent_under_roof() -> PairsScenario:
+    """`pair_tent` with a roof of another net drawn over the arch, its ends
+    beside the arch's sides: once the pair comes down onto the bar, the roof
+    pulls straight across where the pair was drawn."""
+    (pair,) = pair_tent().pairs
+    roof = selected(
+        "roof",
+        "R",
+        FreeSpace(),
+        (1.0, ROOF_EAVES),
+        (1.0, 4.5),
+        (9.0, 4.5),
+        (9.0, ROOF_EAVES),
+    )
+    return PairsScenario(
+        "pair-tent-under-roof",
+        (pair,),
+        (selected("bar", "B", FreeSpace(), *PAIR_BAR), roof),
+    )
+
+
 def pair_corner() -> PairsScenario:
     """A pair turning a sharp corner in free space, where length alone would
     bend its centreline tighter than the inner track allows."""

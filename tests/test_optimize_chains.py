@@ -585,25 +585,6 @@ def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
         np.testing.assert_array_equal(chain.polyline, start)
 
 
-def test_a_repeated_run_past_its_time_limit_runs_its_first_bursts_whole(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = bumps()
-    bursts = recorded_bursts(monkeypatch)
-
-    again = optimize_chains(
-        scenario.chains,
-        scenario.params,
-        replace(COARSE, time_limit=0.0),
-        clock=Ticking(),
-        again=True,
-    )
-
-    assert again.termination is Termination.TIME_LIMIT
-    assert not bursts[0].cut
-    assert bursts[0].iterations > 1
-
-
 def test_time_limit_counts_from_when_the_stage_started() -> None:
     scenario = bumps()
     limited = replace(COARSE, time_limit=5.0)

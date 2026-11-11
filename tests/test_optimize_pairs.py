@@ -6,13 +6,14 @@ The problem's energy is checked against a reference built member by member
 differences."""
 
 import math
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
 import pytest
 import scenarios
-from conftest import Ticking, gap_range, layer_energy, total_energy
+from conftest import BurstClock, gap_range, layer_energy, total_energy
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
@@ -42,7 +43,7 @@ from kibends.energy import EnergyParams, ObstacleField, TermValue, arc_lengths
 from kibends.members import Member, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
-from kibends.optimize import optimize_chains
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import cut_parts, find_pairs, lay_out
 from kibends.pairs import (
@@ -54,6 +55,7 @@ from kibends.pairs import (
 from kibends.polylines import SelfCheck, resample
 from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import simplify_chains
+from kibends.vias import ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 CORNER = OptimizerSettings(burst_maxiter=30)
@@ -595,32 +597,349 @@ def hausdorff(a: FloatArray, b: FloatArray) -> float:
     return float(LineString(a).hausdorff_distance(LineString(b)))
 
 
-def test_a_repeated_run_gives_every_problem_a_burst_before_its_time_limit() -> None:
+def hold_every(results: Sequence[PairResult]) -> list[int]:
+    """Every section, as if each had ended bent too tightly; the run holds
+    those not held yet."""
+    return list(range(len(results)))
+
+
+def hold_once(
+    scenario: PairsScenario,
+    settings: OptimizerSettings = COARSE,
+    clock: Callable[[], float] = time.monotonic,
+) -> RunResult:
+    """A run of `scenario` that holds its sections when it would end."""
+    return optimize_chains(
+        scenario.chains,
+        scenario.params,
+        settings,
+        pairs=scenario.pairs,
+        clock=clock,
+        to_hold=hold_every,
+    )
+
+
+def assert_held_as_drawn(result: RunResult, scenario: PairsScenario) -> None:
+    """Each section is its drawn tracks, held, and no chain comes within its
+    clearance of them."""
+    for pair, given in zip(result.pairs, scenario.pairs, strict=True):
+        assert pair.block.hold is Hold.CROWDING
+        np.testing.assert_array_equal(pair.a, given.a.points)
+        np.testing.assert_array_equal(pair.b, given.b.points)
+        for chain in result.chains:
+            for track in (given.a.points, given.b.points):
+                assert LineString(chain.polyline).distance(LineString(track)) >= (
+                    scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+                )
+
+
+@pytest.fixture(scope="module")
+def roofed() -> RunResult:
+    return hold_once(scenarios.pair_tent_under_roof())
+
+
+class TestSectionHeldWhenTheRunWouldEnd:
+    def test_ends_held_as_drawn_with_every_chain_clear_of_it(
+        self, roofed: RunResult
+    ) -> None:
+        assert roofed.termination is Termination.CONVERGED
+        assert_held_as_drawn(roofed, scenarios.pair_tent_under_roof())
+
+    def test_ends_as_short_as_a_run_that_starts_with_it_held(
+        self, roofed: RunResult
+    ) -> None:
+        over = run(held(scenarios.pair_tent_under_roof()))
+        for went_on, started in zip(roofed.chains, over.chains, strict=True):
+            assert length(went_on.polyline) <= length(started.polyline) + SETTLED_LENGTH
+
+
+SETTLED_LENGTH = 0.005
+"""mm a chain may end longer when the run goes on past a hold than when it
+starts with the section held: two settled runs reach the same shape from
+different starts, each within `COARSE.settled_change`."""
+
+HOLD_BUDGET = 4
+"""Bursts of `pair_tent_under_roof` that the time limit allows: the pair has
+come down onto the bar, and the roof has followed it."""
+
+
+def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.pair_tent_under_roof()
+    limited = replace(COARSE, time_limit=HOLD_BUDGET)
+    plain = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        limited,
+        pairs=scenario.pairs,
+        clock=BurstClock(monkeypatch),
+    )
+    clock = BurstClock(monkeypatch)
+
+    result = hold_once(scenario, limited, clock)
+
+    # No burst runs after the hold, past the limit.
+    assert clock.bursts == HOLD_BUDGET
+    assert result.termination is Termination.TIME_LIMIT
+    assert_held_as_drawn(result, scenario)
+    bar, roof = result.chains
+    np.testing.assert_array_equal(bar.polyline, plain.chains[0].polyline)
+    assert length(bar.polyline) < bar.before.length
+    # The roof had come down across where the pair was drawn, so it went back.
+    assert (
+        LineString(plain.chains[1].polyline).distance(
+            LineString(scenario.pairs[0].a.points)
+        )
+        < scenarios.PAIR_INFLATION
+    )
+    np.testing.assert_array_equal(
+        roof.polyline,
+        resample(
+            scenario.chains[1].centreline.points,
+            scenario.chains[1].fixed,
+            COARSE.spacing,
+        )[0],
+    )
+
+
+TENT_SHIFT = 12.0
+"""mm along x between the two tents of `two_tents`, far enough that neither
+sees the other."""
+
+
+def two_tents() -> PairsScenario:
+    """`pair_tent` and a copy of it of other nets beside it, on one layer."""
+    (first,) = scenarios.pair_tent().pairs
+    (bar,) = scenarios.pair_tent().chains
+    shifted = [(x + TENT_SHIFT, y) for x, y in ((0.0, 0.0), (3.0, 3.0), (7.0, 3.0))]
+    second = scenarios.coupled(FreeSpace(), *shifted, (10.0 + TENT_SHIFT, 0.0))
+    second = replace(
+        second,
+        a=replace(second.a, description="P2", net="P2"),
+        b=replace(second.b, description="N2", net="N2"),
+    )
+    beside = [(x + TENT_SHIFT, y) for x, y in scenarios.PAIR_BAR]
+    bar_two = selected("bar 2", "B2", FreeSpace(), *beside)
+    return PairsScenario("two-tents", (first, second), (bar, bar_two))
+
+
+def hold_first(results: Sequence[PairResult]) -> list[int]:
+    """The first section not held yet, as if holding one left the next bent
+    too tightly."""
+    return [k for k, result in enumerate(results) if not result.block.held][:1]
+
+
+def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = two_tents()
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        replace(COARSE, time_limit=1),
+        pairs=scenario.pairs,
+        clock=clock,
+        to_hold=hold_first,
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert clock.bursts == 1
+    assert_held_as_drawn(result, scenario)
+
+
+def test_a_second_hold_in_one_problem_goes_on_from_the_first() -> None:
+    scenario = two_tents()
+    asked: list[list[int]] = []
+
+    def counted(results: Sequence[PairResult]) -> list[int]:
+        named = hold_first(results)
+        asked.append(named)
+        # A hold forgotten would be named again whenever the run settles.
+        assert len(asked) <= len(scenario.pairs) + 1
+        return named
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        to_hold=counted,
+    )
+
+    assert asked == [[0], [1], []]
+    assert result.termination is Termination.CONVERGED
+    assert_held_as_drawn(result, scenario)
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_hold_leaves_another_problem_as_it_was() -> None:
     scenario = scenarios.pair_tent()
     back = replace(
         selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
         layer="B.Cu",
     )
     chains = (*scenario.chains, back)
-    limited = replace(COARSE, time_limit=0.0)
-    resampled = resample(back.centreline.points, back.fixed, COARSE.spacing)[0]
+    plain = optimize_chains(chains, scenario.params, COARSE, pairs=scenario.pairs)
 
-    def repeated(again: bool) -> RunResult:
-        return optimize_chains(
-            chains,
-            scenario.params,
-            limited,
-            pairs=held(scenario).pairs,
-            clock=Ticking(),
-            again=again,
+    result = optimize_chains(
+        chains, scenario.params, COARSE, pairs=scenario.pairs, to_hold=hold_every
+    )
+
+    assert result.pairs[0].block.hold is Hold.CROWDING
+    np.testing.assert_array_equal(result.chains[1].polyline, plain.chains[1].polyline)
+
+
+def test_a_section_named_again_once_held_is_not_held_again() -> None:
+    scenario = scenarios.pair_tent()
+    asked = 0
+
+    def every_section(results: Sequence[PairResult]) -> list[int]:
+        nonlocal asked
+        asked += 1
+        # Holding it again would rebuild the problem every time it settles.
+        assert asked <= 2
+        return list(range(len(results)))
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        to_hold=every_section,
+    )
+
+    assert asked == 2
+    assert result.termination is Termination.CONVERGED
+    assert result.pairs[0].block.hold is Hold.CROWDING
+
+
+def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.run_burst
+    holds: list[int] = []
+
+    def fails_until_held(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        burst = real(objective, start, revert, settings, stop)
+        return replace(burst, abnormal=not holds)
+
+    def counted(results: Sequence[PairResult]) -> list[int]:
+        named = hold_every(results)
+        holds.extend(named)
+        return named
+
+    monkeypatch.setattr(optimize_module, "run_burst", fails_until_held)
+    scenario = scenarios.pair_tent_under_roof()
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        to_hold=counted,
+    )
+
+    # Named when the run gave up, and again, held, when it converged.
+    assert holds == [0, 0]
+    assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.termination is Termination.GAVE_UP
+    # The abnormal bursts were all before the hold.
+    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+
+
+def test_what_putting_back_misses_puts_the_whole_problem_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def nothing_fails(
+        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        state: object,
+        seen: object,
+        at_start: object,
+    ) -> BoolArray:
+        return np.zeros(len(self.members) + len(self.vias), dtype=bool)
+
+    monkeypatch.setattr(
+        optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        "failing",
+        nothing_fails,
+    )
+    scenario = scenarios.pair_tent_under_roof()
+
+    # The roof has come down across where the pair was drawn, which only
+    # the guard after putting back now finds.
+    result = hold_once(
+        scenario, replace(COARSE, time_limit=HOLD_BUDGET), BurstClock(monkeypatch)
+    )
+
+    assert_held_as_drawn(result, scenario)
+    for chain, given in zip(result.chains, scenario.chains, strict=True):
+        np.testing.assert_array_equal(
+            chain.polyline,
+            resample(given.centreline.points, given.fixed, COARSE.spacing)[0],
         )
 
-    # Repeated, the first iteration runs whole, so the back layer gets its
-    # burst; a first run stops after the first problem's.
-    assert not np.array_equal(repeated(again=True).chains[1].polyline, resampled)
-    cut = repeated(again=False)
-    assert cut.iterations == 1
-    np.testing.assert_array_equal(cut.chains[1].polyline, resampled)
+
+JOINED_AT = (9.5, 5.0)
+"""Where `roof_parts` joins its two parts, right of the pair's arch, mm."""
+ROOF_FAR_END = (10.5, 5.0)
+
+
+def roof_parts(*, via: bool) -> tuple[PairsScenario, tuple[ViaInput, ...]]:
+    """`pair_tent` under a roof of two parts joined at `JOINED_AT`: the first
+    from beside the arch's left side, over the arch, the second on to the
+    right, clear of the arch. Once the pair comes down, the first part pulls
+    across where the pair was drawn; the second stays clear of it. Joined by
+    a moving via, with the second part on B.Cu, if `via`; else at a
+    junction."""
+    tent = scenarios.pair_tent()
+    eaves = (1.0, scenarios.ROOF_EAVES)
+    first = selected("roof", "R", FreeSpace(), eaves, (1.0, 4.5), JOINED_AT)
+    second = selected(
+        "roof end", "R", FreeSpace(), JOINED_AT, ROOF_FAR_END, layer="B.Cu"
+    )
+    vias: tuple[ViaInput, ...] = ()
+    if via:
+        vias = (scenarios.joining(scenarios.through_via("v", "R", JOINED_AT), 1),)
+    else:
+        loose = first.fixed.copy()
+        loose[-1] = False
+        first = replace(first, fixed=loose)
+        second = replace(second, layer="F.Cu", fixed=np.array([False, True]))
+    return replace(tent, chains=(*tent.chains, first, second)), vias
+
+
+@pytest.mark.parametrize("via", [False, True], ids=["junction", "via"])
+def test_what_moves_with_a_part_put_back_goes_back_with_it(
+    monkeypatch: pytest.MonkeyPatch, via: bool
+) -> None:
+    scenario, vias = roof_parts(via=via)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        replace(COARSE, time_limit=HOLD_BUDGET),
+        vias,
+        pairs=scenario.pairs,
+        clock=BurstClock(monkeypatch),
+        to_hold=hold_every,
+    )
+
+    assert_held_as_drawn(result, scenario)
+    _, first, second = result.chains
+    assert tuple(first.polyline[-1]) == JOINED_AT
+    assert tuple(second.polyline[0]) == JOINED_AT
+    if via:
+        assert result.vias[0].position == JOINED_AT
 
 
 def gap(a: FloatArray, b: FloatArray) -> float:

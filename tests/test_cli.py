@@ -73,9 +73,9 @@ from kibends.energy import (
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
-from kibends.pair_blocks import Hold, PairBlock, PairInput
+from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
-from kibends.results import PolylineStats, RunResult, Termination
+from kibends.results import PairResult, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 from kibends.vias import StaticVia, ViaInput
 
@@ -4273,41 +4273,43 @@ class TestPairs:
         assert "a net of a diff pair" in line
         assert not any("moving via" in line for line in log)
 
-    def test_section_left_bent_too_tightly_is_held_in_a_second_run(
+    def too_tight_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> list[list[Hold | None]]:
+        """Make every section the run moved end too tight, so that the run
+        holds it and goes on; each time the run asks, its sections' holds."""
+        real = pipeline._bent_too_tightly  # pyright: ignore[reportPrivateUsage]
+        asked: list[list[Hold | None]] = []
+
+        def too_tight(results: Sequence[PairResult]) -> list[int]:
+            asked.append([r.block.hold for r in results])
+            return real(
+                [
+                    r
+                    if r.block.held
+                    else replace(r, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
+                    for r in results
+                ]
+            )
+
+        monkeypatch.setattr(pipeline, "_bent_too_tightly", too_tight)
+        return asked
+
+    def test_section_left_bent_too_tightly_is_held_and_the_run_goes_on(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
     ) -> None:
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-        held: list[list[Hold | None]] = []
-
-        def too_tight(*args: object, **kwargs: object) -> RunResult:
-            result = real(*args, **kwargs)
-            sections = cast(Sequence[PairInput], kwargs["pairs"])
-            held.append([s.hold for s in sections])
-            pairs = tuple(
-                p
-                if p.block.held
-                else replace(
-                    p,
-                    bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True),
-                )
-                for p in result.pairs
-            )
-            return replace(result, pairs=pairs)
-
-        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
+        asked = self.too_tight_once(monkeypatch)
         board = connect.to(pair_board())
 
         run()
 
-        assert held == [[None], [Hold.CROWDING]]
-        assert any(Hold.CROWDING.value in line for line in log)
-        # The repeated run says it repeats, rather than seeming to start over.
+        assert asked == [[None], [Hold.CROWDING]]
         assert log.count("INFO Setting up the optimizer\n") == 1
-        assert "INFO Setting up the optimizer again, with held sections\n" in log
-        assert any(line.startswith("INFO Optimizer set up again") for line in log)
+        (holding,) = [line for line in log if "Holding" in line]
+        assert holding.startswith("INFO Holding 1 coupled section of ")
         # Whether a net's chain is committed depends on how far repulsion
         # bends its fan-out (some 25 µm, varying with the BLAS) against the
         # chord tolerance; either way the held section, all pins, stays as
@@ -4323,137 +4325,49 @@ class TestPairs:
                 )
         (line,) = [w for w in log if "too tight" in w]
         assert line.startswith("DEBUG")
-        assert Hold.CROWDING.value in line and "again" in line
+        assert Hold.CROWDING.value in line and "going on" in line
 
-    def test_time_limit_covers_a_second_run_that_starts_over(
+    def test_a_hold_at_the_time_limit_ends_the_run(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        asked = self.too_tight_once(monkeypatch)
         real: Callable[..., RunResult] = pipeline.optimize_chains
         runs: list[RunResult] = []
 
-        def too_tight(*args: object, **kwargs: object) -> RunResult:
+        def spy(*args: object, **kwargs: object) -> RunResult:
             result = real(*args, **kwargs)
-            runs.append(result)
-            pairs = tuple(
-                p
-                if p.block.held
-                else replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
-                for p in result.pairs
-            )
-            return replace(result, pairs=pairs)
-
-        monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
-        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
-        connect.to(pair_board())
-
-        run("--dry-run", "--time-limit=1.5")
-
-        first, second = runs
-        assert first.termination is Termination.TIME_LIMIT
-        # Past the limit, the second run still completes one outer iteration,
-        # then stops at the first burst of the next.
-        assert second.iterations <= 2
-        total = first.iterations + second.iterations
-        assert f"after {total} iterations" in capsys.readouterr().out
-
-    def first_run_gives_up(
-        self, monkeypatch: pytest.MonkeyPatch, last: Termination | None = None
-    ) -> list[RunResult]:
-        """Make the first run give up and leave its section too tight, so
-        that the stage repeats it, and the repeat end `last` if given; the
-        runs it makes, as reported."""
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-        runs: list[RunResult] = []
-
-        def first_gives_up(*args: object, **kwargs: object) -> RunResult:
-            result = real(*args, **kwargs)
-            if not kwargs["again"]:
-                pairs = tuple(
-                    replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
-                    for p in result.pairs
-                )
-                abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
-                result = replace(
-                    result,
-                    pairs=pairs,
-                    gave_up=(abandoned,),
-                    termination=Termination.GAVE_UP,
-                )
-            elif last is not None:
-                result = replace(result, termination=last)
             runs.append(result)
             return result
 
-        monkeypatch.setattr(pipeline, "optimize_chains", first_gives_up)
-        return runs
-
-    def test_a_first_run_s_give_up_outlasts_a_second_that_converges(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        runs = self.first_run_gives_up(monkeypatch)
-        # Another net's L, so that the second run, which starts over with the
-        # section held, has work to do.
-        bend = [
-            kipy_track("l1", "SIG", (0, 10), (4, 10), width=WIDTH),
-            kipy_track("l2", "SIG", (4, 10), (4, 14), width=WIDTH),
-        ]
-        board = pair_board(extra=bend)
-        board.selection = [*board.selection, *bend]
-        connect.to(board)
-
-        run("--dry-run")
-
-        assert [r.termination for r in runs] == [
-            Termination.GAVE_UP,
-            Termination.CONVERGED,
-        ]
-        assert not runs[1].gave_up
-        (outcome,) = capsys.readouterr().out.splitlines()
-        assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} after ")
-        (line,) = [w for w in log if "Gave up" in w]
-        assert ABANDONED in line
-
-    @pytest.mark.parametrize(
-        "last", [Termination.TIME_LIMIT, Termination.ITERATION_CAP]
-    )
-    def test_a_second_run_that_stops_early_reports_its_own_ending(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-        last: Termination,
-    ) -> None:
-        runs = self.first_run_gives_up(monkeypatch, last)
+        monkeypatch.setattr(pipeline, "optimize_chains", spy)
+        clock = BurstClock(monkeypatch)
+        monkeypatch.setattr(pipeline, "monotonic", clock)
         connect.to(pair_board())
 
-        run("--dry-run")
+        run("--dry-run", f"--time-limit={HELD_AT_BURST - 0.5}")
 
-        assert len(runs) == 2
-        (outcome,) = capsys.readouterr().out.splitlines()
-        assert outcome.startswith(f"Optimizer: {last.value} after ")
+        (result,) = runs
+        # Asked again once held, past the limit, it names nothing more.
+        assert asked == [[None], [Hold.CROWDING]]
+        assert result.termination is Termination.TIME_LIMIT
+        # The section was held when the limit had passed, and no burst ran
+        # after it.
+        assert clock.bursts == HELD_AT_BURST
+        assert result.pairs[0].block.hold is Hold.CROWDING
+        out = capsys.readouterr().out
+        assert f"after {result.iterations} iterations" in out
 
-    def test_a_problem_abandoned_in_both_runs_is_logged_once(
+    def test_a_problem_given_up_on_is_logged_at_debug(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         real: Callable[..., RunResult] = pipeline.optimize_chains
 
         def gives_up(*args: object, **kwargs: object) -> RunResult:
-            result = real(*args, **kwargs)
-            pairs = tuple(
-                p
-                if p.block.held
-                else replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
-                for p in result.pairs
-            )
             abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
-            return replace(result, pairs=pairs, gave_up=(abandoned,))
+            return replace(real(*args, **kwargs), gave_up=(abandoned,))
 
         monkeypatch.setattr(pipeline, "optimize_chains", gives_up)
         connect.to(pair_board())
@@ -4479,6 +4393,11 @@ class TestPairs:
         assert len(drawn) == 2
         assert all("pair with" in title for title in drawn)
         assert board.calls == []
+
+
+HELD_AT_BURST = 2
+"""The burst of `pair_board`'s one problem after which a time limit holds
+its section."""
 
 
 FOLDED = [("USB_D+", 2.3), ("USB_D-", 2.7), ("USB_D+", 3.4)]
