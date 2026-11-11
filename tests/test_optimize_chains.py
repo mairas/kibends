@@ -594,9 +594,9 @@ def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
     (burst,) = bursts
     assert burst.cut
     assert result.termination is Termination.TIME_LIMIT
+    # The guard refuses the resampled start too, so the inputs stay the best.
     for chain, given in zip(result.chains, scenario.chains, strict=True):
-        start = resample(given.centreline.points, given.fixed, COARSE.spacing)[0]
-        np.testing.assert_array_equal(chain.polyline, start)
+        np.testing.assert_array_equal(chain.polyline, given.centreline.points)
 
 
 def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(

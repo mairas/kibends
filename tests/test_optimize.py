@@ -2,6 +2,7 @@
 that starts inside it and stop rules, on the scenarios of `tests/scenarios.py`."""
 
 import json
+import math
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -390,6 +391,43 @@ def test_a_chain_inside_one_dot_s_clearance_does_not_enter_the_other_s(
         INSIDE_TOLERANCE
     )
     assert result.after.length <= shortened * result.before.length
+
+
+CORNER_MARGIN = 0.02
+"""How far the corner's input lies beyond the dot's clearance, mm."""
+# Half the corner's 135° inside angle, between each edge and the bisector.
+HALF_CORNER = 3 * math.pi / 8
+
+
+def corner_dot() -> Obstacles:
+    """A dot on the inside bisector of the corner at (4, 0) of
+    (0, 0)→(4, 0)→(6, 2)→(6, 6), with both edges CORNER_MARGIN beyond its
+    clearance (https://github.com/mairas/kibends/issues/14)."""
+    bisector = np.array([1.0 - math.sqrt(2), 1.0])
+    bisector /= np.linalg.norm(bisector)
+    centre = np.array([4.0, 0.0]) + bisector * (
+        (TRACK_INFLATION + CORNER_MARGIN) / math.sin(HALF_CORNER)
+    )
+    return Obstacles([Obstacle("dot", shapely.Point(*centre), TRACK_INFLATION)])
+
+
+def test_the_guard_refuses_a_corner_resampling_cuts_into_clearance() -> None:
+    field = corner_dot()
+    polyline, fixed = chain((0.0, 0.0), (4.0, 0.0), (6.0, 2.0), (6.0, 6.0))
+    centreline = ChainCentreline("chain", "", 0.0, 0.0, polyline)
+    alone = ChainInput(centreline, "", fixed, field)
+    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE, None
+    )
+    problem = placed.problem
+    start, mask = problem.points[0], problem.masks[0]
+
+    assert violations(polyline, fixed, field) == 0
+    assert violations(start, mask, field) == 1
+    assert problem.allowed == [0]
+    assert not problem.guard([start], [mask], problem.positions, problem.seen)
+    # Nothing better found yet, the best state is the chain as drawn.
+    np.testing.assert_array_equal(problem.result(0, best=True).polyline, polyline)
 
 
 NARROW = 0.05

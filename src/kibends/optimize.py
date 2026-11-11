@@ -173,9 +173,12 @@ clearance hinge pushes it out, and the check after a burst moves back only
 what was clear at the burst's start. Resampling keeps a vertex more than
 PRESSED_DEPTH inside the others' clearance where it is, as a free vertex
 (`_Problem.pressed`). Each problem keeps its best
-state, taken only from a burst that does not raise its energy, add
-violations to any member or leave a via newly inside, or deeper inside,
-its clearance of any obstacle, or its stops, than it started.
+state, taken only from a burst that does not raise its energy, leave any
+member with more violations than it had as drawn, or leave a via newly
+inside, or deeper inside, its clearance of any obstacle, or its stops,
+than it started. As drawn, not as resampled, since resampling can lay a
+chord across an obstacle's corner; until a burst passes, the best state
+is the inputs.
 
 When it stops
 -------------
@@ -392,7 +395,7 @@ def optimize_chains(
     vias that are none of `vias`; each problem keeps those its moving vias
     share a layer with. Each problem keeps its best state, replaced only after a
     burst that does not raise its energy, leaves no chain or section with
-    more violations than it started with, and leaves no via deeper inside
+    more violations than its input had, and leaves no via deeper inside
     its clearance or its stops than it started.
 
     A problem settles when its burst moved no shape or via by
@@ -999,23 +1002,27 @@ class _Problem:
             i for i, mask in enumerate(self.masks) if not mask.all() or self.carried[i]
         ]
         self.moving = bool(self.free) or bool(vias)
-        # Resampling can lay a chord across an obstacle corner, and a burst
-        # only rejects crossings its own moves create, so the result is
-        # limited to no more violations per member than the resampled start,
-        # and to no via newly or deeper inside its clearance of any obstacle,
-        # or its stops, than it started.
+        # A burst only rejects crossings its own moves create, so the result
+        # is limited to no more violations per member than it had as drawn,
+        # and to no via newly or deeper inside its clearance of any
+        # obstacle, or its stops, than it started. As drawn, not as
+        # resampled: resampling can lay a chord across an obstacle's corner
+        # that the drawn chain kept clear of.
         self.static_parts = [static_parts(body.field) for body in self.bodies]
         """Each member's static field as edges, None for a field that
         gives none, whose items the burst check then judges as one."""
         self.seen = self.seeing(self.points)
         """What the members see of each other at `points`."""
         self.allowed = self.violations(
-            self.points, self.masks, self.positions, self.seen
+            self.originals,
+            self.anchors,
+            self.start_positions,
+            self.seeing(self.originals),
         )
         self.inside = self.via_distances(self.points, self.positions)
         self.stopped = self.stop_distances(self.points, self.positions)
         self.moved = False
-        # The first burst starts from the shapes `allowed` was measured on:
+        # The first burst starts from the shapes the guard first judges:
         # resampled again, they would cut corners deeper still.
         self.resampled = [True] * count
         self.energy = self.energy_of(self.points, self.positions, self.seen)
@@ -1025,6 +1032,12 @@ class _Problem:
         if resume is not None:
             self.resume(resume)
             self.energy = self.energy_of(self.points, self.positions, self.seen)
+        self.at_input = not self.guard(
+            self.points, self.masks, self.positions, self.seen
+        )
+        """Whether the best state is the inputs, since the start the bursts
+        go on from has more violations than they had, until a burst's state
+        passes the guard."""
         self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
@@ -1356,7 +1369,9 @@ class _Problem:
         )
 
     def result(self, k: int, *, best: bool) -> ChainResult:
-        """Chain k's best state, with `best`, else its input."""
+        """Chain k's best state, with `best`, else its input, which is also
+        the best state while `at_input`."""
+        best = best and not self.at_input
         contact_of = self.best_contact_of[k] if best else self.given_contact_of[k]
         mask = self.best_masks[k] if best else self.anchors[k]
         return ChainResult(
@@ -1368,7 +1383,9 @@ class _Problem:
         )
 
     def pair_result(self, k: int, *, best: bool) -> PairResult:
-        """Member k's, a section's, best state, with `best`, else its input."""
+        """Member k's, a section's, best state, with `best`, else its input,
+        which is also the best state while `at_input`."""
+        best = best and not self.at_input
         block = self.members[k]
         assert isinstance(block, PairBlock)
         given = block.given
@@ -1389,7 +1406,9 @@ class _Problem:
         )
 
     def via_result(self, k: int, *, best: bool) -> ViaResult:
-        """Via k's best centre, with `best`, else its input."""
+        """Via k's best centre, with `best`, else its input, which is also
+        the best centre while `at_input`."""
+        best = best and not self.at_input
         x, y = self.best_positions[k] if best else self.start_positions[k]
         return ViaResult((float(x), float(y)), self.via_rejected[k])
 
@@ -1461,6 +1480,7 @@ class _Problem:
             self.best_contact_of = list(self.contact_of)
             self.best_positions = list(self.positions)
             self.best_energy = self.energy
+            self.at_input = False
         self.lowest.append(min(self.lowest[-1], self.energy))
         self.lengths.append(self.length())
         if burst.abnormal:
