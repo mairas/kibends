@@ -138,7 +138,7 @@ def reference_energy(
         else:
             near = neighbour_field(member, others)
             static, limit = member.field, None
-        field: ObstacleField = chain_field(static, [near])
+        field: ObstacleField = chain_field(static, near)
         value += total_energy(points, mask, field, params, settings.short_edge, limit)[
             0
         ]

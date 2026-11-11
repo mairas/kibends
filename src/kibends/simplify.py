@@ -166,7 +166,7 @@ class _Neighbours:
         own, ignored = self.viewer(i)
         shown = [part for j in near for part in self._shown[int(j)]]
         return chain_field(
-            self.chains[i].field, [neighbour_field(own, shown, ignored=ignored)]
+            self.chains[i].field, neighbour_field(own, shown, ignored=ignored)
         )
 
     def move(self, j: int, points: FloatArray) -> None:

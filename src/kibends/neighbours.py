@@ -18,7 +18,6 @@ from dataclasses import dataclass, replace
 from kibends.energy import BoolArray, DistanceField, FloatArray, ObstacleField
 from kibends.obstacles import (
     ChainCentreline,
-    ChainField,
     CompositeField,
     chain_inflation,
     chains_field,
@@ -48,16 +47,10 @@ class ChainInput:
 
 
 def chain_field(
-    static: ObstacleField, neighbours: Iterable[ObstacleField | None]
+    static: ObstacleField, neighbours: ObstacleField | None
 ) -> ObstacleField:
-    """A chain's field: `static` alone, or with the neighbour fields that are
-    not None."""
-    others = [field for field in neighbours if field is not None]
-    chains = [field for field in others if isinstance(field, ChainField)]
-    if len(chains) > 1:
-        rest = [field for field in others if not isinstance(field, ChainField)]
-        others = [ChainField.merged(chains), *rest]
-    return CompositeField([static, *others]) if others else static
+    """A chain's field: `static` alone, or with `neighbours` if not None."""
+    return static if neighbours is None else CompositeField([static, neighbours])
 
 
 def neighbour_field(
