@@ -132,7 +132,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    through a neck, which only KiCad's DRC
    sees. Any other selected via stays where it is; a debug log line names it
    and the reason: it is locked, it is on a net of a differential pair (see
-   [Differential pairs](#differential-pairs)), other copper touches it or a chain end it
+   [Differential pairs](#differential-pairs)), a track of a selected group
+   ends at it, other copper touches it or a chain end it
    would carry (an unselected track, a selected track that passes it with
    no vertex at its centre, a pad, a copper shape or another via of its
    net, on a layer it spans), it sits at the edge of a zone's region

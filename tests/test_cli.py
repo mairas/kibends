@@ -2630,6 +2630,30 @@ class TestMovingVias:
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
 
+    def test_a_via_a_group_track_ends_at_stays_and_the_run_commits(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # Moved, the via would drag the group's track, which the commit's
+        # re-read then finds changed.
+        route = [*l_chain(), *detour_back()]
+        via = kipy_via("v", "SIG", *VIA)
+        group = kipy_group("Tuning Pattern", route[:2])
+        board = connect.to(
+            CommitBoard(
+                selection=[group, *route[2:], via],
+                tracks=list(route),
+                vias=[via],
+                groups=[group],
+            )
+        )
+
+        run("--verbose")
+
+        assert board.calls == COMMIT_CALLS
+        assert not created_vias(board)
+        assert not {"a", "b", "v"} & {*board.deleted}
+        assert any("a track of a selected group ends at it" in line for line in log)
+
     def test_a_via_at_a_width_change_carries_both_ends(
         self, connect: Connector
     ) -> None:
