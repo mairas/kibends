@@ -514,16 +514,16 @@ def optimize_chains(
             if p.problem.gave_up:
                 gave_up.setdefault(p.problem.description, p.problem.abnormal_streak)
             problem = _problem(
-                p.layers,
-                p.chains,
-                p.sections,
-                p.vias,
                 chains,
                 blocks,
                 moving_vias,
                 params,
                 settings,
                 static_vias,
+                layers=p.layers,
+                on=p.chains,
+                sections=p.sections,
+                joined=p.vias,
             )
             members, vias_back = problem.go_on_from(p.problem)
             logger.info(
@@ -559,16 +559,17 @@ class _Placed:
 
 
 def _problem(
-    layers: Sequence[str],
-    on: Sequence[int],
-    sections: Sequence[int],
-    joined: Sequence[int],
     chains: Sequence[ChainInput],
     blocks: Sequence[PairBlock],
     vias: MovingVias,
     params: EnergyParams,
     settings: OptimizerSettings,
     static_vias: Sequence[StaticVia],
+    *,
+    layers: Sequence[str],
+    on: Sequence[int],
+    sections: Sequence[int],
+    joined: Sequence[int],
 ) -> _Problem:
     """The problem of `layers`: the chains `on` them, the `sections` and
     the `joined` vias, by their indices in `chains`, `blocks` and `vias`."""
@@ -617,16 +618,16 @@ def _problems(
         on = [i for i, c in enumerate(chains) if c.layer in group]
         sections = [k for k, b in enumerate(blocks) if b.given.layer in group]
         problem = _problem(
-            group,
-            on,
-            sections,
-            joined,
             chains,
             blocks,
             vias,
             params,
             settings,
             static_vias,
+            layers=group,
+            on=on,
+            sections=sections,
+            joined=joined,
         )
         placed.append(_Placed(problem, group, on, sections, joined))
     return placed
