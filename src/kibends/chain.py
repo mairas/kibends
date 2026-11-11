@@ -16,7 +16,10 @@ share the cut: at the junction it hangs off, else at a point other copper
 pins, else at the vertex that keeps a pad or via it passes, which is then
 pinned (`_cut_loop`). A loop nothing of its net touches, and zero-length
 tracks that touch no selected track of their width, form no chain; the run
-leaves them on the board as unselected copper.
+leaves them on the board as unselected copper. A track shorter than
+`JUNCTION_TOLERANCE_NM` counts as zero-length, its ends merged into one
+point (`_short_tracks_merged`), so it adds no vertex to a chain, which
+still replaces it.
 
 Where selected chains of one net overlap or cross away from their ends,
 nothing pins either: copper of one net does not interact, so a run may move
@@ -63,7 +66,7 @@ NM_PER_MM = 1_000_000
 # Below KiCad's 1 nm resolution, so two distinct chain vertices never merge.
 PIN_MERGE_TOLERANCE_MM = 0.5 / NM_PER_MM
 # Far below any real geometry, yet above the rounding of a point placed on a
-# diagonal segment.
+# diagonal segment, or of a corner KiCad rounds into a track of its own.
 JUNCTION_TOLERANCE_NM = 10
 MAX_CHAIN_DEGREE = 2
 # Widens the float candidate search so a point exactly at the tolerance still
@@ -181,7 +184,9 @@ def extract_chains(
     Selected segments are grouped by layer, net and width, and each group is
     split into connected pieces. A closed loop is cut where its net touches
     it; one nothing of its net touches, and zero-length segments that touch
-    no other of their width, form no chain and are logged at debug. Two
+    no other of their width, form no chain and are logged at debug. A
+    segment shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends
+    merged into one point (`_short_tracks_merged`). Two
     widths that overlap along a span stay a chain each, held where the end
     of one reaches the other. A point where three or more selected tracks of
     one net on one layer end, or tracks of more than one width that do not
@@ -239,6 +244,7 @@ def split_chains(
     giving `left_out` a line on each piece that forms no chain."""
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
+    kept = _short_tracks_merged(kept)
     if all(s.start == s.end for s in kept):
         raise ChainError("selection has no tracks of non-zero length")
 
@@ -442,6 +448,7 @@ def extract_chain(
     The chain starts at the end with the smaller (x, y).
     """
     kept, locked = split_locked(segments)
+    kept = _short_tracks_merged(kept)
     copper = tuple(same_net_copper)
     if kept:
         _, layer, net = _uniform_attributes(kept)
@@ -627,6 +634,34 @@ def _single_value[Attribute: (int, str)](
         for value, ids in sorted(ids_by_value.items())
     )
     raise ChainError(f"selected tracks have different {what}: {listing}{hint}")
+
+
+def _short_tracks_merged(segments: Sequence[Segment]) -> list[Segment]:
+    """`segments` with each one shorter than `JUNCTION_TOLERANCE_NM` made a
+    zero-length dot: its two ends merge into the smaller, and every segment
+    of its layer and net that ends at either ends there.
+
+    KiCad leaves such tracks where it rounds a corner to the nanometre grid.
+    As an edge, one would give a chain two vertices a nanometre apart, which
+    every later stage reads as a sharp kink.
+    """
+    into: dict[tuple[str, str, NmPoint], NmPoint] = {}
+
+    def merged(s: Segment, p: NmPoint) -> NmPoint:
+        while (s.layer, s.net, p) in into:
+            p = into[s.layer, s.net, p]
+        return p
+
+    for s in segments:
+        dx, dy = s.end[0] - s.start[0], s.end[1] - s.start[1]
+        if dx * dx + dy * dy >= JUNCTION_TOLERANCE_NM**2:
+            continue
+        low, high = sorted((merged(s, s.start), merged(s, s.end)))
+        if low != high:
+            into[s.layer, s.net, high] = low
+    return [
+        replace(s, start=merged(s, s.start), end=merged(s, s.end)) for s in segments
+    ]
 
 
 def _unique_edges(segments: Sequence[Segment]) -> tuple[list[Segment], set[NmPoint]]:

@@ -41,6 +41,7 @@ from conftest import (
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
+from kipy.geometry import Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
@@ -3985,6 +3986,26 @@ class TestPairs:
         assert sorted(board.deleted) == list(PAIR_IDS)
         gaps = coupled_gaps(*by_net(board).values())
         assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+
+    def test_a_nanometre_track_at_a_corner_is_smoothed_away(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = pair_board()
+        corner = next(t for t in board.tracks if t.id.value == "p3")
+        # As KiCad leaves one at a 45° corner: across it, 1 nm each way.
+        dot = kipy_track("dot", USB[0], (0, 0), (0, 0), width=PAIR_WIDTH)
+        dot.start = Vector2.from_xy(corner.start.x, corner.start.y)
+        dot.end = Vector2.from_xy(corner.start.x + 1, corner.start.y - 1)
+        corner.start = dot.end
+        board.selection = [*board.selection, dot]
+        board.tracks = [*board.tracks, dot]
+        connect.to(board)
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert pair.held == 0
+        assert sorted(board.deleted) == sorted([*PAIR_IDS, "dot"])
 
     def test_two_pairs_commit_each_joined_and_at_its_gap(
         self, connect: Connector, log: list[str]

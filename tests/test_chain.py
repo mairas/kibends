@@ -146,6 +146,23 @@ class TestDedupe:
 
         assert sorted(chain.segment_ids) == ["a", "b", "c", "dot", "dup"]
 
+    def test_a_nanometre_track_at_a_corner_adds_no_vertex(self) -> None:
+        corner = nm(10, 0)
+        off = (corner[0] + 1, corner[1] + 1)
+        a, b, c = sorted(l_z_segments(), key=lambda s: s.id)
+        segments = [
+            a,
+            Segment("short", corner, off, WIDTH_NM, LAYER, NET),
+            replace(b, end=off),
+            c,
+        ]
+
+        chain = extract_chain(segments, frame=BOARD_FRAME)
+
+        assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
+        assert chain.pinned == (True, False, False, True)
+        assert sorted(chain.segment_ids) == ["a", "b", "c", "short"]
+
     def test_zero_length_segment_away_from_chain_is_left_out(self) -> None:
         segments = [*l_z_segments(), seg("stray", (50, 50), (50, 50))]
 
