@@ -8,13 +8,14 @@ Several chains are simplified in turn, each against its own field plus the
 other chains on its layer at their latest shapes, those it ignores left
 out, as the optimizer leaves them out (`neighbours.neighbour_field`). Its
 field holds only the chains whose copper can reach the vertices it merges
-across, found by their boxes (`_Neighbours`), so the work grows with the
-chains, not with pairs of them, and the result is that of a field of every
-chain on the layer. A vertex that keeps a pad or via (`chain.Contact`) is
-fixed, so merging keeps it where the optimizer left it, inside its region.
-A coupled section of a differential pair is simplified as its centreline,
-as the optimizer moved it, and its two tracks follow it as they do in the
-optimizer.
+across, found by comparing boxes with those of all chains on its layer in
+one vectorised step (`_Neighbours`). The field it builds and searches so
+grows with the chains near it, not with all chains on the layer, and the
+result is that of a field of every chain on the layer. A vertex that
+keeps a pad or via (`chain.Contact`) is fixed, so merging keeps it where
+the optimizer left it, inside its region. A coupled section of a
+differential pair is simplified as its centreline, as the optimizer moved
+it, and its two tracks follow it as they do in the optimizer.
 
 `kept_vertices` merges a section's routing the same way before it moves
 (`pair_blocks`).
@@ -102,8 +103,9 @@ class _Neighbours:
     kept, so it neither blocks a segment nor makes a distance negative, and
     the answers the simplification takes are those of a field of every
     chain on the layer.
-    Finding them compares one box per chain on the layer, so the work per
-    chain grows with its near neighbours, not with all chains.
+    Finding them compares the boxes of all chains on the layer in one
+    vectorised step; the field built and searched grows only with the
+    chains near.
     """
 
     def __init__(
