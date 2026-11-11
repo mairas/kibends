@@ -702,6 +702,53 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     )
 
 
+TENT_SHIFT = 12.0
+"""mm along x between the two tents of `two_tents`, far enough that neither
+sees the other."""
+
+
+def two_tents() -> PairsScenario:
+    """`pair_tent` and a copy of it of other nets beside it, on one layer."""
+    (first,) = scenarios.pair_tent().pairs
+    (bar,) = scenarios.pair_tent().chains
+    shifted = [(x + TENT_SHIFT, y) for x, y in ((0.0, 0.0), (3.0, 3.0), (7.0, 3.0))]
+    second = scenarios.coupled(FreeSpace(), *shifted, (10.0 + TENT_SHIFT, 0.0))
+    second = replace(
+        second,
+        a=replace(second.a, description="P2", net="P2"),
+        b=replace(second.b, description="N2", net="N2"),
+    )
+    beside = [(x + TENT_SHIFT, y) for x, y in scenarios.PAIR_BAR]
+    bar_two = selected("bar 2", "B2", FreeSpace(), *beside)
+    return PairsScenario("two-tents", (first, second), (bar, bar_two))
+
+
+def hold_first(results: Sequence[PairResult]) -> list[int]:
+    """The first section not held yet, as if holding one left the next bent
+    too tightly."""
+    return [k for k, result in enumerate(results) if not result.block.held][:1]
+
+
+def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = two_tents()
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        replace(COARSE, time_limit=1),
+        pairs=scenario.pairs,
+        clock=clock,
+        to_hold=hold_first,
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert clock.bursts == 1
+    assert_held_as_drawn(result, scenario)
+
+
 def test_a_section_named_again_once_held_is_not_held_again() -> None:
     scenario = scenarios.pair_tent()
     asked = 0

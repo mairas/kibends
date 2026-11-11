@@ -4349,7 +4349,8 @@ class TestPairs:
         run("--dry-run", f"--time-limit={HELD_AT_BURST - 0.5}")
 
         (result,) = runs
-        assert asked == [[None]]
+        # Asked again once held, past the limit, it names nothing more.
+        assert asked == [[None], [Hold.CROWDING]]
         assert result.termination is Termination.TIME_LIMIT
         # The section was held when the limit had passed, and no burst ran
         # after it.

@@ -294,7 +294,8 @@ run had taken it, except those that had moved into the section's clearance,
 or into a chain or via that had to go back, which go back to where they
 started; with time left, the run then smooths them again. `--time-limit`
 still covers the whole run: if the time is up when the section is held, the
-run ends there.
+run ends there, once it has also held any section that going back left bent
+too tightly.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they

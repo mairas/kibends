@@ -184,7 +184,9 @@ problem settled on abnormal bursts gave up: it keeps the best state if
 that is lower in energy than the inputs, and ends abnormally if not.
 
 Where it would stop, for whatever reason, the run holds the sections bent
-too tightly and goes on, unless the time is up. The hold is judged there
+too tightly and goes on. When the time is up, it runs no further burst
+but judges again what each hold left, until no section is left to hold,
+since a section put back may be bent too tightly. The hold is judged there
 rather than as a bend stays too tight, since a burst may still round it.
 The problem built again measures its guard, its energy and its inputs'
 energy with the sections held, so the best state is never compared with
@@ -394,7 +396,9 @@ def optimize_chains(
     would come too close to the section, or to what was put back, put back
     where they started; the others keep their progress. The iteration cap
     counts again from the hold. A run that would end at the time limit
-    ends with the hold, without another burst.
+    runs no further burst: it asks `to_hold` again after each hold, since
+    what a hold put back may be bent too tightly, until it names no
+    section that is not held.
 
     It logs at INFO when setup begins, once the problems are built, the
     setup time and the starting length and energy, and at each hold what
@@ -466,40 +470,44 @@ def optimize_chains(
 
     iteration = 0
     cap = settings.max_iterations
+    termination = Termination.ITERATION_CAP
     while True:
-        termination = Termination.ITERATION_CAP
-        while iteration < cap:
-            iteration += 1
-            out_of_time = False
-            change = 0.0
-            for problem in moving:
-                if problem.settled:
-                    continue
-                change = max(
-                    change, problem.step(None if deadline is None else expired)
-                )
-                if expired():
-                    out_of_time = True
+        # Past the time limit, what a hold puts back is judged again, with
+        # no burst, until it leaves no section to hold.
+        if termination is not Termination.TIME_LIMIT:
+            termination = Termination.ITERATION_CAP
+            while iteration < cap:
+                iteration += 1
+                out_of_time = False
+                change = 0.0
+                for problem in moving:
+                    if problem.settled:
+                        continue
+                    change = max(
+                        change, problem.step(None if deadline is None else expired)
+                    )
+                    if expired():
+                        out_of_time = True
+                        break
+                now = clock()
+                message = _progress(moving, iteration, now - origin, change)
+                if now - last_shown >= PROGRESS_INTERVAL:
+                    logger.info(message)
+                    last_shown = now
+                else:
+                    logger.debug(message)
+                if all(p.settled for p in moving):
+                    if iteration == 1 and not any(p.moved for p in moving):
+                        return result(Termination.NOTHING_TO_DO, 1, best=False)
+                    termination = (
+                        Termination.GAVE_UP
+                        if gave_up or any(p.gave_up for p in moving)
+                        else Termination.CONVERGED
+                    )
                     break
-            now = clock()
-            message = _progress(moving, iteration, now - origin, change)
-            if now - last_shown >= PROGRESS_INTERVAL:
-                logger.info(message)
-                last_shown = now
-            else:
-                logger.debug(message)
-            if all(p.settled for p in moving):
-                if iteration == 1 and not any(p.moved for p in moving):
-                    return result(Termination.NOTHING_TO_DO, 1, best=False)
-                termination = (
-                    Termination.GAVE_UP
-                    if gave_up or any(p.gave_up for p in moving)
-                    else Termination.CONVERGED
-                )
-                break
-            if out_of_time:
-                termination = Termination.TIME_LIMIT
-                break
+                if out_of_time:
+                    termination = Termination.TIME_LIMIT
+                    break
         named: Sequence[int] = () if to_hold is None else to_hold(sections(best=True))
         held = [k for k in named if not blocks[k].held]
         if not held:
@@ -536,8 +544,6 @@ def optimize_chains(
             placed[n] = replace(p, problem=problem)
         problems = [p.problem for p in placed]
         moving = [p for p in problems if p.moving]
-        if termination is Termination.TIME_LIMIT:
-            break
         cap = iteration + settings.max_iterations
     final = result(termination, iteration, best=True)
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
