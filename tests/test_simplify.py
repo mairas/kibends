@@ -22,7 +22,7 @@ from kibends.contacts import no_contacts
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, track_inflation
 from kibends.optimize import optimize, optimize_chains
-from kibends.pair_blocks import pair_block
+from kibends.pair_blocks import PairBlock, pair_block
 from kibends.polylines import measure
 from kibends.results import ChainResult, RunResult, Termination
 from kibends.simplify import simplify, simplify_chains
@@ -305,6 +305,64 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
     for track in block.offset(centreline):
         assert LineString(track).distance(LineString(wall.points)) >= keep
+
+
+CREST_SPAN = 0.6
+"""rad either side of a crest's top."""
+
+
+def section_over_a_crest() -> tuple[PairBlock, FloatArray]:
+    """A coupled section bending over a crest of radius `BEND`, a vertex at
+    its top, and its centreline."""
+    angles = np.pi / 2 + np.arange(-CREST_SPAN, CREST_SPAN + BEND_STEP / 2, BEND_STEP)
+    arc = BEND * np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    block = pair_block(
+        scenarios.coupled(FreeSpace(), *(tuple(p) for p in arc)), SPACING
+    )
+    return block, block.chain.centreline.points
+
+
+def track_gaps(
+    block: PairBlock, centreline: FloatArray, other: FloatArray
+) -> list[float]:
+    """How far each of the tracks at `centreline` lies from `other`, mm."""
+    return [
+        LineString(track).distance(LineString(other))
+        for track in block.offset(centreline)
+    ]
+
+
+def test_a_section_s_merged_corners_keep_clear_of_another_selected_chain() -> None:
+    # The other chain lies beyond the reach of the centreline's box but
+    # within that of the corners' box: the corners of the outer track at
+    # the vertices kept next to merged edges reach past its optimised shape.
+    block, line = section_over_a_crest()
+    facing = block.facing
+    reach = track_inflation(
+        facing.centreline.width, facing.centreline.clearance, PAIR_WIDTH, PAIR_CLEARANCE
+    )
+    y = line[:, 1].max() + reach + NEAR
+    wall = path((-BEND / 2, y), (BEND / 2, y))
+    chains = [
+        facing,
+        ChainInput(
+            ChainCentreline("wall", "W", PAIR_WIDTH, PAIR_CLEARANCE, wall),
+            facing.layer,
+            np.ones(len(wall), dtype=bool),
+            FreeSpace(),
+        ),
+    ]
+
+    centreline, _ = simplify_chains(
+        chains,
+        unmoved((line, free(len(line))), (wall, chains[1].fixed)),
+        SECTION_TOLERANCE,
+        sections={0: block},
+    )
+
+    assert len(centreline) < len(line)
+    keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
+    assert min(track_gaps(block, centreline, wall)) >= keep
 
 
 WAVE_STEP = 0.05
