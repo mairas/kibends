@@ -25,6 +25,7 @@ from kibends.energy import (
     edge_curvature,
     edge_integral,
     hinge_curvature,
+    hinge_integrand,
     obstacle_curvature,
     obstacle_integrand,
     quadrature_points,
@@ -639,3 +640,16 @@ def test_inside_an_obstacle_the_curvature_is_the_boundary_s() -> None:
 
     assert inside == boundary > 0.0
     assert hinge_inside == hinge_boundary > 0.0
+
+
+def test_the_hinge_curvature_is_its_slope_s_derivative_within_the_standoff() -> None:
+    distance = PARAMS.standoff * np.array([0.1, 0.5, 0.9])
+    _, up = hinge_integrand(PARAMS)(distance + CURVATURE_STEP)
+    _, down = hinge_integrand(PARAMS)(distance - CURVATURE_STEP)
+
+    np.testing.assert_allclose(
+        hinge_curvature(PARAMS)(distance),
+        (up - down) / (2 * CURVATURE_STEP),
+        rtol=CURVATURE_RTOL,
+        atol=CURVATURE_ATOL,
+    )
