@@ -72,7 +72,7 @@ from kibends.energy import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
-from kibends.optimize import optimize_chains
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
@@ -3392,6 +3392,7 @@ the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
+ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
 PADS_AT = 10.5
 """x of the same-net pads beside the pair's last straight, mm."""
@@ -4358,6 +4359,23 @@ class TestPairs:
         assert result.pairs[0].block.hold is Hold.CROWDING
         out = capsys.readouterr().out
         assert f"after {result.iterations} iterations" in out
+
+    def test_a_problem_given_up_on_is_logged_at_debug(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+
+        def gives_up(*args: object, **kwargs: object) -> RunResult:
+            abandoned = (ABANDONED, MAX_ABNORMAL_BURSTS)
+            return replace(real(*args, **kwargs), gave_up=(abandoned,))
+
+        monkeypatch.setattr(pipeline, "optimize_chains", gives_up)
+        connect.to(pair_board())
+
+        run("--dry-run")
+
+        (line,) = [w for w in log if "Gave up" in w]
+        assert line.startswith("DEBUG") and ABANDONED in line
 
     def test_dry_run_plot_shows_both_tracks_of_the_pair(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
