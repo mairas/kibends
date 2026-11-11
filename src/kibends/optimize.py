@@ -1173,29 +1173,13 @@ class _Problem:
     def failing(
         self, state: _State, seen: Seen, at_start: set[tuple[int, int]]
     ) -> BoolArray:
-        """For each member, then each via, whether at `state` it has more
-        violations than `allowed`, enters a member or via that it did not
-        enter at the start, `at_start` (`entered`), or is entered so, or,
-        for a via, is newly or deeper inside its clearance of an obstacle
-        or its stops than it started, or is a member or via a via is so
-        inside. `seen` is what the members see at `state`."""
-        count = len(self.members)
-        failing = np.zeros(count + len(self.vias), dtype=bool)
-        violations = self.violations(state.points, state.masks, state.positions, seen)
-        failing[:count] = np.array(violations) > np.array(self.allowed)
+        """For each member, then each via, whether at `state` it oversteps
+        (`overstepping`), enters a member or via that it did not enter at
+        the start, `at_start` (`entered`), or is entered so. `seen` is what
+        the members see at `state`."""
+        failing = self.overstepping(state.points, state.masks, state.positions, seen)
         for pair in self.entered(state.points, state.positions, seen) - at_start:
             failing[list(pair)] = True
-        for now, start in (
-            (self.via_distances(state.points, state.positions), self.inside),
-            (self.stop_distances(state.points, state.positions), self.stopped),
-        ):
-            static, inside = newly_inside(
-                now, start, INSIDE_TOLERANCE, DEEPER_ROUND_OFF
-            )
-            failing[count + now.static.via[static]] = True
-            failing[count + now.by_obstacle.via[inside]] = True
-            # A member by its index, a via after the members, as here.
-            failing[now.by_obstacle.obstacle[inside]] = True
         return failing
 
     def guard(
@@ -1205,26 +1189,40 @@ class _Problem:
         positions: Sequence[FloatArray],
         seen: Seen,
     ) -> bool:
-        """Whether no member has more violations than `allowed` and no via
-        is newly inside, or deeper inside, its clearance of any obstacle or
-        any of its stops than it started (`via_moves.newly_inside`), each
-        judged apart, so that a via inside one cannot be pushed into
-        another. `seen` is what the members see at `polylines`."""
-        return all(
-            count <= allowed
-            for count, allowed in zip(
-                self.violations(polylines, masks, positions, seen),
-                self.allowed,
-                strict=True,
+        """Whether nothing oversteps at `polylines` and `positions`
+        (`overstepping`). `seen` is what the members see at `polylines`."""
+        return not self.overstepping(polylines, masks, positions, seen).any()
+
+    def overstepping(
+        self,
+        polylines: Sequence[FloatArray],
+        masks: Sequence[BoolArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
+    ) -> BoolArray:
+        """For each member, then each via, whether at `polylines` and
+        `positions` it has more violations than `allowed`, or, for a via, is
+        newly inside, or deeper inside, its clearance of any obstacle or any
+        of its stops than it started (`via_moves.newly_inside`), or is a
+        member or via a via is so inside. Each obstacle is judged apart, so
+        that a via inside one cannot be pushed into another. `seen` is what
+        the members see at `polylines`."""
+        count = len(self.members)
+        over = np.zeros(count + len(self.vias), dtype=bool)
+        violations = self.violations(polylines, masks, positions, seen)
+        over[:count] = np.array(violations) > np.array(self.allowed)
+        for now, start in (
+            (self.via_distances(polylines, positions), self.inside),
+            (self.stop_distances(polylines, positions), self.stopped),
+        ):
+            static, inside = newly_inside(
+                now, start, INSIDE_TOLERANCE, DEEPER_ROUND_OFF
             )
-        ) and not any(
-            inside.any()
-            for now, start in (
-                (self.via_distances(polylines, positions), self.inside),
-                (self.stop_distances(polylines, positions), self.stopped),
-            )
-            for inside in newly_inside(now, start, INSIDE_TOLERANCE, DEEPER_ROUND_OFF)
-        )
+            over[count + now.static.via[static]] = True
+            over[count + now.by_obstacle.via[inside]] = True
+            # A member by its index, a via after the members, as here.
+            over[now.by_obstacle.obstacle[inside]] = True
+        return over
 
     def violations(
         self,
