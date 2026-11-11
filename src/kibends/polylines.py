@@ -180,9 +180,9 @@ def _arc_fractions(points: FloatArray) -> FloatArray:
 
 @dataclass(frozen=True)
 class SelfCheck:
-    """What a burst may not do to a coupled section's centreline, measured
-    against `original`, where the burst started: bend an edge newly below
-    `bend_limit`."""
+    """What a burst may not do to a coupled section's centreline: bend an
+    edge below `bend_limit` that was not already there where the burst
+    started (`tight_before`)."""
 
     bend_limit: float
     tight_before: BoolArray
