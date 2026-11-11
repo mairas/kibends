@@ -127,7 +127,12 @@ from kibends.bursts import (  # noqa: E402
 from kibends.chain import NM_PER_MM  # noqa: E402
 from kibends.energy import EnergyParams, FloatArray, IntArray  # noqa: E402
 from kibends.neighbours import ChainInput  # noqa: E402
-from kibends.optimize import optimize, optimize_chains  # noqa: E402
+from kibends.optimize import (  # noqa: E402
+    OptimizeResult,
+    RunResult,
+    optimize,
+    optimize_chains,
+)
 from kibends.polylines import shape_change  # noqa: E402
 from kibends.seen import Pairs, Seen  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
@@ -430,88 +435,95 @@ Case = Callable[[], tuple[int, str]]
 Several = ChainsScenario | ViasScenario | PairsScenario
 
 
+def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
+    """The scenarios of `tests/scenarios.py` the benchmark runs, by name."""
+    free = FreeSpace()
+    return {
+        "wrap": scenarios.wrap,
+        "channel-0": lambda: scenarios.channel(0.0),
+        "channel-1": lambda: scenarios.channel(1.0),
+        "topology": scenarios.topology,
+        "pad-row": scenarios.pad_row,
+        **(
+            {"starts-inside": scenarios.starts_inside}
+            if hasattr(scenarios, "starts_inside")
+            else {}
+        ),
+        "detour": scenarios.detour,
+        "narrow-gap": scenarios.narrow_gap,
+        "channel-pair": scenarios.channel_pair,
+        "uneven-channel-pair": scenarios.uneven_channel_pair,
+        "tent": scenarios.tent,
+        "same-net-wrap": scenarios.same_net_wrap,
+        "crowded": scenarios.crowded,
+        "drape": scenarios.drape,
+        "squeeze": scenarios.squeeze,
+        "hooks": scenarios.hooks,
+        # An older tree's neck-down holds its corner, so it is no stand-in.
+        **(
+            {"width-change": scenarios.width_change}
+            if hasattr(scenarios, "width_change")
+            else {}
+        ),
+        "centreline-over-pad": scenarios.centreline_over_pad,
+        "via-detour": scenarios.via_detour,
+        "via-on-one-layer": scenarios.via_on_one_layer,
+        "via-fermat": scenarios.via_fermat,
+        "via-hemmed": scenarios.via_hemmed,
+        "via-corner": scenarios.via_corner,
+        "via-beside-chain": scenarios.via_beside_chain,
+        "via-pair": scenarios.via_pair,
+        "via-over-pinned-N": lambda: scenarios.via_over_pinned("N"),
+        "via-over-pinned-P": lambda: scenarios.via_over_pinned("P"),
+        "via-over-bowed-N": lambda: scenarios.via_over_bowed("N"),
+        "via-over-bowed-P": lambda: scenarios.via_over_bowed("P"),
+        "via-detour-over": lambda: scenarios.via_detour_over(free),
+        "via-detour-over-box": lambda: scenarios.via_detour_over(
+            Box(4.9, 2.0, 0.05, 0.05)
+        ),
+        "via-slack": lambda: scenarios.via_slack(free),
+        "via-across-chain": scenarios.via_across_chain,
+        "via-grid-3x4": lambda: scenarios.via_grid(3, 4),
+        "pair-over-pad": scenarios.pair_over_pad,
+        "pair-tent": scenarios.pair_tent,
+        "pair-corner": scenarios.pair_corner,
+        "pair-round-corner": scenarios.pair_round_corner,
+        "pair-uneven-end": scenarios.pair_uneven_end,
+        "pair-chamfered": scenarios.pair_chamfered,
+        "pair-split": scenarios.pair_split,
+        "pair-turning-back-150": scenarios.pair_turning_back,
+    }
+
+
+def run_scenario(
+    s: scenarios.Scenario | Several,
+) -> OptimizeResult | RunResult:
+    """The scenario through the optimizer at default settings."""
+    if isinstance(s, scenarios.Scenario):
+        return optimize(s.polyline, s.fixed, s.field, s.params)
+    return optimize_chains(
+        s.chains,
+        s.params,
+        vias=s.vias if isinstance(s, ViasScenario) else (),
+        pairs=s.pairs if isinstance(s, PairsScenario) else (),
+    )
+
+
 def scenario_cases() -> dict[str, Case]:
-    def single(make: Callable[[], scenarios.Scenario]) -> Case:
+    def case(make: Callable[[], scenarios.Scenario | Several]) -> Case:
         def go() -> tuple[int, str]:
-            s = make()
-            result = optimize(s.polyline, s.fixed, s.field, s.params)
-            outcome = result.termination.value
-            return result.iterations, f"{outcome}, {length(result.polyline):.4f} mm"
-
-        return go
-
-    def several(make: Callable[[], Several]) -> Case:
-        def go() -> tuple[int, str]:
-            s = make()
-            result = optimize_chains(
-                s.chains,
-                s.params,
-                vias=s.vias if isinstance(s, ViasScenario) else (),
-                pairs=s.pairs if isinstance(s, PairsScenario) else (),
-            )
-            total = sum(length(c.polyline) for c in result.chains) + sum(
-                length(t) for p in result.pairs for t in p.kept()
-            )
+            result = run_scenario(make())
+            if isinstance(result, OptimizeResult):
+                total = length(result.polyline)
+            else:
+                total = sum(length(c.polyline) for c in result.chains) + sum(
+                    length(t) for p in result.pairs for t in p.kept()
+                )
             return result.iterations, f"{result.termination.value}, {total:.4f} mm"
 
         return go
 
-    free = FreeSpace()
-    return {
-        "wrap": single(scenarios.wrap),
-        "channel-0": single(lambda: scenarios.channel(0.0)),
-        "channel-1": single(lambda: scenarios.channel(1.0)),
-        "topology": single(scenarios.topology),
-        "pad-row": single(scenarios.pad_row),
-        **(
-            {"starts-inside": single(scenarios.starts_inside)}
-            if hasattr(scenarios, "starts_inside")
-            else {}
-        ),
-        "detour": single(scenarios.detour),
-        "narrow-gap": single(scenarios.narrow_gap),
-        "channel-pair": several(scenarios.channel_pair),
-        "uneven-channel-pair": several(scenarios.uneven_channel_pair),
-        "tent": several(scenarios.tent),
-        "same-net-wrap": several(scenarios.same_net_wrap),
-        "crowded": several(scenarios.crowded),
-        "drape": several(scenarios.drape),
-        "squeeze": several(scenarios.squeeze),
-        "hooks": several(scenarios.hooks),
-        # An older tree's neck-down holds its corner, so it is no stand-in.
-        **(
-            {"width-change": several(scenarios.width_change)}
-            if hasattr(scenarios, "width_change")
-            else {}
-        ),
-        "centreline-over-pad": several(scenarios.centreline_over_pad),
-        "via-detour": several(scenarios.via_detour),
-        "via-on-one-layer": several(scenarios.via_on_one_layer),
-        "via-fermat": several(scenarios.via_fermat),
-        "via-hemmed": several(scenarios.via_hemmed),
-        "via-corner": several(scenarios.via_corner),
-        "via-beside-chain": several(scenarios.via_beside_chain),
-        "via-pair": several(scenarios.via_pair),
-        "via-over-pinned-N": several(lambda: scenarios.via_over_pinned("N")),
-        "via-over-pinned-P": several(lambda: scenarios.via_over_pinned("P")),
-        "via-over-bowed-N": several(lambda: scenarios.via_over_bowed("N")),
-        "via-over-bowed-P": several(lambda: scenarios.via_over_bowed("P")),
-        "via-detour-over": several(lambda: scenarios.via_detour_over(free)),
-        "via-detour-over-box": several(
-            lambda: scenarios.via_detour_over(Box(4.9, 2.0, 0.05, 0.05))
-        ),
-        "via-slack": several(lambda: scenarios.via_slack(free)),
-        "via-across-chain": several(scenarios.via_across_chain),
-        "via-grid-3x4": several(lambda: scenarios.via_grid(3, 4)),
-        "pair-over-pad": several(scenarios.pair_over_pad),
-        "pair-tent": several(scenarios.pair_tent),
-        "pair-corner": several(scenarios.pair_corner),
-        "pair-round-corner": several(scenarios.pair_round_corner),
-        "pair-uneven-end": several(scenarios.pair_uneven_end),
-        "pair-chamfered": several(scenarios.pair_chamfered),
-        "pair-split": several(scenarios.pair_split),
-        "pair-turning-back-150": several(scenarios.pair_turning_back),
-    }
+    return {name: case(make) for name, make in scenario_makers().items()}
 
 
 def length(points: FloatArray) -> float:
