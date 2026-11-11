@@ -309,6 +309,9 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
 
 CREST_SPAN = 0.6
 """rad either side of a crest's top."""
+SAG = 0.04
+"""How far a chain over a crest bows up in its middle, mm: within
+SECTION_TOLERANCE."""
 
 
 def section_over_a_crest() -> tuple[PairBlock, FloatArray]:
@@ -363,6 +366,39 @@ def test_a_section_s_merged_corners_keep_clear_of_another_selected_chain() -> No
     assert len(centreline) < len(line)
     keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
     assert min(track_gaps(block, centreline, wall)) >= keep
+
+
+def test_a_chain_keeps_clear_of_a_section_simplified_before_it() -> None:
+    # The chain's chord clears the section's optimised tracks, but not the
+    # corners its merged centreline gives them, which reach past the box
+    # around the optimised tracks.
+    block, line = section_over_a_crest()
+    facing = block.facing
+    top = max(float(track[:, 1].max()) for track in block.offset(line))
+    x = np.linspace(-2 * BEND, 2 * BEND, 7)
+    over = np.column_stack(
+        [x, top + scenarios.PAIR_INFLATION + NEAR + SAG * (1 - (x / x[-1]) ** 2)]
+    )
+    chains = [
+        facing,
+        ChainInput(
+            ChainCentreline("over", "W", PAIR_WIDTH, PAIR_CLEARANCE, over),
+            facing.layer,
+            free(len(over)),
+            FreeSpace(),
+        ),
+    ]
+
+    centreline, chord = simplify_chains(
+        chains,
+        unmoved((line, free(len(line))), (over, chains[1].fixed)),
+        SECTION_TOLERANCE,
+        sections={0: block},
+    )
+
+    assert len(centreline) < len(line)
+    keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
+    assert min(track_gaps(block, centreline, chord)) >= keep
 
 
 WAVE_STEP = 0.05
