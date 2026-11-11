@@ -59,7 +59,7 @@ from kibends.bursts import (
     Revert,
     Stop,
 )
-from kibends.chain import NM_PER_MM, Chain, Point2
+from kibends.chain import NM_PER_MM, Point2
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.energy import (
     EnergyParams,
@@ -3802,14 +3802,8 @@ PAIR_FAN_N = (PAIR_FAN[0], -PAIR_FAN[1])
 """Where track N starts."""
 PAIR_END = (13.0, 3.0 + PAIR_HALF_PITCH)
 """Where track P ends, at the end of the pair's coupled section."""
-BUMP = 0.6
-"""mm, how far a bumped pair track leaves its partner."""
 ONWARD = 3.0
 """How far, mm, the track on B.Cu at a via runs on along x."""
-CUT_SHORT = 10.0
-"""x, mm, short of `PAIR_END`, where a track of the pair is cut to end its
-partner uncoupled; the coupled straight before it stays long enough to
-pair."""
 
 
 def with_via(
@@ -4124,52 +4118,10 @@ class TestPairs:
         (line,) = [w for w in log if "Via v" in w]
         x, y = PAIR_END[0] - GRID_ORIGIN[0], PAIR_END[1] - GRID_ORIGIN[1]
         assert f"Via v at ({x:.3f}, {y:.3f}) stays fixed" in line
-        assert (
-            "a coupled section of differential pair USB_D+ and USB_D- on F.Cu "
-            "ends at it"
-        ) in line
+        assert "it is on USB_D+, a net of a diff pair" in line
         assert all(by_net(board).values())
 
-    def test_a_section_reaching_a_via_only_in_the_final_chains_holds_it(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = with_via(pair_board(), at=PAIR_END, onward=ONWARD)
-        # Nothing ends at it and no zone reaches it, so it stays, and the
-        # chains are extracted again with it pinning.
-        stray = kipy_via("s", "GND", 0.0, -FAR)
-        dot = kipy_track("dot", "GND", (FAR, FAR), (FAR, FAR), width=PAIR_WIDTH)
-        board.selection = [*board.selection, stray, dot]
-        board.vias = [*board.vias, stray]
-        board.tracks = [*board.tracks, dot]
-        connect.to(board)
-        real: Callable[..., list[Chain]] = pipeline._extract_chains  # pyright: ignore[reportPrivateUsage]
-        calls: list[None] = []
-
-        def first_uncoupled_at_the_end(*args: object, **kwargs: object) -> list[Chain]:
-            chains = real(*args, **kwargs)
-            calls.append(None)
-            if len(calls) > 1:
-                return chains
-            # Track N ends short of track P's via here, so P ends uncoupled.
-            return [
-                replace(c, points=tuple((min(x, CUT_SHORT), y) for x, y in c.points))
-                if c.net == USB[1]
-                else c
-                for c in chains
-            ]
-
-        monkeypatch.setattr(pipeline, "_extract_chains", first_uncoupled_at_the_end)
-
-        run()
-
-        assert "v" not in board.deleted
-        (line,) = [w for w in log if "Via v" in w]
-        assert "a coupled section of differential pair" in line
-        assert all(by_net(board).values())
-        # Said once, for the chains the run settles on.
-        assert len([w for w in log if "Leaving out" in w]) == 1
-
-    def test_vias_at_the_fan_outs_move_with_them(
+    def test_vias_at_the_fan_outs_stay_and_hold_their_ends(
         self, connect: Connector, log: list[str]
     ) -> None:
         board = with_via(pair_board())
@@ -4177,87 +4129,23 @@ class TestPairs:
 
         run()
 
-        assert not any("stays fixed" in line for line in log)
-        assert {"v", "w", "down_v", "down_w"} <= set(board.deleted)
-        moved = {v.net.name: (v.position.x, v.position.y) for v in created_vias(board)}
-        assert moved.keys() == set(USB)
-        assert moved[USB[0]] != (nm(PAIR_FAN[0]), nm(PAIR_FAN[1]))
-        assert moved[USB[1]] != (nm(PAIR_FAN_N[0]), nm(PAIR_FAN_N[1]))
-        for net, centre in moved.items():
-            for layer in (BL.BL_F_Cu, BL.BL_B_Cu):
-                on_net = [t for t in created_on(board, layer) if t.net.name == net]
-                assert centre in ends(on_net)
+        assert created_vias(board) == []
+        assert not {"v", "w"} & set(board.deleted)
+        for via in ("v", "w"):
+            (line,) = [w for w in log if f"Via {via} " in w]
+            assert "a net of a diff pair" in line
         front = {
             net: [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == net]
             for net in USB
         }
-        # The section meets its fan-outs where it did.
-        for net, side in zip(USB, (1.0, -1.0), strict=True):
-            assert (0, nm(side * PAIR_HALF_PITCH)) in ends(front[net])
+        for net, at in zip(USB, (PAIR_FAN, PAIR_FAN_N), strict=True):
+            assert (nm(at[0]), nm(at[1])) in ends(front[net])
         gaps = coupled_gaps(*([segment(t) for t in front[net]] for net in USB))
         assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
-    def test_a_via_that_would_cut_a_pair_track_off_its_pairing_stays(
+    def test_a_via_a_diff_pair_track_runs_through_stays_on_it(
         self, connect: Connector, log: list[str]
     ) -> None:
-        # USB_D+ bumps away from USB_D- between two coupled stretches, with a
-        # via on the bump's top: cut there, USB_D- pairs with one piece and
-        # the other runs coupled with it unpaired.
-        h = PAIR_HALF_PITCH
-        mitre = math.tan(math.pi / 8) * h
-        top = (4.0, h + BUMP)
-        tracks: list[kbt.Track] = []
-        for net, side, prefix in zip(USB, (1.0, -1.0), ("p", "n"), strict=True):
-            bump = [(3.5, h), top, (4.5, h)] if side > 0 else []
-            points = [
-                (PAIR_FAN[0], side * PAIR_FAN[1]),
-                (0.0, side * h),
-                *bump,
-                (5.0 - side * mitre, side * h),
-                (8.0 - side * mitre, 3.0 + side * h),
-                (13.0, 3.0 + side * h),
-            ]
-            tracks += [
-                kipy_track(f"{prefix}{k}", net, a, b, width=PAIR_WIDTH)
-                for k, (a, b) in enumerate(itertools.pairwise(points))
-            ]
-        via = kipy_via("v", USB[0], *top, diameter=0.3, drill=0.15)
-        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
-        board = connect.to(
-            CommitBoard(
-                selection=[*tracks, via],
-                tracks=list(tracks),
-                vias=[via],
-                netclasses={USB[0]: usb, USB[1]: usb},
-            )
-        )
-
-        run()
-
-        assert created_vias(board) == []
-        assert "v" not in board.deleted
-        (stays,) = [line for line in log if "Via v" in line]
-        assert stays.startswith("DEBUG") and "stays fixed" in stays
-        assert "runs coupled with" in stays
-        assert not any("pairs with another chain" in line for line in log)
-        p, n = by_net(board).values()
-        for stretch in (box(COUPLED_FROM, -FAR, 3.0, FAR), box(6.0, -FAR, FAR, FAR)):
-            a, b = (
-                np.array(linemerge(lines).intersection(stretch).coords)
-                for lines in (p, n)
-            )
-            gaps = gap_range(a, b, PAIR_WIDTH)
-            assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
-
-    @pytest.mark.parametrize("held", [True, False], ids=["held", "free"])
-    def test_vias_a_pair_runs_through_are_judged_on_the_pairing_that_runs(
-        self,
-        connect: Connector,
-        log: list[str],
-        held: bool,
-    ) -> None:
-        # Cut at both vias, the fan-out of USB_D+ pairs with nothing; whole
-        # where a via stays, it pairs.
         h = PAIR_HALF_PITCH
         m = math.tan(math.pi / 8) * h
         mid = (PAIR_FAN[0] / 2, (PAIR_FAN[1] + h) / 2)
@@ -4275,38 +4163,28 @@ class TestPairs:
                 kipy_track(f"{prefix}{k}", net, a, b, width=PAIR_WIDTH)
                 for k, (a, b) in enumerate(itertools.pairwise(points))
             ]
-        vias = [
-            kipy_via("v1", "USB_D+", *mid, diameter=0.3, drill=0.15),
-            kipy_via("v2", "USB_D+", 0.0, h, diameter=0.3, drill=0.15),
-        ]
-        stub = kipy_track("stub", "USB_D+", (0.0, h), (0.0, 3.0), width=PAIR_WIDTH)
+        via = kipy_via("v", USB[0], *mid, diameter=0.3, drill=0.15)
         usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
         board = connect.to(
             CommitBoard(
-                selection=[*tracks, *vias],
-                tracks=[*tracks, *([stub] if held else [])],
-                vias=vias,
-                netclasses={"USB_D+": usb, "USB_D-": usb},
+                selection=[*tracks, via],
+                tracks=list(tracks),
+                vias=[via],
+                netclasses={USB[0]: usb, USB[1]: usb},
             )
         )
 
         run()
 
-        assert not any("ERROR" in line for line in log)
-        # V2 stays, held by the stub or at the section's end once the
-        # fan-out is whole there; v1 moves with the fan-out.
-        (moved,) = created_vias(board)
-        assert "v1" in board.deleted and "v2" not in board.deleted
-        at = (moved.position.x, moved.position.y)
-        assert at != (nm(mid[0]), nm(mid[1]))
+        assert created_vias(board) == []
+        assert "v" not in board.deleted
+        (line,) = [w for w in log if "Via v" in w]
+        assert "a net of a diff pair" in line
         plus = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
-        assert [(p.x, p.y) for t in plus for p in (t.start, t.end)].count(at) == 2
-        (stays,) = [line for line in log if "Via v2" in line]
-        reason = "track stub" if held else "a coupled section of differential pair"
-        assert reason in stays
+        assert (nm(mid[0]), nm(mid[1])) in ends(plus)
 
     @pytest.mark.parametrize("unpaired", ["far", "wide"])
-    def test_via_on_a_chain_that_does_not_pair_may_move(
+    def test_via_on_a_diff_pair_chain_that_does_not_pair_stays(
         self, connect: Connector, log: list[str], unpaired: str
     ) -> None:
         board = pair_board()
@@ -4329,8 +4207,9 @@ class TestPairs:
 
         run("--dry-run")
 
-        assert not any("Via v" in w for w in log)
-        assert any("1 moving via" in line for line in log)
+        (line,) = [w for w in log if "Via v" in w]
+        assert "a net of a diff pair" in line
+        assert not any("moving via" in line for line in log)
 
     @pytest.mark.parametrize(
         ("too_close", "hold"), [(0, Hold.CROWDING), (1, Hold.FOLDING)]

@@ -14,6 +14,7 @@ Units are mm floats in KiCad's board frame, with y pointing down.
 """
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import NamedTuple
@@ -97,9 +98,11 @@ class PairError(ValueError):
 
 
 def complementary_net(name: str) -> str | None:
-    """The other net of a pair, matching KiCad's router (`MatchDpSuffix`):
-    trailing digits and underscores are skipped, and the character before
-    them must be `+`, `-`, `P` or `N` (upper case only)."""
+    """The name the other net of a diff pair would have, matching KiCad's
+    router (`MatchDpSuffix`): trailing digits and underscores are skipped,
+    and the character before them must be `+`, `-`, `P` or `N` (upper case
+    only). A net is of a diff pair only when that net exists
+    (`in_diff_pair`)."""
     stem = name.rstrip(_IGNORED_TRAILING)
     complement = _SUFFIX_COMPLEMENTS.get(stem[-1:])
     if complement is None:
@@ -107,12 +110,22 @@ def complementary_net(name: str) -> str | None:
     return stem[:-1] + complement + name[len(stem) :]
 
 
+def in_diff_pair(net: str, nets: Collection[str]) -> bool:
+    """Whether `net` is a net of a diff pair, as KiCad treats it
+    (`DRC_ENGINE::IsNetADiffPair`): its complementary net is among `nets`,
+    the board's."""
+    other = complementary_net(net)
+    return other is not None and other in nets
+
+
 def nets_pair(a: str, b: str) -> bool:
     return complementary_net(a) == b
 
 
 def diff_pair_nets(net: str) -> frozenset[str]:
-    """`net` and the other net of its diff pair, if it has one."""
+    """`net` and the other net of its diff pair, if it has one. Callers
+    match it only against nets of selected chains, so a complement that is
+    not on the board matches nothing, as `in_diff_pair` would have it."""
     other = complementary_net(net)
     return frozenset({net} if other is None else {net, other})
 

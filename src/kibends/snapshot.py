@@ -319,6 +319,9 @@ class Selection:
     vias: tuple[Via, ...]
     arcs: tuple[Arc, ...]
     """The selected arcs as read, for the commit to compare."""
+    nets: frozenset[str] = frozenset()
+    """The names of the board's nets, read only when an unlocked via is
+    selected, to tell which vias are on a diff pair (`pairs.in_diff_pair`)."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -603,7 +606,11 @@ def read_selection(board: kipy.board.Board) -> Selection:
     vias = [i for i in items if isinstance(i, kbt.Via)]
     if not segments and not vias:
         raise SelectionError("selection has no tracks or vias")
-    return Selection(segments, tuple(map(via_from_kipy, vias)), tuple(arcs))
+    read = tuple(map(via_from_kipy, vias))
+    # A locked via stays fixed whatever its net.
+    unlocked = any(not v.locked for v in read)
+    nets = frozenset(n.name for n in board.get_nets()) if unlocked else frozenset[str]()
+    return Selection(segments, read, tuple(arcs), nets)
 
 
 def read_user_frame(board: kipy.board.Board) -> UserFrame:

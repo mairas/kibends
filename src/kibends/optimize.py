@@ -129,11 +129,11 @@ copper (`ViaInput.copper`), connected copper of one net on one layer as
 one (`via_moves.StaticFree`), each member and each via. A via that ends
 inside its clearance of one it started the burst clear of, or deeper
 inside one than it started, moves back with the ends it carries, so that
-a via inside one, such as its own pair's section, is still kept out of
-the others. What only stops it is judged the same way, obstacle by
-obstacle of each part (`ViaInput.stop_parts`): outside where its zones,
-taken together on each layer where one reaches the via's ring, connect it
-at the next refill (`obstacles.containment`), its own net's stops, and
+a via inside one is still kept out of the others. What only stops it is
+judged the same way, obstacle by obstacle of each part
+(`ViaInput.stop_parts`): outside where its zones, taken together on each
+layer where one reaches the via's ring, connect it at the next refill
+(`obstacles.containment`), its own net's stops, and
 each moving via of its net. On the zones' layers its inflation also holds
 the zone's clearance and margin, against static copper and members alike,
 so that the refill reaches the via wherever the others move. The chains a

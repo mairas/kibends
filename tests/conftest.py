@@ -583,6 +583,17 @@ class FakeBoard:
         self.reads["get_zones"] += 1
         return self.zones
 
+    def get_nets(self) -> list[kbt.Net]:
+        """The nets of the board's tracks, vias, pads and copper zones."""
+        self.reads["get_nets"] += 1
+        names = {
+            *(t.net.name for t in self.tracks),
+            *(v.net.name for v in self.vias),
+            *(p.net.name for p in self.pads),
+            *(z.net.name for z in self.zones if z.net is not None),
+        }
+        return [kbt.Net(name=n) for n in sorted(names)]
+
     def get_netclass_for_nets(self, nets: Sequence[kbt.Net]) -> dict[str, NetClass]:
         self.reads["get_netclass_for_nets"] += 1
         default = self.default_netclass()

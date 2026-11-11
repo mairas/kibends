@@ -1,6 +1,8 @@
 """Decide which selected vias may move with the chains they join.
 
-A selected via moves only when it is unlocked, every copper item touching
+A selected via moves only when it is unlocked, not on a net of a diff pair
+(`pairs.in_diff_pair`: KiCad's naming rule, with the other net on the
+board, whether or not the selection pairs its tracks), every copper item touching
 it on a layer it spans is the end of a selected chain or a zone of its
 net, no other copper touches those ends, and either at least two such ends
 meet it or none does and a zone of its net reaches it: a stitching via,
@@ -39,7 +41,7 @@ has them repel each other.
 import enum
 import math
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
@@ -53,6 +55,7 @@ from kibends.chain import Chain, Point2
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment
+from kibends.pairs import in_diff_pair
 from kibends.snapshot import (
     Disc,
     Via,
@@ -186,9 +189,10 @@ def pairs_with(via: Via, ground: bool, other: StaticVia) -> bool:
     return kind is not None and kind is not PairKind.SPREAD
 
 
-def may_move(via: Via) -> bool:
-    """Whether `via` may move: it is unlocked."""
-    return not via.locked
+def may_move(via: Via, nets: Collection[str]) -> bool:
+    """Whether `via` may move: it is unlocked and not on a net of a diff
+    pair among `nets`, the board's."""
+    return not via.locked and not in_diff_pair(via.net, nets)
 
 
 def chain_cuts(vias: Sequence[Via]) -> Callable[[str, str], list[Point2]]:
@@ -237,6 +241,7 @@ def movable_vias(
     *,
     frame: UserFrame,
     zones: Mapping[str, Sequence[ViaZone]],
+    nets: Collection[str],
 ) -> list[MovableVia]:
     """The vias among `vias` that may move, logging once at debug level why
     each other one stays, at its position in `frame`.
@@ -246,6 +251,7 @@ def movable_vias(
     `zones` the zones of its net whose region reaches each one's ring,
     which keep it from moving only when, on some layer, its centre does not
     start where they connect it taken together (`ZoneUnion.centres`).
+    `nets` are the board's net names, which tell its diff pairs.
     """
     chains_of: dict[str, set[int]] = defaultdict(set)
     for k, c in enumerate(chains):
@@ -262,7 +268,7 @@ def movable_vias(
         ]
         inside = tuple(zones.get(via.id, ()))
         unions = zone_unions(inside)
-        reason = _fixed_reason(via, strangers, len(ends), bool(inside)) or (
+        reason = _fixed_reason(via, nets, strangers, len(ends), bool(inside)) or (
             _edge_reason(via, unions)
         )
         if reason is None:
@@ -279,10 +285,12 @@ def movable_vias(
 
 
 def _fixed_reason(
-    via: Via, strangers: Sequence[str], ends: int, zoned: bool
+    via: Via, nets: Collection[str], strangers: Sequence[str], ends: int, zoned: bool
 ) -> str | None:
     if via.locked:
         return "it is locked"
+    if in_diff_pair(via.net, nets):
+        return f"it is on {via.net}, a net of a diff pair"
     if strangers:
         verb = "connects" if len(strangers) == 1 else "connect"
         return f"{', '.join(strangers)} {verb} to it"

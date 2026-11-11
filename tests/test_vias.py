@@ -96,7 +96,7 @@ def judge(
     chosen = read_selection(fake)
     replaced = {s.id for s in chosen.segments if not s.locked}
     layers = {s.layer for s in chosen.segments if not s.locked}
-    cuts = chain_cuts([v for v in chosen.vias if may_move(v)])
+    cuts = chain_cuts([v for v in chosen.vias if may_move(v, chosen.nets)])
     bare = extract_chains(
         chosen.segments, lambda layer, net: (), frame=BOARD_FRAME, cuts=cuts
     )
@@ -111,7 +111,12 @@ def judge(
         cuts=cuts,
     )
     movable = movable_vias(
-        chosen.vias, whole.via_contacts, chains, frame=frame, zones=whole.via_zones
+        chosen.vias,
+        whole.via_contacts,
+        chains,
+        frame=frame,
+        zones=whole.via_zones,
+        nets=chosen.nets,
     )
     return movable, chains
 
@@ -186,6 +191,42 @@ class TestMovableVias:
 
     def test_locked_via_stays_fixed(self, log: list[str]) -> None:
         assert "it is locked" in fixed(log, kipy_via("v", "SIG", *VIA, locked=True))
+
+    @pytest.mark.parametrize(
+        ("net", "partner"), [("USB_D+", "USB_D-"), ("LVDS_N", "LVDS_P")]
+    )
+    def test_via_of_a_diff_pair_net_stays_fixed(
+        self, log: list[str], net: str, partner: str
+    ) -> None:
+        # With the other net on the board but none of its tracks selected.
+        tracks = [
+            kipy_track("a", net, (0, 0), VIA),
+            kipy_track("e", net, VIA, (8, 4), layer=BL.BL_B_Cu),
+        ]
+        far = kipy_track("far", partner, (20, 20), (24, 20))
+        v = kipy_via("v", net, *VIA)
+
+        movable, _ = judge([*tracks, v], [*tracks, far], [v])
+
+        assert movable == []
+        (warning,) = warnings(log)
+        assert f"it is on {net}, a net of a diff pair" in warning
+
+    @pytest.mark.parametrize("net", ["VIN", "RESET_N", "/PWR_EN", "VBAT+"])
+    def test_via_named_like_a_diff_pair_without_its_partner_moves(
+        self, log: list[str], net: str
+    ) -> None:
+        # KiCad pairs a net only with a complement that exists.
+        tracks = [
+            kipy_track("a", net, (0, 0), VIA),
+            kipy_track("e", net, VIA, (8, 4), layer=BL.BL_B_Cu),
+        ]
+        v = kipy_via("v", net, *VIA)
+
+        movable, _ = judge([*tracks, v], tracks, [v])
+
+        assert [m.via.id for m in movable] == ["v"]
+        assert warnings(log) == []
 
     def test_warning_gives_the_position_in_the_frame(self, log: list[str]) -> None:
         v = kipy_via("v", "SIG", *VIA, locked=True)
