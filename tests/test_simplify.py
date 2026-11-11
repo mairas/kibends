@@ -3,6 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import clearances
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from reference_fields import chain_obstacles
 from scenarios import (
@@ -76,10 +77,10 @@ class TestWrapAroundDisc:
         tolerance_only = simplify(arc, free(len(arc)), FreeSpace(), WIDE_TOLERANCE)
         result = simplify(arc, free(len(arc)), DISC, WIDE_TOLERANCE)
 
-        assert measure(tolerance_only, DISC, SPACING).min_clearance < 0.0
+        assert clearances(tolerance_only, DISC).min() < 0.0
         assert len(tolerance_only) < len(result) < len(arc)
         assert DISC.segments_clear(result[:-1], result[1:]).all()
-        assert measure(result, DISC, SPACING).min_clearance >= 0.0
+        assert clearances(result, DISC).min() >= 0.0
 
     def test_unmergeable_wrap_is_left_alone(self) -> None:
         arc = arc_around_disc(standoff=0.001)
@@ -225,11 +226,7 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     fixed = np.zeros(len(line), dtype=bool)
     fixed[[0, -1]] = True
     run = RunResult(
-        (
-            ChainResult(
-                line, fixed, 0, measure(line, field, SPACING), no_contacts(line)
-            ),
-        ),
+        (ChainResult(line, fixed, 0, measure(line, SPACING), no_contacts(line)),),
         Termination.CONVERGED,
         1,
     )

@@ -40,10 +40,6 @@ class PolylineStats:
     tightest_bend_radius: float
     """Smallest discrete radius of curvature after resampling at the spacing;
     infinite for a straight polyline, mm."""
-    min_clearance: float
-    """Smallest signed distance to the clearance boundary along the edges, mm."""
-    mean_clearance: float
-    """Length-weighted mean of that distance, mm."""
 
 
 @dataclass(frozen=True)

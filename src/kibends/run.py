@@ -70,8 +70,6 @@ from kibends.energy import (
 from kibends.neighbours import (
     ChainInput,
     chain_field,
-    neighbour_fields,
-    same_layer_neighbours,
 )
 from kibends.obstacles import (
     HOLE_TO_HOLE,
@@ -182,8 +180,7 @@ class ChainReport:
     each chain that has a part of it."""
     before: PolylineStats
     after: PolylineStats
-    """Of the simplified result, or of the selection when unchanged, with the
-    other chains at their simplified results."""
+    """Of the simplified result, or of the selection when unchanged."""
     rejected_edges: int
     changed: bool
     """False when the result equals the selected tracks and the chain shares
@@ -323,8 +320,6 @@ class _WholeResult:
 class _Outcome:
     """The simplified result and its reports, per selected chain."""
 
-    final_inputs: list[ChainInput]
-    """The chains' inputs with the moved vias where they end up."""
     unsimplified: list[FloatArray]
     simplified: list[FloatArray]
     reports: tuple[ChainReport, ...]
@@ -358,7 +353,7 @@ def run_smooth(
     run = optimized.run
     if options.plot is not None:
         if read.chains:
-            _draw(options.plot, read, optimized, outcome)
+            _draw(options.plot, read, optimized, outcome, options)
         else:
             logger.info("No plot: the selection has no chains to draw")
     on_optimized(
@@ -660,19 +655,14 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
-    # The statistics see the moved vias where they end up.
-    final_inputs = _with_vias(
-        optimized.whole, optimized.via_inputs, via_reports, options
-    )
     reports = _chain_reports(
         read.chains,
-        final_inputs,
-        _whole_results(optimized, final_inputs, unsimplified),
+        optimized.whole,
+        _whole_results(optimized, optimized.whole, unsimplified),
         simplified,
     )
     pair_reports = _pair_reports(optimized, chains, final_tracks)
     return _Outcome(
-        final_inputs,
         unsimplified,
         simplified,
         reports,
@@ -1000,10 +990,8 @@ def _whole_results(
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
-    measured before the run among the other chains as they started."""
+    measured before the run."""
     run, layout = optimized.run, optimized.layout
-    originals = [given.centreline.points for given in inputs]
-    neighbours = same_layer_neighbours(inputs)
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
         if slot is not None:
@@ -1012,14 +1000,10 @@ def _whole_results(
             continue
         stretches = layout.chain_stretches(k)
         pieces = [run.chains[s.piece] for s in stretches if s.piece is not None]
-        field = chain_field(
-            inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals),
-        )
         results.append(
             _WholeResult(
                 unsimplified[k],
-                measure(originals[k], field, DEFAULT_SETTINGS.spacing),
+                measure(inputs[k].centreline.points, DEFAULT_SETTINGS.spacing),
                 sum(p.rejected_edges for p in pieces),
             )
         )
@@ -1068,7 +1052,6 @@ def _chain_reports(
     results: Sequence[_WholeResult],
     simplified: Sequence[FloatArray],
 ) -> tuple[ChainReport, ...]:
-    neighbours = same_layer_neighbours(inputs)
     reports: list[ChainReport] = []
     changes = _changed_with_shared_tracks(
         chains,
@@ -1077,15 +1060,11 @@ def _chain_reports(
             for s, given in zip(simplified, inputs, strict=True)
         ],
     )
-    for i, (chain, given, result, changed) in enumerate(
-        zip(chains, inputs, results, changes, strict=True)
+    for chain, given, result, polyline, changed in zip(
+        chains, inputs, results, simplified, changes, strict=True
     ):
-        given_points = given.centreline.points
-        field = chain_field(
-            given.field, neighbour_fields(inputs, i, neighbours[i], simplified)
-        )
         # An unchanged chain stays on the board as it is.
-        after = simplified[i] if changed else given_points
+        after = polyline if changed else given.centreline.points
         reports.append(
             ChainReport(
                 net=chain.net,
@@ -1094,7 +1073,7 @@ def _chain_reports(
                 description=given.centreline.description,
                 tracks=len(chain.segment_ids),
                 before=result.before,
-                after=measure(after, field, DEFAULT_SETTINGS.spacing),
+                after=measure(after, DEFAULT_SETTINGS.spacing),
                 rejected_edges=result.rejected_edges,
                 changed=changed,
             )
@@ -1119,9 +1098,15 @@ def _require_plot() -> None:
         raise PlotUnavailableError(f"{PLOT_EXTRA_MESSAGE} ({e})") from None
 
 
-def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> None:
-    """One panel per chain, over its own static field, with the start and end
-    of each via it ends at."""
+def _draw(
+    path: Path,
+    read: _Read,
+    optimized: _Optimized,
+    outcome: _Outcome,
+    options: SmoothOptions,
+) -> None:
+    """One panel per chain, over its own static field with the moved vias
+    where they end up, with the start and end of each via it ends at."""
     from kibends.plot import Panel, render
 
     run = optimized.run
@@ -1147,12 +1132,16 @@ def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> 
                 title=f"{r.net} on {r.layer}"
                 + (f", pair with {partner[i]}" if i in partner else "")
                 + f": {run.termination.value}, "
-                f"length {r.before.length:.3f} → {r.after.length:.3f} mm, "
-                f"min clearance margin {r.after.min_clearance:.4f} mm",
+                f"length {r.before.length:.3f} → {r.after.length:.3f} mm",
             )
             for i, (given, unsimplified, polyline, r) in enumerate(
                 zip(
-                    outcome.final_inputs,
+                    _with_vias(
+                        optimized.whole,
+                        optimized.via_inputs,
+                        outcome.via_reports,
+                        options,
+                    ),
                     outcome.unsimplified,
                     outcome.simplified,
                     outcome.reports,

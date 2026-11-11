@@ -6,7 +6,7 @@ members into problems and gives them bursts until they settle, and
 `_Problem`, one problem's variables, energy, checks and best state. What
 does not depend on a problem lives beside it: `members` (what the members
 see of each other and their summed energy), `polylines` (resampling,
-statistics, violations, shape change and a section's self check),
+statistics, violations, shape change and a section's bend check),
 `contacts` (the stops that keep a vertex on its contact) and `results`
 (what a run returns).
 
@@ -229,10 +229,8 @@ from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.polylines import (
     SelfCheck,
-    clearance_points,
     count_violations,
     measure,
-    measured,
     resample,
     shape_change,
 )
@@ -240,7 +238,6 @@ from kibends.results import (
     ChainResult,
     OptimizeResult,
     PairResult,
-    PolylineStats,
     RunResult,
     Termination,
     ViaResult,
@@ -284,7 +281,7 @@ def optimize(
     after = (
         chain.before
         if run.termination is Termination.NOTHING_TO_DO
-        else measure(chain.polyline, field, settings.spacing)
+        else measure(chain.polyline, settings.spacing)
     )
     return OptimizeResult(
         polyline=chain.polyline,
@@ -939,7 +936,7 @@ class _Problem:
                 contact_of[v] = k
             contact_of[anchors] = -1
             self.given_contact_of.append(contact_of)
-        self.before = self.start_statistics(self.originals, self.start_positions)
+        self.before = [measure(p, settings.spacing) for p in self.originals]
         # A burst starts from the members resampled; the shapes as the burst
         # left them are what the energy, the guard and the best state see.
         # Resampling would put free vertices between a held member's pins.
@@ -1049,23 +1046,6 @@ class _Problem:
         """What each member sees of the others and of the vias with the
         members at `polylines` (`members.seen_parts`)."""
         return seen_parts(self.members, polylines, self.rings)
-
-    def start_statistics(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[PolylineStats]:
-        """Each member's statistics at `polylines` (`polylines.measure`),
-        its clearance taken from its static copper, the other members and
-        the vias at `positions`."""
-        spacing = self.settings.spacing
-        samples = [clearance_points(points, spacing) for points in polylines]
-        flat = shown_flat(self.members, polylines, positions)
-        near = self.seeing(polylines).distances(samples, flat)
-        return [
-            measured(points, np.minimum(body.field.signed_distance(at)[0], d), spacing)
-            for body, points, at, d in zip(
-                self.bodies, polylines, samples, near, strict=True
-            )
-        ]
 
     def edges_across(
         self,

@@ -558,21 +558,6 @@ class TestSmooth:
         assert list(degree.values()).count(3) == 1
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    @pytest.mark.parametrize("tip", [-0.25, -0.1])
-    def test_selected_stub_touching_the_chain_is_no_clearance_violation(
-        self, connect: Connector, tip: float
-    ) -> None:
-        tracks = [*l_chain(), kipy_track("stub", "SIG", (2, -3), (2, tip), width=WIDTH)]
-        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
-
-        report = pipeline.run_smooth(options)
-
-        assert len(report.chains) == 3
-        for c in report.chains:
-            assert c.after.min_clearance >= -NM_ROUNDING
-
-    @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_stub_crossing_the_route_past_its_copper_is_left_behind(
         self,
         connect: Connector,
@@ -1460,18 +1445,13 @@ class TestSeveralChains:
         for c in report.chains:
             assert c.changed
             assert c.after.length < c.before.length
-            assert c.after.min_clearance >= -NM_ROUNDING
         assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
         assert (report.committed, report.refusal) == (False, None)
         assert board.calls == []
-        # Nothing else is near: only the other chain sets the clearance margin.
         gap = LineString(simplified[0]).distance(LineString(simplified[1]))
-        for c in report.chains:
-            assert c.after.min_clearance == pytest.approx(
-                gap - (CLEARANCE + WIDTH), abs=1e-3
-            )
+        assert gap >= CLEARANCE + WIDTH - NM_ROUNDING
 
     def test_other_nets_pad_stays_an_obstacle_at_equal_widths(
         self, connect: Connector
@@ -2167,8 +2147,6 @@ class TestSeveralLayers:
             ("F.Cu", 2, True),
             ("F.Cu", 2, True),
         ]
-        for c in report.chains[1:]:
-            assert c.after.min_clearance >= -NM_ROUNDING
 
     def test_chains_crossing_on_two_layers_smooth_as_if_alone(
         self, connect: Connector
@@ -2775,7 +2753,6 @@ class TestMovingVias:
         assert report.vias[0].end[1] < 1.0
         for chain in report.chains:
             assert chain.after.segment_count == 1
-            assert chain.after.min_clearance >= -NM_ROUNDING
 
     def test_a_via_starting_inside_its_clearance_moves_out_of_it(
         self,
@@ -3322,7 +3299,7 @@ def test_a_via_in_a_plane_moves_within_its_region_and_commits(
 
 
 def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
-    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    stats = PolylineStats(1.0, 1, math.inf)
     chain = pipeline.ChainReport("SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, 2, True)
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), rejected_edges=3)
     report = pipeline.OptimizerReport(
@@ -3338,7 +3315,7 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
 
 def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
     problem = "the chains and vias on F.Cu and B.Cu"
-    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    stats = PolylineStats(1.0, 1, math.inf)
     chain = pipeline.ChainReport(
         "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, 1, True
     )

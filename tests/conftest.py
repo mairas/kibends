@@ -4,6 +4,8 @@ FakeBoard and the kipy builders are adapted from kistitch's
 tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
+import itertools
+import math
 from collections import Counter
 from collections.abc import (
     Callable,
@@ -56,7 +58,9 @@ from kibends.chain import (
 )
 from kibends.coords import UserFrame
 from kibends.energy import (
+    DistanceField,
     EnergyParams,
+    FloatArray,
     ObstacleField,
     attraction_integrand,
     obstacle_integrand,
@@ -170,6 +174,22 @@ def log() -> Iterator[list[str]]:
 
 def nm(v: float) -> int:
     return round(v * NM_PER_MM)
+
+
+CLEARANCE_STEP = 0.01
+"""mm between the points along a polyline's edges where `clearances` looks."""
+
+
+def clearances(polyline: FloatArray, field: DistanceField) -> FloatArray:
+    """The signed distance from `field` along each edge of `polyline`, in
+    steps of at most CLEARANCE_STEP, both ends included."""
+    points = [
+        start + np.linspace(0.0, 1.0, steps + 1)[:, None] * (end - start)
+        for start, end in itertools.pairwise(polyline)
+        for steps in [max(1, math.ceil(math.dist(start, end) / CLEARANCE_STEP))]
+    ]
+    distance, _ = field.signed_distance(np.concatenate(points))
+    return distance
 
 
 def one_chain(

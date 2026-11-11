@@ -2,8 +2,8 @@
 (`optimize`) applies to every member, independent of the problem.
 
 `resample` lays each span between fixed vertices out at uniform arc-length
-spacing, as every burst starts. `measure` gives a polyline's length, bend
-and clearance statistics (`results.PolylineStats`), and `violations`
+spacing, as every burst starts. `measure` gives a polyline's length and
+bend statistics (`results.PolylineStats`), and `violations`
 counts where it enters its static clearance away from its anchors, which
 the best state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
@@ -20,9 +20,7 @@ from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
-    DistanceField,
     FloatArray,
-    IntArray,
     ObstacleField,
     arc_lengths,
 )
@@ -35,8 +33,6 @@ RESAMPLE_SLACK = 1e-6
 
 # Below this turning angle a vertex counts as straight (infinite radius).
 STRAIGHT_TURN = 1e-9
-
-MEASURE_SAMPLES_PER_SPACING = 4
 
 # Shape change is measured from each vertex to the other polyline's edges
 # within this many edges of the same index.
@@ -113,24 +109,13 @@ def resample(
     return np.concatenate(pieces), np.concatenate(masks)
 
 
-def measure(
-    polyline: FloatArray, field: DistanceField, spacing: float
-) -> PolylineStats:
-    """Length, bend and clearance statistics of a polyline.
+def measure(polyline: FloatArray, spacing: float) -> PolylineStats:
+    """Length and bend statistics of a polyline.
 
     The bend radius is the discrete curvature radius l/(4·tan(φ/2)) of the
     polyline resampled at `spacing` with every vertex kept, so a sharp corner
     reports a radius below the spacing however long its edges are.
     """
-    distance, _ = field.signed_distance(clearance_points(polyline, spacing))
-    return measured(polyline, distance, spacing)
-
-
-def measured(
-    polyline: FloatArray, distance: FloatArray, spacing: float
-) -> PolylineStats:
-    """`measure` with the signed distance at each of the polyline's
-    `clearance_points` given."""
     lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
     return PolylineStats(
         length=float(lengths.sum()),
@@ -138,27 +123,7 @@ def measured(
         tightest_bend_radius=_tightest_bend_radius(
             resample(polyline, np.ones(len(polyline), dtype=bool), spacing)[0]
         ),
-        **_clearance(lengths, distance, spacing),
     )
-
-
-def clearance_points(polyline: FloatArray, spacing: float) -> FloatArray:
-    """Where `measure` takes the clearance: along each edge in even steps of
-    at most spacing / MEASURE_SAMPLES_PER_SPACING, both its ends included."""
-    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
-    points = [
-        start + np.linspace(0.0, 1.0, count + 1)[:, None] * (end - start)
-        for start, end, count in zip(
-            polyline[:-1], polyline[1:], _sample_counts(lengths, spacing), strict=True
-        )
-    ]
-    return np.concatenate(points)
-
-
-def _sample_counts(lengths: FloatArray, spacing: float) -> IntArray:
-    """How many steps `clearance_points` takes along each edge."""
-    step = spacing / MEASURE_SAMPLES_PER_SPACING
-    return np.maximum(1, np.ceil(lengths / step).astype(int))
 
 
 def _tightest_bend_radius(points: FloatArray) -> float:
@@ -172,20 +137,6 @@ def _tightest_bend_radius(points: FloatArray) -> float:
         return float("inf")
     span = (lengths[:-1] + lengths[1:])[bending]
     return float(np.min(span / (4 * np.tan(turn[bending] / 2))))
-
-
-def _clearance(
-    lengths: FloatArray, distance: FloatArray, spacing: float
-) -> dict[str, float]:
-    weights: list[FloatArray] = []
-    for count, length in zip(_sample_counts(lengths, spacing), lengths, strict=True):
-        edge_weights = np.full(count + 1, length / count)
-        edge_weights[[0, -1]] /= 2
-        weights.append(edge_weights)
-    weight = np.concatenate(weights)
-    total = weight.sum()
-    mean = float(distance @ weight / total) if total > 0.0 else float(distance.mean())
-    return {"min_clearance": float(distance.min()), "mean_clearance": mean}
 
 
 def shape_change(before: FloatArray, after: FloatArray) -> float:

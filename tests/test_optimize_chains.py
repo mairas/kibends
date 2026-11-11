@@ -14,7 +14,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, Ticking
+from conftest import BurstClock, Ticking, clearances
 from distance_fields import Disc, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
@@ -38,8 +38,8 @@ from kibends.optimize import (
     PROGRESS_INTERVAL,
     optimize_chains,
 )
-from kibends.polylines import measure, resample
-from kibends.results import PolylineStats, RunResult, Termination
+from kibends.polylines import resample
+from kibends.results import RunResult, Termination
 from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -105,24 +105,16 @@ def committed_energy(
     )
 
 
-def after(
-    chains: Sequence[ChainInput],
-    result: RunResult,
-    params: EnergyParams,
-    settings: OptimizerSettings = COARSE,
-) -> list[PolylineStats]:
-    """Each chain's statistics with the other chains at their returned shapes."""
-    polylines = [c.polyline for c in result.chains]
-    return [
-        measure(p, field, settings.spacing)
-        for p, field in zip(polylines, fields(chains, polylines), strict=True)
-    ]
-
-
 def min_clearances(
     chains: Sequence[ChainInput], result: RunResult, params: EnergyParams
 ) -> list[float]:
-    return [stats.min_clearance for stats in after(chains, result, params)]
+    """Each chain's smallest clearance margin, with the other chains at their
+    returned shapes."""
+    polylines = [c.polyline for c in result.chains]
+    return [
+        float(clearances(p, field).min())
+        for p, field in zip(polylines, fields(chains, polylines), strict=True)
+    ]
 
 
 def bumps() -> ChainsScenario:
@@ -391,9 +383,7 @@ def test_a_chain_wrapped_around_an_obstacle_stays_on_its_side() -> None:
     (result,) = optimize_chains([chain], topology.params, COARSE).chains
 
     assert y_at(result.polyline, 0.0) > 0.0
-    assert measure(result.polyline, topology.field, COARSE.spacing).min_clearance >= (
-        -INSIDE_TOLERANCE
-    )
+    assert clearances(result.polyline, topology.field).min() >= -INSIDE_TOLERANCE
     assert length(result.polyline) < length(chain.centreline.points)
 
 
@@ -437,8 +427,8 @@ def test_vertices_inside_a_neighbours_clearance_move_out() -> None:
     assert (
         kept_vertices(b.polyline, np.array([scenarios.CROWDED_NEIGHBOUR_VERTEX])) == 0
     )
-    for stats in after(scenario.chains, result, scenario.params):
-        assert stats.min_clearance >= -INSIDE_TOLERANCE
+    for c in min_clearances(scenario.chains, result, scenario.params):
+        assert c >= -INSIDE_TOLERANCE
 
 
 TIGHT_WIDTH = 0.25
@@ -479,10 +469,13 @@ def test_a_bus_tighter_than_its_clearance_spreads_out() -> None:
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE)
 
-    for chain, given, stats in zip(
-        result.chains, chains, after(chains, result, scenarios.PARAMS), strict=True
+    for chain, given, c in zip(
+        result.chains,
+        chains,
+        min_clearances(chains, result, scenarios.PARAMS),
+        strict=True,
     ):
-        assert stats.min_clearance >= -INSIDE_TOLERANCE
+        assert c >= -INSIDE_TOLERANCE
         corners = given.centreline.points[1:-1]
         assert kept_vertices(chain.polyline, corners) == 0
 

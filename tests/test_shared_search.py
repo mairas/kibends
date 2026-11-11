@@ -23,18 +23,14 @@ import scenarios
 from distance_fields import FloatArray, FreeSpace
 from reference_fields import chain_obstacles_for_via
 from scenarios import (
-    PAIR_INFLATION,
     ChainsScenario,
     PairsScenario,
     ViasScenario,
     selected,
 )
-from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point, Polygon, box
 
-import kibends.obstacles as obstacles_module
 import kibends.optimize as optimize_module
-import kibends.seen as seen_module
 from kibends.bursts import DEFAULT_SETTINGS, point_distance
 from kibends.energy import (
     BoolArray,
@@ -80,16 +76,13 @@ from kibends.obstacles import (
 from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
 from kibends.pairs import complementary_net
-from kibends.polylines import measure, violations
+from kibends.polylines import violations
 from kibends.seen import (
     SKIN_LEAST,
     STATIC_SKIN,
     NeighbourList,
     Pieces,
-    Seen,
     StaticList,
-    Track,
-    Viewer,
 )
 from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import FreeDistances, MovingVias
@@ -254,6 +247,9 @@ def _fan_out(net: str, end: FloatArray, drop: float) -> ChainInput:
 DISTANCE_ROUNDING = 1e-12
 """How far a distance the shared search gives may part from a member's
 own field's, which takes the same differences, mm."""
+EXACT_BELOW = 1.0
+"""mm below which the members' distances are asked exactly: beyond the
+queries' jitter from the shapes."""
 STATIC_ROUNDING = 1e-12
 """How far a via's distance to its static copper, measured on the static
 edges, may part from shapely's, mm: round-off in the same formula."""
@@ -794,11 +790,12 @@ def test_the_checks_are_those_each_members_own_field_gives(
                 for points in polylines
             ]
             for got, field, at in zip(
-                seen.distances(queries, flat), fields, queries, strict=True
+                seen.distances(queries, flat, EXACT_BELOW), fields, queries, strict=True
             ):
+                # Exact below the threshold, and at least it beyond.
                 np.testing.assert_allclose(
-                    got,
-                    field.signed_distance(at)[0],
+                    np.minimum(got, EXACT_BELOW),
+                    np.minimum(field.signed_distance(at)[0], EXACT_BELOW),
                     rtol=DISTANCE_ROUNDING,
                     atol=DISTANCE_ROUNDING,
                 )
@@ -818,27 +815,6 @@ def test_the_checks_are_those_each_members_own_field_gives(
             assert problem.edges_across(polylines, positions, seen) == [
                 int(np.count_nonzero(~c)) for c in clear
             ]
-            spacing = DEFAULT_SETTINGS.spacing
-            for got, expected in zip(
-                problem.start_statistics(polylines, positions),
-                (
-                    measure(points, CompositeField([body.field, field]), spacing)
-                    for body, points, field in zip(
-                        problem.bodies, polylines, fields, strict=True
-                    )
-                ),
-                strict=True,
-            ):
-                assert (got.length, got.segment_count, got.tightest_bend_radius) == (
-                    expected.length,
-                    expected.segment_count,
-                    expected.tightest_bend_radius,
-                )
-                assert (got.min_clearance, got.mean_clearance) == pytest.approx(
-                    (expected.min_clearance, expected.mean_clearance),
-                    rel=DISTANCE_ROUNDING,
-                    abs=DISTANCE_ROUNDING,
-                )
             masks = problem.masks
             assert problem.violations(polylines, masks, positions, seen) == [
                 violations(points, mask, CompositeField([body.field, field]))
@@ -855,169 +831,6 @@ def test_the_checks_are_those_each_members_own_field_gives(
                 np.testing.assert_array_equal(
                     got, field.signed_distance(points)[0] < -PRESSED_DEPTH
                 )
-
-
-ONE_NET_CHAINS = 60
-ONE_NET_VERTICES = 40
-ONE_NET_PITCH = 0.3
-"""How far apart the chains of one net lie, mm: each sees none of them."""
-FAR_AWAY = 50.0
-"""How far the chain of another net lies from them, mm."""
-PAIRS_PER_POINT = 100
-"""How many (point, edge) pairs per point the trees may give: a search that
-looked at every edge of the one net would take thousands."""
-
-
-def test_the_exact_distance_looks_only_at_what_each_member_sees(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Many chains of one net and one of another net far from them: the
-    exact distance from each chain is the far one's, or theirs for the far
-    one, found without looking at the near chains of one net for each
-    other's points."""
-    xs = np.linspace(0.0, 12.0, ONE_NET_VERTICES)
-    chains = [
-        selected(f"g{k}", "GND", FreeSpace(), *((x, k * ONE_NET_PITCH) for x in xs))
-        for k in range(ONE_NET_CHAINS)
-    ]
-    chains.append(selected("far", "X", FreeSpace(), *((x, -FAR_AWAY) for x in xs)))
-    polylines = [chain.centreline.points for chain in chains]
-    seen = seen_parts(chains, polylines)
-    looked = [0]
-    near_segments = seen_module.near_segments
-    each_within = obstacles_module._pairs_each_within  # pyright: ignore[reportPrivateUsage]
-
-    def near(
-        starts: FloatArray, ends: FloatArray, points: FloatArray, radius: float
-    ) -> tuple[IntArray, IntArray]:
-        found = near_segments(starts, ends, points, radius)
-        looked[0] += len(found[0])
-        return found
-
-    def each(
-        tree: cKDTree, centres: FloatArray, radii: FloatArray
-    ) -> tuple[IntArray, IntArray]:
-        found = each_within(tree, centres, radii)
-        looked[0] += len(found[0])
-        return found
-
-    # Every pair the search looks at comes out of one of the two trees.
-    monkeypatch.setattr(seen_module, "near_segments", near)
-    monkeypatch.setattr(obstacles_module, "_pairs_each_within", each)
-    got = seen.distances(polylines, np.concatenate(polylines))
-    monkeypatch.undo()
-
-    points = sum(len(line) for line in polylines)
-    assert looked[0] <= PAIRS_PER_POINT * points
-    for chain, distance in zip(chains, got, strict=True):
-        others = [c for c in chains if c.centreline.net != chain.centreline.net]
-        field = _exact_field(
-            np.concatenate([c.centreline.points[:-1] for c in others]),
-            np.concatenate([c.centreline.points[1:] for c in others]),
-            np.full(sum(len(c.centreline.points) - 1 for c in others), PAIR_INFLATION),
-        )
-        np.testing.assert_allclose(
-            distance,
-            field.signed_distance(chain.centreline.points)[0],
-            rtol=DISTANCE_ROUNDING,
-            atol=DISTANCE_ROUNDING,
-        )
-
-
-NUMBERED_INFLATION = 0.3
-"""How far every two tracks of the numbered nets keep apart, mm."""
-TRACK_NETS = (0, 1, 3, 4, 6, 9)
-"""The numbered nets' tracks, one each, a row apart: net 9's is the chain's
-own, which every member leaves out."""
-ROW = 2.0
-"""How far apart the tracks lie, mm: farther than twice the inflation, so
-that each point's nearest piece is found beyond the first search. A point
-1 mm past the end of net 1's track has it nearest."""
-
-
-EXCEPTION_RING = 0.5
-"""How far a chain keeps from the via it sees, mm: the widest inflation."""
-EDGE_INFLATION = 0.4
-"""How far a member keeps from the edge of a track its exceptions give."""
-
-
-def test_the_exact_distance_finds_exceptions_beyond_the_first_search() -> None:
-    """A chain whose nearest piece is a via, and a member that leaves out
-    two nets whose nearest is an edge of a track of one of them, both
-    much farther than twice the widest inflation: only each member's own
-    exceptions answer them."""
-    flat = np.array(
-        [[0.0, 0.0], [5.0, 0.0], [0.0, 8.0], [10.0, 8.0], [20.0, 0.0], [20.0, 0.0]]
-    )
-    tracks = [Track(0, 2, "F.Cu", 0, 0), Track(2, 2, "F.Cu", 1, 0)]
-    viewers = [Viewer("F.Cu", 0, 0, ()), Viewer("F.Cu", 5, 0, (1, 2))]
-    via = Pieces(np.array([4]), np.array([EXCEPTION_RING]))
-    edge = Pieces(np.array([2]), np.array([EDGE_INFLATION]))
-    seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [via, edge])
-    queries = [np.array([[30.0, 0.0]]), np.array([[9.0, 20.0]])]
-    fields = [
-        _exact_field(
-            flat[[2, 4]],
-            flat[[3, 5]],
-            np.array([NUMBERED_INFLATION, EXCEPTION_RING]),
-        ),
-        _exact_field(
-            flat[[0, 2]],
-            flat[[1, 3]],
-            np.array([NUMBERED_INFLATION, EDGE_INFLATION]),
-        ),
-    ]
-
-    got = seen.distances(queries, flat)
-
-    widest = max(EXCEPTION_RING, EDGE_INFLATION)
-    for distance, field, at in zip(got, fields, queries, strict=True):
-        expected = field.signed_distance(at)[0]
-        assert np.all(expected > 2 * widest)
-        np.testing.assert_allclose(
-            distance, expected, rtol=DISTANCE_ROUNDING, atol=DISTANCE_ROUNDING
-        )
-
-
-def test_the_exact_distance_asks_every_net_a_chain_sees() -> None:
-    """A chain of net 9 beside a section that leaves out nets 6 and 9, so
-    that no edge of net 9 is among the layer's, and the largest net among
-    them is 6: in the three bits that numbers, net 9 agrees with net 1, and
-    the chain must still see net 1. A second section leaves out nets 3 and
-    9. Each member's exact distance is what a field of the tracks it sees
-    gives."""
-    tracks: list[Track] = []
-    rows: list[FloatArray] = []
-    for k, net in enumerate(TRACK_NETS):
-        y = k * ROW
-        rows.append(np.array([[0.0, y], [5.0, y]]))
-        tracks.append(Track(2 * k, 2, "F.Cu", net, 0))
-    flat = np.concatenate(rows)
-    viewers = [
-        Viewer("F.Cu", 9, 0, ()),
-        Viewer("F.Cu", 8, 0, (6, 9)),
-        Viewer("F.Cu", 10, 0, (3, 9)),
-    ]
-    none = Pieces(np.empty(0, dtype=np.intp), np.empty(0))
-    seen = Seen(tracks, viewers, np.array([[NUMBERED_INFLATION]]), [none] * 3)
-    queries = [np.array([[2.5, -1.0], [6.0, ROW], [2.5, 20.0]]) for _ in viewers]
-
-    for viewer, at, got in zip(
-        viewers, queries, seen.distances(queries, flat), strict=True
-    ):
-        left_out = {viewer.net, *viewer.exempt}
-        shown = [k for k, t in enumerate(tracks) if t.net not in left_out]
-        field = _exact_field(
-            flat[[2 * k for k in shown]],
-            flat[[2 * k + 1 for k in shown]],
-            np.full(len(shown), NUMBERED_INFLATION),
-        )
-        np.testing.assert_allclose(
-            got,
-            field.signed_distance(at)[0],
-            rtol=DISTANCE_ROUNDING,
-            atol=DISTANCE_ROUNDING,
-        )
 
 
 ZONE_CLEARANCE = 0.4

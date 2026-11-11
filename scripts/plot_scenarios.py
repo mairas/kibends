@@ -38,7 +38,6 @@ def plot_scenario(scenario: scenarios.Scenario, output: Path) -> Path:
         f"{result.iterations} iterations\n"
         f"length {result.before.length:.3f} → {after.length:.3f} mm, "
         f"tightest bend {after.tightest_bend_radius:.3f} mm, "
-        f"min clearance {after.min_clearance:.4f} mm, "
         f"{len(simplified) - 1} segments simplified",
     )
     render(path, [panel])

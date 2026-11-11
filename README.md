@@ -207,7 +207,7 @@ improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS-B terminated abnormally" and commits nothing.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
-with its length before and after and its minimum clearance margin.
+with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
 iteration how long setup took, how many problems it split the selection into
 (the layers or groups of layers the moving tracks and vias tie together), and

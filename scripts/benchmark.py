@@ -42,8 +42,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   as from the other; the same with each track up to 0.03 mm off its pitch;
   262 chains of 5 mm for one outer iteration, to time setup and the
   work around a burst among many chains; and the same chains all of one
-  net with one of another net far from them, whose distances in the
-  starting statistics lie beyond every edge of the one net. The last runs
+  net with one of another net far from them. The last runs
   end to end
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
   rows of pads at 1 mm pitch, whose distance field every energy evaluation
