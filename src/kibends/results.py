@@ -85,8 +85,9 @@ class PairResult:
     centreline: FloatArray
     fixed: BoolArray
     """The vertices of `centreline` that simplification keeps: those the run
-    pinned, but the direction pins of a section it moved, as a
-    merged edge stays within the chord tolerance of them."""
+    pinned, but the direction pins of a section it moved that
+    `PairBlock.mergeable_pins` gives, as a merged edge stays within the
+    chord tolerance of them. Those bounding an uneven end's edge stay."""
     a: FloatArray
     b: FloatArray
     """The two tracks along `centreline`, b running the same way as a; the
