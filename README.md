@@ -27,6 +27,9 @@ Status: early development.
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
 - Python 3.14 or later.
+- A Rust toolchain, since installing builds kibends' optimizer core from
+  source. Without `cargo` on the path, the build downloads one into its
+  own cache; [rustup](https://rustup.rs) installs one to keep.
 
 ## Installation
 
@@ -473,8 +476,10 @@ only slightly, but still replaces its tracks.
 
 ## Development
 
+Development needs a Rust toolchain with `clippy` and `rustfmt`.
+
 ```sh
-./run sync
-./run test       # fast tests, in parallel
+./run sync       # also builds the Rust core, kibends._core
+./run test       # Rust tests and fast Python tests, rebuilding first
 ./run test-all   # also the slow tests; run before committing
 ```

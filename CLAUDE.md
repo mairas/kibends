@@ -6,10 +6,11 @@ The repository is public. Never write host names, addresses or other details of 
 
 ## Commands
 
-- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs. Run it in every fresh worktree before testing.
-- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` tests.
-- `./run lint` runs `ruff check` and `ruff format --check`; `./run format` formats and applies ruff's fixes.
-- `./run typecheck` runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
+- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs, and builds the Rust extension `kibends._core` (crates `rust/core` and `rust/py`) in cargo's dev profile. Run it in every fresh worktree before testing.
+- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` tests. Both sync quietly first, so they test the current Rust code, and run the core crate's `cargo test` before pytest.
+- `./run lint` runs `ruff check`, `ruff format --check`, `cargo fmt --check` and `cargo clippy -D warnings`; `./run format` formats with ruff and rustfmt and applies ruff's fixes.
+- `./run typecheck` regenerates the stubs of `kibends._core` (`./run stubs`, into `src/kibends/_core/`) and fails if they changed, then runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
+- `scripts/record_baseline.py` records the scipy optimizer's results on the scenarios and one bench case into `tests/data/scipy_baseline_<platform>.json`; CI records the Linux file and uploads it as an artifact while none is committed.
 - `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing.
 - `./run bench` measures the optimizer's time, with its setup and the time outside L-BFGS-B apart, iterations, energy evaluations and neighbour-list searches on stitched planes, the scenarios, buses of parallel tracks (`--only bus`, one of them also timing simplification), a lone track solved beside a cluster of pressed tracks (`--only joint`, `--plot DIR` saving its length plots) and return vias; `--tree DIR` measures another checkout.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
