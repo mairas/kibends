@@ -1,22 +1,23 @@
 """Selected chains as obstacles to each other.
 
 Each chain has a static field of everything on the board but the selected
-chains. The other selected chains on its layer are added to it as obstacles,
-one field each, at whatever shape the caller holds them in; the optimizer
-asks the same of all its members at once instead (`members.seen_parts`),
-with no field per member. A chain ignores the chains of its net and of the
-other net of its diff pair (`pairs.diff_pair_nets`), and a coupled section
-those of its two nets: they may come close, overlap or cross. KiCad's DRC
-reports what that lets through between the two nets of a diff pair.
+chains. The other selected chains on its layer are added to it as obstacles
+in one field (`neighbour_field`), at whatever shape the caller holds them
+in; simplification gives it only those near what it asks about
+(`simplify`). The optimizer asks the same of all its members at once
+instead (`members.seen_parts`), with no field per member. A chain ignores
+the chains of its net and of the other net of its diff pair
+(`pairs.diff_pair_nets`), and a coupled section those of its two nets:
+they may come close, overlap or cross. KiCad's DRC reports what that lets
+through between the two nets of a diff pair.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from kibends.energy import BoolArray, DistanceField, FloatArray, ObstacleField
 from kibends.obstacles import (
     ChainCentreline,
-    ChainField,
     CompositeField,
     chain_inflation,
     chains_field,
@@ -45,25 +46,11 @@ class ChainInput:
     them, as resampling a chain does."""
 
 
-def same_layer_neighbours(chains: Sequence[ChainInput]) -> list[list[int]]:
-    """For each chain, the indices of the other chains on its layer."""
-    return [
-        [j for j, other in enumerate(chains) if j != i and other.layer == chain.layer]
-        for i, chain in enumerate(chains)
-    ]
-
-
 def chain_field(
-    static: ObstacleField, neighbours: Iterable[ObstacleField | None]
+    static: ObstacleField, neighbours: ObstacleField | None
 ) -> ObstacleField:
-    """A chain's field: `static` alone, or with the neighbour fields that are
-    not None."""
-    others = [field for field in neighbours if field is not None]
-    chains = [field for field in others if isinstance(field, ChainField)]
-    if len(chains) > 1:
-        rest = [field for field in others if not isinstance(field, ChainField)]
-        others = [ChainField.merged(chains), *rest]
-    return CompositeField([static, *others]) if others else static
+    """A chain's field: `static` alone, or with `neighbours` if not None."""
+    return static if neighbours is None else CompositeField([static, neighbours])
 
 
 def neighbour_field(

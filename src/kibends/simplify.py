@@ -6,9 +6,14 @@ segment must also pass the exact edge check.
 
 Several chains are simplified in turn, each against its own field plus the
 other chains on its layer at their latest shapes, those it ignores left
-out, as the optimizer leaves them out (`neighbours.neighbour_field`). A
-vertex that keeps a pad or via (`chain.Contact`) is fixed, so merging keeps
-it where the optimizer left it, inside its region. A coupled section of a
+out, as the optimizer leaves them out (`neighbours.neighbour_field`). Its
+field holds only the chains whose copper can reach the vertices it merges
+across, found by comparing boxes with those of all chains on its layer in
+one vectorised step (`_Neighbours`). The field it builds and searches so
+grows with the chains near it, not with all chains on the layer, and the
+result is that of a field of every chain on the layer. A vertex that
+keeps a pad or via (`chain.Contact`) is fixed, so merging keeps it where
+the optimizer left it, inside its region. A coupled section of a
 differential pair is simplified as its centreline, as the optimizer moved
 it, and its two tracks follow it as they do in the optimizer.
 
@@ -22,13 +27,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
-from kibends.energy import BoolArray, FloatArray, ObstacleField
-from kibends.neighbours import (
-    ChainInput,
-    chain_field,
-    neighbour_field,
-    same_layer_neighbours,
-)
+from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField
+from kibends.neighbours import ChainInput, chain_field, neighbour_field
+from kibends.obstacles import track_inflation
 
 if TYPE_CHECKING:
     # Both import pair_blocks, which simplifies a section's routing.
@@ -73,28 +74,39 @@ def simplify_chains(
         raise ValueError(
             f"{len(run.chains)} optimised chains for {len(chains)} chain inputs"
         )
-    optimised = [c.polyline for c in run.chains]
-    seen = _Neighbours(chains, optimised, sections or {})
-    neighbours = same_layer_neighbours(chains)
-    current = list(optimised)
+    seen = _Neighbours(chains, [c.polyline for c in run.chains], sections or {})
     for i in range(len(chains)):
         result = run.chains[i]
-        field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
+        # Each merged edge joins two of these vertices, so it stays in their box.
+        field = seen.field(i, result.polyline)
         fixed = result.fixed
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
             kept = kept_vertices(result.polyline, fixed, field, allowed)
-            loose = seen.loose_corners(i, kept, field)
+            loose = seen.loose_corners(i, kept)
             if not loose.any():
                 break
             fixed = fixed | loose
-        current[i] = result.polyline[kept]
-    return current
+        seen.move(i, result.polyline[kept])
+    return seen.current
 
 
 class _Neighbours:
     """The chains as they see each other while simplifying, coupled
-    sections among them."""
+    sections among them, each at its latest shape.
+
+    A chain's field holds only the others whose copper can reach what it
+    asks about: those whose box, around what they show, comes within the
+    widest inflation it keeps from a track on its layer of the box around
+    the points asked about. Any other is farther from each of those
+    points, and from each segment between them, than the distance it is
+    kept, so it neither blocks a segment nor makes a distance negative, and
+    the answers the simplification takes are those of a field of every
+    chain on the layer.
+    Finding them compares the boxes of all chains on the layer in one
+    vectorised step; the field built and searched grows only with the
+    chains near.
+    """
 
     def __init__(
         self,
@@ -105,6 +117,72 @@ class _Neighbours:
         self.chains = chains
         self.optimised = optimised
         self.sections = sections
+        self.current = list(optimised)
+        self._shown = [self.shown(j, points) for j, points in enumerate(optimised)]
+        self._low = np.empty((len(chains), 2))
+        self._high = np.empty((len(chains), 2))
+        for j in range(len(chains)):
+            self._bound(j)
+        on: dict[str, list[int]] = {}
+        for j, chain in enumerate(chains):
+            on.setdefault(chain.layer, []).append(j)
+        layers: dict[str, IntArray] = {
+            layer: np.array(members, dtype=np.intp) for layer, members in on.items()
+        }
+        kinds = {
+            layer: {
+                (other.centreline.width, other.centreline.clearance)
+                for j in members
+                for other, _ in self._shown[j]
+            }
+            for layer, members in on.items()
+        }
+        self._layer_mates = [layers[chain.layer] for chain in chains]
+        """Per chain, the indices of the chains on its layer, its own among
+        them."""
+        self._reach: list[float] = []
+        """Per chain, the widest inflation it keeps from a track on its layer."""
+        for i, chain in enumerate(chains):
+            me = self.viewer(i)[0].centreline
+            self._reach.append(
+                max(
+                    track_inflation(me.width, me.clearance, width, clearance)
+                    for width, clearance in kinds[chain.layer]
+                )
+            )
+
+    def viewer(self, i: int) -> tuple[ChainInput, frozenset[str] | None]:
+        """The chain i keeps clear of the others as, and the nets it ignores
+        beyond `neighbour_field`'s default: a section's two."""
+        block = self.sections.get(i)
+        return (self.chains[i], None) if block is None else (block.facing, block.nets)
+
+    def field(self, i: int, points: FloatArray) -> ObstacleField:
+        """Chain i's field, with the others as they are now, for questions
+        about `points` and the segments between them."""
+        low, high = points.min(axis=0), points.max(axis=0)
+        on, reach = self._layer_mates[i], self._reach[i]
+        near = on[
+            (on != i)
+            & (self._low[on] <= high + reach).all(axis=1)
+            & (self._high[on] >= low - reach).all(axis=1)
+        ]
+        own, ignored = self.viewer(i)
+        shown = [part for j in near for part in self._shown[int(j)]]
+        return chain_field(
+            self.chains[i].field, neighbour_field(own, shown, ignored=ignored)
+        )
+
+    def move(self, j: int, points: FloatArray) -> None:
+        """Chain j is at `points` from now on."""
+        self.current[j] = points
+        self._shown[j] = self.shown(j, points)
+        self._bound(j)
+
+    def _bound(self, j: int) -> None:
+        shown = np.concatenate([points for _, points in self._shown[j]])
+        self._low[j] = shown.min(axis=0)
+        self._high[j] = shown.max(axis=0)
 
     def tolerances(self, i: int, points: FloatArray, tolerance: float) -> FloatArray:
         """How far each vertex of chain i at `points` may lie off a chord
@@ -119,12 +197,10 @@ class _Neighbours:
             return np.full(len(points), tolerance)
         return np.where(block.direction_pins(points), INSIDE_TOLERANCE, tolerance)
 
-    def loose_corners(
-        self, i: int, kept: Sequence[int], field: ObstacleField
-    ) -> BoolArray:
+    def loose_corners(self, i: int, kept: Sequence[int]) -> BoolArray:
         """For a section, the vertices of its optimised centreline to keep
         on either side of each kept vertex next to a merged edge where a
-        track's corner enters `field`."""
+        track's corner enters its field."""
         polyline = self.optimised[i]
         loose = np.zeros(len(polyline), dtype=bool)
         block = self.sections.get(i)
@@ -138,8 +214,10 @@ class _Neighbours:
         # Each corner keeps the clearance of a track, half the pair's
         # extent less half a track width inside the centreline's.
         inside = (block.facing.centreline.width - block.given.a.width) / 2
-        for track in block.offset(polyline[at]):
-            distance, _ = field.signed_distance(track[1:-1])
+        corners = [track[1:-1] for track in block.offset(polyline[at])]
+        field = self.field(i, np.concatenate(corners))
+        for corner in corners:
+            distance, _ = field.signed_distance(corner)
             entering = beside & (distance < -inside - INSIDE_TOLERANCE)
             for vertex in at[1:-1][entering]:
                 loose[[vertex - 1, vertex + 1]] = True
@@ -152,28 +230,6 @@ class _Neighbours:
             return [(self.chains[j], points)]
         tracks = block.offset(points)
         return list(zip(block.tracks, tracks, strict=True))
-
-    def fields(
-        self,
-        i: int,
-        others: Sequence[int],
-        polylines: Sequence[FloatArray],
-    ) -> list[ObstacleField]:
-        """The chains `others`, at `polylines`, as obstacles to chain i;
-        those it ignores are dropped."""
-        block = self.sections.get(i)
-        own = self.chains[i] if block is None else block.facing
-        ignored = None if block is None else block.nets
-        return [
-            field
-            for j in others
-            if (
-                field := neighbour_field(
-                    own, self.shown(j, polylines[j]), ignored=ignored
-                )
-            )
-            is not None
-        ]
 
 
 def kept_vertices(

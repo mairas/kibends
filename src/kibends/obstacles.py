@@ -1325,25 +1325,6 @@ class ChainField:
             self._obstacles,
         )
 
-    @staticmethod
-    def merged(fields: Sequence[ChainField]) -> ChainField:
-        """One field answering as the union of `fields` does, with one tree."""
-        starts = np.concatenate([f._starts for f in fields])
-        along = np.concatenate([f._along for f in fields])
-        counts = [int(f._obstacles.max(initial=-1)) + 1 for f in fields]
-        offsets = np.cumsum([0, *counts[:-1]])
-        return ChainField(
-            np.column_stack([starts.real, starts.imag]),
-            np.column_stack([(starts + along).real, (starts + along).imag]),
-            np.concatenate([f._inflations for f in fields]),
-            np.concatenate(
-                [
-                    np.empty(0, dtype=np.intp),
-                    *(f._obstacles + o for f, o in zip(fields, offsets, strict=True)),
-                ]
-            ),
-        )
-
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:

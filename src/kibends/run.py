@@ -971,7 +971,7 @@ def _with_vias(
         out.append(
             given
             if part is None
-            else replace(given, field=chain_field(given.field, [part]))
+            else replace(given, field=chain_field(given.field, part))
         )
     return out
 

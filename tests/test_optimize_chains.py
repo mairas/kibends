@@ -78,16 +78,14 @@ def fields(
     return [
         chain_field(
             chain.field,
-            [
-                neighbour_field(
-                    chain,
-                    [
-                        (other, polylines[j])
-                        for j, other in enumerate(chains)
-                        if j != i and other.layer == chain.layer
-                    ],
-                )
-            ],
+            neighbour_field(
+                chain,
+                [
+                    (other, polylines[j])
+                    for j, other in enumerate(chains)
+                    if j != i and other.layer == chain.layer
+                ],
+            ),
         )
         for i, chain in enumerate(chains)
     ]
