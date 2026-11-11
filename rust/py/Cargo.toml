@@ -1,0 +1,23 @@
+[package]
+name = "kibends-py"
+description = "The extension module kibends._core, a thin binding of kibends-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_core"
+# rlib lets the stub_gen binary link the module to read its stub information.
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "stub_gen"
+doc = false
+
+[dependencies]
+kibends-core.workspace = true
+pyo3.workspace = true
+pyo3-stub-gen.workspace = true

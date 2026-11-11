@@ -16,27 +16,39 @@ if [[ $0 != $PROJECT_ROOT && $PROJECT_ROOT != "" ]]; then
 fi
 readonly PROJECT_ROOT=$(pwd)
 
+# pyo3's build scripts configure themselves from this interpreter. The
+# editable build uses the same one, so cargo and `uv sync` share one build of
+# pyo3 instead of each rebuilding it after the other.
+export PYO3_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+
 ################################################################################
 # Development Commands
 
 function sync {
-  #@ Create or update the virtualenv with dev dependencies and the plot extra
+  #@ Create or update the virtualenv with dev dependencies and the plot extra, building kibends._core
   #@ Category: Development
-  uv sync --extra plot
+  uv sync --extra plot "$@"
 }
 
 # On Linux, numpy's OpenBLAS starts a thread per core in every xdist worker,
 # and the workers' threads oversubscribe the cores: the suite ran about 10x slower on 4 cores.
 
+# The tests run after a quiet sync, which rebuilds kibends._core if its
+# sources changed, so they always test the current Rust code.
+
 function test {
-  #@ Run the fast tests (extra arguments go to pytest)
+  #@ Run the Rust core's tests and the fast Python tests (extra arguments go to pytest)
   #@ Category: Development
+  sync --quiet
+  cargo test --quiet -p kibends-core
   OPENBLAS_NUM_THREADS=1 .venv/bin/python -m pytest -m "not slow" "$@"
 }
 
 function test-all {
   #@ Run every test, including slow ones
   #@ Category: Development
+  sync --quiet
+  cargo test --quiet -p kibends-core
   OPENBLAS_NUM_THREADS=1 .venv/bin/python -m pytest "$@"
 }
 
@@ -47,10 +59,12 @@ function bench {
 }
 
 function lint {
-  #@ Check linting and formatting with ruff
+  #@ Check linting and formatting with ruff, rustfmt and clippy
   #@ Category: Development
   .venv/bin/ruff check .
   .venv/bin/ruff format --check .
+  cargo fmt --all --check
+  cargo clippy --quiet --workspace --all-targets -- -D warnings
 }
 
 function format {
@@ -58,11 +72,35 @@ function format {
   #@ Category: Development
   .venv/bin/ruff check --fix .
   .venv/bin/ruff format .
+  cargo fmt --all
+}
+
+readonly STUBS=src/kibends/_core
+
+function stubs {
+  #@ Regenerate the type stubs of kibends._core from the Rust sources
+  #@ Category: Development
+  # The generator links libpython, which on Linux lies outside the
+  # loader's search path.
+  local libdir
+  libdir=$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+  LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    cargo run --quiet -p kibends-py --bin stub_gen
 }
 
 function typecheck {
-  #@ Type-check with pyright in strict mode
+  #@ Check that the stubs of kibends._core are current, and type-check with pyright in strict mode
   #@ Category: Development
+  local committed
+  committed=$(mktemp -d)
+  cp -R "$STUBS/." "$committed"
+  stubs
+  if ! diff -r "$committed" "$STUBS"; then
+    rm -rf "$committed"
+    echo "The stubs in $STUBS were out of date and have been regenerated." >&2
+    return 1
+  fi
+  rm -rf "$committed"
   .venv/bin/pyright
 }
 
