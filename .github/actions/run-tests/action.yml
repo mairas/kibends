@@ -7,6 +7,15 @@ runs:
     - name: Set up uv
       uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
     - name: Install dependencies
       shell: bash
       run: ./run sync
@@ -22,3 +31,19 @@ runs:
     - name: Test
       shell: bash
       run: ./run test-all
+
+    # While no Linux baseline is committed, record one from this run to
+    # download and commit. Recording must happen while scipy runs the
+    # optimizer.
+    - name: Record the scipy baseline
+      id: baseline
+      if: runner.os == 'Linux' && hashFiles('tests/data/scipy_baseline_linux-*.json') == ''
+      shell: bash
+      run: OPENBLAS_NUM_THREADS=1 .venv/bin/python scripts/record_baseline.py
+
+    - name: Upload the scipy baseline
+      if: steps.baseline.outcome == 'success'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: scipy-baseline-linux
+        path: tests/data/scipy_baseline_linux-*.json
