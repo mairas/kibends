@@ -34,6 +34,8 @@ BoolArray = NDArray[np.bool_]
 IntArray = NDArray[np.intp]
 TermValue = tuple[float, FloatArray]
 Integrand = Callable[[FloatArray], tuple[FloatArray, FloatArray]]
+Curvature = Callable[[FloatArray], FloatArray]
+"""An integrand's second derivative by the distance."""
 PairIntegrand = Callable[[FloatArray, FloatArray], tuple[FloatArray, FloatArray]]
 
 DEFAULT_ATTRACTION_RANGE = 3.0
@@ -197,6 +199,35 @@ def obstacle_integrand(params: EnergyParams) -> Integrand:
         )
 
     return obstacle
+
+
+def obstacle_curvature(params: EnergyParams) -> Curvature:
+    """The second derivative of `obstacle_integrand` by the distance, and
+    inside an obstacle that at its boundary. Inside, the integrand is
+    linear, but a step back out meets the boundary's curvature, and a
+    track pressed at the clearance lies a round-off inside it as often as
+    outside."""
+    falloff = _falloff_curvature(params.falloff_range)
+    hinge = _hinge_curvature(params.standoff)
+
+    def curvature(distance: FloatArray) -> FloatArray:
+        outside = np.maximum(distance, 0.0)
+        return params.repulsion * falloff(outside) + params.clearance_weight * hinge(
+            outside
+        )
+
+    return curvature
+
+
+def hinge_curvature(params: EnergyParams) -> Curvature:
+    """The second derivative of `hinge_integrand` by the distance, inside
+    an obstacle taken at its boundary as in `obstacle_curvature`."""
+    hinge = _hinge_curvature(params.standoff)
+
+    def curvature(distance: FloatArray) -> FloatArray:
+        return params.clearance_weight * hinge(np.maximum(distance, 0.0))
+
+    return curvature
 
 
 def hinge_integrand(params: EnergyParams) -> Integrand:
@@ -467,6 +498,26 @@ def _falloff(falloff_range: float) -> Integrand:
     return falloff
 
 
+def _falloff_curvature(falloff_range: float) -> Curvature:
+    """The second derivative of `_falloff`: 0 where it is linear or 0."""
+
+    def curvature(distance: FloatArray) -> FloatArray:
+        within = (distance >= 0.0) & (distance < falloff_range)
+        remaining = 1 - np.clip(distance, 0.0, falloff_range) / falloff_range
+        return np.where(within, 6 / falloff_range**2 * remaining, 0.0)
+
+    return curvature
+
+
+def _hinge_curvature(standoff: float) -> Curvature:
+    """The second derivative of `_hinge`: 1/ε on its quadratic part."""
+
+    def curvature(distance: FloatArray) -> FloatArray:
+        return np.where((distance >= 0.0) & (distance < standoff), 1 / standoff, 0.0)
+
+    return curvature
+
+
 def _hinge(standoff: float) -> Integrand:
     """CHOMP clearance hinge with standoff ε.
 
@@ -494,6 +545,98 @@ def quadrature_points(points: FloatArray, points_per_edge: int) -> FloatArray:
     return np.concatenate([points, interior.reshape(-1, 2)])
 
 
+class _EdgeSamples(NamedTuple):
+    """The quadrature points of each edge, its ends included, as
+    `edge_integral` weights them."""
+
+    distance: FloatArray
+    """(edges, points_per_edge + 2) distances."""
+    gradient: FloatArray
+    """(edges, points_per_edge + 2, 2) their gradients."""
+    t: FloatArray
+    """Where along its edge each point lies, from 0 to 1."""
+    weights: FloatArray
+    """The trapezoid rule's weight of each point, summing to 1."""
+
+
+def _edge_samples(
+    n: int, distance: FloatArray, direction: FloatArray, points_per_edge: int
+) -> _EdgeSamples:
+    """The distances at `quadrature_points` of a polyline of `n` vertices,
+    and their gradients, by edge."""
+    interior_t = np.arange(1, points_per_edge + 1) / (points_per_edge + 1)
+    vertex_distance, interior_distance = distance[:n], distance[n:].reshape(n - 1, -1)
+    vertex_gradient = direction[:n]
+    interior_gradient = direction[n:].reshape(n - 1, -1, 2)
+    edge_distance = np.concatenate(
+        [vertex_distance[:-1, None], interior_distance, vertex_distance[1:, None]],
+        axis=1,
+    )
+    edge_gradient = np.concatenate(
+        [vertex_gradient[:-1, None], interior_gradient, vertex_gradient[1:, None]],
+        axis=1,
+    )
+    t = np.concatenate([[0.0], interior_t, [1.0]])
+    weights = np.full(points_per_edge + 2, 1 / (points_per_edge + 1))
+    weights[[0, -1]] /= 2
+    return _EdgeSamples(edge_distance, edge_gradient, t, weights)
+
+
+def point_stiffness(
+    distance: FloatArray,
+    direction: FloatArray,
+    integrand: Integrand,
+    curvature: Curvature,
+) -> FloatArray:
+    """The diagonal second derivative of `integrand` at points by x and by
+    y, from their smooth distances (...) and gradients (..., 2), as the
+    terms of it that cannot be negative: f''(d)·g², with g the gradient,
+    and |f'(d)|·(1 - |g|²)/τ on both axes, the smooth minimum's own
+    curvature (`smooth_minimum`) where obstacles in different directions
+    are about as near, the spread of their unit gradients measured by the
+    shortfall of |g| from 1. It leaves out each obstacle's own curvature."""
+    _, slope = integrand(distance)
+    squared = direction**2
+    spread = np.maximum(1 - squared.sum(axis=-1), 0.0)
+    smoothing = np.abs(slope) * spread / SMOOTH_WIDTH
+    return curvature(distance)[..., None] * squared + smoothing[..., None]
+
+
+def edge_curvature(
+    points: FloatArray,
+    distance: FloatArray,
+    direction: FloatArray,
+    integrand: Integrand,
+    curvature: Curvature,
+    points_per_edge: int,
+) -> FloatArray:
+    """Each vertex's stiffness under `edge_integral` of `integrand`: the
+    larger over x and y of its diagonal second derivative, from the
+    distances and their gradients at `quadrature_points`.
+
+    Each quadrature point adds its `point_stiffness` times lₑ·wₖ and the
+    square of the vertex's interpolation weight, and each edge its mean f̄
+    times the curvature of its length, f̄·(1 - u²)/lₑ across its direction
+    u. It leaves out the product of the length's and the distance's
+    slopes, which can be negative, so that it is exact for edges parallel
+    to flat obstacles."""
+    n = len(points)
+    samples = _edge_samples(n, distance, direction, points_per_edge)
+    value_at, _ = integrand(samples.distance)
+    _, lengths, units = _edges(points)
+    measure = (lengths[:, None] * samples.weights)[:, :, None]
+    per_point = measure * point_stiffness(
+        samples.distance, samples.gradient, integrand, curvature
+    )
+    start = np.einsum("k,ekj->ej", (1 - samples.t) ** 2, per_point)
+    end = np.einsum("k,ekj->ej", samples.t**2, per_point)
+    edge_mean = value_at @ samples.weights
+    across = (edge_mean / np.maximum(lengths, MIN_EDGE_LENGTH))[:, None] * (
+        1 - units**2
+    )
+    return _scatter_edge_gradient(n, start + across, end + across).max(axis=1)
+
+
 def edge_integral(
     points: FloatArray,
     distance: FloatArray,
@@ -511,22 +654,9 @@ def edge_integral(
     whose distances also depend on other coordinates.
     """
     n = len(points)
-    interior_t = np.arange(1, points_per_edge + 1) / (points_per_edge + 1)
-    vertex_distance, interior_distance = distance[:n], distance[n:].reshape(n - 1, -1)
-    vertex_gradient = direction[:n]
-    interior_gradient = direction[n:].reshape(n - 1, -1, 2)
-
-    edge_distance = np.concatenate(
-        [vertex_distance[:-1, None], interior_distance, vertex_distance[1:, None]],
-        axis=1,
+    edge_distance, edge_distance_gradient, t, weights = _edge_samples(
+        n, distance, direction, points_per_edge
     )
-    edge_distance_gradient = np.concatenate(
-        [vertex_gradient[:-1, None], interior_gradient, vertex_gradient[1:, None]],
-        axis=1,
-    )
-    t = np.concatenate([[0.0], interior_t, [1.0]])
-    weights = np.full(points_per_edge + 2, 1 / (points_per_edge + 1))
-    weights[[0, -1]] /= 2
 
     value_at, slope_at = integrand(edge_distance)
     _, lengths, units = _edges(points)
