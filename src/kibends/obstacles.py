@@ -2213,8 +2213,6 @@ def _via_field(
         ),
     ]
     outline = _board_outline(spanned[0].edge_paths)
-    if outline is None:
-        return Obstacles(items)
     return Obstacles(items, outline, edge_clearance + keeper.radius)
 
 
@@ -2281,9 +2279,8 @@ def own_net_stops(
     overlap them, since a via in a pad needs the fabricator to fill and cap
     it, unless `allow_via_in_pad`, which KiCad's DRC does not check either.
     """
-    spanned = [s for s in layers if via.reaches(s.layer)]
-    if not spanned:
-        raise ValueError(f"no layer that via {via.id} spans was given")
+    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
+    spanned, keeper = found.spanned, found.keeper
     left_out = {via.id, *moving}
     own = {
         v.id: v
@@ -2292,7 +2289,6 @@ def own_net_stops(
         if v.id not in left_out and v.net == via.net
     }.values()
     clearance = spanned[0].clearance(via.net)
-    keeper = _via_keeper(via, clearance, hole_clearance, hole_to_hole)
     plated = [p for p in spanned[0].pads if _plated_of(p, via)]
     items = _hole_items(plated, (), keeper)
     if not allow_via_in_pad:
