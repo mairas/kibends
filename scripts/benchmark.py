@@ -36,13 +36,14 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   at default settings; width-change and starts-inside are each skipped for
   a tree without them (an older tree's neck-down is another geometry).
 - bus: tracks of different nets side by side, each case stopped after
-  TIME_LIMIT seconds unless it ends first. Three go through the optimizer
+  TIME_LIMIT seconds unless it ends first. Five go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
   0.5: ten Z-shaped tracks at 0.6 mm pitch, each as far from one neighbour
   as from the other; the same with each track up to 0.03 mm off its pitch;
   262 chains of 5 mm for one outer iteration, to time setup and the
-  work around a burst among many chains, then simplified, timed in its
-  note and counted in its wall time; and the same chains all of one
+  work around a burst among many chains; the same, then simplified, the
+  simplification timed in its note and counted in its wall time and its
+  time outside L-BFGS-B; and the same chains all of one
   net with one of another net far from them. The last runs
   end to end
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
@@ -776,6 +777,9 @@ def bus_cases() -> dict[str, Case]:
             z_bus(BUS_JITTER), settings
         ),
         "262 chains of 5 mm, 1 iteration": bus_run(
+            short_chains(), replace(settings, max_iterations=1)
+        ),
+        "262 chains of 5 mm, 1 iteration, simplified": bus_run(
             short_chains(), replace(settings, max_iterations=1), simplified=True
         ),
         "262 chains of one net and one far off, 1 iteration": bus_run(
