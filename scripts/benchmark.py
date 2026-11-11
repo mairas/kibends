@@ -929,13 +929,15 @@ def replace_net(chain: ChainInput, net: str, shift: float) -> ChainInput:
     return replace(chain, centreline=centreline)
 
 
-def joint_run(case: JointCase, traces: dict[str, dict[str, ChainTrace]]) -> Case:
+def joint_run(case: JointCase) -> tuple[Case, dict[str, ChainTrace]]:
+    """The run of `case`, and the traces it fills as it runs."""
     settings = smooth_options().settings
+    traces: dict[str, ChainTrace] = {}
 
     def go() -> tuple[int, str]:
         with traced() as trace:
             result = optimize_chains(case.chains(), case.params, settings)
-        traces[""] = trace
+        traces.update(trace)
         lone = trace[LONE]
         return result.iterations, (
             f"{result.termination.value}; lone {lone.lengths[-1]:.4f} mm "
@@ -943,12 +945,12 @@ def joint_run(case: JointCase, traces: dict[str, dict[str, ChainTrace]]) -> Case
             f"all {sum(length(c.polyline) for c in result.chains):.4f} mm"
         )
 
-    return go
+    return go, traces
 
 
-REACHED = 1e-3
+REACHED = smooth_options().settings.stall_tolerance
 """How near the alone run's final length the lone track counts as there, mm:
-`OptimizerSettings.stall_tolerance`."""
+the runs' stall tolerance."""
 
 
 def plot_traces(
@@ -1000,9 +1002,8 @@ def joint() -> None:
     for name, case in joint_cases().items():
         if alone is not None and ARGS.case not in name:
             continue
-        traces: dict[str, dict[str, ChainTrace]] = {}
-        measure(name, joint_run(case, traces))
-        trace = traces[""]
+        run, trace = joint_run(case)
+        measure(name, run)
         lone = trace[LONE]
         if alone is None:
             alone = lone
