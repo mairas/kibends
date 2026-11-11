@@ -34,6 +34,7 @@ from kibends.bursts import (
     Objective,
     OptimizerSettings,
     Revert,
+    ScaledObjective,
     Stop,
 )
 from kibends.chain import NM_PER_MM, Segment
@@ -1459,19 +1460,29 @@ REFERENCE_STIFFNESS = optimize_module.REFERENCE_EDGES / DEFAULT_SETTINGS.spacing
 """A free vertex's length stiffness between edges of the default spacing."""
 
 
-def pressed_and_free_scales() -> list[FloatArray]:
-    """Per chain, its free vertices' scales in the first burst of three
-    straight tracks pressed together at their clearance and one far from
-    them."""
-    far = selected("far", "far", FreeSpace(), (0.0, -20.0), (10.0, -20.0))
+FAR_Y = -20.0
+"""Where the free track lies, mm: beyond every term's reach of the others."""
+PRESSED_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
+
+
+def pressed_and_free() -> list[ChainInput]:
+    """A straight track at FAR_Y, then three pressed together at their
+    clearance from y = 0 up."""
+    far = selected("far", "far", FreeSpace(), (0.0, FAR_Y), (10.0, FAR_Y))
     pressed = [
         selected(f"S{i}", f"S{i}", FreeSpace(), (0.0, y), (10.0, y))
         for i, y in enumerate(i * PRESSED_PITCH for i in range(3))
     ]
-    params = replace(scenarios.PARAMS, repulsion=0.5)
-    vias = MovingVias([far, *pressed], [], HOLE_CLEARANCE, HOLE_TO_HOLE)
+    return [far, *pressed]
+
+
+def pressed_and_free_scales() -> list[FloatArray]:
+    """Per chain of `pressed_and_free`, its free vertices' scales in the
+    first burst."""
+    chains = pressed_and_free()
+    vias = MovingVias(chains, [], HOLE_CLEARANCE, HOLE_TO_HOLE)
     (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
-        [far, *pressed], [], vias, params, DEFAULT_SETTINGS
+        chains, [], vias, PRESSED_PARAMS, DEFAULT_SETTINGS
     )
     problem = placed.problem
     layout = problem.layout(problem.points)
@@ -1490,6 +1501,37 @@ def test_a_burst_scales_down_a_track_pressed_between_two_and_not_a_free_one() ->
     assert far.max() == 1.0
     assert np.median(middle) < PRESSED_SCALE
     assert np.median(middle) < np.median(outer) < 1.0
+
+
+def test_a_burst_minimises_over_its_scaled_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.run_burst
+    given: list[tuple[Objective, FloatArray]] = []
+
+    def capturing(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        given.append((objective, start.reshape(-1, 2).copy()))
+        return real(objective, start, revert, settings, stop)
+
+    monkeypatch.setattr(optimize_module, "run_burst", capturing)
+
+    optimize_chains(
+        pressed_and_free(), PRESSED_PARAMS, replace(DEFAULT_SETTINGS, max_iterations=1)
+    )
+
+    objective, start = given[0]
+    assert isinstance(objective, ScaledObjective)
+    scale = objective.scale.reshape(-1, 2)[:, 0]
+    far = scale[start[:, 1] == FAR_Y]
+    middle = scale[start[:, 1] == PRESSED_PITCH]
+    assert np.median(far) == 1.0
+    assert np.median(middle) < PRESSED_SCALE
 
 
 def test_no_variable_scales_above_one() -> None:
