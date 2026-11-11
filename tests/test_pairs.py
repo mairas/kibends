@@ -7,9 +7,8 @@ from shapely.geometry import LineString
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE
 from kibends.chain import Chain, Point2
-from kibends.energy import BoolArray, FloatArray, arc_lengths
+from kibends.energy import BoolArray, FloatArray
 from kibends.pairs import (
-    STRAIGHT_PITCHES,
     Pair,
     PairError,
     Piece,
@@ -714,6 +713,17 @@ def test_a_fold_is_too_tight() -> None:
     assert check.too_tight
 
 
+def test_a_repeated_vertex_is_too_tight() -> None:
+    # As two vertices of an outer track on either side of the point square
+    # across from the inner track's corner offset to the centreline's corner.
+    repeated = array((0.0, 0.0), (5.0, 0.0), (5.0, 0.0), (8.0, 3.0))
+
+    check = check_bend_radius(repeated, GAP, WIDTH)
+
+    assert check.radius == 0.0
+    assert check.too_tight
+
+
 FOLD_DIRECTIONS = 360
 """Directions, one degree apart, to fold a centreline along: off the axes,
 rounding leaves 1 + cos of a fold a hair above 0."""
@@ -786,7 +796,9 @@ def straight(y: float, *xs: float) -> FloatArray:
 
 
 @pytest.mark.parametrize("b_reversed", [False, True])
-def test_a_pin_on_either_track_splits_the_pair_square_across(b_reversed: bool) -> None:
+def test_pins_between_a_stretch_s_ends_stay_inside_its_section(
+    b_reversed: bool,
+) -> None:
     a = pinned("USB_D+", straight(-HALF_PITCH, 0.0, 4.0, 10.0), 1)
     b_points = straight(HALF_PITCH, 0.0, 7.0, 10.0)
     b = pinned("USB_D-", b_points[::-1] if b_reversed else b_points, 1)
@@ -794,55 +806,11 @@ def test_a_pin_on_either_track_splits_the_pair_square_across(b_reversed: bool) -
     pair = find_pair(a, b, CHORD)
 
     assert pair is not None
-    assert [s.b_reversed for s in pair.sections] == [b_reversed] * 3
-    for (ends_a, ends_b), (start, end) in zip(
-        section_ends(pair), [(0.0, 4.0), (4.0, 7.0), (7.0, 10.0)], strict=True
-    ):
-        np.testing.assert_allclose(ends_a[:, 0], [start, end])
-        np.testing.assert_allclose(ends_b[:, 0], [start, end])
-
-
-PITCH = GAP + WIDTH
-REACH = STRAIGHT_PITCHES * PITCH
-"""How far both tracks must run straight to either side of a pin that
-splits a pair."""
-CORNERS = (1, 2)
-"""Corners of `corner_pair`: track a is inside the first and outside the
-second."""
-NEAR_CORNER = (0.0, 0.02, -0.02, 0.1, -0.1, 0.28, -0.28, 0.6, -0.6)
-"""mm along a track from one of its corners, ahead of it where positive,
-all closer than `REACH`."""
-CLEAR_OF_CORNER = 1.0
-"""mm along a track from one of its corners, farther than `REACH` on both
-tracks, whose corners lie a pitch·tan(22.5°) apart along the pair."""
-
-
-def pinned_at(net: str, points: FloatArray, *arcs: float) -> Chain:
-    """`points` as a chain of `net`, pinned at its ends and at the point at
-    each of `arcs` along it, a vertex inserted there unless one is."""
-    line = [(float(x), float(y)) for x, y in points]
-    pins = [True, *[False] * (len(line) - 2), True]
-    for arc in arcs:
-        k = _vertex_at(line, pins, arc)
-        pins[k] = True
-    return Chain(tuple(line), tuple(pins), WIDTH, "F.Cu", net, ())
-
-
-def _vertex_at(line: list[Point2], pins: list[bool], arc: float) -> int:
-    """The index of the vertex at `arc` along `line`, inserted unpinned
-    unless one lies there."""
-    along = arc_lengths(np.array(line))
-    k = int(np.searchsorted(along, arc - ROUND_TRIP_TOLERANCE))
-    if not math.isclose(along[k], arc, abs_tol=ROUND_TRIP_TOLERANCE):
-        t = (arc - along[k - 1]) / (along[k] - along[k - 1])
-        (x0, y0), (x1, y1) = line[k - 1], line[k]
-        line.insert(k, (x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
-        pins.insert(k, False)
-    return k
-
-
-def corner_arc(points: FloatArray, corner: int) -> float:
-    return float(arc_lengths(points)[corner])
+    assert [s.b_reversed for s in pair.sections] == [b_reversed]
+    ((ends_a, ends_b),) = section_ends(pair)
+    np.testing.assert_allclose(ends_a[:, 0], [0.0, 10.0])
+    np.testing.assert_allclose(ends_b[:, 0], [0.0, 10.0])
+    assert pinned_inside(pair) == 2
 
 
 def pinned_inside(pair: Pair) -> int:
@@ -852,177 +820,3 @@ def pinned_inside(pair: Pair) -> int:
         + int(pair.b.pinned[s.b_start + 1 : s.b_end].sum())
         for s in pair.sections
     )
-
-
-def corner_pair_pinned(on_a: bool, *arcs: float) -> tuple[Chain, Chain]:
-    """`corner_pair` pinned at `arcs` along track a if `on_a`, else b."""
-    a, b = corner_pair()
-    return (
-        pinned_at("CLK_P", a, *(arcs if on_a else ())),
-        pinned_at("CLK_N", b, *(() if on_a else arcs)),
-    )
-
-
-@pytest.mark.parametrize("offset", NEAR_CORNER)
-@pytest.mark.parametrize("corner", CORNERS)
-@pytest.mark.parametrize("on_a", [True, False])
-def test_a_pin_within_two_pitches_of_a_corner_splits_nothing(
-    on_a: bool, corner: int, offset: float
-) -> None:
-    track = corner_pair()[0 if on_a else 1]
-    a, b = corner_pair_pinned(on_a, corner_arc(track, corner) + offset)
-
-    pair = find_pair(a, b, CHORD)
-
-    assert pair is not None
-    assert len(pair.sections) == 1
-    assert pinned_inside(pair) == 1
-
-
-@pytest.mark.parametrize("offset", [CLEAR_OF_CORNER, -CLEAR_OF_CORNER])
-@pytest.mark.parametrize("corner", CORNERS)
-@pytest.mark.parametrize("on_a", [True, False])
-def test_a_pin_two_pitches_from_every_corner_splits_the_pair_square_across(
-    on_a: bool, corner: int, offset: float
-) -> None:
-    track = corner_pair()[0 if on_a else 1]
-    a, b = corner_pair_pinned(on_a, corner_arc(track, corner) + offset)
-
-    pair = find_pair(a, b, CHORD)
-
-    assert pair is not None
-    assert len(pair.sections) == 2
-    assert pinned_inside(pair) == 0
-    (first_a, first_b), (second_a, second_b) = section_ends(pair)
-    np.testing.assert_array_equal([first_a[1], first_b[1]], [second_a[0], second_b[0]])
-    across = first_b[1] - first_a[1]
-    along = pair.a.points[pair.sections[1].a_start + 1] - second_a[0]
-    assert np.hypot(*across) == pytest.approx(PITCH)
-    assert np.dot(across, along) == pytest.approx(0.0, abs=ROUND_TRIP_TOLERANCE)
-
-
-def test_a_vertex_that_does_not_turn_does_not_hide_a_corner() -> None:
-    # A straight drawn in two clicks: the vertex between the pin and the
-    # corner keeps the direction, and the corner lies within reach.
-    a, b = corner_pair()
-    corner = corner_arc(a, 1)
-    line = [(float(x), float(y)) for x, y in a]
-    pins = [True, False, False, True]
-    _vertex_at(line, pins, corner - 0.15)
-    pins[_vertex_at(line, pins, corner - 0.3)] = True
-    chain_a = Chain(tuple(line), tuple(pins), WIDTH, "F.Cu", "CLK_P", ())
-
-    pair = find_pair(chain_a, pinned_at("CLK_N", b), CHORD)
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (1, 1)
-
-
-def test_a_vertex_that_does_not_turn_does_not_stop_a_split() -> None:
-    a, b = corner_pair()
-    corner = corner_arc(a, 1)
-    line = [(float(x), float(y)) for x, y in a]
-    pins = [True, False, False, True]
-    _vertex_at(line, pins, corner - 1.0)
-    pins[_vertex_at(line, pins, corner - 1.5)] = True
-    chain_a = Chain(tuple(line), tuple(pins), WIDTH, "F.Cu", "CLK_P", ())
-
-    pair = find_pair(chain_a, pinned_at("CLK_N", b), CHORD)
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (2, 0)
-
-
-@pytest.mark.parametrize(
-    ("offsets", "split"), [((0.1, 0.3), False), ((0.3, 1.5), True)]
-)
-def test_only_pins_two_pitches_past_an_outer_corner_split_the_pair(
-    offsets: tuple[float, float], split: bool
-) -> None:
-    # Track b is outside corner 1: a pad's two outline crossings past it.
-    corner = corner_arc(corner_pair()[1], 1)
-    a, b = corner_pair_pinned(False, *(corner + offset for offset in offsets))
-
-    pair = find_pair(a, b, CHORD)
-
-    assert pair is not None
-    # The pin past the far one, or both, stay inside a section.
-    assert (len(pair.sections), pinned_inside(pair)) == ((2, 1) if split else (1, 2))
-
-
-@pytest.mark.parametrize("gap", [0.3, 0.4, 0.5])
-@pytest.mark.parametrize("offset", [0.0, 0.1, -0.1])
-def test_a_pin_at_the_outer_corner_of_a_wider_pair_splits_nothing(
-    gap: float, offset: float
-) -> None:
-    centre = array((0.0, 0.0), (5.0, 0.0), (8.0, 3.0), (13.0, 3.0))
-    a, b = offset_pair(centre, gap, WIDTH)
-    outer = a if corner_arc(a, 1) > corner_arc(b, 1) else b
-    at = corner_arc(outer, 1) + offset
-    pin_a, pin_b = ((at,), ()) if outer is a else ((), (at,))
-
-    pair = find_pair(
-        pinned_at("CLK_P", a, *pin_a), pinned_at("CLK_N", b, *pin_b), CHORD
-    )
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (1, 1)
-
-
-CURVE_RADIUS = 2.0
-CURVE_SEGMENTS = 40
-"""A quarter circle drawn as this many segments, each turning by 2.25°."""
-
-
-@pytest.mark.parametrize("vertex", [5, 13, 20, 31])
-def test_pins_on_a_curve_of_short_segments_split_nothing(vertex: int) -> None:
-    angles = np.linspace(0.0, np.pi / 2, CURVE_SEGMENTS + 1)
-    curve = CURVE_RADIUS * np.stack([np.sin(angles), 1.0 - np.cos(angles)], axis=1)
-    centre = np.concatenate([[(-3.0, 0.0)], curve, [curve[-1] + (0.0, 3.0)]])
-    a, b = offset_pair(centre, GAP, WIDTH)
-    # Both tracks pinned at the vertices square across each other.
-    pins_a = [corner_arc(a, vertex + 1)]
-    pins_b = [corner_arc(b, vertex + 1)]
-
-    pair = find_pair(
-        pinned_at("CLK_P", a, *pins_a), pinned_at("CLK_N", b, *pins_b), CHORD
-    )
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (1, 2)
-
-
-@pytest.mark.parametrize("b_reversed", [False, True])
-def test_pins_square_across_each_other_split_the_pair_once(b_reversed: bool) -> None:
-    a = pinned("USB_D+", straight(-HALF_PITCH, 0.0, 5.0, 10.0), 1)
-    b_points = straight(HALF_PITCH, 0.0, 5.0, 10.0)
-    b = pinned("USB_D-", b_points[::-1] if b_reversed else b_points, 1)
-
-    pair = find_pair(a, b, CHORD)
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (2, 0)
-    starts = [ends_a[0, 0] for ends_a, _ in section_ends(pair)]
-    np.testing.assert_allclose(starts, [0.0, 5.0])
-
-
-TILT = 0.002
-"""Radians by which track b runs away from track a: square across from each
-other, the two tracks' points lie up to `TILT` times the pitch apart along
-the pair."""
-
-
-def test_a_pin_out_of_order_on_the_other_track_stays_inside_a_section() -> None:
-    # A pin on a at x = 3 and one on b whose place square across on a lies
-    # just before it, while a's place square across on b lies before b's:
-    # the stations cross, so one of them stays inside a section.
-    a = pinned("USB_D+", straight(-HALF_PITCH, 0.0, 3.0, 6.0), 1)
-    crossing = 3.0 - TILT * HALF_PITCH
-    b_points = array((0.0, 0.0), (crossing, TILT * crossing), (6.0, TILT * 6.0))
-    b_points[:, 1] += HALF_PITCH
-    b = pinned("USB_D-", b_points, 1)
-
-    pair = find_pair(a, b, 0.0)
-
-    assert pair is not None
-    assert (len(pair.sections), pinned_inside(pair)) == (2, 1)

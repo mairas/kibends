@@ -579,11 +579,9 @@ def test_a_pair_turning_back_around_a_pad_keeps_its_legs_apart() -> None:
 
 def test_a_section_held_stays_as_it_is() -> None:
     (given,) = scenarios.pair_over_pad().pairs
-    pinned = given.b_pinned.copy()
-    pinned[2] = True
 
     result = optimize_chains(
-        (), scenarios.PARAMS, COARSE, pairs=(replace(given, b_pinned=pinned),)
+        (), scenarios.PARAMS, COARSE, pairs=(replace(given, hold=Hold.GROUP),)
     )
 
     assert result.termination is Termination.NOTHING_TO_DO
@@ -1329,9 +1327,10 @@ SPACINGS = [
     pytest.param(COARSE, id="coarse"),
     pytest.param(DEFAULT_SPACING, id="default"),
 ]
-SPLIT_HOLDS = {None, Hold.COPPER, Hold.SHORT}
-"""How a section split at pins, or left whole around one, may be held: as
-routed, never for its bend."""
+PINNED_HOLDS = {None, Hold.SHORT, Hold.ROUTING}
+"""How a section with pins between its ends may be held: as routed, where
+what a pin keeps of its routing bends too tightly or leaves nothing to
+move, never after the run."""
 RIGHT_ANGLE_PAIR = ((0.0, 0.0), (4.0, 0.0), (4.0, -4.0))
 """A pair's centreline turning left by 90°: P is outside its corner."""
 
@@ -1374,8 +1373,8 @@ def assert_kept_or_held(
     chains: Sequence[Chain], settings: OptimizerSettings, gap: float = DP_GAP
 ) -> Smoothed:
     """Smooth `chains`: every pin stays, the joined tracks keep the pair's
-    gap, so they neither narrow nor overlap, and no section is held for
-    its bend."""
+    gap, so they neither narrow nor overlap, and no section is held after
+    the run for its bend."""
     out = smoothed(chains, settings)
 
     assert_pins_kept(chains, out.joined)
@@ -1383,7 +1382,7 @@ def assert_kept_or_held(
     low, high = gap_range(p, n, PAIR_WIDTH)
     slack = GAP_TOLERANCE * gap
     assert gap - slack <= low <= high <= gap + slack
-    assert {p.block.hold for p in out.result.pairs} <= SPLIT_HOLDS
+    assert {p.block.hold for p in out.result.pairs} <= PINNED_HOLDS
     return out
 
 
@@ -1391,7 +1390,7 @@ def assert_kept_or_held(
 @pytest.mark.parametrize("offset", NEAR_CORNER)
 @pytest.mark.parametrize("corner", CORNERS)
 @pytest.mark.parametrize("pinned", ["P", "N"])
-def test_a_pin_near_a_corner_of_either_track_holds_its_section(
+def test_a_pin_near_a_corner_of_either_track_stays_on_it(
     pinned: str, corner: int, offset: float, settings: OptimizerSettings
 ) -> None:
     tracks = scenarios.tracks(*PINNED_PAIR)
@@ -1400,13 +1399,13 @@ def test_a_pin_near_a_corner_of_either_track_holds_its_section(
 
     out = assert_kept_or_held(chains, settings)
 
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+    assert len(out.result.pairs) == 1
 
 
 @pytest.mark.parametrize("settings", SPACINGS)
 @pytest.mark.parametrize("offset", [0.0, 0.1, -0.1])
 @pytest.mark.parametrize("corner", CORNERS)
-def test_a_pad_across_both_tracks_near_a_corner_holds_its_section(
+def test_a_pad_across_both_tracks_near_a_corner_keeps_both_on_it(
     corner: int, offset: float, settings: OptimizerSettings
 ) -> None:
     # At 0 the pad touches both tracks' corner vertices, across the bend.
@@ -1418,7 +1417,7 @@ def test_a_pad_across_both_tracks_near_a_corner_holds_its_section(
 
     out = assert_kept_or_held(chains, settings)
 
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+    assert len(out.result.pairs) == 1
 
 
 @pytest.mark.parametrize("settings", SPACINGS)
@@ -1438,19 +1437,21 @@ def test_a_pin_two_pitches_from_every_corner_rounds_them_all(
 
     out = assert_kept_or_held(chains, settings)
 
-    assert [p.block.hold for p in out.result.pairs] == [None, None]
+    assert [p.block.hold for p in out.result.pairs] == [None]
     assert_corners_round(chains, out.joined)
 
 
 def test_a_pin_across_from_the_other_tracks_corner_holds_its_section() -> None:
+    # P is outside the corner: its pin and its corner offset to one point
+    # of the centreline, which turns there on the spot.
     out = assert_kept_or_held(pinned_pair((ACROSS_N_CORNER,), ()), COARSE)
 
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+    assert [p.block.hold for p in out.result.pairs] == [Hold.ROUTING]
 
 
 @pytest.mark.parametrize("offset", [0.0, 0.02, -0.02, 0.1, -0.1])
 @pytest.mark.parametrize("pinned", ["P", "N"])
-def test_a_pin_at_a_right_angle_corner_holds_its_section(
+def test_a_pin_at_a_right_angle_corner_stays_on_its_track(
     pinned: str, offset: float
 ) -> None:
     tracks = scenarios.tracks(*RIGHT_ANGLE_PAIR)
@@ -1459,7 +1460,7 @@ def test_a_pin_at_a_right_angle_corner_holds_its_section(
 
     out = assert_kept_or_held(chains, DEFAULT_SPACING)
 
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+    assert len(out.result.pairs) == 1
 
 
 @pytest.mark.parametrize("pinned", ["P", "N"])
@@ -1470,7 +1471,7 @@ def test_a_pin_on_a_straight_lets_a_right_angle_corner_round(pinned: str) -> Non
 
     out = assert_kept_or_held(chains, DEFAULT_SPACING)
 
-    assert [p.block.hold for p in out.result.pairs] == [None, None]
+    assert [p.block.hold for p in out.result.pairs] == [None]
     for chain, line in zip(chains, out.joined, strict=True):
         corner = Point(np.array(chain.points)[-2])
         assert LineString(line).distance(corner) >= ROUNDED
@@ -1478,9 +1479,11 @@ def test_a_pin_on_a_straight_lets_a_right_angle_corner_round(pinned: str) -> Non
 
 @pytest.mark.parametrize(
     ("offsets", "holds"),
-    [((0.1, 0.3), [Hold.COPPER]), ((0.3, 1.5), [Hold.COPPER, None])],
+    # Within about a pitch of the corner, the outer track's pins and its
+    # corner offset to centreline points that turn back on each other.
+    [((0.1, 0.3), [Hold.ROUTING]), ((0.3, 1.5), [None])],
 )
-def test_pins_past_an_outer_corner_hold_only_the_section_around_them(
+def test_pins_past_an_outer_corner_keep_their_place(
     offsets: tuple[float, float], holds: list[Hold | None]
 ) -> None:
     # N is outside corner 1: a pad's two outline crossings past it.
@@ -1494,7 +1497,7 @@ def test_pins_past_an_outer_corner_hold_only_the_section_around_them(
 
 
 @pytest.mark.parametrize("gap", [0.3, 0.4, 0.5])
-def test_a_pin_at_the_outer_corner_of_a_wider_pair_holds_its_section(
+def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
     gap: float,
 ) -> None:
     p, n = offset_pair(scenarios.path(*PINNED_PAIR), gap, PAIR_WIDTH)
@@ -1503,22 +1506,4 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_holds_its_section(
 
     out = assert_kept_or_held(chains, DEFAULT_SPACING, gap)
 
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
-
-
-def test_a_vertex_that_does_not_turn_does_not_hide_a_corner() -> None:
-    # P's first straight drawn in two clicks, between the pin and its
-    # corner.
-    p, n = scenarios.tracks(*PINNED_PAIR)
-    corner = corner_arc(p, 1)
-    clicked = pinned_along("USB_D+", p, corner - 0.15, corner - 0.3)
-    pins = list(clicked.pinned)
-    pins[2] = False
-    chains = [
-        replace(clicked, pinned=tuple(pins)),
-        pinned_along("USB_D-", n),
-    ]
-
-    out = assert_kept_or_held(chains, DEFAULT_SPACING)
-
-    assert [p.block.hold for p in out.result.pairs] == [Hold.COPPER]
+    assert len(out.result.pairs) == 1

@@ -232,9 +232,10 @@ class PairReport:
     """Length difference of its two tracks, mm."""
     sections: int
     held: int
-    """Coupled sections left as they are: same-net copper touches them
-    between their ends, their routing bends too tightly, or the copper
-    around them kept them from rounding a corner (`Hold`)."""
+    """Coupled sections left as they are: their routing, or what same-net
+    copper touching them keeps of it, bends too tightly, they are too short
+    to move, or the copper around them kept them from rounding a corner
+    (`Hold`)."""
     rejected_edges: int
 
 

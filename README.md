@@ -317,14 +317,13 @@ not selected, still keep clearance from the other net's tracks.
 Bending a pair makes its inner track shorter, so the skew, the length
 difference of the two chains, changes; kibends does not correct it, which
 KiCad's length tuner does. Same-net copper that touches a coupled section
-between its ends, such as a pad the pair runs past or a stub that branches
-off one track, fixes the pair there. Where both tracks run straight for
-at least two pitches (track width plus gap) to either side of that
-point, the section is split there, and square across the pair from it on
-the other track, into sections that each move on their own and meet where
-the copper is; a part too short to change shape between two such points
-stays as it is. Copper anywhere else, such as near a corner, leaves the
-whole section as it is.
+between its ends, such as a pad the pair runs through or a stub that
+branches off one track, fixes the pair there: the track it touches keeps
+passing through that point in the direction it did, the other track runs
+beside it at the gap, and the rest of the section, such as a corner beyond
+the pad, is smoothed. Copper close to a corner keeps that corner sharp, and
+when that bends more tightly than the inner track allows, or leaves too
+little of the section to change shape, the whole section stays as it is.
 
 A selected stub, such as a test pad's or an ESD diode's, splits the track
 it branches off into separate chains. The other track of the diff pair is
