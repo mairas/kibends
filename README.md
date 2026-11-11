@@ -298,10 +298,9 @@ taper, and meeting the fan-outs in the direction they did. While
 optimising, a section's parts more than a turn apart along it, such as the
 legs of a U or the laps of a spiral, do not move closer to each other than
 the pair's outer extent plus the larger clearance, and parts that already
-lie closer do not move closer still. The run refuses, naming the pair, to commit
-a section whose tracks come closer to each other than both its nets'
-clearance and its routing kept them, where they run side by side or
-across a turn.
+lie closer do not move closer still. kibends does not check the committed
+tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
+than their clearance.
 Both nets' tracks go into the one commit.
 
 A chain of one of the pair's nets, such as a fan-out, keeps clear of the

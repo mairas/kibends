@@ -110,7 +110,7 @@ from kibends.pair_layout import (
     lay_out,
     pairs_and_partners_taken,
 )
-from kibends.pairs import GAP_TOLERANCE, gap_range, gaps_across
+from kibends.pairs import GAP_TOLERANCE, gap_range
 from kibends.polylines import enclosed_area, measure
 from kibends.results import (
     ChainResult,
@@ -355,9 +355,6 @@ class _Outcome:
     reports: tuple[ChainReport, ...]
     via_reports: tuple[ViaReport, ...]
     pair_reports: tuple[PairReport, ...]
-    pinched: str | None
-    """Why a coupled section's tracks may not be committed, if one's may
-    not."""
     crowded: str | None
     """Why the moved vias may not be committed, if they may not."""
 
@@ -370,9 +367,8 @@ def run_smooth(
 
     `on_optimized` gets the optimizer's report before the commit, which may
     raise. Raises on failures that leave nothing to report (no board, a bad
-    selection, a refused commit); an abnormal optimizer stop, a pinched
-    pair or a crowded via comes back as the report's `refusal`, with
-    nothing committed.
+    selection, a refused commit); an abnormal optimizer stop or a crowded
+    via comes back as the report's `refusal`, with nothing committed.
     """
     if options.plot is not None:
         _require_plot()
@@ -1034,7 +1030,6 @@ def _simplify_and_report(
         reports,
         via_reports,
         pair_reports,
-        _pinched(layout.sections, [p.block.apart for p in run.pairs], final_tracks),
         _crowded(
             optimized.whole,
             optimized.via_inputs,
@@ -1044,40 +1039,6 @@ def _simplify_and_report(
             read.frame,
         ),
     )
-
-
-def _pinched(
-    sections: Sequence[PairInput],
-    aparts: Sequence[float],
-    tracks: Sequence[tuple[FloatArray, FloatArray]],
-) -> str | None:
-    """Why the first section whose tracks come closer to each other than
-    both its nets' clearance and its routing did, where they run side by
-    side or more than a turn apart along it (`PairBlock.apart`), may not be
-    committed."""
-    for given, apart, (a, b) in zip(sections, aparts, tracks, strict=True):
-        if np.array_equal(a, given.a.points) and np.array_equal(b, given.b.points):
-            continue
-        width = given.a.width
-        clearance = max(given.a.clearance, given.b.clearance)
-        turn = math.pi / 2 * apart
-        reach = clearance + width
-        routed = gaps_across(given.a.points, given.b.points, width, turn, reach)
-        found = gaps_across(a, b, width, turn, reach)
-        # The run keeps each section clear of itself; should its tracks still
-        # come too close, committing them would short or crowd the pair.
-        for smallest, was, where in zip(
-            found, routed, ("", " across a turn"), strict=True
-        ):
-            floor = min(clearance, was)
-            if smallest < floor - INSIDE_TOLERANCE:
-                return (
-                    f"The tracks of the differential pair {given.a.net} and "
-                    f"{given.b.net} come within {smallest:.4f} mm of each "
-                    f"other{where}, below the {floor:.4f} mm they keep; "
-                    "nothing committed"
-                )
-    return None
 
 
 def _crowded(
@@ -1165,8 +1126,6 @@ def _commit(
 
     if run.termination is Termination.ABNORMAL:
         return report(refusal=ABNORMAL_MESSAGE)
-    if outcome.pinched is not None:
-        return report(refusal=outcome.pinched)
     if outcome.crowded is not None:
         return report(refusal=outcome.crowded)
     if options.dry_run or not report().changes:

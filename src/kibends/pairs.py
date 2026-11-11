@@ -642,45 +642,6 @@ def gap_range(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]
     return float(near.distance.min()) - width, float(square.max()) - width
 
 
-def gaps_across(
-    a: FloatArray, b: FloatArray, width: float, turn: float, reach: float
-) -> tuple[float, float]:
-    """The smallest edge-to-edge gap between a pair's tracks a and b where
-    they lie within `turn` of each other along the pair, side by side, and
-    where they lie farther apart along it, as across the legs of a U or the
-    laps of a spiral; infinite where no centres come within `reach`.
-
-    A point's place along the pair is that of its nearest point on the
-    pair's centreline. Each smallest gap is that of samples of either track,
-    vertices included, to the other's edges.
-    """
-    middle = centreline(a, b, width).points
-    beside, beyond = [math.inf], [math.inf]
-    for points, other in ((a, b), (b, a)):
-        samples = shapely.get_coordinates(
-            shapely.segmentize(LineString(points), width / SAMPLES_PER_WIDTH)
-        )
-        line = _polyline(other)
-        segments = shapely.linestrings(np.stack([other[:-1], other[1:]], axis=1))
-        tree = STRtree(np.asarray(segments, dtype=object))
-        query, index = tree.query(
-            shapely.points(samples), predicate="dwithin", distance=reach
-        )
-        start = samples[query] - line.starts[index]
-        t = np.clip(
-            np.sum(start * line.directions[index], axis=1), 0.0, line.lengths[index]
-        )
-        foot = line.starts[index] + t[:, None] * line.directions[index]
-        offset = samples[query] - foot
-        distance = np.hypot(offset[:, 0], offset[:, 1])
-        apart = np.abs(
-            _nearest(samples[query], middle).along - _nearest(foot, middle).along
-        )
-        beside.extend(distance[apart <= turn])
-        beyond.extend(distance[apart > turn])
-    return min(beside) - width, min(beyond) - width
-
-
 def _centre_distances(a: FloatArray, b: FloatArray, width: float) -> FloatArray:
     """Distances from samples along each track to the other track's centre."""
     return _centre_nearest(a, b, width).distance
