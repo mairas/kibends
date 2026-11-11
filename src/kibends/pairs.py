@@ -200,19 +200,6 @@ def _pieces(count: int, spans: list[tuple[int, int, int]]) -> list[Piece]:
     return pieces
 
 
-def runs_coupled(a: Chain, b: Chain, chord_tolerance: float) -> bool:
-    """Whether two chains of one width have a stretch that `find_pair` would
-    take as coupled, whatever their nets."""
-    return bool(
-        _coupled_spans(
-            np.array(a.points, dtype=float),
-            np.array(b.points, dtype=float),
-            a.width,
-            chord_tolerance,
-        )
-    )
-
-
 def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     """Find the coupled sections of two chains on one layer whose nets pair.
 

@@ -341,9 +341,9 @@ either side of the pattern pairs up to it as at a stub. Beside the
 pattern's bumps, the other track is smoothed on its own.
 
 A run warns when two chains whose nets pair run coupled but have
-different widths, and when a chain runs coupled with one of its pair net
-that pairs with another chain. Each of these is smoothed as separate
-chains. A diff pair keeps its measured gap, whatever its netclass sets. A
+different widths; they are smoothed as separate chains. A chain whose
+partner beside it pairs with another chain of its net is smoothed on its
+own, without a warning. A diff pair keeps its measured gap, whatever its netclass sets. A
 pair is paired on each layer separately. kibends does not route uncoupled
 fan-outs into coupling.
 

@@ -532,9 +532,7 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
     parts = cut_parts(
         [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
     )
-    pairs = find_pairs(
-        [part.chain for part in parts], options.chord_tolerance, frame=read.frame
-    )
+    pairs = find_pairs([part.chain for part in parts], options.chord_tolerance)
 
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float

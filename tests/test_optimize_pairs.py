@@ -38,7 +38,6 @@ from kibends.bursts import (
 )
 from kibends.chain import Chain
 from kibends.contacts import no_contacts
-from kibends.coords import BOARD_FRAME
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
@@ -827,9 +826,7 @@ def test_a_junction_where_a_pair_starts_stays_whole() -> None:
         return FreeSpace()
 
     parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
-    pairs = find_pairs(
-        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
-    )
+    pairs = find_pairs([p.chain for p in parts], DEFAULT_CHORD_TOLERANCE)
     layout = lay_out(whole, parts, pairs, free)
 
     result = optimize_chains(
@@ -910,9 +907,7 @@ def smoothed(chains: Sequence[Chain], settings: OptimizerSettings = COARSE) -> S
         for c in chains
     ]
     parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
-    pairs = find_pairs(
-        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
-    )
+    pairs = find_pairs([p.chain for p in parts], DEFAULT_CHORD_TOLERANCE)
     layout = lay_out(whole, parts, pairs, free_section)
     result = optimize_chains(
         layout.inputs, scenarios.PARAMS, settings, pairs=layout.sections
