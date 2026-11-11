@@ -51,7 +51,6 @@ from kibends.energy import (
 )
 from kibends.obstacles import (
     NO_FOUND,
-    ChainField,
     ComplexArray,
     Found,
     SmoothAnswer,
@@ -312,126 +311,35 @@ class Seen:
         return _complete(answers)
 
     def distances(
-        self, queries: Sequence[FloatArray], flat: FloatArray, below: float = math.inf
+        self, queries: Sequence[FloatArray], flat: FloatArray, below: float
     ) -> list[FloatArray]:
         """Per member, the signed distance from each of its `queries` to the
         nearest piece it sees, as `ChainField.signed_distance` gives it over
         the member's own pieces, +inf where it sees none. `below` is the
         threshold the caller compares the distances against: below it they
-        are exact, elsewhere at least `below`; by default exact everywhere.
-        `flat` is what the members show (`members.shown_flat`) at the shapes
-        this was built at, with the vias where the caller holds them.
+        are exact, elsewhere at least `below`. `flat` is what the members
+        show (`members.shown_flat`) at the shapes this was built at, with the
+        vias where the caller holds them.
 
-        One search within the members' largest inflation plus `below`, or
-        twice that inflation, answers every point whose nearest piece lies
-        within it. Without a finite `below`, the rest are answered from the
-        pieces they see alone (`_beyond`), so that no edge a member does not
-        see, such as its own net's, is looked at however far its nearest
-        piece lies."""
+        One search within the members' largest inflation plus `below`
+        answers every point whose nearest piece lies within it."""
         answers: list[FloatArray | None] = [None] * len(self.within)
         for layer in self.layers:
             points, owner, bounds = _gathered(queries, layer.members)
             distance = np.full(len(points), np.inf)
-            within = self.within[layer.members]
-            widest = float(within.max())
-            if len(layer.edges) and widest > 0.0:
-                finite = math.isfinite(below)
-                radius = widest + below if finite else 2 * widest
-                if radius >= 0.0:
-                    point, piece, inflation = self._pairs(
-                        layer, points, owner, flat, radius
-                    )
-                    starts, along = self._shapes(layer, flat, piece)
-                    distance = nearest_of_pairs(
-                        complex_points(points), point, starts, along, inflation, radius
-                    ).distance
-                if not finite:
-                    # A piece beyond the radius lies farther than the radius
-                    # less the member's largest inflation.
-                    far = np.flatnonzero(distance > radius - within[owner])
-                    distance[far] = self._beyond(layer, points[far], owner[far], flat)
+            widest = float(self.within[layer.members].max())
+            radius = widest + below
+            if len(layer.edges) and widest > 0.0 and radius >= 0.0:
+                point, piece, inflation = self._pairs(
+                    layer, points, owner, flat, radius
+                )
+                starts, along = self._shapes(layer, flat, piece)
+                distance = nearest_of_pairs(
+                    complex_points(points), point, starts, along, inflation, radius
+                ).distance
             for i, (first, last) in zip(layer.members, bounds, strict=True):
                 answers[i] = distance[first:last]
         return _complete(answers)
-
-    def _beyond(
-        self, layer: SeenLayer, points: FloatArray, owner: IntArray, flat: FloatArray
-    ) -> FloatArray:
-        """`distances` at `points` of `layer`, each of the member `owner`
-        gives by its place on the layer, exactly and however far, each point
-        looking only at what its member sees.
-
-        A member's exceptions form a field of their own. The tracks a member
-        sees by the rule are those of every net but its own and those it
-        ignores besides: a member that ignores more than its own net has a
-        field per distinct set of nets left out. The others' are the union,
-        over the bits of the nets' numbers, of the tracks whose net differs
-        from its own in that bit, so each edge is in one field per bit and
-        every other net in one field at least."""
-        distance = np.full(len(points), np.inf)
-        if not len(points):
-            return distance
-        a, b = self.segments(layer.whole, flat)
-        tracks = np.flatnonzero(layer.kind >= 0)
-        net = layer.net[tracks]
-        nets = [
-            {int(n) for n in (layer.viewer_net[m], *layer.exempt[m]) if n != NO_NET}
-            for m in range(len(layer.members))
-        ]
-
-        def nearest(edges: IntArray, asking: IntArray) -> None:
-            """Lower `distance` at the points `asking` to what the track
-            `edges` give, by their positions in `layer.edges`."""
-            kinds = layer.viewer_kind[owner[asking]]
-            for kind in np.unique(kinds):
-                at = asking[kinds == kind]
-                # Only exact distances are asked of it, which obstacles do
-                # not change.
-                field = ChainField(
-                    a[edges],
-                    b[edges],
-                    self.table[kind, layer.kind[edges]],
-                    np.arange(len(edges), dtype=np.intp),
-                )
-                d = field.signed_distance(points[at])[0]
-                distance[at] = np.minimum(distance[at], d)
-
-        single = np.array([len(n) == 1 for n in nets])[owner]
-        own = np.array([min(n) if len(n) == 1 else NO_NET for n in nets])[owner]
-        # Every bit any track's or asking chain's net sets: a net that agrees
-        # with a chain's own in fewer bits would never be asked for.
-        widest = max(int(net.max(initial=0)), int(own[single].max(initial=0)))
-        for bit in range(max(1, widest.bit_length())):
-            for value in (0, 1):
-                asking = np.flatnonzero(single & ((own >> bit) & 1 != value))
-                edges = tracks[(net >> bit) & 1 == value]
-                if len(asking) and len(edges):
-                    nearest(edges, asking)
-        groups: dict[frozenset[int], list[int]] = {}
-        for m in range(len(nets)):
-            if len(nets[m]) > 1:
-                groups.setdefault(frozenset(nets[m]), []).append(m)
-        for left_out, members in groups.items():
-            asking = np.flatnonzero(np.isin(owner, members))
-            edges = tracks[~np.isin(net, list(left_out))]
-            if len(asking) and len(edges):
-                nearest(edges, asking)
-        count = len(layer.edges)
-        for m in range(len(layer.members)):
-            low, high = np.searchsorted(layer.slot, [m * count, (m + 1) * count])
-            if low == high:
-                continue
-            c, d = self.segments(layer.piece[low:high], flat)
-            at = np.flatnonzero(owner == m)
-            if not len(at):
-                continue
-            field = ChainField(
-                c, d, layer.inflation[low:high], np.arange(high - low, dtype=np.intp)
-            )
-            distance[at] = np.minimum(
-                distance[at], field.signed_distance(points[at])[0]
-            )
-        return distance
 
     def segments_clear(
         self,

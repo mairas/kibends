@@ -16,6 +16,7 @@ import pytest
 import scenarios
 import shapely
 from conftest import (
+    BOARD_FRAME,
     COMMIT_CALLS,
     PAD_HALF_SIZE,
     RETURN_SIGNAL_VIA,
@@ -24,6 +25,7 @@ from conftest import (
     CommitBoard,
     FakeKiCad,
     Ticking,
+    gap_range,
     kipy_arc,
     kipy_copper_zone,
     kipy_group,
@@ -63,7 +65,7 @@ from kibends.bursts import (
     Stop,
 )
 from kibends.chain import NM_PER_MM, Point2
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.coords import UserFrame
 from kibends.energy import (
     EnergyParams,
     FloatArray,
@@ -72,7 +74,7 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
-from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
+from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.results import PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 from kibends.vias import StaticVia, ViaInput
@@ -163,10 +165,6 @@ about 1.58 mm apart; the default pulls harder."""
 RETURN_TRADED = 0.01
 """mm the default's pull may lengthen `return_via_board`'s route by, against
 the run without attraction."""
-
-
-def path_length(points: FloatArray) -> float:
-    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
 def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
@@ -556,21 +554,6 @@ class TestSmooth:
             (nm(4), nm(4)),
         ]
         assert list(degree.values()).count(3) == 1
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    @pytest.mark.parametrize("tip", [-0.25, -0.1])
-    def test_selected_stub_touching_the_chain_is_no_clearance_violation(
-        self, connect: Connector, tip: float
-    ) -> None:
-        tracks = [*l_chain(), kipy_track("stub", "SIG", (2, -3), (2, tip), width=WIDTH)]
-        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
-
-        report = pipeline.run_smooth(options)
-
-        assert len(report.chains) == 3
-        for c in report.chains:
-            assert c.after.min_clearance >= -NM_ROUNDING
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_stub_crossing_the_route_past_its_copper_is_left_behind(
@@ -1460,18 +1443,13 @@ class TestSeveralChains:
         for c in report.chains:
             assert c.changed
             assert c.after.length < c.before.length
-            assert c.after.min_clearance >= -NM_ROUNDING
         assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
         assert (report.committed, report.refusal) == (False, None)
         assert board.calls == []
-        # Nothing else is near: only the other chain sets the clearance margin.
         gap = LineString(simplified[0]).distance(LineString(simplified[1]))
-        for c in report.chains:
-            assert c.after.min_clearance == pytest.approx(
-                gap - (CLEARANCE + WIDTH), abs=1e-3
-            )
+        assert gap >= CLEARANCE + WIDTH - NM_ROUNDING
 
     def test_other_nets_pad_stays_an_obstacle_at_equal_widths(
         self, connect: Connector
@@ -1655,20 +1633,6 @@ IN_TRIANGLE = (7.75, 1.25)
 """Near the centre of the circle inside `triangle_loop`, 1.26 mm across."""
 
 
-def off_junction_route() -> list[kbt.Track]:
-    """A bent route that ends at `triangle_loop`'s corner (0, 0), so that
-    the loop hangs off a junction there."""
-    return [
-        kipy_track("r1", "SIG", (-5, 0), (-2, -1), width=WIDTH),
-        kipy_track("r2", "SIG", (-2, -1), (0, 0), width=WIDTH),
-    ]
-
-
-SHRINK_LIMIT = 6
-"""Bursts after which `off_junction_route` and `triangle_loop`, unheld,
-have shrunk the loop and not yet converged, under COARSE: unlimited, the
-first run takes 8."""
-
 TRIANGLE_PADS = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
 """Pads of SIG on three corners of a square loop."""
 
@@ -1792,44 +1756,6 @@ class TestLoopsAndDots:
         # The loop round the pad pulls the junction off the straight route.
         assert junction[1] > nm(0.1)
 
-    # Unlimited, the loop shrinks for 10 bursts; stopped at 3, it is still
-    # part way.
-    @pytest.mark.parametrize("limit", [(), ("--time-limit=3",)], ids=["free", "3"])
-    def test_a_loop_nothing_holds_open_is_left_as_drawn(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-        limit: tuple[str, ...],
-    ) -> None:
-        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
-        loop = triangle_loop()
-        touch = kipy_track("t", "SIG", (-3, 0), (0, 0), width=WIDTH)
-        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, touch]))
-
-        run(*limit)
-
-        assert board.deleted == []
-        assert "begin_commit" not in board.calls
-        (held,) = [line for line in log if "holds it open" in line]
-        assert held.startswith("DEBUG") and "a, b, c" in held
-        assert not any("shrinks to no area" in line for line in log)
-
-    def test_a_diff_pair_loop_round_its_other_net_surrounds_nothing(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        loop = triangle_loop("D_P")
-        touch = kipy_track("t", "D_P", (-3, 0), (0, 0), width=WIDTH)
-        inside = kipy_track("n", "D_N", (6, 1), (8, 1.5), width=WIDTH)
-        connect.to(
-            CommitBoard(selection=[*loop, inside], tracks=[*loop, touch, inside])
-        )
-
-        run()
-
-        (held,) = [line for line in log if "holds it open" in line]
-        assert "a, b, c" in held
-
     def test_a_loop_through_three_pads_of_its_net_settles_into_their_triangle(
         self, connect: Connector
     ) -> None:
@@ -1852,209 +1778,8 @@ class TestLoopsAndDots:
         assert {(p.x, p.y) for t in created for p in (t.start, t.end)} == corners
         assert len(created) == len(corners)
 
-    def test_a_loop_touched_at_two_points_that_would_fold_flat_is_left_as_drawn(
-        self, connect: Connector
-    ) -> None:
-        loop = [
-            kipy_track("a", "SIG", (0, 0), (10, 0), width=WIDTH),
-            kipy_track("b", "SIG", (10, 0), (10, 4), width=WIDTH),
-            kipy_track("c", "SIG", (10, 4), (0, 4), width=WIDTH),
-            kipy_track("d", "SIG", (0, 4), (0, 0), width=WIDTH),
-        ]
-        touches = [
-            kipy_track("t1", "SIG", (-3, 0), (0, 0), width=WIDTH),
-            kipy_track("t2", "SIG", (13, 4), (10, 4), width=WIDTH),
-        ]
-        board = connect.to(CommitBoard(selection=list(loop), tracks=[*loop, *touches]))
-
-        run()
-
-        assert board.deleted == []
-        assert "begin_commit" not in board.calls
-
-    def test_a_loop_shrinking_off_a_junction_holds_it_for_the_other_branches(
-        self, connect: Connector
-    ) -> None:
-        tracks = [*off_junction_route(), *triangle_loop()]
-        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-
-        run()
-
-        assert sorted(board.deleted) == ["r1", "r2"]
-        assert created_path(board).coords[:] in (
-            [(-5.0, 0.0), (0.0, 0.0)],
-            [(0.0, 0.0), (-5.0, 0.0)],
-        )
-
-    def test_a_loop_that_shrinks_all_the_same_is_held_from_where_the_run_was(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        reports: list[pipeline.RunReport],
-        log: list[str],
-    ) -> None:
-        # Taken for a loop held open, the loop off the route's junction
-        # shrinks in the first run instead.
-
-        def none_collapsing(_read: object, _options: object) -> list[int]:
-            return []
-
-        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
-        clock = BurstClock(monkeypatch)
-        monkeypatch.setattr(pipeline, "monotonic", clock)
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-        runs: list[RunResult] = []
-        starts: list[RunResult | None] = []
-
-        def abnormal(*args: object, **kwargs: object) -> RunResult:
-            starts.append(cast(RunResult | None, kwargs["start"]))
-            result = replace(real(*args, **kwargs), abnormal=(("a burst", 1),))
-            if not runs:
-                result = replace(result, gave_up=(("a problem", 3),))
-            runs.append(result)
-            return result
-
-        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
-        tracks = [*off_junction_route(), *triangle_loop()]
-        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-
-        run("--dry-run", f"--time-limit={SHRINK_LIMIT}")
-
-        first, second = runs
-        assert starts[0] is None
-        resumed = starts[1]
-        assert resumed is not None
-        # The route goes on from where the first run left it, its end back
-        # on the junction as drawn; the loop starts over as drawn, held.
-        route, loop = resumed.chains
-        assert np.array_equal(route.polyline[:-1], first.chains[0].polyline[:-1])
-        assert tuple(route.polyline[-1]) == (0.0, 0.0) and route.fixed[-1]
-        assert loop.fixed.all()
-        assert loop.polyline.tolist() == [[0, 0], [9, 0], [9, 3], [0, 0]]
-        # Resumed, the second run completes one outer iteration, then stops
-        # at the first burst of the next.
-        assert second.iterations <= 2
-        assert clock.bursts <= SHRINK_LIMIT + 2
-        (report,) = reports
-        assert report.iterations == first.iterations + second.iterations
-        assert report.elapsed == clock.bursts
-        assert report.abnormal == (("a burst", 2),)
-        # The give-up the first run logged counts in, once.
-        assert sum("Gave up on a problem" in line for line in log) == 1
-        assert sum("INFO Optimizing" in line for line in log) == 1
-        assert log.count("INFO Setting up the optimizer\n") == 1
-        assert "INFO Setting up the optimizer again, with held loops\n" in log
-
-    def test_a_give_up_before_a_loop_is_held_stays_the_outcome(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        reports: list[pipeline.RunReport],
-    ) -> None:
-        def none_collapsing(_read: object, _options: object) -> list[int]:
-            return []
-
-        monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-        runs: list[RunResult] = []
-
-        def giving_up_first(*args: object, **kwargs: object) -> RunResult:
-            result = real(*args, **kwargs)
-            if not runs:
-                result = replace(result, gave_up=(("a problem", 3),))
-            runs.append(result)
-            return result
-
-        monkeypatch.setattr(pipeline, "optimize_chains", giving_up_first)
-        tracks = [*off_junction_route(), *triangle_loop()]
-        connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-
-        run("--dry-run")
-
-        _, second = runs
-        assert second.termination is Termination.CONVERGED
-        (report,) = reports
-        assert report.termination is Termination.GAVE_UP
-
-    @pytest.mark.parametrize("backstop", [False, True], ids=["before", "backstop"])
-    def test_a_via_a_held_loop_ends_at_stays(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-        backstop: bool,
-    ) -> None:
-        if backstop:
-
-            def none_collapsing(_read: object, _options: object) -> list[int]:
-                return []
-
-            monkeypatch.setattr(pipeline, "_collapsing", none_collapsing)
-        route = [
-            kipy_track("f", "SIG", (-6, -6), (0, 0), width=WIDTH),
-            kipy_track("r", "SIG", (0, 0), (6, -6), width=WIDTH, layer=BL.BL_B_Cu),
-        ]
-        loop = [
-            kipy_track("a", "SIG", (0, 0), (3, 0), width=WIDTH),
-            kipy_track("b", "SIG", (3, 0), (3, 2), width=WIDTH),
-            kipy_track("c", "SIG", (3, 2), (0, 0), width=WIDTH),
-        ]
-        via = kipy_via("V", "SIG", 0, 0)
-        board = connect.to(
-            CommitBoard(
-                selection=[*route, *loop, via],
-                tracks=[*route, *loop],
-                vias=[via],
-                pads=[kipy_pad("p", "SIG", -6, -6), kipy_pad("q", "SIG", 6, -6)],
-            )
-        )
-
-        run()
-
-        assert created_vias(board) == []
-        assert not {"a", "b", "c"} & set(board.deleted)
-        (stays,) = [line for line in log if "Via V" in line and "a, b, c" in line]
-        assert stays.startswith("DEBUG") and "stays fixed" in stays
-
-    def test_a_via_a_held_loop_runs_through_stays_naming_the_loop_once(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        loop = triangle_loop()
-        via = kipy_via("v", "SIG", 9, 0)
-        board = connect.to(
-            CommitBoard(selection=[*loop, via], tracks=list(loop), vias=[via])
-        )
-
-        run()
-
-        assert created_vias(board) == []
-        (stays,) = [line for line in log if "Via v" in line]
-        assert stays.startswith("DEBUG")
-        assert stays.rstrip().endswith(
-            "stays fixed: the closed loop a, b, c it ends is held as drawn"
-        )
-
-    def test_routes_off_a_held_loop_still_meet_it_where_it_was_drawn(
-        self, connect: Connector
-    ) -> None:
-        # Alone, the two routes' ends would meet anywhere on the line between
-        # their far ends.
-        other = [
-            kipy_track("s1", "SIG", (0, -5), (-1, -2), width=WIDTH),
-            kipy_track("s2", "SIG", (-1, -2), (0, 0), width=WIDTH),
-        ]
-        tracks = [*off_junction_route(), *other, *triangle_loop()]
-        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-
-        run()
-
-        assert sorted(board.deleted) == ["r1", "r2", "s1", "s2"]
-        created = cast(list[kbt.Track], board.created)
-        ends_there = [p for t in created for p in (t.start, t.end) if p.x == p.y == 0]
-        assert len(ends_there) == 2
-
     @pytest.mark.parametrize("touched", [False, True], ids=["alone", "touched"])
-    def test_a_loop_closed_by_an_arc_is_smoothed_or_left_whole(
+    def test_a_loop_closed_by_an_arc_is_smoothed_round_a_pad(
         self, connect: Connector, touched: bool
     ) -> None:
         # The arc bulges below (0, 0)-(9, 0), round the pad of GND.
@@ -2071,40 +1796,12 @@ class TestLoopsAndDots:
 
         run()
 
-        if not touched:
-            assert board.deleted == []
-            return
         assert sorted(board.deleted) == ["arc", "back"]
         path = created_path(board)
         assert path.is_closed and (0.0, 0.0) in path.coords[:]
         pad = pad_box(4.5, 1.5)
         assert shapely.Polygon(path.coords).contains(pad)
         assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
-
-    def test_a_loop_nothing_touches_stays_and_holds_the_others_clear(
-        self, connect: Connector
-    ) -> None:
-        loop = [
-            kipy_track("l1", "SIG2", (1.6, 1.2), (2.4, 1.2), width=WIDTH),
-            kipy_track("l2", "SIG2", (2.4, 1.2), (2.4, 2.0), width=WIDTH),
-            kipy_track("l3", "SIG2", (2.4, 2.0), (1.6, 2.0), width=WIDTH),
-            kipy_track("l4", "SIG2", (1.6, 2.0), (1.6, 1.2), width=WIDTH),
-        ]
-        tracks = [*l_chain(), *loop]
-        board = connect.to(CommitBoard(selection=list(tracks), tracks=list(tracks)))
-
-        run()
-
-        assert sorted(board.deleted) == ["a", "b"]
-        created = cast(list[kbt.Track], board.created)
-        assert {t.net.name for t in created} == {"SIG"}
-        required = CLEARANCE + WIDTH
-        assert all(
-            segment(t).distance(segment(other)) >= required - NM_ROUNDING
-            for t in created
-            for other in loop
-        )
-        assert len(created) > 1
 
     def test_a_zero_length_track_beside_a_chain_stays(
         self, connect: Connector, log: list[str]
@@ -2147,59 +1844,6 @@ class TestLoopsAndDots:
 
         assert sorted(board.deleted) == ["a", "b"]
         assert (nm(2), nm(0)) in ends(cast(list[kbt.Track], board.created))
-
-    @pytest.mark.parametrize("with_via", [False, True], ids=["alone", "via"])
-    def test_a_selection_of_only_an_untouched_loop_has_nothing_to_do(
-        self, connect: Connector, log: list[str], with_via: bool
-    ) -> None:
-        loop = triangle_loop()
-        vias = [kipy_via("v", "SIG", 20, 20)] if with_via else []
-        board = connect.to(
-            CommitBoard(selection=[*loop, *vias], tracks=list(loop), vias=vias)
-        )
-
-        run()
-
-        assert board.calls == []
-        assert any("INFO Nothing to do" in line for line in log)
-        (left_out,) = [line for line in log if "Leaving out" in line]
-        assert left_out.startswith("DEBUG") and "a, b, c" in left_out
-
-    def test_a_moving_via_carries_its_own_chain_after_a_loop_is_left_out(
-        self, connect: Connector
-    ) -> None:
-        # The square loop, which crosses B and which nothing of SIG touches
-        # at an end, stays as copper and pins B, which then sorts after A.
-        tracks = [
-            kipy_track("A", "SIG", (0, 0), (5, 5), width=WIDTH),
-            kipy_track("B", "SIG", (0, 0), (10, 0), width=WIDTH),
-            kipy_track("D", "SIG", (0, 0), (0, 5), width=WIDTH),
-            kipy_track("E", "SIG", (5, 5), (9, 9), width=WIDTH, layer=BL.BL_B_Cu),
-            kipy_track("l1", "SIG", (2, -1), (4, -1), width=WIDTH),
-            kipy_track("l2", "SIG", (4, -1), (4, 1), width=WIDTH),
-            kipy_track("l3", "SIG", (4, 1), (2, 1), width=WIDTH),
-            kipy_track("l4", "SIG", (2, 1), (2, -1), width=WIDTH),
-        ]
-        via = kipy_via("V", "SIG", 5, 5)
-        board = connect.to(
-            CommitBoard(
-                selection=[*tracks, via],
-                tracks=list(tracks),
-                vias=[via],
-                pads=[kipy_pad("g", "GND", 5.6, 4.4)],
-            )
-        )
-
-        run()
-
-        (moved,) = created_vias(board)
-        at = (moved.position.x, moved.position.y)
-        assert at != (nm(5), nm(5))
-        created = cast(list[kbt.Track], board.created[:-1])
-        assert at in ends(created_on(board, BL.BL_F_Cu))
-        assert at in ends(created_on(board, BL.BL_B_Cu))
-        assert (nm(10), nm(0)) in ends(created)
-        assert not {"l1", "l2", "l3", "l4"} & set(board.deleted)
 
 
 VIA = (4.0, 4.0)
@@ -2501,8 +2145,6 @@ class TestSeveralLayers:
             ("F.Cu", 2, True),
             ("F.Cu", 2, True),
         ]
-        for c in report.chains[1:]:
-            assert c.after.min_clearance >= -NM_ROUNDING
 
     def test_chains_crossing_on_two_layers_smooth_as_if_alone(
         self, connect: Connector
@@ -3109,7 +2751,6 @@ class TestMovingVias:
         assert report.vias[0].end[1] < 1.0
         for chain in report.chains:
             assert chain.after.segment_count == 1
-            assert chain.after.min_clearance >= -NM_ROUNDING
 
     def test_a_via_starting_inside_its_clearance_moves_out_of_it(
         self,
@@ -3656,7 +3297,7 @@ def test_a_via_in_a_plane_moves_within_its_region_and_commits(
 
 
 def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
-    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    stats = PolylineStats(1.0, 1, math.inf)
     chain = pipeline.ChainReport("SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, 2, True)
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), rejected_edges=3)
     report = pipeline.OptimizerReport(
@@ -3672,7 +3313,7 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
 
 def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
     problem = "the chains and vias on F.Cu and B.Cu"
-    stats = PolylineStats(1.0, 1, math.inf, 0.1, 0.1)
+    stats = PolylineStats(1.0, 1, math.inf)
     chain = pipeline.ChainReport(
         "USB_D+", "F.Cu", WIDTH, "USB_D+", 1, stats, stats, 1, True
     )
@@ -3680,7 +3321,6 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
         nets=("USB_D+", "USB_D-"),
         layer="F.Cu",
         gap=0.15,
-        gap_after=(0.14, 0.16),
         skew_before=0.0,
         skew_after=0.1,
         sections=1,
@@ -3752,7 +3392,6 @@ the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
-OTHER_PAIR_GAP = 0.2
 ABANDONED = "a chain whose bursts all ended abnormally"
 PAIR_IDS = ("n1", "n2", "n3", "n4", "p1", "p2", "p3", "p4")
 PADS_AT = 10.5
@@ -3812,11 +3451,9 @@ def pair_tracks(
     return tracks
 
 
-def pair_board(
-    *, diff_pair_gap: float = PAIR_GAP, extra: Sequence[kbt.Track] = ()
-) -> CommitBoard:
+def pair_board(*, extra: Sequence[kbt.Track] = ()) -> CommitBoard:
     tracks = pair_tracks()
-    usb = netclass("USB", PAIR_CLEARANCE, diff_pair_gap)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=[*tracks, *extra],
@@ -3867,7 +3504,7 @@ def cut_partner_board() -> CommitBoard:
         kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
         for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     selected = [*p, *n, stub]
     return CommitBoard(
         selection=list(selected),
@@ -3919,7 +3556,7 @@ def pattern_board(
     groups = [kipy_group("Tuning Pattern", pattern_items)]
     for k in range(nesting):
         groups.append(kipy_group(f"outer{k}", [groups[-1]]))
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=[*tracks, after, groups[-1]],
         tracks=[
@@ -4055,7 +3692,7 @@ def tvs_board() -> CommitBoard:
             kipy_pad(f"tvs{net}", net, x + side * TVS_PAD_SHIFT, TVS_PADS_Y),
         ]
         vias.append(kipy_via(f"via{net}", net, *end, TVS_VIA_DIAMETER, TVS_VIA_DRILL))
-    usb = netclass("USB", PAIR_CLEARANCE, TVS_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -4145,7 +3782,7 @@ class TestPairs:
             *pair_tracks(),
             *pair_tracks(eth, at=SECOND_PAIR, prefixes=("q", "m")),
         ]
-        pairs = netclass("DP", PAIR_CLEARANCE, PAIR_GAP)
+        pairs = netclass("DP", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=list(tracks),
@@ -4180,7 +3817,6 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.nets, pair.layer) == (USB, "F.Cu")
         assert pair.gap == pytest.approx(PAIR_GAP, abs=REPORTED)
-        assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         # The two corners turn opposite ways, so the tracks start equally long.
         assert pair.skew_before == pytest.approx(0.0, abs=REPORTED)
 
@@ -4194,7 +3830,7 @@ class TestPairs:
             for net, points in lines.items()
             for k, (start, end) in enumerate(itertools.pairwise(points))
         ]
-        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        usb = netclass("USB", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=list(tracks),
@@ -4211,30 +3847,6 @@ class TestPairs:
         assert pair.skew_before == pytest.approx(skew, abs=REPORTED)
         p_now, n_now = (unary_union(c).length for c in by_net(board).values())
         assert pair.skew_after == pytest.approx(abs(p_now - n_now), abs=REPORTED)
-
-    def test_netclass_gap_like_the_measured_one_does_not_warn(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        connect.to(pair_board())
-
-        run("--dry-run")
-
-        assert not any("netclass" in line for line in log)
-
-    def test_netclass_gap_of_either_net_is_checked(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        board = pair_board()
-        board.netclasses = {
-            "USB_D+": netclass("USB", PAIR_CLEARANCE),
-            "USB_D-": netclass("USB", PAIR_CLEARANCE, OTHER_PAIR_GAP),
-        }
-        connect.to(board)
-
-        run("--dry-run")
-
-        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
-        assert f"{OTHER_PAIR_GAP:.3f}" in warning
 
     def test_section_fields_leave_out_moving_vias(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
@@ -4425,8 +4037,6 @@ class TestPairs:
         assert board.calls == COMMIT_CALLS
         (pairs,) = (r.pairs for r in reports)
         assert [(p.sections, p.held) for p in pairs] == [(1, 0), (1, 0)]
-        for pair in pairs:
-            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         assert not [w for w in log if "on its own" in w or "do not run coupled" in w]
         lines = by_net(board)
         p = [line for line in lines[USB[0]] if {x for x, _ in line.coords} != {STUB_AT}]
@@ -4450,8 +4060,6 @@ class TestPairs:
         assert board.calls == COMMIT_CALLS
         (pairs,) = (r.pairs for r in reports)
         assert [(p.sections, p.held) for p in pairs] == [(1, 0)] * 3
-        for pair in pairs:
-            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         assert not unexpected_warnings(log)
         assert not {f"m{k}" for k in range(len(MEANDER) - 1)} & set(board.deleted)
         # USB_D+ is cut opposite the stub and both ends of the meander.
@@ -4547,29 +4155,18 @@ class TestPairs:
                 [y] * len(beside.coords), abs=NM_ROUNDING
             )
 
-    def test_netclass_gap_unlike_the_measured_one_warns(
-        self, connect: Connector, log: list[str]
-    ) -> None:
-        connect.to(pair_board(diff_pair_gap=0.2))
-
-        run("--dry-run")
-
-        (warning,) = [w for w in log if w.startswith("WARNING") and "netclass" in w]
-        assert "0.150" in warning and "0.200" in warning
-
-    def test_a_diff_pair_cut_by_a_stub_counts_and_warns_once(
+    def test_a_diff_pair_cut_by_a_stub_counts_once(
         self, connect: Connector, log: list[str]
     ) -> None:
         foot = (STUB_AT, PAIR_HALF_PITCH)
         stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
-        board = pair_board(diff_pair_gap=0.2, extra=[stub])
+        board = pair_board(extra=[stub])
         board.selection = [*board.selection, stub]
         connect.to(board)
 
         run("--dry-run")
 
         assert "INFO Optimizing 4 chains, 1 differential pair among them\n" in log
-        assert len([w for w in log if w.startswith("WARNING") and "netclass" in w]) == 1
 
     def test_via_where_a_coupled_section_ends_stays_fixed(
         self, connect: Connector, log: list[str]
@@ -4629,7 +4226,7 @@ class TestPairs:
                 for k, (a, b) in enumerate(itertools.pairwise(points))
             ]
         via = kipy_via("v", USB[0], *mid, diameter=0.3, drill=0.15)
-        usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+        usb = netclass("USB", PAIR_CLEARANCE)
         board = connect.to(
             CommitBoard(
                 selection=[*tracks, via],
@@ -4676,16 +4273,11 @@ class TestPairs:
         assert "a net of a diff pair" in line
         assert not any("moving via" in line for line in log)
 
-    @pytest.mark.parametrize(
-        ("too_close", "hold"), [(0, Hold.CROWDING), (1, Hold.FOLDING)]
-    )
     def test_section_left_bent_too_tightly_is_held_in_a_second_run(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
-        too_close: int,
-        hold: Hold,
     ) -> None:
         real: Callable[..., RunResult] = pipeline.optimize_chains
         held: list[list[Hold | None]] = []
@@ -4700,7 +4292,6 @@ class TestPairs:
                 else replace(
                     p,
                     bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True),
-                    too_close=too_close,
                 )
                 for p in result.pairs
             )
@@ -4711,8 +4302,8 @@ class TestPairs:
 
         run()
 
-        assert held == [[None], [hold]]
-        assert any(hold.value in line for line in log)
+        assert held == [[None], [Hold.CROWDING]]
+        assert any(Hold.CROWDING.value in line for line in log)
         # The repeated run says it repeats, rather than seeming to start over.
         assert log.count("INFO Setting up the optimizer\n") == 1
         assert "INFO Setting up the optimizer again, with held sections\n" in log
@@ -4732,9 +4323,9 @@ class TestPairs:
                 )
         (line,) = [w for w in log if "too tight" in w]
         assert line.startswith("DEBUG")
-        assert hold.value in line and "again" in line
+        assert Hold.CROWDING.value in line and "again" in line
 
-    def test_time_limit_keeps_the_first_runs_work_in_a_second_run(
+    def test_time_limit_covers_a_second_run_that_starts_over(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
@@ -4756,16 +4347,7 @@ class TestPairs:
 
         monkeypatch.setattr(pipeline, "optimize_chains", too_tight)
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
-        board = pair_board()
-        # Two Ls of other nets beside the pair, which the first run shortens.
-        bend = [
-            kipy_track(f"{net}{k}", net, start, end, width=WIDTH)
-            for net, y in (("SIG", 10), ("SIG2", 20))
-            for k, (start, end) in enumerate([((0, y), (4, y)), ((4, y), (4, y + 4))])
-        ]
-        board.selection = [*board.selection, *bend]
-        board.tracks = [*board.tracks, *bend]
-        connect.to(board)
+        connect.to(pair_board())
 
         run("--dry-run", "--time-limit=1.5")
 
@@ -4774,15 +4356,6 @@ class TestPairs:
         # Past the limit, the second run still completes one outer iteration,
         # then stops at the first burst of the next.
         assert second.iterations <= 2
-        # The first run shortened both Ls, and the second kept that.
-        shortened = [
-            k
-            for k, c in enumerate(first.chains)
-            if path_length(c.polyline) < c.before.length - KEPT
-        ]
-        assert len(shortened) == 2
-        for before, after in zip(first.chains, second.chains, strict=True):
-            assert path_length(after.polyline) <= path_length(before.polyline) + KEPT
         total = first.iterations + second.iterations
         assert f"after {total} iterations" in capsys.readouterr().out
 
@@ -4797,7 +4370,7 @@ class TestPairs:
 
         def first_gives_up(*args: object, **kwargs: object) -> RunResult:
             result = real(*args, **kwargs)
-            if kwargs["start"] is None:
+            if not kwargs["again"]:
                 pairs = tuple(
                     replace(p, bend=BendCheck(TOO_TIGHT_RADIUS, too_tight=True))
                     for p in result.pairs
@@ -4825,7 +4398,15 @@ class TestPairs:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         runs = self.first_run_gives_up(monkeypatch)
-        connect.to(pair_board())
+        # Another net's L, so that the second run, which starts over with the
+        # section held, has work to do.
+        bend = [
+            kipy_track("l1", "SIG", (0, 10), (4, 10), width=WIDTH),
+            kipy_track("l2", "SIG", (4, 10), (4, 14), width=WIDTH),
+        ]
+        board = pair_board(extra=bend)
+        board.selection = [*board.selection, *bend]
+        connect.to(board)
 
         run("--dry-run")
 
@@ -4927,7 +4508,7 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
     # Without its fan-out, the pair is coupled from its start.
     tracks = [t for t in pair_tracks() if t.id.value not in ("p1", "n1")]
     side = 1.0 if net == USB[0] else -1.0
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),
@@ -4962,7 +4543,7 @@ def pair_tracks_at(
     the run's calls of `simplify_chains`."""
     calls = spy_simplify(monkeypatch)
     board = pair_board()
-    usb = netclass("USB", clearance, PAIR_GAP)
+    usb = netclass("USB", clearance)
     board.netclasses = {"USB_D+": usb, "USB_D-": usb}
     connect.to(board)
     run()
@@ -5018,7 +4599,7 @@ class Simplified:
 
     def tracks(self, i: int) -> tuple[FloatArray, FloatArray]:
         """Section i's tracks as simplified."""
-        return self.sections[i].offset_kept(self.run.chains[i].polyline, self.result[i])
+        return self.sections[i].offset(self.result[i])
 
 
 def spy_simplify(monkeypatch: pytest.MonkeyPatch) -> list[Simplified]:
@@ -5072,11 +4653,11 @@ SPLIT_SECTIONS = ((0.0, 4.0), (6.0, 11.0))
 SPLIT_DETOUR = 1.2
 
 
-def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
+def split_pair_board() -> CommitBoard:
     """Pair USB_D+/USB_D- fanned out at both ends, coupled along y = 0 in
     two straight sections, split by a detour of each track outward around a
-    pad of another net; the second section at `second_gap`."""
-    h, h2 = PAIR_HALF_PITCH, (second_gap + PAIR_WIDTH) / 2
+    pad of another net."""
+    h = PAIR_HALF_PITCH
     (start, split), (rejoin, end) = SPLIT_SECTIONS
     tracks: list[kbt.Track] = []
     for net, side, prefix in (("USB_D+", 1.0, "p"), ("USB_D-", -1.0, "n")):
@@ -5086,15 +4667,15 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
             (split, side * h),
             (split + 0.5, side * SPLIT_DETOUR),
             (rejoin - 0.5, side * SPLIT_DETOUR),
-            (rejoin, side * h2),
-            (end, side * h2),
-            (end + 1.0, side * (1.0 + h2)),
+            (rejoin, side * h),
+            (end, side * h),
+            (end + 1.0, side * (1.0 + h)),
         ]
         tracks += [
             kipy_track(f"{prefix}{k + 1}", net, a, b, width=PAIR_WIDTH)
             for k, (a, b) in enumerate(itertools.pairwise(points))
         ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5155,7 +4736,7 @@ def bus_board(margin: float = BUS_MARGIN) -> CommitBoard:
                 kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
                 for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
             ]
-    bus = netclass("BUS", PAIR_GAP, PAIR_GAP)
+    bus = netclass("BUS", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5183,22 +4764,6 @@ def test_two_pairs_at_clearance_both_smooth_and_simplify(
     assert usb.distance(eth) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
 
 
-NARROWER_GAP = 0.14
-"""Of the second section of a split pair: within the pair's tolerance."""
-
-
-@pytest.mark.usefixtures("coarse_optimizer")
-def test_reports_the_gap_range_over_every_section(
-    connect: Connector, reports: list[pipeline.RunReport]
-) -> None:
-    connect.to(split_pair_board(NARROWER_GAP))
-
-    run("--dry-run")
-
-    ((pair,),) = (r.pairs for r in reports)
-    assert pair.gap_after == pytest.approx((NARROWER_GAP, PAIR_GAP), abs=REPORTED)
-
-
 def routed_too_tightly_board() -> CommitBoard:
     """Pair USB_D+/USB_D- turning 90° in a chamfer so short that its
     centreline bends tighter than the inner track allows."""
@@ -5218,7 +4783,7 @@ def routed_too_tightly_board() -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5260,7 +4825,7 @@ def test_a_chain_beside_a_pair_at_clearance_lets_both_smooth(
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(points)))
     ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),
@@ -5280,10 +4845,10 @@ STUB = 1.0
 STUBBED_LENGTH = 10.0
 STUB_JOG = 0.1
 """How long, along the pair, each track takes to step between the gaps."""
-TAPER_REACH = 2.0
-TAPER_SAMPLES = 50
+END_REACH = 2.0
+END_SAMPLES = 50
 """mm from each end within which the gap may still follow the stubs':
-the stub, the jog and the taper the optimizer turns the step into."""
+the stub, the jog and the end edge that takes up the step."""
 
 
 def stubbed_pair_board() -> CommitBoard:
@@ -5305,7 +4870,7 @@ def stubbed_pair_board() -> CommitBoard:
             kipy_track(f"{net}{k}", net, a, b, width=PAIR_WIDTH)
             for k, (a, b) in enumerate(itertools.pairwise(points))
         ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5313,7 +4878,7 @@ def stubbed_pair_board() -> CommitBoard:
     )
 
 
-def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
+def test_end_gaps_give_way_to_the_pair_s_gap_at_the_ends(
     connect: Connector,
 ) -> None:
     board = connect.to(stubbed_pair_board())
@@ -5321,12 +4886,12 @@ def test_end_gaps_taper_into_the_pair_s_gap_and_no_further(
     run()
 
     p, n = (unary_union(lines) for lines in by_net(board).values())
-    middle = box(TAPER_REACH, -FAR, STUBBED_LENGTH - TAPER_REACH, FAR)
+    middle = box(END_REACH, -FAR, STUBBED_LENGTH - END_REACH, FAR)
     inner = p.intersection(middle)
     assert not inner.is_empty
     gaps = [
         n.distance(inner.interpolate(d)) - PAIR_WIDTH
-        for d in np.linspace(0.0, inner.length, TAPER_SAMPLES)
+        for d in np.linspace(0.0, inner.length, END_SAMPLES)
     ]
     assert gaps == pytest.approx([PAIR_GAP] * len(gaps), abs=NM_ROUNDING)
 
@@ -5344,7 +4909,7 @@ def corner_board(*centre: tuple[float, float]) -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    usb = netclass("USB", PAIR_CLEARANCE)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5395,14 +4960,13 @@ def test_coupled_tracks_commit_segment_for_segment_in_parallel(
     for i, block in call.sections.items():
         a, b = call.tracks(i)
         assert len(a) == len(b)
-        optimised = call.run.chains[i].polyline
-        gaps = block.gaps.at(optimised)[
-            [
-                int(np.flatnonzero((optimised == v).all(axis=1))[0])
-                for v in call.result[i]
-            ]
-        ]
-        for k in np.flatnonzero(np.diff(gaps) == 0.0):
+        line = call.result[i]
+        # An uneven end's edge takes up the difference of its own gap.
+        first, last = (
+            int(np.hypot(*(block.uneven - pin).T).min(initial=np.inf) <= NM_ROUNDING)
+            for pin in (line[1], line[-2])
+        )
+        for k in range(first, len(a) - 1 - last):
             turn = unit(a[k + 1] - a[k]) @ unit(b[k + 1] - b[k])
             assert math.acos(min(float(turn), 1.0)) <= PARALLEL
         for track, net in ((a, block.given.a.net), (b, block.given.b.net)):
@@ -5448,11 +5012,7 @@ def test_a_pair_whose_tracks_cross_is_committed_for_the_drc_to_report(
                 kept
                 for j, k in itertools.permutations(range(1, last), 2)
                 if LineString(
-                    (
-                        tracks := block.offset_kept(
-                            optimised, kept := optimised[[0, j, k, last]]
-                        )
-                    )[0]
+                    (tracks := block.offset(kept := optimised[[0, j, k, last]]))[0]
                 ).intersects(LineString(tracks[1]))
             )
         return result
@@ -5480,7 +5040,7 @@ def v_board(turn: float) -> CommitBoard:
         )
         for k, (start, end) in enumerate(itertools.pairwise(vertices(track)))
     ]
-    usb = netclass("USB", PAIR_GAP, PAIR_GAP)
+    usb = netclass("USB", PAIR_GAP)
     return CommitBoard(
         selection=list(tracks),
         tracks=list(tracks),
@@ -5502,8 +5062,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
 
     run(f"--repulsion={V_REPULSION}")
 
-    ((pair,),) = (r.pairs for r in reports)
-    assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+    ((_,),) = (r.pairs for r in reports)
     p, n = (unary_union(lines) for lines in by_net(board).values())
     assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
 
@@ -5531,7 +5090,7 @@ def test_a_sharp_pair_held_as_routed_commits_nothing(
     # Same-net copper on P's apex, whose outline crosses P closer to the
     # turn than two pitches, holds the section as routed.
     held_by = kipy_pad("pad", USB[0], float(p[1, 0]), float(p[1, 1]))
-    usb = netclass("USB", clearance, gap)
+    usb = netclass("USB", clearance)
     board = connect.to(
         CommitBoard(
             selection=list(tracks),

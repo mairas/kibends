@@ -6,7 +6,9 @@ import kipy.board
 import kipy.board_types as kbt
 import pytest
 from conftest import (
+    BOARD_FRAME,
     FakeBoard,
+    extract_chains,
     kipy_copper_zone,
     kipy_pad,
     kipy_rect,
@@ -18,8 +20,8 @@ from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
 from kipy.wrapper import Wrapper
 
-from kibends.chain import Chain, extract_chains
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.chain import Chain
+from kibends.coords import UserFrame
 from kibends.snapshot import (
     KICAD_MAX_ERROR,
     BoardSnapshot,

@@ -66,22 +66,6 @@ def chain_field(
     return CompositeField([static, *others]) if others else static
 
 
-def neighbour_fields(
-    chains: Sequence[ChainInput],
-    i: int,
-    others: Iterable[int],
-    polylines: Sequence[FloatArray],
-) -> list[ObstacleField]:
-    """The chains `others`, at `polylines`, as obstacles to chain i; those
-    it ignores are dropped."""
-    return [
-        field
-        for j in others
-        if (field := neighbour_field(chains[i], [(chains[j], polylines[j])]))
-        is not None
-    ]
-
-
 def neighbour_field(
     own: ChainInput,
     shown: Iterable[tuple[ChainInput, FloatArray]],

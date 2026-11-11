@@ -76,10 +76,9 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    may come off it: draw a T to end on the track, or check the ratsnest
    after the run. A closed loop is cut where copper of its net touches it,
    a junction, another track, a pad or a via, and smoothed from there; one
-   that nothing of its net touches, or that surrounds nothing and would
-   shrink to a point or fold flat, is left as drawn. Should such a loop
-   shrink all the same, the optimizer goes on from where it was with the
-   loop held, and `--time-limit` covers both runs. A
+   that nothing of its net touches is cut at its first point. A loop that
+   surrounds nothing shrinks: to nothing, and its tracks are deleted, when
+   it is held at one point, or to a line when held at two. A
    route that changes layers through a via is one chain per layer. Chains on different layers do not affect
    each other, except through the vias that move with them.
    An unselected via stays where it is and holds the chain ends on both
@@ -208,7 +207,7 @@ improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS-B terminated abnormally" and commits nothing.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
-with its length before and after and its minimum clearance margin.
+with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
 iteration how long setup took, how many problems it split the selection into
 (the layers or groups of layers the moving tracks and vias tie together), and
@@ -286,23 +285,20 @@ ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
 already bends tighter keeps its own tracks; a jog or sliver of less than a
-micrometre, such as KiCad leaves on its nanometre grid, does not count. So does one whose corner the
-copper around it keeps from rounding, such as a pad inside a sharp corner,
-or its own parts beyond the corner: the run is repeated with that section
-held, so that the other chains keep clear of its tracks. The repeat goes on from
-where the first run left every other chain and via, and `--time-limit`
-covers both runs.
+micrometre, such as KiCad leaves on its nanometre grid, does not count. So
+does one whose corner the copper around it keeps from rounding, such as a
+pad inside a sharp corner: the run is repeated with that section held, so
+that the other chains keep clear of its tracks. The repeat starts over from
+the selection as drawn, and `--time-limit` covers both runs: the repeat runs
+at least one round of bursts however little time is left.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
-followed the optimised one: at the gap, tapering to an end's own gap near
-an end routed at another, segment for segment in parallel outside such a
-taper, and meeting the fan-outs in the direction they did. While
-optimising, a section's parts more than a turn apart along it, such as the
-legs of a U or the laps of a spiral, do not move closer to each other than
-the pair's outer extent plus the larger clearance, and parts that already
-lie closer do not move closer still. kibends does not check the committed
-tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
+followed the optimised one: at the gap, segment for segment in parallel,
+and meeting the fan-outs in the direction they did. Where an end was
+routed at another gap, one track's end edge, about a spacing long, takes up
+the difference and turns slightly off the direction it had. kibends does
+not check the committed tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
 than their clearance.
 Both nets' tracks go into the one commit.
 
@@ -345,11 +341,10 @@ either side of the pattern pairs up to it as at a stub. Beside the
 pattern's bumps, the other track is smoothed on its own.
 
 A run warns when two chains whose nets pair run coupled but have
-different widths, when a chain runs coupled with one of its pair net that
-pairs with another chain, and when a pair's measured gap differs by more
-than a tenth from its netclass's differential pair gap. Each of these is
-smoothed as separate chains, or, for the last, at its measured gap. A pair
-is paired on each layer separately. kibends does not route uncoupled
+different widths; they are smoothed as separate chains. A chain whose
+partner beside it pairs with another chain of its net is smoothed on its
+own, without a warning. A diff pair keeps its measured gap, whatever its netclass sets. A
+pair is paired on each layer separately. kibends does not route uncoupled
 fan-outs into coupling.
 
 A diff pair's vias do not move. A selected via on either net of a diff
@@ -425,7 +420,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. Each time it must go on from where it was, with a differential pair's section held as routed or with a closed loop held as drawn, it first completes one outer iteration, so it may run over by one outer iteration more for each. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst. When it must start over with a differential pair's section held as routed, it first completes one outer iteration, so it may run over by one outer iteration more. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |

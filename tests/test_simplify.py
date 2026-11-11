@@ -3,6 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import clearances
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from reference_fields import chain_obstacles
 from scenarios import (
@@ -13,7 +14,6 @@ from scenarios import (
     ChainsScenario,
     chain,
     path,
-    selected,
 )
 from shapely.geometry import LineString
 
@@ -25,7 +25,7 @@ from kibends.optimize import optimize, optimize_chains
 from kibends.pair_blocks import pair_block
 from kibends.polylines import measure
 from kibends.results import ChainResult, RunResult, Termination
-from kibends.simplify import cutting_chains, simplify, simplify_chains
+from kibends.simplify import simplify, simplify_chains
 
 SPACING = 0.1
 DISC = Disc(0.0, 0.0, 1.0)
@@ -77,10 +77,10 @@ class TestWrapAroundDisc:
         tolerance_only = simplify(arc, free(len(arc)), FreeSpace(), WIDE_TOLERANCE)
         result = simplify(arc, free(len(arc)), DISC, WIDE_TOLERANCE)
 
-        assert measure(tolerance_only, DISC, SPACING).min_clearance < 0.0
+        assert clearances(tolerance_only, DISC).min() < 0.0
         assert len(tolerance_only) < len(result) < len(arc)
         assert DISC.segments_clear(result[:-1], result[1:]).all()
-        assert measure(result, DISC, SPACING).min_clearance >= 0.0
+        assert clearances(result, DISC).min() >= 0.0
 
     def test_unmergeable_wrap_is_left_alone(self) -> None:
         arc = arc_around_disc(standoff=0.001)
@@ -194,24 +194,6 @@ class TestSeveralChains:
         assert not any(line.startswith("WARNING") for line in log)
 
 
-def test_merged_edges_cutting_into_a_neighbour_are_found() -> None:
-    # Inconsistent on purpose: the merged edge of A was never checked against B.
-    a = selected("A", "A", FreeSpace(), (0.0, 0.0), (5.0, -0.5), (10.0, 0.0))
-    b = selected("B", "B", FreeSpace(), (0.0, 0.3), (10.0, 0.3))
-    optimised = [a.centreline.points, b.centreline.points]
-    merged_a = [0, 2]
-    unmerged_b = [0, 1]
-
-    cutting = cutting_chains(
-        [a, b],
-        optimised,
-        [a.centreline.points[merged_a], b.centreline.points],
-        [merged_a, unmerged_b],
-    )
-
-    assert cutting == [0]
-
-
 BEND = 1.0
 """Radius of a coupled section's arc, mm."""
 BEND_STEP = 0.02
@@ -244,11 +226,7 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
     fixed = np.zeros(len(line), dtype=bool)
     fixed[[0, -1]] = True
     run = RunResult(
-        (
-            ChainResult(
-                line, fixed, 0, measure(line, field, SPACING), no_contacts(line)
-            ),
-        ),
+        (ChainResult(line, fixed, 0, measure(line, SPACING), no_contacts(line)),),
         Termination.CONVERGED,
         1,
     )
@@ -262,31 +240,8 @@ def test_a_section_s_merged_corners_keep_clear_of_copper_outside_its_bend() -> N
 
     assert len(centreline) < len(line)
     keep = PAIR_CLEARANCE + PAIR_WIDTH - INSIDE_TOLERANCE
-    for track in block.offset_kept(line, centreline):
+    for track in block.offset(centreline):
         assert LineString(track).distance(LineString(wall.points)) >= keep
-
-
-def test_only_an_end_routed_at_another_gap_bounds_a_taper() -> None:
-    uneven = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
-    even = pair_block(scenarios.pair_over_pad().pairs[0], SPACING)
-
-    bounds = uneven.taper_bounds(uneven.chain.centreline.points)
-
-    (bound,) = np.flatnonzero(bounds)
-    assert bound > len(bounds) / 2
-    assert not even.taper_bounds(even.chain.centreline.points).any()
-
-
-def test_kept_vertices_offset_at_their_optimised_gaps() -> None:
-    block = pair_block(scenarios.pair_uneven_end().pairs[0], SPACING)
-    line = block.chain.centreline.points
-    every = block.offset_kept(line, line)
-    kept = line[[0, len(line) // 2, -1]]
-
-    for whole, track in zip(block.offset(line), every, strict=True):
-        np.testing.assert_array_equal(track, whole)
-    for track in block.offset_kept(line, kept):
-        assert len(track) == len(kept)
 
 
 WAVE_STEP = 0.05
@@ -307,7 +262,7 @@ def test_kept_vertices_offset_into_tracks_parallel_segment_for_segment() -> None
     last = len(line) - 1
     kept = line[sorted({0, 1, *range(1, last, KEEP_EVERY), last - 1, last})]
 
-    a, b = block.offset_kept(line, kept)
+    a, b = block.offset(kept)
 
     assert len(a) == len(b) == len(kept)
     along_a, along_b = (np.diff(t, axis=0) for t in (a, b))

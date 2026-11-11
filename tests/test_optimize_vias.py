@@ -14,7 +14,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import neutral_distance
+from conftest import build_via_obstacles, neutral_distance
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
 from shapely.geometry import LineString, Point, box
@@ -49,7 +49,6 @@ from kibends.obstacles import (
     ChainCentreline,
     Obstacle,
     Obstacles,
-    build_via_obstacles,
     own_net_stops,
     split_via_obstacles,
     via_via_inflation,
@@ -64,14 +63,8 @@ from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
-def run(
-    scenario: ViasScenario,
-    settings: OptimizerSettings = COARSE,
-    start: RunResult | None = None,
-) -> RunResult:
-    return optimize_chains(
-        scenario.chains, scenario.params, settings, scenario.vias, start=start
-    )
+def run(scenario: ViasScenario, settings: OptimizerSettings = COARSE) -> RunResult:
+    return optimize_chains(scenario.chains, scenario.params, settings, scenario.vias)
 
 
 def length(points: FloatArray) -> float:
@@ -278,7 +271,7 @@ def test_the_guard_takes_a_via_starting_inside_only_shallower(
     wall = Box(x + WALL_DEPTH - 50.0, y, 50.0, 50.0)
     scenario = squeezed(wall, y + ZONE_SLACK - MARGIN)
     (placed,) = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
     problem = placed.problem
 
@@ -361,7 +354,6 @@ def layer(name: str, via_keepouts: tuple[BaseGeometry, ...] = ()) -> LayerSnapsh
         edge_paths=(),
         clearances={},
         default_clearance=scenarios.PAIR_CLEARANCE,
-        diff_pair_gaps={},
     )
 
 
@@ -837,7 +829,7 @@ def test_the_guard_refuses_a_via_newly_inside_one_obstacle_while_inside_another(
 ):
     scenario = beside_a_wall_under_pinned()
     (placed,) = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
     problem = placed.problem
 
@@ -960,7 +952,7 @@ def test_the_guard_refuses_a_via_newly_inside_one_static_item_inside_another(
 ) -> None:
     scenario = inside_one_item_beside_another(stops)
     (placed,) = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
     problem = placed.problem
 
@@ -1413,7 +1405,6 @@ def test_a_problem_keeps_the_static_vias_its_moving_vias_meet() -> None:
         moving_vias(given),
         given.params,
         COARSE,
-        None,
         static_vias(),
     )
 
@@ -1449,7 +1440,7 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
     result = run(scenario)
 
     placed = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), params, COARSE, None
+        scenario.chains, [], moving_vias(scenario), params, COARSE
     )
     assert sorted(len(p.problem.vias) for p in placed) == [0, 0, 1]
 
@@ -1499,7 +1490,6 @@ def test_a_via_moved_back_keeps_its_problem_from_settling(
         return optimize_module._ProblemBurst(
             list(starts),
             list(self.positions),
-            [0] * count,
             [0] * count,
             [moved_back] * len(self.vias),
             False,
@@ -1595,7 +1585,7 @@ class TestGradient:
         everything = [*scenario.chains, *(block.chain for block in blocks)]
         vias = MovingVias(everything, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
         (placed,) = optimize_module._problems(
-            scenario.chains, blocks, vias, params, COARSE, None, static
+            scenario.chains, blocks, vias, params, COARSE, static
         )
         problem = placed.problem
         layout = problem.layout(problem.points)
@@ -1619,9 +1609,7 @@ class TestGradient:
         scenario = scenarios.via_grid(3, 3, via_every=1)
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
         vias = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
-        (placed,) = optimize_module._problems(
-            scenario.chains, [], vias, params, COARSE, None
-        )
+        (placed,) = optimize_module._problems(scenario.chains, [], vias, params, COARSE)
         layout = placed.problem.layout(placed.problem.points)
         objective = placed.problem.objective(layout)
         x = layout.x0
@@ -1782,36 +1770,6 @@ def moving_vias(scenario: ViasScenario) -> MovingVias:
     return MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
 
 
-class TestResume:
-    def test_goes_on_from_the_via_where_the_earlier_run_left_it(self) -> None:
-        scenario = scenarios.via_detour()
-        once = replace(COARSE, max_iterations=1)
-        first = run(scenario, once)
-
-        resumed = run(scenario, once, start=first)
-        fresh = run(scenario, once)
-
-        assert resumed.vias[0].position[1] < fresh.vias[0].position[1]
-
-    def test_a_start_with_the_via_newly_inside_its_clearance_is_not_taken(
-        self,
-    ) -> None:
-        free = run(scenarios.via_detour())
-        (via,) = free.vias
-        # A pad where the earlier run left the via.
-        scenario = scenarios.via_detour_over(FreeSpace())
-        blocked = replace(
-            scenario,
-            vias=(replace(scenario.vias[0], field=Disc(*via.position, 0.5)),),
-        )
-
-        resumed = run(blocked, replace(COARSE, max_iterations=1), start=free)
-
-        (moved,) = resumed.vias
-        assert math.dist(moved.position, via.position) > 0.5 - INSIDE_TOLERANCE
-        assert moved.position[1] > via.position[1]
-
-
 def test_chains_straightened_in_one_burst_are_kept() -> None:
     # Two free vertices a chain: one burst straightens the route, and the
     # via's move in it is less than the tolerance.
@@ -1911,7 +1869,7 @@ def test_the_guard_refuses_a_via_deep_outside_its_zone_entering_another_s_holes(
 ):
     scenario = outside_their_zone()
     (placed,) = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE, None
+        scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
     problem = placed.problem
     left, right = problem.positions
@@ -2136,7 +2094,7 @@ class TestViaEnergy:
         scenario = VIA_ENERGY_SCENARIOS[name]()
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
         placed = optimize_module._problems(
-            scenario.chains, [], moving_vias(scenario), params, COARSE, None
+            scenario.chains, [], moving_vias(scenario), params, COARSE
         )
         problems = [p.problem for p in placed if p.problem.vias]
         assert problems
@@ -2324,7 +2282,6 @@ class TestPairEnergy:
             moving_vias(scenario),
             scenario.params,
             COARSE,
-            None,
             GROUND_STATIC,
         )
         problems = [p.problem for p in placed if p.problem.vias]

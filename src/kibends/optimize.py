@@ -6,7 +6,7 @@ members into problems and gives them bursts until they settle, and
 `_Problem`, one problem's variables, energy, checks and best state. What
 does not depend on a problem lives beside it: `members` (what the members
 see of each other and their summed energy), `polylines` (resampling,
-statistics, violations, shape change and a section's self check),
+statistics, violations, shape change and a section's bend check),
 `contacts` (the stops that keep a vertex on its contact) and `results`
 (what a run returns).
 
@@ -45,11 +45,9 @@ centreline at each evaluation (`members.shown`), so where the obstacle term pull
 track's edge, the gradient goes back through the offset to the
 centreline's vertices (`PairBlock.offset_pullback`). Besides the edge
 check, a burst moves back what `polylines.SelfCheck` finds: a centreline
-newly bent below its limit, or brought closer to its own parts beyond a
-turn than it may. A held member (`ChainInput.held`), such as a held
-section, is fully pinned and not resampled; a run
-given an earlier one's result resumes from it (`optimize_chains`), which
-is how `run` repeats a run with the sections that ended too tight held.
+newly bent below its limit. A held member (`ChainInput.held`), such as a held
+section, is fully pinned and not resampled, which is how `run` repeats a
+run with the sections that ended too tight held.
 
 A moving via (`kibends.via_moves`) is two more variables, its centre. The
 ends of the chains it joins are not variables of their own: each is the
@@ -117,8 +115,7 @@ A section moves as its centreline and is seen as its two tracks, which
 the others' edge checks see where the burst leaves them; its own edges
 are checked as the pair's outer extent. A burst also moves back what
 `polylines.SelfCheck` finds on a section: an edge newly bent below its
-limit, or its parts beyond a turn brought closer than they may
-(`polylines.close_to_itself`).
+limit.
 
 A moving via is a member whose one vertex is its centre, inflated by
 `via_chain_inflation` against a member of another net and seen by it so,
@@ -167,7 +164,7 @@ its clearance of any obstacle, or its stops, than it started.
 When it stops
 -------------
 A problem settles when its burst moves nothing by `settled_change` and
-moves nothing back but a section's own parts, when its lowest energy and
+moves nothing back, when its lowest energy and
 its tracks' length stall over `stall_window` bursts, the energy by a
 tolerance for each moving member and via and the length by one
 (`stalled`), or after MAX_ABNORMAL_BURSTS abnormal bursts in a row. The
@@ -182,8 +179,7 @@ at its next L-BFGS-B iteration; that burst's state goes through the
 checks and the guard as any, and it settles nothing. Each problem keeps
 its best state either way (`optimize_chains`). A run in which some
 problem settled on abnormal bursts gave up: it keeps the best state if
-that is lower in energy than the inputs, from which a resumed run
-measures too, and ends abnormally if not.
+that is lower in energy than the inputs, and ends abnormally if not.
 """
 
 import time
@@ -231,10 +227,8 @@ from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.pair_blocks import PairBlock, PairInput, pair_block
 from kibends.polylines import (
     SelfCheck,
-    clearance_points,
     count_violations,
     measure,
-    measured,
     resample,
     shape_change,
 )
@@ -242,7 +236,6 @@ from kibends.results import (
     ChainResult,
     OptimizeResult,
     PairResult,
-    PolylineStats,
     RunResult,
     Termination,
     ViaResult,
@@ -286,7 +279,7 @@ def optimize(
     after = (
         chain.before
         if run.termination is Termination.NOTHING_TO_DO
-        else measure(chain.polyline, field, settings.spacing)
+        else measure(chain.polyline, settings.spacing)
     )
     return OptimizeResult(
         polyline=chain.polyline,
@@ -340,10 +333,6 @@ PRESSED_DEPTH = 0.02
 End = tuple[int, int]
 """A chain end: the chain's index and 0 or -1."""
 
-Resumed = tuple[FloatArray, BoolArray, IntArray]
-"""Where a member resumes: its polyline, the vertices that stay and, per
-vertex, the contact it keeps (`_Problem.contact_of`)."""
-
 
 def optimize_chains(
     chains: Sequence[ChainInput],
@@ -356,9 +345,8 @@ def optimize_chains(
     pairs: Sequence[PairInput] = (),
     clock: Callable[[], float] = time.monotonic,
     started: float | None = None,
-    start: RunResult | None = None,
+    again: bool = False,
     static_vias: Sequence[StaticVia] = (),
-    held_label: str = "sections",
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -376,39 +364,32 @@ def optimize_chains(
     its clearance or its stops than it started.
 
     A problem settles when its burst moved no shape or via by
-    `settled_change` and moved nothing back but for a section's parts that
-    came too close to each other, or when the lowest energy its bursts
-    reached, whether or not the guard took them as its best state, and its
-    tracks' length stalled over `stall_window` bursts (`stalled`), or after
-    MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges when
-    every problem has, and gives up (`Termination.GAVE_UP`) if some problem
-    settled on abnormal bursts. A run that gave up on some problem and
-    whose best states sum to no less energy than its inputs, not where it
-    resumed, ends `Termination.ABNORMAL`, whatever stopped it. With a time
-    limit in `settings`, the run stops once `clock` reads the limit or more
-    past `started`, by default when the run starts: the running burst ends
-    at its next L-BFGS-B iteration, and its state goes through the checks
-    and the guard as any burst's.
+    `settled_change` and moved nothing back, or when the lowest energy its
+    bursts reached, whether or not the guard took them as its best state,
+    and its tracks' length stalled over `stall_window` bursts (`stalled`),
+    or after MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges
+    when every problem has, and gives up (`Termination.GAVE_UP`) if some
+    problem settled on abnormal bursts. A run that gave up on some problem
+    and whose best states sum to no less energy than its inputs ends
+    `Termination.ABNORMAL`, whatever stopped it. With a
+    time limit in `settings`, the run stops once `clock` reads the limit or
+    more past `started`, by default when the run starts: the running burst
+    ends at its next L-BFGS-B iteration, and its state goes through the
+    checks and the guard as any burst's.
 
-    A run given the result of an earlier one on the same inputs as `start`
-    starts each problem from that run's best state, the sections held in
-    this run excepted, unless that leaves some chain or section of the
-    problem with more violations or more edges across the others than its
-    input, or a via newly inside its clearance; then that problem starts
-    from its inputs. Either way the run
-    completes its first outer iteration before it looks at the time limit.
+    A run `again`, which repeats an earlier one on the same clock with
+    sections held, starts from its inputs as any run and completes its
+    first outer iteration before it looks at the time limit.
 
     It logs at INFO when setup begins and, once the problems are built,
-    the setup time and the starting length and energy, saying "again" when
-    it repeats a run from `start`, with what it holds named by
-    `held_label`, a label for the log only. Each outer iteration
+    the setup time and the starting length and energy, saying "again" for
+    a run `again`. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since `started` or the last INFO line. Each burst logs what it
     cost at DEBUG only (`_Problem.step`).
     """
-    again = start is not None
     logger.info(
-        f"Setting up the optimizer again, with held {held_label}"
+        "Setting up the optimizer again, with held sections"
         if again
         else "Setting up the optimizer"
     )
@@ -417,9 +398,7 @@ def optimize_chains(
     blocks = [pair_block(pair, settings.spacing) for pair in pairs]
     everything = [*chains, *(block.chain for block in blocks)]
     moving_vias = MovingVias(everything, vias, hole_clearance, hole_to_hole)
-    placed = _problems(
-        chains, blocks, moving_vias, params, settings, start, static_vias
-    )
+    placed = _problems(chains, blocks, moving_vias, params, settings, static_vias)
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
 
@@ -469,9 +448,8 @@ def optimize_chains(
     termination = Termination.ITERATION_CAP
     iteration = 0
     for iteration in range(1, settings.max_iterations + 1):
-        # A resumed run gives every problem a burst against what changed
-        # since, as the sections held now.
-        timed = deadline is not None and (start is None or iteration > 1)
+        # A repeated run starts over when the time may have run out already.
+        timed = deadline is not None and (not again or iteration > 1)
         out_of_time = False
         change = 0.0
         for problem in moving:
@@ -525,7 +503,6 @@ def _problems(
     vias: MovingVias,
     params: EnergyParams,
     settings: OptimizerSettings,
-    start: RunResult | None,
     static_vias: Sequence[StaticVia] = (),
 ) -> list[_Placed]:
     """The run's problems: the layers that the vias tie together, with
@@ -551,14 +528,6 @@ def _problems(
             for v, via in enumerate(vias.vias)
             if group is tied or any(via.via.reaches(layer) for layer in group)
         ]
-        resume = (
-            None
-            if start is None
-            else _Resume(
-                _resumed(start, on, sections, blocks),
-                [np.array(start.vias[v].position, dtype=float) for v in joined],
-            )
-        )
         problem = _Problem(
             group,
             [chains[i] for i in on],
@@ -566,7 +535,6 @@ def _problems(
             [_problem_via(vias, v, local, joined) for v in joined],
             params,
             settings,
-            resume,
             static_vias,
             hole_clearance=vias.hole_clearance,
             hole_to_hole=vias.hole_to_hole,
@@ -634,40 +602,6 @@ class _ViaPart:
     integrand: Integrand
 
 
-@dataclass(frozen=True)
-class _Resume:
-    members: list[Resumed | None]
-    positions: list[FloatArray]
-    """Of the problem's vias."""
-
-
-def _resumed(
-    start: RunResult,
-    chains: Sequence[int],
-    sections: Sequence[int],
-    blocks: Sequence[PairBlock],
-) -> list[Resumed | None]:
-    """Where the chains and sections of a problem, by index, resume from
-    `start`: its best state, but None for a section held in this run. A
-    section the earlier run moved comes back without its direction pins
-    among its fixed vertices, as simplification may merge across them;
-    here they are pinned again."""
-    resumed: list[Resumed | None] = []
-    for i in chains:
-        chain = start.chains[i]
-        contact_of = chain.contact_of
-        resumed.append((chain.polyline, chain.fixed & (contact_of < 0), contact_of))
-    for k in sections:
-        block = blocks[k]
-        if block.held:
-            resumed.append(None)
-            continue
-        points = start.pairs[k].centreline
-        pinned = start.pairs[k].fixed | block.direction_pins(points)
-        resumed.append((points, pinned, no_contacts(points)))
-    return resumed
-
-
 def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     """The chain ends that are neither fixed nor keep a contact, grouped by
     the point, layer and net they share; raises ValueError for one that
@@ -692,7 +626,8 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
 
 def _starting(problems: Sequence[_Problem], setup: float, *, again: bool) -> str:
     """One line on the run about to start, after `setup` seconds of setup,
-    `again` when it repeats a run from an earlier one's result."""
+    `again` when it repeats an earlier run, from the inputs, with sections
+    held."""
     count = len(problems)
     return (
         f"Optimizer set up{' again' if again else ''} in {setup:.1f} s: "
@@ -810,12 +745,12 @@ class _Layout:
 @dataclass(frozen=True)
 class _Round:
     """What one check of a burst found: per member, its edges that newly
-    crossed and, of those, a section's vertex pairs too close; per via, the
+    crossed; per via, the
     edges at the ends it carries that newly crossed, and the times it ended
     newly or deeper inside its clearance. A crossing is counted on the side
     that found it, once, though both sides move back."""
 
-    members: list[tuple[int, int]]
+    members: list[int]
     vias: list[int]
 
 
@@ -824,11 +759,7 @@ class _ProblemBurst:
     polylines: list[FloatArray]
     positions: list[FloatArray]
     rejected_edges: list[int]
-    """Per member, its edges whose moves were undone, and a section's
-    vertex pairs."""
-    too_close: list[int]
-    """Per member, of `rejected_edges`, a section's vertex pairs that came
-    too close to each other (`polylines.close_to_itself`)."""
+    """Per member, its edges whose moves were undone."""
     via_rejected: list[int]
     """Per via, the edges at the ends it carries that newly crossed, and
     the times it ended newly inside its clearance."""
@@ -859,7 +790,6 @@ class _Problem:
         vias: Sequence[_Via],
         params: EnergyParams,
         settings: OptimizerSettings,
-        resume: _Resume | None = None,
         static_vias: Sequence[StaticVia] = (),
         *,
         hole_clearance: float,
@@ -948,7 +878,7 @@ class _Problem:
                 contact_of[v] = k
             contact_of[anchors] = -1
             self.given_contact_of.append(contact_of)
-        self.before = self.start_statistics(self.originals, self.start_positions)
+        self.before = [measure(p, settings.spacing) for p in self.originals]
         # A burst starts from the members resampled; the shapes as the burst
         # left them are what the energy, the guard and the best state see.
         # Resampling would put free vertices between a held member's pins.
@@ -996,12 +926,7 @@ class _Problem:
         # resampled again, they would cut corners deeper still.
         self.resampled = [True] * count
         self.energy = self.energy_of(self.points, self.positions, self.seen)
-        # A resumed run has improved on its inputs, not only on where it
-        # resumes, if its best state beats them.
         self.input_energy = self.energy
-        if resume is not None:
-            self.resume(resume)
-            self.energy = self.energy_of(self.points, self.positions, self.seen)
         self.best_energy = self.energy
         self.best = list(self.points)
         self.best_masks = list(self.masks)
@@ -1010,7 +935,6 @@ class _Problem:
         self.lowest = [self.energy]
         self.lengths = [self.length()]
         self.rejected_edges = [0] * count
-        self.too_close = [0] * count
         self.via_rejected = [0] * len(vias)
         self.abnormal_bursts = 0
         self.abnormal_streak = 0
@@ -1021,75 +945,10 @@ class _Problem:
         """Whether it settled on MAX_ABNORMAL_BURSTS abnormal bursts in a row."""
         return self.abnormal_streak >= MAX_ABNORMAL_BURSTS
 
-    def resume(self, state: _Resume) -> None:
-        """Take `state` as the current shapes of the members that move and
-        have one, and the vias' centres, unless that leaves some member with
-        more violations than `allowed`, or with more edges across the others
-        than at its inputs, or some via newly or deeper inside its clearance
-        of an obstacle than it started (`guard`). Edges are counted too
-        because a held section is all pins, which `polylines.violations`
-        cannot count, and a burst leaves an edge that starts across another
-        member as it is."""
-        points, masks = list(self.points), list(self.masks)
-        contact_of = list(self.contact_of)
-        for i in self.free:
-            given = state.members[i]
-            if given is not None:
-                points[i], masks[i], contact_of[i] = given
-        positions = list(state.positions)
-        seen = self.seeing(points)
-        across = zip(
-            self.edges_across(points, positions, seen),
-            self.edges_across(self.points, self.positions, self.seen),
-            strict=True,
-        )
-        if self.guard(points, masks, positions, seen) and all(
-            count <= before for count, before in across
-        ):
-            self.points, self.masks, self.positions = points, masks, positions
-            self.seen = seen
-            self.contact_of = contact_of
-            self.resampled = [
-                done and given is None
-                for done, given in zip(self.resampled, state.members, strict=True)
-            ]
-            self.moved = True
-
     def seeing(self, polylines: Sequence[FloatArray]) -> Seen:
         """What each member sees of the others and of the vias with the
         members at `polylines` (`members.seen_parts`)."""
         return seen_parts(self.members, polylines, self.rings)
-
-    def start_statistics(
-        self, polylines: Sequence[FloatArray], positions: Sequence[FloatArray]
-    ) -> list[PolylineStats]:
-        """Each member's statistics at `polylines` (`polylines.measure`),
-        its clearance taken from its static copper, the other members and
-        the vias at `positions`."""
-        spacing = self.settings.spacing
-        samples = [clearance_points(points, spacing) for points in polylines]
-        flat = shown_flat(self.members, polylines, positions)
-        near = self.seeing(polylines).distances(samples, flat)
-        return [
-            measured(points, np.minimum(body.field.signed_distance(at)[0], d), spacing)
-            for body, points, at, d in zip(
-                self.bodies, polylines, samples, near, strict=True
-            )
-        ]
-
-    def edges_across(
-        self,
-        polylines: Sequence[FloatArray],
-        positions: Sequence[FloatArray],
-        seen: Seen,
-    ) -> list[int]:
-        """Per member at `polylines`, its edges not clear of the other
-        members and the vias at `positions` as it sees them, `seen` there."""
-        flat = shown_flat(self.members, polylines, positions)
-        return [
-            int(np.count_nonzero(~edges.clear))
-            for edges in seen.segments_clear(polylines, flat)
-        ]
 
     def guard(
         self,
@@ -1126,7 +985,7 @@ class _Problem:
         positions: Sequence[FloatArray],
         seen: Seen,
     ) -> list[int]:
-        """Per member at `polylines`, its `polylines.violations` of its
+        """Per member at `polylines`, its `polylines.count_violations` of its
         static copper, the other members and the vias at `positions`
         together, every member's at once through `seen`, what they see
         there."""
@@ -1356,11 +1215,10 @@ class _Problem:
         return PairResult(
             block=block,
             centreline=points,
-            fixed=mask & ~block.direction_pins(points) if moved else mask,
+            fixed=mask & ~block.mergeable_pins(points) if moved else mask,
             a=a,
             b=b,
             rejected_edges=self.rejected_edges[k],
-            too_close=self.too_close[k],
             before=self.before[k],
             bend=block.bend(points) if moved else block.tight_start,
         )
@@ -1423,11 +1281,8 @@ class _Problem:
         self.moved |= change > NOTHING_MOVED
         self.points, self.positions = burst.polylines, burst.positions
         self.seen = self.seeing(self.points)
-        for i, (count, close) in enumerate(
-            zip(burst.rejected_edges, burst.too_close, strict=True)
-        ):
+        for i, count in enumerate(burst.rejected_edges):
             self.rejected_edges[i] += count
-            self.too_close[i] += close
         for k, count in enumerate(burst.via_rejected):
             self.via_rejected[k] += count
         self.energy = self.energy_of(self.points, self.positions, self.seen)
@@ -1451,13 +1306,8 @@ class _Problem:
             self.abnormal_streak = 0
         # An abnormal burst may have stopped anywhere, so only the streak
         # settles it. A burst cut short by moves back changed little because
-        # of them, not because the shapes settled; but a section pressed
-        # onto its own parts beyond a turn has moves to undo in every burst,
-        # which no energy term pushes back.
-        cut_short = any(burst.via_rejected) or any(
-            count > close
-            for count, close in zip(burst.rejected_edges, burst.too_close, strict=True)
-        )
+        # of them, not because the shapes settled.
+        cut_short = any(burst.via_rejected) or any(burst.rejected_edges)
         self.settled = self.gave_up or (
             not burst.abnormal
             and not burst.cut
@@ -1551,8 +1401,8 @@ class _Problem:
         """One L-BFGS-B run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
         copper, or newly or more deeply another member's new shape, a
-        section newly bent below its limit or brought its parts beyond a
-        turn too close (`polylines.SelfCheck`) or a via ended newly or
+        section newly bent below its limit (`polylines.SelfCheck`) or a via
+        ended newly or
         deeper inside its clearance of an obstacle."""
         members = self.members
         positions = self.positions
@@ -1575,9 +1425,7 @@ class _Problem:
         # moving back always ends.
         left_before = [self.left(i, s) for i, s in enumerate(starts)]
         checks = [
-            SelfCheck.of(s, member.limit, member.apart)
-            if isinstance(member, PairBlock)
-            else None
+            SelfCheck.of(s, member.limit) if isinstance(member, PairBlock) else None
             for member, s in zip(members, starts, strict=True)
         ]
         free_before = self.via_distances(starts, positions)
@@ -1592,7 +1440,7 @@ class _Problem:
             polylines, centres = layout.unflatten(x)
             flat = shown_flat(members, polylines, centres)
             back = np.zeros(count, dtype=bool)
-            counts: list[tuple[int, int]] = []
+            counts: list[int] = []
             via_counts = [0] * len(self.vias)
             others = seen.segments_clear(polylines, flat)
             for i, points in enumerate(polylines):
@@ -1620,13 +1468,13 @@ class _Problem:
                     via_counts[k] += int(ends[end])
                 outside = self.left(i, points) & ~left_before[i]
                 ends |= outside
-                rejected, close = int(crossing.sum()) + int(outside.sum()), 0
+                rejected = int(crossing.sum()) + int(outside.sum())
                 check = checks[i]
                 if check is not None:
-                    own, more, close = check(points)
+                    own, more = check(points)
                     ends |= own
                     rejected += more
-                counts.append((rejected, close))
+                counts.append(rejected)
                 back[index[i][ends & free[i]]] = True
             entering = np.zeros(len(self.vias), dtype=bool)
             for now, before in (
@@ -1658,7 +1506,7 @@ class _Problem:
             found_now, back = crossings(candidate)
             if not found:
                 found.append(found_now)
-            return sum(r for r, _ in found_now.members) + sum(found_now.vias), back
+            return sum(found_now.members) + sum(found_now.vias), back
 
         def revert(x: FloatArray) -> int:
             return revert_until_clear(x, x0, check)[1]
@@ -1676,14 +1524,13 @@ class _Problem:
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
         if result.abnormal or not found:
-            counted = _Round([(0, 0)] * len(starts), [0] * len(self.vias))
+            counted = _Round([0] * len(starts), [0] * len(self.vias))
         else:
             counted = found[0]
         return _ProblemBurst(
             polylines,
             centres,
-            [rejected for rejected, _ in counted.members],
-            [close for _, close in counted.members],
+            list(counted.members),
             list(counted.vias),
             result.abnormal,
             result.iterations,

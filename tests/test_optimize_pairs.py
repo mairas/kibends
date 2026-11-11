@@ -12,8 +12,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import Ticking
-from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
+from conftest import Ticking, gap_range, layer_energy, total_energy
+from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
     DP_PAD,
@@ -34,20 +34,12 @@ from kibends.bursts import (
     OptimizerSettings,
     Revert,
     Stop,
-    revert_until_clear,
     run_burst,
 )
 from kibends.chain import Chain
 from kibends.contacts import no_contacts
-from kibends.coords import BOARD_FRAME
-from kibends.energy import (
-    EnergyParams,
-    ObstacleField,
-    TermValue,
-    arc_lengths,
-    total_energy,
-)
-from kibends.members import Member, layer_energy, seen_parts
+from kibends.energy import EnergyParams, ObstacleField, TermValue, arc_lengths
+from kibends.members import Member, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import optimize_chains
@@ -57,10 +49,9 @@ from kibends.pairs import (
     GAP_TOLERANCE,
     bend_radius_limit,
     check_bend_radius,
-    gap_range,
     offset_pair,
 )
-from kibends.polylines import SelfCheck, close_to_itself, resample
+from kibends.polylines import SelfCheck, resample
 from kibends.results import ChainResult, PairResult, RunResult, Termination
 from kibends.simplify import simplify_chains
 
@@ -74,13 +65,9 @@ DIRECTION_TOLERANCE = 1e-9
 EXTENT_SLACK = 1e-9
 
 
-def run(
-    scenario: PairsScenario,
-    settings: OptimizerSettings = COARSE,
-    start: RunResult | None = None,
-) -> RunResult:
+def run(scenario: PairsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
     return optimize_chains(
-        scenario.chains, scenario.params, settings, pairs=scenario.pairs, start=start
+        scenario.chains, scenario.params, settings, pairs=scenario.pairs
     )
 
 
@@ -194,8 +181,8 @@ def test_offset_pullback_matches_finite_differences(
 
     analytic = block.offset_pullback(points, at_a, at_b)
 
-    # A gap's taper starts at its end's direction pin: at the pinned end
-    # edges the gaps have a kink, which no free vertex reaches.
+    # The tracks' end points are the section's own, which no free vertex
+    # moves.
     free = np.flatnonzero(~fixed)
     numeric = np.zeros_like(points)
     for k in free:
@@ -328,8 +315,7 @@ class TestPairOverPad:
     def test_simplified_tracks_stay_parallel_segment_for_segment(
         self, over_pad: RunResult
     ) -> None:
-        # As run.py simplifies a section: its centreline vertices must come
-        # back exactly as the run offset them for `offset_kept` to find them.
+        # As run.py simplifies a section.
         (pair,) = over_pad.pairs
         block = pair.block
         result = ChainResult(
@@ -346,7 +332,7 @@ class TestPairOverPad:
             scenarios.DP_CHORD_TOLERANCE,
             sections={0: block},
         )
-        a, b = block.offset_kept(pair.centreline, centreline)
+        a, b = block.offset(centreline)
 
         assert 2 < len(centreline) < len(pair.centreline)
         along_a, along_b = (np.diff(t, axis=0) for t in (a, b))
@@ -448,7 +434,7 @@ class TestTightCorner:
         (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs
         assert length(pair.centreline) <= pair.before.length
         assert pair.bend is not None and not pair.bend.too_tight
-        assert pair.rejected_edges > pair.too_close == 0
+        assert pair.rejected_edges > 0
 
     def test_energy_at_a_fold_is_finite(self) -> None:
         (given,) = scenarios.pair_corner().pairs
@@ -498,7 +484,7 @@ class TestTightCorner:
         straight = np.array([(float(x), 0.0) for x in range(6)])
         check = SelfCheck.of(straight, bend_radius_limit(DP_GAP, PAIR_WIDTH))
 
-        back, count, _ = check(folded(straight, 1))
+        back, count = check(folded(straight, 1))
 
         assert count > 0
         assert back[[1, 2, 3]].all()
@@ -513,17 +499,30 @@ class TestTightCorner:
         assert_within_extent(pair, given, CORNER)
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [scenarios.pair_uneven_end(), scenarios.pair_chamfered()],
-    ids=lambda s: s.name,
-)
-def test_ends_keep_both_tracks_directions(scenario: PairsScenario) -> None:
+def test_chamfered_ends_keep_both_tracks_directions() -> None:
+    scenario = scenarios.pair_chamfered()
     (given,) = scenario.pairs
 
     (pair,) = run(scenario).pairs
 
     assert_meets_its_ends(pair, given)
+    assert_gap_kept(pair)
+    assert length(pair.centreline) < pair.before.length
+
+
+def test_track_b_s_end_edge_takes_up_an_uneven_end_s_gap() -> None:
+    scenario = scenarios.pair_uneven_end()
+    (given,) = scenario.pairs
+
+    (pair,) = run(scenario).pairs
+
+    for track, original in ((pair.a, given.a.points), (pair.b, given.b.points)):
+        np.testing.assert_array_equal(track[[0, -1]], original[[0, -1]])
+    a = given.a.points
+    for points, before in ((pair.a, a), (pair.a[::-1], a[::-1])):
+        np.testing.assert_allclose(
+            heading(points), heading(before), atol=DIRECTION_TOLERANCE
+        )
     assert_gap_kept(pair)
     assert length(pair.centreline) < pair.before.length
 
@@ -560,20 +559,12 @@ class TestTwoCoupledSections:
             )
 
 
-def test_a_pair_turning_back_around_a_pad_keeps_its_legs_apart() -> None:
-    scenario = scenarios.pair_turning_back()
-    (given,) = scenario.pairs
-    apart = pair_block(given, scenarios.TURNING_BACK.spacing).apart
-
-    result = run(scenario, scenarios.TURNING_BACK)
+def test_a_pair_turning_back_around_a_pad_keeps_its_gap_and_bend() -> None:
+    result = run(scenarios.pair_turning_back(), scenarios.TURNING_BACK)
 
     (pair,) = result.pairs
     assert_gap_kept(pair)
-    # Beyond the turn the centreline stays a pair's outer extent plus
-    # clearance from itself, as the self check measures it.
-    _, closest = close_to_itself(pair.centreline, apart)
-    assert np.all(closest >= apart - INSIDE_TOLERANCE)
-    # Moves the run undid do not keep it from settling.
+    assert pair.bend is not None and not pair.bend.too_tight
     assert result.termination is Termination.CONVERGED
 
 
@@ -604,129 +595,32 @@ def hausdorff(a: FloatArray, b: FloatArray) -> float:
     return float(LineString(a).hausdorff_distance(LineString(b)))
 
 
-@pytest.fixture(scope="module")
-def held_tent() -> RunResult:
-    """`pair_tent` with its section held, from its inputs."""
-    return run(held(scenarios.pair_tent()))
+def test_a_repeated_run_gives_every_problem_a_burst_before_its_time_limit() -> None:
+    scenario = scenarios.pair_tent()
+    back = replace(
+        selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+        layer="B.Cu",
+    )
+    chains = (*scenario.chains, back)
+    limited = replace(COARSE, time_limit=0.0)
+    resampled = resample(back.centreline.points, back.fixed, COARSE.spacing)[0]
 
-
-class TestResume:
-    def test_a_held_section_stays_and_the_others_go_on_from_the_best_state(
-        self, tent: RunResult, held_tent: RunResult
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        first = tent
-
-        again = run(held(scenario), start=first)
-
-        (pair,) = again.pairs
-        (given,) = scenario.pairs
-        np.testing.assert_array_equal(pair.a, given.a.points)
-        np.testing.assert_array_equal(pair.b, given.b.points)
-        (bar,), (before,) = again.chains, first.chains
-        assert again.iterations <= COARSE.stall_window + 1
-        assert hausdorff(bar.polyline, before.polyline) < 10 * COARSE.settled_change
-        assert not np.array_equal(bar.polyline, held_tent.chains[0].polyline)
-
-    def test_a_start_that_adds_violations_is_not_taken(
-        self, tent: RunResult, held_tent: RunResult
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        first = tent
-        (bar,) = first.chains
-        # Through the arch's tracks, which the bar never reached.
-        crossing = bar.polyline.copy()
-        crossing[len(crossing) // 2, 1] = 3.0
-        start = replace(first, chains=(replace(bar, polyline=crossing),))
-
-        again = run(held(scenario), start=start)
-
-        np.testing.assert_array_equal(
-            again.chains[0].polyline, held_tent.chains[0].polyline
-        )
-
-    def test_a_start_across_a_held_section_is_not_taken(self, tent: RunResult) -> None:
-        scenario = scenarios.pair_tent()
-        (bar,) = scenario.chains
-        # The bar starts inside this disc, so a start with one violation is
-        # no more than its inputs had.
-        scenario = replace(
-            scenario, chains=(replace(bar, field=Disc(5.0, 1.695, 0.2)),)
-        )
-        (best,) = tent.chains
-        across = best.polyline.copy()
-        across[1] = (3.05, 2.95)
-        start = replace(tent, chains=(replace(best, polyline=across),))
-
-        again = run(held(scenario), start=start)
-
-        (pair,) = again.pairs
-        bar_after = LineString(again.chains[0].polyline)
-        for track in (pair.a, pair.b):
-            assert LineString(track).distance(bar_after) >= (
-                PAIR_WIDTH + PAIR_CLEARANCE - INSIDE_TOLERANCE
-            )
-
-    def test_a_section_resumes_from_its_best_centreline(
-        self, over_pad: RunResult
-    ) -> None:
-        scenario = scenarios.pair_over_pad()
-        first = over_pad
-
-        again = run(scenario, start=first)
-
-        (pair,), (before,) = again.pairs, first.pairs
-        assert again.iterations <= COARSE.stall_window + 1
-        assert (
-            hausdorff(pair.centreline, before.centreline) < 10 * COARSE.settled_change
-        )
-        assert_gap_kept(pair)
-
-    def test_a_resumed_run_gives_every_problem_a_burst_before_its_time_limit(
-        self,
-    ) -> None:
-        scenario = scenarios.pair_tent()
-        back = replace(
-            selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
-            layer="B.Cu",
-        )
-        chains = (*scenario.chains, back)
-        # Stopped early, so that the resumed run's problems have work left.
-        first = optimize_chains(
-            chains,
-            scenario.params,
-            replace(COARSE, max_iterations=1),
-            pairs=scenario.pairs,
-        )
-        limited = replace(COARSE, time_limit=0.0)
-
-        again = optimize_chains(
+    def repeated(again: bool) -> RunResult:
+        return optimize_chains(
             chains,
             scenario.params,
             limited,
             pairs=held(scenario).pairs,
             clock=Ticking(),
-            start=first,
+            again=again,
         )
 
-        # The first iteration ran whole; the second stopped after its first
-        # burst.
-        assert again.termination is Termination.TIME_LIMIT
-        assert again.iterations == 2
-        cut = optimize_chains(
-            chains,
-            scenario.params,
-            limited,
-            pairs=held(scenario).pairs,
-            clock=Ticking(),
-        )
-        # Without a start, the back layer never got its burst.
-        assert cut.iterations == 1
-        np.testing.assert_array_equal(
-            cut.chains[1].polyline,
-            resample(back.centreline.points, back.fixed, COARSE.spacing)[0],
-        )
-        assert not np.array_equal(again.chains[1].polyline, first.chains[1].polyline)
+    # Repeated, the first iteration runs whole, so the back layer gets its
+    # burst; a first run stops after the first problem's.
+    assert not np.array_equal(repeated(again=True).chains[1].polyline, resampled)
+    cut = repeated(again=False)
+    assert cut.iterations == 1
+    np.testing.assert_array_equal(cut.chains[1].polyline, resampled)
 
 
 def gap(a: FloatArray, b: FloatArray) -> float:
@@ -865,181 +759,13 @@ def test_a_pair_costs_about_one_chain() -> None:
     assert pair_field.points < PAIR_COST * chain_field.points
 
 
-APART = 0.7
-"""mm a centreline keeps its own parts beyond a turn, as a pair's does."""
-ARC_STEPS = 64
-
-
-def close_pairs(points: FloatArray) -> set[tuple[int, int]]:
-    pairs, _ = close_to_itself(points, APART)
-    return {(int(i), int(j)) for i, j in pairs}
-
-
-def hairpin(legs: float) -> FloatArray:
-    """Two 3 mm legs `legs` apart along x < 0, 0.1 mm between vertices,
-    joined by a half circle; the first leg runs at y = legs / 2."""
-    angles = np.linspace(-math.pi / 2, math.pi / 2, ARC_STEPS)
-    turn = (legs / 2) * np.stack([np.cos(angles), np.sin(angles)], axis=1)
-    back = np.stack([np.linspace(0.0, -3.0, 31), np.full(31, -legs / 2)], axis=1)
-    forth = np.stack([np.linspace(-3.0, 0.0, 31), np.full(31, legs / 2)], axis=1)
-    return np.concatenate([forth[:-1], turn[::-1][:-1], back])
-
-
-def test_a_straight_centreline_is_not_close_to_itself() -> None:
-    line = np.stack([np.linspace(0.0, 10.0, 101), np.zeros(101)], axis=1)
-
-    assert close_pairs(line) == set()
-
-
-def test_a_turn_as_wide_as_the_parts_keep_apart_is_not_close_to_itself() -> None:
-    angles = np.linspace(0.0, math.pi, ARC_STEPS)
-    half = APART / 2 + EXTENT_SLACK
-    turn = half * np.stack([np.cos(angles), np.sin(angles)], axis=1)
-
-    assert close_pairs(turn) == set()
-
-
-def test_legs_beyond_a_tight_turn_are_close_to_each_other() -> None:
-    points = hairpin(APART / 2)
-
-    assert (0, len(points) - 1) in close_pairs(points)
-
-
-def at(points: FloatArray, x: float, y: float) -> int:
-    return int(np.argmin(np.hypot(points[:, 0] - x, points[:, 1] - y)))
-
-
-LEGS = 0.6
-"""mm between a hairpin's legs, less than they keep: closer than that they
-may not come."""
-
-
-def revert(candidate: FloatArray, original: FloatArray) -> tuple[BoolArray, int]:
-    """Move back, in place and as a burst does, what `SelfCheck` finds in
-    `candidate`, a centreline with fixed ends; and how many vertex pairs it
-    found too close at first."""
-    free = np.ones(len(original), dtype=bool)
-    free[[0, -1]] = False
-    check = SelfCheck.of(original, apart=APART)
-    first: list[int] = []
-
-    def crossings(points: FloatArray) -> tuple[int, BoolArray]:
-        back, count, close = check(points)
-        assert count == close
-        if not first:
-            first.append(close)
-        return count, back & free
-
-    reverted, _ = revert_until_clear(candidate, original, crossings)
-    return reverted, first[0]
-
-
-def test_two_vertices_closer_than_they_started_both_move_back() -> None:
-    original = hairpin(LEGS)
-    top, bottom = at(original, -2.0, LEGS / 2), at(original, -2.0, -LEGS / 2)
-    elsewhere = at(original, -0.5, -LEGS / 2)
-    candidate = original.copy()
-    candidate[top, 1] -= 0.05
-    candidate[bottom, 1] += 0.05
-    candidate[elsewhere, 0] -= 0.02
-
-    reverted, too_close = revert(candidate, original)
-
-    assert reverted[top] and reverted[bottom] and not reverted[elsewhere]
-    assert (candidate[[top, bottom]] == original[[top, bottom]]).all()
-    assert candidate[elsewhere, 0] == original[elsewhere, 0] - 0.02
-    assert too_close > 0
-
-
-@pytest.mark.parametrize("backwards", [False, True])
-def test_a_vertex_too_close_to_one_that_stayed_moves_back_alone(
-    backwards: bool,
-) -> None:
-    original = hairpin(LEGS)
-    if backwards:
-        original = original[::-1].copy()
-    kink = at(original, -2.0, LEGS / 2)
-    original[kink, 1] = 0.0
-    moved = at(original, -2.0, -LEGS / 2)
-    elsewhere = at(original, -0.5, -LEGS / 2)
-    candidate = original.copy()
-    # Still farther from the kink than it started, but closer to the other
-    # leg's vertex at x = -2.3, which stays, than either started from the
-    # other leg.
-    candidate[moved] = (-2.3, -0.15)
-    candidate[elsewhere, 0] -= 0.02
-
-    reverted, too_close = revert(candidate, original)
-
-    assert reverted[moved] and not reverted[elsewhere] and too_close > 0
-    assert (candidate[moved] == original[moved]).all()
-
-
-BUMP = (11, 15)
-"""Vertices, from and to, lifted off a straight line into a bump."""
-BUMP_HEIGHT = 1.0
-"""mm: tall enough that the vertices either side of the bump lie more than a
-turn apart along it."""
-
-
-def test_a_pair_beyond_a_turn_only_as_moved_may_stay_as_close_as_it_started() -> None:
-    # The vertices either side of the bump do not move, but the bump puts
-    # them more than a turn apart along the line: they may stay as close as
-    # they started, or moving back could never clear them, and the whole
-    # burst would be undone.
-    original = np.stack([np.linspace(0.0, 3.0, 31), np.zeros(31)], axis=1)
-    candidate = original.copy()
-    candidate[slice(*BUMP), 1] = BUMP_HEIGHT
-
-    reverted, too_close = revert(candidate, original)
-
-    assert too_close == 0
-    assert not reverted.any()
-
-
-TILT = 0.3
-"""rad by which a whole hairpin turns."""
-
-
-def test_a_hairpin_turned_whole_keeps_its_parts_as_far_apart() -> None:
-    original = hairpin(LEGS)
-    c, s = math.cos(TILT), math.sin(TILT)
-    candidate = original @ np.array([[c, s], [-s, c]])
-
-    _, too_close = revert(candidate, original)
-
-    assert too_close == 0
-
-
-def test_a_section_s_parts_apart_keep_their_tracks_at_clearance() -> None:
-    # Two parts of one centreline, as across the legs of a U, `apart` from
-    # each other: their tracks keep exactly the clearance.
-    block = pair_block(
-        scenarios.coupled(FreeSpace(), (0.0, 0.0), (5.0, 0.0)), COARSE.spacing
-    )
-    out = np.array([(0.0, 0.0), (5.0, 0.0)])
-    back = out[::-1] + np.array([0.0, block.apart])
-    tracks = [
-        LineString(track)
-        for part in (out, back)
-        for track in offset_pair(part, DP_GAP, PAIR_WIDTH)
-    ]
-
-    across = min(t.distance(u) for t in tracks[:2] for u in tracks[2:]) - PAIR_WIDTH
-
-    assert across == pytest.approx(PAIR_CLEARANCE)
-
-
 REJECTED = 5
 STILL_ITERATIONS = COARSE.stall_window - 1
 """Too few bursts for the best energy to stall."""
 
 
-@pytest.mark.parametrize(
-    ("too_close", "settles"), [(REJECTED, True), (REJECTED - 1, False)]
-)
-def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_parts(
-    monkeypatch: pytest.MonkeyPatch, too_close: int, settles: bool
+def test_a_problem_whose_bursts_move_back_does_not_settle(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def still(
         self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
@@ -1051,7 +777,6 @@ def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_part
             list(starts),
             list(self.positions),
             [REJECTED] * count,
-            [too_close] * count,
             [0] * len(self.vias),
             False,
         )
@@ -1061,10 +786,7 @@ def test_a_problem_settles_on_rejections_only_when_they_are_a_section_s_own_part
 
     result = run(scenarios.pair_corner(), settings)
 
-    if settles:
-        assert result.termination is Termination.NOTHING_TO_DO
-    else:
-        assert result.termination is Termination.ITERATION_CAP
+    assert result.termination is Termination.ITERATION_CAP
 
 
 def test_a_junction_where_a_pair_starts_stays_whole() -> None:
@@ -1097,9 +819,7 @@ def test_a_junction_where_a_pair_starts_stays_whole() -> None:
         return FreeSpace()
 
     parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
-    pairs = find_pairs(
-        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
-    )
+    pairs = find_pairs([p.chain for p in parts], DEFAULT_CHORD_TOLERANCE)
     layout = lay_out(whole, parts, pairs, free)
 
     result = optimize_chains(
@@ -1180,9 +900,7 @@ def smoothed(chains: Sequence[Chain], settings: OptimizerSettings = COARSE) -> S
         for c in chains
     ]
     parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
-    pairs = find_pairs(
-        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
-    )
+    pairs = find_pairs([p.chain for p in parts], DEFAULT_CHORD_TOLERANCE)
     layout = lay_out(whole, parts, pairs, free_section)
     result = optimize_chains(
         layout.inputs, scenarios.PARAMS, settings, pairs=layout.sections
@@ -1320,18 +1038,21 @@ The other two mirror them, run the other way."""
 ACROSS_N_CORNER = 9.0
 """x of a point on P's middle straight whose nearest point on N is N's
 corner at the straight's end."""
+QUICK_SETTLE = 0.02
+"""mm, the settled change of the runs below: four times a real run's, so
+that they converge in under a second. They run to convergence, since where
+a run cut off unconverged stops depends on the CPU."""
 DEFAULT_SPACING = replace(
-    COARSE, spacing=OptimizerSettings().spacing, settled_change=0.002, max_iterations=4
+    COARSE, spacing=OptimizerSettings().spacing, settled_change=QUICK_SETTLE
 )
 """The default spacing, at which a section's direction pins and its starting
 bend are those of a real run, with short bursts to run fast."""
-COARSE_CAPPED = replace(COARSE, max_iterations=12)
-"""`COARSE`, stopped before rounding a corner close to a pin's direction
-pin settles fully, about 35 iterations, to run fast."""
+COARSE_QUICK = replace(COARSE, settled_change=QUICK_SETTLE)
 SPACINGS = [
-    pytest.param(COARSE_CAPPED, id="coarse"),
+    pytest.param(COARSE_QUICK, id="coarse"),
     pytest.param(DEFAULT_SPACING, id="default"),
 ]
+CONVERGED = {Termination.CONVERGED, Termination.NOTHING_TO_DO}
 PINNED_HOLDS = {None, Hold.SHORT, Hold.ROUTING}
 """How a section with pins between its ends may be held: as routed, where
 what a pin keeps of its routing bends too tightly or leaves nothing to
@@ -1377,11 +1098,12 @@ def pinned_near(
 def assert_kept_or_held(
     chains: Sequence[Chain], settings: OptimizerSettings, gap: float = DP_GAP
 ) -> Smoothed:
-    """Smooth `chains`: every pin stays, the joined tracks keep the pair's
-    gap, so they neither narrow nor overlap, and no section is held after
-    the run for its bend, nor ends it bending too tightly."""
+    """Smooth `chains` to convergence: every pin stays, the joined tracks
+    keep the pair's gap, so they neither narrow nor overlap, and no section
+    is held after the run for its bend, nor ends it bending too tightly."""
     out = smoothed(chains, settings)
 
+    assert out.result.termination in CONVERGED
     assert_pins_kept(chains, out.joined)
     p, n = out.joined
     low, high = gap_range(p, n, PAIR_WIDTH)

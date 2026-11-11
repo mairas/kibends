@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
+from conftest import clearances, total_energy, violations
 from distance_fields import Box, Disc, FloatArray, FreeSpace, MisleadingWalls, Union
 from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
@@ -24,11 +25,11 @@ from kibends.bursts import (
     Revert,
     Stop,
 )
-from kibends.energy import BoolArray, ObstacleField, total_energy
+from kibends.energy import BoolArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
-from kibends.polylines import measure, resample, violations
+from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
 
@@ -113,14 +114,14 @@ class TestWrap:
         self, wrapped: OptimizeResult
     ) -> None:
         assert all_edges_clear(wrapped.polyline, scenarios.WRAP_BOX)
-        assert wrapped.after.min_clearance >= 0.0
+        assert clearances(wrapped.polyline, scenarios.WRAP_BOX).min() >= 0.0
 
     def test_wraps_the_box_and_is_shorter(self, wrapped: OptimizeResult) -> None:
         corner = np.array([8.5, 1.5])
         distance, _ = scenarios.WRAP_BOX.signed_distance(wrapped.polyline)
         # Sampled along the edges: at this spacing no vertex need sit in the
         # corner, but the track between them still hugs it.
-        assert wrapped.after.min_clearance < PARAMS.standoff
+        assert clearances(wrapped.polyline, scenarios.WRAP_BOX).min() < PARAMS.standoff
         nearest = wrapped.polyline[np.argmin(distance)]
         assert np.linalg.norm(nearest - corner) < 1.0
         assert wrapped.after.length < wrapped.before.length
@@ -151,14 +152,19 @@ class TestWrap:
 
 class TestChannel:
     def test_repulsion_centres_the_track(self) -> None:
-        result = run(scenarios.channel(repulsion=1.0), COARSE)
+        scenario = scenarios.channel(repulsion=1.0)
+
+        result = run(scenario, COARSE)
 
         assert result.termination is Termination.CONVERGED
         middle = result.polyline[
             (result.polyline[:, 0] > 7.0) & (result.polyline[:, 0] < 13.0)
         ]
         assert np.abs(middle[:, 1]).max() < 0.05
-        assert result.after.mean_clearance > result.before.mean_clearance
+        assert (
+            clearances(result.polyline, scenario.field).mean()
+            > clearances(scenario.polyline, scenario.field).mean()
+        )
 
     def test_without_repulsion_length_keeps_it_straight(self) -> None:
         scenario = scenarios.channel(repulsion=0.0)
@@ -219,7 +225,7 @@ def test_a_vertex_deep_inside_an_obstacle_moves_out() -> None:
     result = run(scenario, COARSE)
 
     assert not np.all(result.polyline == scenarios.INSIDE_VERTEX, axis=1).any()
-    assert result.after.min_clearance >= -INSIDE_TOLERANCE
+    assert clearances(result.polyline, scenario.field).min() >= -INSIDE_TOLERANCE
     assert result.after.length < result.before.length
 
 
@@ -233,8 +239,8 @@ def test_a_vertex_just_inside_a_pad_s_clearance_ends_clear_of_it() -> None:
 
     result = optimize(polyline, fixed, pad, PARAMS, COARSE)
 
-    assert result.before.min_clearance == pytest.approx(-PAD_DEPTH)
-    assert result.after.min_clearance >= -INSIDE_TOLERANCE
+    assert clearances(polyline, pad).min() == pytest.approx(-PAD_DEPTH)
+    assert clearances(result.polyline, pad).min() >= -INSIDE_TOLERANCE
 
 
 def test_a_pinned_end_inside_a_clearance_stays() -> None:
@@ -321,7 +327,7 @@ def test_the_guard_takes_no_more_violations_than_the_start(
         ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, GUARDED_DISC
     )
     (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
-        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE, None
+        [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE
     )
     problem = placed.problem
     moved = problem.points[0].copy()
@@ -456,16 +462,13 @@ def test_endpoints_must_be_fixed() -> None:
         optimize(polyline, np.array([True, False]), FreeSpace(), PARAMS)
 
 
-def test_measure_reports_clearance_and_bend() -> None:
-    disc = Disc(0.0, 0.0, 1.0)
+def test_measure_reports_bend_and_length() -> None:
     angles = np.linspace(0.0, np.pi, 200)
     radius = 1.5
     arc = radius * np.stack([np.cos(angles), np.sin(angles)], axis=1)
 
-    stats = measure(arc, disc, spacing=0.05)
+    stats = measure(arc, spacing=0.05)
 
-    assert stats.min_clearance == pytest.approx(radius - 1.0, abs=1e-3)
-    assert stats.mean_clearance == pytest.approx(radius - 1.0, abs=1e-3)
     assert stats.tightest_bend_radius == pytest.approx(radius, rel=1e-2)
     assert stats.length == pytest.approx(np.pi * radius, rel=1e-4)
 
@@ -473,7 +476,7 @@ def test_measure_reports_clearance_and_bend() -> None:
 def test_measure_gives_a_sharp_corner_a_small_radius() -> None:
     polyline = path((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
 
-    stats = measure(polyline, Box(50.0, 50.0, 1.0, 1.0), spacing=0.1)
+    stats = measure(polyline, spacing=0.1)
 
     assert stats.tightest_bend_radius < 0.1
 
@@ -641,7 +644,7 @@ def test_flat_energy_on_a_real_board_stops_when_it_stalls() -> None:
 
     assert result.termination is Termination.CONVERGED
     assert result.iterations < STALL_ITERATION_LIMIT
-    assert result.after.min_clearance >= 0.0
+    assert clearances(result.polyline, field).min() >= 0.0
 
 
 class TestStalled:
@@ -770,4 +773,7 @@ def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
 
     assert result.termination is Termination.CONVERGED
     assert result.iterations == 1
-    assert result.after.mean_clearance > result.before.mean_clearance
+    assert (
+        clearances(result.polyline, scenario.field).mean()
+        > clearances(scenario.polyline, scenario.field).mean()
+    )

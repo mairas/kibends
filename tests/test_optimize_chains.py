@@ -14,22 +14,25 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, Ticking
+from conftest import (
+    BOARD_FRAME,
+    BurstClock,
+    Ticking,
+    clearances,
+    extract_chains,
+    layer_energy,
+    total_energy,
+)
 from distance_fields import Disc, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, Stop
-from kibends.chain import NM_PER_MM, Segment, extract_chains
+from kibends.chain import NM_PER_MM, Segment
 from kibends.commit import snapped_points
-from kibends.coords import BOARD_FRAME
-from kibends.energy import (
-    EnergyParams,
-    ObstacleField,
-    total_energy,
-)
-from kibends.members import layer_energy, seen_parts
+from kibends.energy import EnergyParams, ObstacleField
+from kibends.members import seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (
@@ -38,8 +41,8 @@ from kibends.optimize import (
     PROGRESS_INTERVAL,
     optimize_chains,
 )
-from kibends.polylines import measure, resample
-from kibends.results import PolylineStats, RunResult, Termination
+from kibends.polylines import resample
+from kibends.results import RunResult, Termination
 from kibends.simplify import simplify_chains
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -105,24 +108,16 @@ def committed_energy(
     )
 
 
-def after(
-    chains: Sequence[ChainInput],
-    result: RunResult,
-    params: EnergyParams,
-    settings: OptimizerSettings = COARSE,
-) -> list[PolylineStats]:
-    """Each chain's statistics with the other chains at their returned shapes."""
-    polylines = [c.polyline for c in result.chains]
-    return [
-        measure(p, field, settings.spacing)
-        for p, field in zip(polylines, fields(chains, polylines), strict=True)
-    ]
-
-
 def min_clearances(
     chains: Sequence[ChainInput], result: RunResult, params: EnergyParams
 ) -> list[float]:
-    return [stats.min_clearance for stats in after(chains, result, params)]
+    """Each chain's smallest clearance margin, with the other chains at their
+    returned shapes."""
+    polylines = [c.polyline for c in result.chains]
+    return [
+        float(clearances(p, field).min())
+        for p, field in zip(polylines, fields(chains, polylines), strict=True)
+    ]
 
 
 def bumps() -> ChainsScenario:
@@ -391,9 +386,7 @@ def test_a_chain_wrapped_around_an_obstacle_stays_on_its_side() -> None:
     (result,) = optimize_chains([chain], topology.params, COARSE).chains
 
     assert y_at(result.polyline, 0.0) > 0.0
-    assert measure(result.polyline, topology.field, COARSE.spacing).min_clearance >= (
-        -INSIDE_TOLERANCE
-    )
+    assert clearances(result.polyline, topology.field).min() >= -INSIDE_TOLERANCE
     assert length(result.polyline) < length(chain.centreline.points)
 
 
@@ -437,8 +430,8 @@ def test_vertices_inside_a_neighbours_clearance_move_out() -> None:
     assert (
         kept_vertices(b.polyline, np.array([scenarios.CROWDED_NEIGHBOUR_VERTEX])) == 0
     )
-    for stats in after(scenario.chains, result, scenario.params):
-        assert stats.min_clearance >= -INSIDE_TOLERANCE
+    for c in min_clearances(scenario.chains, result, scenario.params):
+        assert c >= -INSIDE_TOLERANCE
 
 
 TIGHT_WIDTH = 0.25
@@ -479,10 +472,13 @@ def test_a_bus_tighter_than_its_clearance_spreads_out() -> None:
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE)
 
-    for chain, given, stats in zip(
-        result.chains, chains, after(chains, result, scenarios.PARAMS), strict=True
+    for chain, given, c in zip(
+        result.chains,
+        chains,
+        min_clearances(chains, result, scenarios.PARAMS),
+        strict=True,
     ):
-        assert stats.min_clearance >= -INSIDE_TOLERANCE
+        assert c >= -INSIDE_TOLERANCE
         corners = given.centreline.points[1:-1]
         assert kept_vertices(chain.polyline, corners) == 0
 
@@ -591,11 +587,10 @@ def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
         np.testing.assert_array_equal(chain.polyline, start)
 
 
-def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(
+def test_a_repeated_run_past_its_time_limit_runs_its_first_bursts_whole(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = bumps()
-    first = run(scenario, replace(COARSE, max_iterations=1))
     bursts = recorded_bursts(monkeypatch)
 
     again = optimize_chains(
@@ -603,10 +598,10 @@ def test_a_resumed_run_past_its_time_limit_runs_its_first_bursts_whole(
         scenario.params,
         replace(COARSE, time_limit=0.0),
         clock=Ticking(),
-        start=first,
+        again=True,
     )
 
-    assert again.iterations == 1
+    assert again.termination is Termination.TIME_LIMIT
     assert not bursts[0].cut
     assert bursts[0].iterations > 1
 
@@ -973,39 +968,6 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
 
     assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
-
-
-ZIGZAG = 0.1
-"""mm every other free vertex of a stuck burst moves sideways, which
-lengthens the chains."""
-
-
-def test_a_resumed_run_that_gives_up_keeps_the_earlier_run_s_progress(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = bumps()
-    first = run(scenario)
-
-    def stuck(
-        objective: Objective,
-        start: FloatArray,
-        revert: Revert,
-        settings: OptimizerSettings,
-        stop: Stop | None = None,
-    ) -> Burst:
-        zigzag = start.copy()
-        zigzag[1::4] += ZIGZAG
-        return Burst(zigzag, abnormal=True)
-
-    monkeypatch.setattr(optimize_module, "run_burst", stuck)
-
-    again = optimize_chains(scenario.chains, scenario.params, COARSE, start=first)
-
-    # No burst was taken, but where it resumed is below its inputs.
-    assert again.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    assert again.termination is Termination.GAVE_UP
-    for chain in again.chains:
-        assert length(chain.polyline) < chain.before.length
 
 
 def test_a_normal_burst_ends_an_abnormal_streak(

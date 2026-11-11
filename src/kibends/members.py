@@ -14,9 +14,8 @@ distance its obstacle term takes the smooth minimum over both
 its gradient at every vertex and via centre: where a member's obstacle
 term pulls on another's edge, each obstacle's share of the gradient
 reaches the ends of its edge nearest the point, and through a section's
-offset its centreline (`PairBlock.offset_pullback`). `layer_energy` is
-its form for one layer without vias, and `pull_answers` takes a via's push
-back to what answers it, by the same shares.
+offset its centreline (`PairBlock.offset_pullback`). `pull_answers` takes
+a via's push back to what answers it, by the same shares.
 """
 
 import math
@@ -55,32 +54,6 @@ Member = ChainInput | PairBlock
 centreline."""
 
 
-def layer_energy(
-    chains: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    masks: Sequence[BoolArray],
-    params: EnergyParams,
-    short_edge: float,
-    seen: Seen | None = None,
-) -> tuple[float, list[FloatArray]]:
-    """The summed energy of chains and sections of one layer, each in its
-    static field plus what it sees of the others at `polylines`, by default
-    as `seen_parts` finds it there, a section with its bend-radius hinge,
-    and its gradient at every vertex of every chain and centreline, with the
-    rows of `masks` zeroed; raises ValueError if it is not finite.
-
-    A section's centreline is what it keeps clear as, and its two tracks,
-    offset from it, are what the others keep clear of: their part of the
-    gradient is taken back through the offset (`PairBlock.offset_pullback`).
-    """
-    if seen is None:
-        seen = seen_parts(chains, polylines)
-    value, gradients, _ = members_energy(
-        chains, polylines, masks, params, short_edge, seen, ()
-    )
-    return value, gradients
-
-
 def members_energy(
     members: Sequence[Member],
     polylines: Sequence[FloatArray],
@@ -92,12 +65,21 @@ def members_energy(
     listed: NeighbourList | None = None,
     statics: StaticList | None = None,
 ) -> tuple[float, list[FloatArray], FloatArray]:
-    """`layer_energy` of members on any layers, each seeing the others on its
-    own as `seen` shows them, with vias at `positions` among them; and the
-    gradient at each via's centre. With `listed`, made for `seen`, each
-    layer looks only at the pieces it lists; with `statics`, made for the
-    members' static fields with the energy's reach, the static fields
-    answer from it, by default from one search each."""
+    """The summed energy of chains and sections on any layers, each in its
+    static field plus what it sees of the others on its own layer at
+    `polylines` as `seen` shows them, with vias at `positions` among them,
+    a section with its bend-radius hinge; its gradient at every vertex of
+    every chain and centreline, with the rows of `masks` zeroed; and the
+    gradient at each via's centre. Raises ValueError if it is not finite.
+
+    A section's centreline is what it keeps clear as, and its two tracks,
+    offset from it, are what the others keep clear of: their part of the
+    gradient is taken back through the offset (`PairBlock.offset_pullback`).
+
+    With `listed`, made for `seen`, each layer looks only at the pieces it
+    lists; with `statics`, made for the members' static fields with the
+    energy's reach, the static fields answer from it, by default from one
+    search each."""
     reach = obstacle_reach(params)
     integrand = obstacle_integrand(params)
     k = params.points_per_edge

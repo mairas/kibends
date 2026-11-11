@@ -148,39 +148,6 @@ def arc_lengths(points: FloatArray) -> FloatArray:
     return np.concatenate((np.zeros(1), np.cumsum(steps)))
 
 
-def length_energy(points: FloatArray, fixed: BoolArray) -> TermValue:
-    value, gradient = _length(points, fixed, 0.0)
-    return value, _zero_fixed(gradient, fixed)
-
-
-def repulsion_energy(
-    points: FloatArray,
-    fixed: BoolArray,
-    field: DistanceField,
-    falloff_range: float,
-    points_per_edge: int,
-) -> TermValue:
-    """∫ g(d(s)) ds with g = (1 - d/range)³ in [0, range), 0 beyond."""
-    value, gradient = _edge_integral(
-        points, field, _falloff(falloff_range), points_per_edge, falloff_range
-    )
-    return value, _zero_fixed(gradient, fixed)
-
-
-def clearance_energy(
-    points: FloatArray,
-    fixed: BoolArray,
-    field: DistanceField,
-    standoff: float,
-    points_per_edge: int,
-) -> TermValue:
-    """∫ c(d(s)) ds with the CHOMP hinge c of the given standoff."""
-    value, gradient = _edge_integral(
-        points, field, _hinge(standoff), points_per_edge, standoff
-    )
-    return value, _zero_fixed(gradient, fixed)
-
-
 def bend_radius_energy(
     points: FloatArray, fixed: BoolArray, limit: float, params: EnergyParams
 ) -> TermValue:
@@ -200,57 +167,20 @@ def bend_radius_energy(
     return value, _zero_fixed(gradient, fixed)
 
 
-def total_energy(
-    points: FloatArray,
-    fixed: BoolArray,
-    field: DistanceField,
-    params: EnergyParams,
-    short_edge: float = 0.0,
-    bend_limit: float | None = None,
-) -> TermValue:
-    """Weighted sum of all terms; raises ValueError if it is not finite.
-
-    A positive `short_edge`, mm, adds a barrier Σ (s - l)²/l over the edges
-    shorter than s = `short_edge` that have a free end. Nothing else keeps
-    neighbouring vertices apart: sliding a vertex along the track barely
-    changes length or repulsion, while an edge's direction, and with it the
-    gradient of its length and of the turns the bend-radius hinge measures,
-    is undefined as it vanishes. The barrier grows without bound as an edge
-    shrinks, so free vertices never pile up. It is 0 with zero slope at s,
-    so it leaves longer edges alone.
-
-    A `bend_limit`, mm, adds `bend_radius_energy` with that limit.
-    """
-    shape_value, shape_gradient = _length(points, fixed, short_edge)
-    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
-    value = shape_value + obstacle_value
-    gradient = shape_gradient + obstacle_gradient
-    if bend_limit is not None:
-        bend_value, bend_gradient = _bend_radius(
-            points, _bends(points), bend_limit, params
-        )
-        value += bend_value
-        gradient = gradient + bend_gradient
-    if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
-        raise ValueError(f"energy is not finite: {value}")
-    return value, _zero_fixed(gradient, fixed)
-
-
 def shape_energy(points: FloatArray, fixed: BoolArray, short_edge: float) -> TermValue:
-    """The terms of `total_energy` that depend on the polyline alone: length
-    and the short-edge barrier."""
+    """The terms of a member's energy that depend on the polyline alone:
+    its length and, with a positive `short_edge`, mm, a barrier
+    Σ (s - l)²/l over the edges shorter than s = `short_edge` that have a
+    free end.
+
+    Nothing else keeps neighbouring vertices apart: sliding a vertex along
+    the track barely changes length or repulsion, while an edge's
+    direction, and with it the gradient of its length and of the turns the
+    bend-radius hinge measures, is undefined as it vanishes. The barrier
+    grows without bound as an edge shrinks, so free vertices never pile up.
+    It is 0 with zero slope at s, so it leaves longer edges alone."""
     value, gradient = _length(points, fixed, short_edge)
     return value, _zero_fixed(gradient, fixed)
-
-
-def obstacle_energy(
-    points: FloatArray, field: DistanceField, params: EnergyParams
-) -> TermValue:
-    """The obstacle terms of `total_energy` alone, with the gradient of every
-    vertex, fixed ones included."""
-    integrand = obstacle_integrand(params)
-    reach = obstacle_reach(params)
-    return _edge_integral(points, field, integrand, params.points_per_edge, reach)
 
 
 def obstacle_integrand(params: EnergyParams) -> Integrand:
@@ -425,7 +355,7 @@ def _scatter_edge_gradient(
 
 
 def _length(points: FloatArray, fixed: BoolArray, short_edge: float) -> TermValue:
-    """Length plus the short-edge barrier of `total_energy`."""
+    """Length plus the short-edge barrier of `shape_energy`."""
     _, lengths, units = _edges(points)
     value = float(lengths.sum())
     short = lengths < short_edge
@@ -551,24 +481,6 @@ def _hinge(standoff: float) -> Integrand:
         return value, slope
 
     return hinge
-
-
-def _edge_integral(
-    points: FloatArray,
-    field: DistanceField,
-    integrand: Integrand,
-    points_per_edge: int,
-    reach: float,
-) -> TermValue:
-    """∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge,
-    d the field's smooth distance."""
-    distance, direction = field.smooth_distance(
-        quadrature_points(points, points_per_edge), reach=reach
-    )
-    value, gradient, _ = edge_integral(
-        points, distance, direction, integrand, points_per_edge
-    )
-    return value, gradient
 
 
 def quadrature_points(points: FloatArray, points_per_edge: int) -> FloatArray:

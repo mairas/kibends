@@ -2,33 +2,24 @@
 (`optimize`) applies to every member, independent of the problem.
 
 `resample` lays each span between fixed vertices out at uniform arc-length
-spacing, as every burst starts. `measure` gives a polyline's length, bend
-and clearance statistics (`results.PolylineStats`), and `violations`
-counts where it enters its static clearance away from its anchors, which
-the best state may not add to. `shape_change` is how far a burst moved a
+spacing, as every burst starts. `measure` gives a polyline's length and
+bend statistics (`results.PolylineStats`), and `count_violations`
+counts where it enters its clearance away from its anchors, which the best
+state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
-bend an edge newly below the limit, or bring its parts beyond a turn
-closer than they may (`close_to_itself`). `enclosed_area` is the area a
-closed polyline goes round.
+bend an edge newly below the limit.
 """
 
-import math
 from dataclasses import dataclass
 from itertools import pairwise
 
 import numpy as np
-import shapely
-from scipy.spatial import cKDTree
 
-from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
-    DistanceField,
     FloatArray,
-    IntArray,
-    ObstacleField,
     arc_lengths,
 )
 from kibends.pairs import bend_radii, too_tight
@@ -38,13 +29,8 @@ from kibends.results import PolylineStats
 # vertex, so float noise in re-measured lengths does not change the count.
 RESAMPLE_SLACK = 1e-6
 
-# A ring encloses an area only with three corners, its first repeated last.
-RING_COORDS = 4
-
 # Below this turning angle a vertex counts as straight (infinite radius).
 STRAIGHT_TURN = 1e-9
-
-MEASURE_SAMPLES_PER_SPACING = 4
 
 # Shape change is measured from each vertex to the other polyline's edges
 # within this many edges of the same index.
@@ -55,39 +41,21 @@ SHAPE_WINDOW = 3
 BEND_REACH = np.arange(-1, 3)
 
 
-def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> int:
-    """Places where the polyline enters the clearance away from its anchors.
-
-    Each corner cut, an edge with both ends clear that passes through an
-    obstacle, counts once, and so does each run of consecutive vertices
-    inside the clearance that holds no anchor. A run that holds an anchor
-    in the clearance cannot move away and is not counted.
-    A run is consecutive in the chain, so inside vertices in two touching
-    or overlapping obstacles form one. The count says nothing about how deep
-    a violation goes, and an edge from any run to a clear vertex adds nothing
-    to it whatever obstacles the edge passes through. Vertices and edges
-    within INSIDE_TOLERANCE of the clearance count as clear, so a track
+def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
+    """Places where a polyline enters the clearance away from its
+    `anchors`, given the vertices `inside` the clearance and the edges that
+    `cut` into it, each by more than INSIDE_TOLERANCE, so that a track
     routed at exactly the clearance starts with no violations.
 
-    This is the count's definition, against one field. The optimizer asks
-    its fields for every member at once and counts with `count_violations`
-    (`optimize._Problem.violations`); the tests hold the two to the same
-    answer.
-    """
-    distance, _ = field.signed_distance(points)
-    inside = distance < -INSIDE_TOLERANCE
-    ends_clear = ~inside[:-1] & ~inside[1:]
-    cut = np.zeros(len(ends_clear), dtype=bool)
-    cut[ends_clear] = ~field.segments_clear(
-        points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
-    )
-    return count_violations(inside, cut, anchors)
-
-
-def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
-    """`violations` of a polyline whose vertices `inside` lie in the
-    clearance and whose edges `cut` enter it, each by more than
-    INSIDE_TOLERANCE; only the cut edges with both ends clear count."""
+    Each corner cut, an edge with both ends clear that enters the
+    clearance, counts once, and so does each run of consecutive vertices
+    inside the clearance that holds no anchor; only the cut edges with both
+    ends clear count. A run that holds an anchor in the clearance cannot
+    move away and is not counted. A run is consecutive in the chain, so
+    inside vertices in two touching or overlapping obstacles form one. The
+    count says nothing about how deep a violation goes, and an edge from
+    any run to a clear vertex adds nothing to it whatever obstacles the edge
+    passes through."""
     ends_clear = ~inside[:-1] & ~inside[1:]
     cuts = np.count_nonzero(cut & ends_clear)
     run_starts = inside & ~np.concatenate(([False], inside[:-1]))
@@ -121,24 +89,13 @@ def resample(
     return np.concatenate(pieces), np.concatenate(masks)
 
 
-def measure(
-    polyline: FloatArray, field: DistanceField, spacing: float
-) -> PolylineStats:
-    """Length, bend and clearance statistics of a polyline.
+def measure(polyline: FloatArray, spacing: float) -> PolylineStats:
+    """Length and bend statistics of a polyline.
 
     The bend radius is the discrete curvature radius l/(4·tan(φ/2)) of the
     polyline resampled at `spacing` with every vertex kept, so a sharp corner
     reports a radius below the spacing however long its edges are.
     """
-    distance, _ = field.signed_distance(clearance_points(polyline, spacing))
-    return measured(polyline, distance, spacing)
-
-
-def measured(
-    polyline: FloatArray, distance: FloatArray, spacing: float
-) -> PolylineStats:
-    """`measure` with the signed distance at each of the polyline's
-    `clearance_points` given."""
     lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
     return PolylineStats(
         length=float(lengths.sum()),
@@ -146,27 +103,7 @@ def measured(
         tightest_bend_radius=_tightest_bend_radius(
             resample(polyline, np.ones(len(polyline), dtype=bool), spacing)[0]
         ),
-        **_clearance(lengths, distance, spacing),
     )
-
-
-def clearance_points(polyline: FloatArray, spacing: float) -> FloatArray:
-    """Where `measure` takes the clearance: along each edge in even steps of
-    at most spacing / MEASURE_SAMPLES_PER_SPACING, both its ends included."""
-    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
-    points = [
-        start + np.linspace(0.0, 1.0, count + 1)[:, None] * (end - start)
-        for start, end, count in zip(
-            polyline[:-1], polyline[1:], _sample_counts(lengths, spacing), strict=True
-        )
-    ]
-    return np.concatenate(points)
-
-
-def _sample_counts(lengths: FloatArray, spacing: float) -> IntArray:
-    """How many steps `clearance_points` takes along each edge."""
-    step = spacing / MEASURE_SAMPLES_PER_SPACING
-    return np.maximum(1, np.ceil(lengths / step).astype(int))
 
 
 def _tightest_bend_radius(points: FloatArray) -> float:
@@ -180,20 +117,6 @@ def _tightest_bend_radius(points: FloatArray) -> float:
         return float("inf")
     span = (lengths[:-1] + lengths[1:])[bending]
     return float(np.min(span / (4 * np.tan(turn[bending] / 2))))
-
-
-def _clearance(
-    lengths: FloatArray, distance: FloatArray, spacing: float
-) -> dict[str, float]:
-    weights: list[FloatArray] = []
-    for count, length in zip(_sample_counts(lengths, spacing), lengths, strict=True):
-        edge_weights = np.full(count + 1, length / count)
-        edge_weights[[0, -1]] /= 2
-        weights.append(edge_weights)
-    weight = np.concatenate(weights)
-    total = weight.sum()
-    mean = float(distance @ weight / total) if total > 0.0 else float(distance.mean())
-    return {"min_clearance": float(distance.min()), "mean_clearance": mean}
 
 
 def shape_change(before: FloatArray, after: FloatArray) -> float:
@@ -235,83 +158,24 @@ def _arc_fractions(points: FloatArray) -> FloatArray:
     return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
 
 
-def close_to_itself(points: FloatArray, apart: float) -> tuple[IntArray, FloatArray]:
-    """The pairs of vertices closer than `apart` that lie more than half a
-    circle `apart` across from each other along the polyline, and their
-    distances: there it comes back onto itself rather than turning, as a
-    turn tighter than that circle would."""
-    pairs = cKDTree(points).query_pairs(apart, output_type="ndarray")
-    if not len(pairs):
-        return pairs, np.empty(0)
-    arc = arc_lengths(points)
-    i, j = pairs[:, 0], pairs[:, 1]
-    beyond = np.abs(arc[i] - arc[j]) > math.pi / 2 * apart
-    pairs = pairs[beyond]
-    i, j = pairs[:, 0], pairs[:, 1]
-    return pairs, np.hypot(*(points[i] - points[j]).T)
-
-
 @dataclass(frozen=True)
 class SelfCheck:
-    """What a burst may not do to a coupled section's centreline, measured
-    against `original`, where the burst started: with a `bend_limit`, bend
-    an edge newly below it; with `apart`, bring vertices closer than that
-    to its parts beyond a turn (`close_to_itself`), or than either started
-    from them where it started closer, but never than the two started."""
+    """What a burst may not do to a coupled section's centreline: bend an
+    edge below `bend_limit` that was not already there where the burst
+    started (`tight_before`)."""
 
-    original: FloatArray
-    bend_limit: float | None
-    apart: float | None
-    tight_before: BoolArray | None
-    nearest: FloatArray
-    """Per vertex, how close it started to its parts beyond a turn, at most
-    `apart`."""
+    bend_limit: float
+    tight_before: BoolArray
 
     @staticmethod
-    def of(
-        original: FloatArray,
-        bend_limit: float | None = None,
-        apart: float | None = None,
-    ) -> SelfCheck:
-        tight_before = (
-            None if bend_limit is None else too_tight(bend_radii(original), bend_limit)
-        )
-        nearest = np.full(len(original), apart or 0.0)
-        if apart is not None:
-            pairs, distance = close_to_itself(original, apart)
-            np.minimum.at(nearest, pairs[:, 0], distance)
-            np.minimum.at(nearest, pairs[:, 1], distance)
-        return SelfCheck(original, bend_limit, apart, tight_before, nearest)
+    def of(original: FloatArray, bend_limit: float) -> SelfCheck:
+        return SelfCheck(bend_limit, too_tight(bend_radii(original), bend_limit))
 
-    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int, int]:
-        """The vertices to move back, how many edges newly bent too tightly
-        and vertex pairs came too close, and how many of those were pairs."""
+    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int]:
+        """The vertices to move back, and how many edges newly bent too
+        tightly."""
         back = np.zeros(len(candidate), dtype=bool)
-        count = close = 0
-        if self.bend_limit is not None and self.tight_before is not None:
-            tight = too_tight(bend_radii(candidate), self.bend_limit)
-            tight &= ~self.tight_before
-            around = np.flatnonzero(tight)[:, None] + BEND_REACH
-            back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
-            count += int(tight.sum())
-        if self.apart is not None:
-            pairs, distance = close_to_itself(candidate, self.apart)
-            i, j = pairs[:, 0], pairs[:, 1]
-            # At most the pair's own starting distance, so a pair moved back
-            # whole is never too close, even one that lies beyond a turn only
-            # along the candidate.
-            started = np.hypot(*(self.original[i] - self.original[j]).T)
-            floor = np.minimum(np.maximum(self.nearest[i], self.nearest[j]), started)
-            closer = distance < floor - INSIDE_TOLERANCE
-            back[i[closer]] = back[j[closer]] = True
-            close = int(closer.sum())
-            count += close
-        return back, count, close
-
-
-def enclosed_area(loop: FloatArray) -> float:
-    """The area a closed polyline encloses, each lobe of a crossed one
-    counted once, mm^2."""
-    if len(loop) < RING_COORDS:
-        return 0.0
-    return shapely.make_valid(shapely.Polygon(loop)).area
+        tight = too_tight(bend_radii(candidate), self.bend_limit) & ~self.tight_before
+        around = np.flatnonzero(tight)[:, None] + BEND_REACH
+        back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
+        return back, int(tight.sum())

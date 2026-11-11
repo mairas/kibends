@@ -48,7 +48,7 @@ def test_the_listed_energy_is_the_searched_one(
         everything, list(getattr(scenario, "vias", ())), HOLE_CLEARANCE, HOLE_TO_HOLE
     )
     (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
-        chains, blocks, vias, params, DEFAULT_SETTINGS, None
+        chains, blocks, vias, params, DEFAULT_SETTINGS
     )
     problem = placed.problem
     layout = problem.layout(problem.points)

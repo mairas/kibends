@@ -22,7 +22,3 @@ class UserFrame:
         # Adding 0.0 turns a -0.0 from rounding into 0.0.
         x, y = (round(v, DECIMALS) + 0.0 for v in self.to_user(p))
         return f"({x:.{DECIMALS}f}, {y:.{DECIMALS}f})"
-
-
-BOARD_FRAME = UserFrame()
-"""The board frame itself, as a grid origin at the page origin gives it."""

@@ -7,25 +7,19 @@ it hands over; it prints nothing.
 selected via that may move, and, if any of them stays fixed, extracts them
 again with the chains through that via whole and its copper pinning. A diff
 pair's vias never move (`vias.may_move`), so no moving via carries a paired
-chain. Selected tracks that form no chain, a loop nothing of its net touches
-or a stray zero-length track, stay on the board as unselected copper, and
-the chains are extracted again with them pinning. When a
-selected via may move and attraction is on, it finds the ground nets, logs
-them and classes every via by them; with attraction off nothing is classed,
-and the optimizer's energy is the one without ground vias. It then builds
-the fields, optimizes, simplifies and commits. A coupled section the run
-leaves bent too tightly is held, and the optimizer runs again from the
-previous run's best state. A loop that surrounds nothing would shrink to no
-area, to a point or a line doubled back: one that nothing holds open is held
-as drawn from the start (`_collapsing`), with the junction it hangs off if
-any, and one that shrinks all the same (`_shrunk`) is held as drawn in a run
-that resumes from the previous one's best state, on the same clock and time
-limit. A chain whose result equals its selected tracks, and that shares no
-split track with a changed chain, is left out of the commit; nothing is
-committed when every chain is unchanged and no via moved. A selected arc
-thus stays an arc only in a chain left exactly as drawn; simplification
-merges its pieces and the optimizer shortens it, so it is nearly always
-replaced.
+chain. Selected tracks that form no chain, stray zero-length tracks, stay on
+the board as unselected copper, and the chains are extracted again with them
+pinning. When a selected via may move and attraction is on, it finds the
+ground nets, logs them and classes every via by them; with attraction off
+nothing is classed, and the optimizer's energy is the one without ground
+vias. It then builds the fields, optimizes, simplifies and commits. A
+coupled section the run leaves bent too tightly is held, and the optimizer
+runs again from the inputs, on the same clock and time limit. A chain whose
+result equals its selected tracks, and that shares no split track with a
+changed chain, is left out of the commit; nothing is committed when every
+chain is unchanged and no via moved. A selected arc thus stays an arc only
+in a chain left exactly as drawn; simplification merges its pieces and the
+optimizer shortens it, so it is nearly always replaced.
 
 The run checks no clearance of its own after optimizing: what the
 optimizer and simplification leave is committed, and the user's KiCad DRC
@@ -40,10 +34,8 @@ what messages print positions in.
 """
 
 import importlib
-import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from itertools import combinations
 from pathlib import Path
 from time import monotonic
 from typing import NamedTuple
@@ -51,16 +43,12 @@ from typing import NamedTuple
 import kipy
 import kipy.board
 import numpy as np
-import shapely
 from kipy.errors import ApiError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
-from shapely.geometry import LineString, Point
-from shapely.geometry.base import BaseGeometry
 
 from kibends.bursts import DEFAULT_SETTINGS, OptimizerSettings
 from kibends.chain import (
-    PIN_MERGE_TOLERANCE_MM,
     Chain,
     Point2,
     SameNetCopper,
@@ -81,8 +69,6 @@ from kibends.energy import (
 from kibends.neighbours import (
     ChainInput,
     chain_field,
-    neighbour_fields,
-    same_layer_neighbours,
 )
 from kibends.obstacles import (
     HOLE_TO_HOLE,
@@ -103,8 +89,7 @@ from kibends.pair_layout import (
     find_pairs,
     lay_out,
 )
-from kibends.pairs import GAP_TOLERANCE, diff_pair_nets, gap_range
-from kibends.polylines import enclosed_area, measure
+from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
     PairResult,
@@ -193,8 +178,7 @@ class ChainReport:
     each chain that has a part of it."""
     before: PolylineStats
     after: PolylineStats
-    """Of the simplified result, or of the selection when unchanged, with the
-    other chains at their simplified results."""
+    """Of the simplified result, or of the selection when unchanged."""
     rejected_edges: int
     changed: bool
     """False when the result equals the selected tracks and the chain shares
@@ -225,8 +209,6 @@ class PairReport:
     layer: str
     gap: float
     """The measured gap its coupled sections keep, their median, mm."""
-    gap_after: tuple[float, float]
-    """Smallest and largest gap along the result's coupled sections, mm."""
     skew_before: float
     skew_after: float
     """Length difference of its two tracks, mm."""
@@ -242,7 +224,7 @@ class PairReport:
 @dataclass(frozen=True)
 class OptimizerReport:
     chains: tuple[ChainReport, ...]
-    """In the order `extract_chains` gives."""
+    """In the order `chain.split_chains` gives."""
     vias: tuple[ViaReport, ...]
     """The movable vias, in selection order."""
     pairs: tuple[PairReport, ...]
@@ -308,8 +290,6 @@ class _Optimized:
     via_inputs: list[ViaInput]
     """With the selected chains' ends."""
     run: RunResult
-    started: float
-    """When the optimize stage started, on `monotonic`'s clock."""
     elapsed: float
     """Wall time of the optimize stage, s."""
 
@@ -336,8 +316,6 @@ class _WholeResult:
 class _Outcome:
     """The simplified result and its reports, per selected chain."""
 
-    final_inputs: list[ChainInput]
-    """The chains' inputs with the moved vias where they end up."""
     unsimplified: list[FloatArray]
     simplified: list[FloatArray]
     reports: tuple[ChainReport, ...]
@@ -366,11 +344,12 @@ def run_smooth(
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
-    read, optimized, outcome = _smooth(read, options)
+    optimized = _optimize(read, options)
+    outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
     if options.plot is not None:
         if read.chains:
-            _draw(options.plot, read, optimized, outcome)
+            _draw(options.plot, read, optimized, outcome, options)
         else:
             logger.info("No plot: the selection has no chains to draw")
     on_optimized(
@@ -514,71 +493,6 @@ def _leave_out(
     )
 
 
-def _shrunk(read: _Read, simplified: Sequence[FloatArray]) -> list[int]:
-    """The loops among the chains whose results enclose nothing, by index,
-    each logged at debug.
-
-    A loop round any copper keeps its centreline at least half its width
-    from it, so it encloses at least a circle of that radius. One that
-    encloses less surrounds nothing: it is on its way to a point, or, held
-    at two points, to a line doubled back on itself."""
-    shrunk: list[int] = []
-    for k, (chain, polyline) in enumerate(zip(read.chains, simplified, strict=True)):
-        if chain.points[0] != chain.points[-1] or all(chain.pinned):
-            continue
-        if enclosed_area(polyline) >= math.pi * (chain.width / 2) ** 2:
-            continue
-        logger.debug(
-            f"Leaving the closed loop {', '.join(chain.segment_ids)} through "
-            f"{read.frame.point(chain.points[0])} as drawn: it surrounds "
-            "nothing and shrinks to no area; optimizing again with it held"
-        )
-        shrunk.append(k)
-    return shrunk
-
-
-def _hold(read: _Read, held: Collection[int]) -> tuple[_Read, list[int]]:
-    """`read` with the loops `held` pinned whole, and the moving vias that
-    carry an end of one, by index, which stay fixed now and hold every end
-    they carried, each logged at debug.
-
-    The other branches of a junction a loop hangs off are pinned there with
-    it, as `lay_out` pins every loose end that meets a fixed one."""
-    released = [
-        v for v, m in enumerate(read.movable) if any(e.chain in held for e in m.ends)
-    ]
-    ends = {
-        (end.chain, -1 if end.last else 0)
-        for v in released
-        for end in read.movable[v].ends
-    }
-    for v in released:
-        via = read.movable[v].via
-        loops = "; ".join(
-            ", ".join(read.chains[k].segment_ids)
-            for k in dict.fromkeys(e.chain for e in read.movable[v].ends)
-            if k in held
-        )
-        logger.debug(
-            f"Via {via.id} at {read.frame.point(via.position)} stays fixed: the "
-            f"closed loop {loops} it ends is held as drawn"
-        )
-
-    def pinned(k: int, chain: Chain) -> Chain:
-        if k in held:
-            return replace(chain, pinned=(True,) * len(chain.points), slides=())
-        last = len(chain.points) - 1
-        pins = tuple(
-            pin or (i in (0, last) and (k, -1 if i == last else 0) in ends)
-            for i, pin in enumerate(chain.pinned)
-        )
-        return replace(chain, pinned=pins)
-
-    chains = [pinned(k, chain) for k, chain in enumerate(read.chains)]
-    movable = [m for v, m in enumerate(read.movable) if v not in released]
-    return replace(read, chains=chains, movable=movable), released
-
-
 def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]:
     """The ground nets `whole.ground_nets` finds, logged with where they come
     from, warning of each of `given` without copper."""
@@ -607,178 +521,15 @@ def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]
     return found.nets
 
 
-def _smooth(read: _Read, options: SmoothOptions) -> tuple[_Read, _Optimized, _Outcome]:
-    """Optimize, simplify and report, each loop that would collapse held as
-    drawn: one that nothing holds open (`_collapsing`) from the start, and
-    one whose result shrank to nothing all the same (`_shrunk`) in a run
-    that resumes from the last, on its clock and time limit and with its
-    counts."""
-    fields = _StaticFields(options)
-    collapsing = _collapsing(read, fields)
-    if collapsing:
-        read, _ = _hold(read, collapsing)
-    optimized = _optimize(read, options, fields)
-    outcome = _simplify_and_report(read, optimized, options)
-    while shrunk := _shrunk(read, outcome.simplified):
-        read, released = _hold(read, shrunk)
-        optimized = _optimize(
-            read,
-            options,
-            fields,
-            earlier=optimized,
-            held_loops=shrunk,
-            released=released,
-        )
-        outcome = _simplify_and_report(read, optimized, options)
-    return read, optimized, outcome
-
-
-class _StaticFields:
-    """The obstacles of each layer, net and width over the vias that stand
-    still, built once for each set of moving vias."""
-
-    def __init__(self, options: SmoothOptions) -> None:
-        self._options = options
-        self._built: dict[tuple[str, str, float, frozenset[str]], Obstacles] = {}
-
-    def __call__(
-        self, snapshot: LayerSnapshot, chain: Chain, moving: Collection[str]
-    ) -> Obstacles:
-        key = (chain.layer, chain.net, chain.width, frozenset(moving))
-        if key not in self._built:
-            self._built[key] = _static_field(snapshot, chain, self._options, moving)
-        return self._built[key]
-
-
-def _collapsing(read: _Read, fields: _StaticFields) -> list[int]:
-    """The loops among the chains that would shrink to no area, by index,
-    each logged at debug: what they are held by cannot keep them open
-    (`_held_open`), and they surround nothing they keep clear of."""
+def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
+    """Optimize the chains of `read`."""
     moving = {m.via.id for m in read.movable}
-    collapsing: list[int] = []
-    for k, chain in enumerate(read.chains):
-        if (
-            chain.points[0] != chain.points[-1]
-            or all(chain.pinned)
-            or _held_open(chain)
-            or _surrounds_something(chain, read, fields, moving)
-        ):
-            continue
-        logger.debug(
-            f"Leaving the closed loop {', '.join(chain.segment_ids)} through "
-            f"{read.frame.point(chain.points[0])} as drawn: it surrounds "
-            "nothing, and nothing holds it open"
-        )
-        collapsing.append(k)
-    return collapsing
-
-
-def _held_open(chain: Chain) -> bool:
-    """Whether what holds a loop may keep it from shrinking to no area.
-
-    The shortest loop through its pins, in order, is the polygon they make,
-    which encloses the area `_shrunk` measures. Its contacts let it pick a
-    point in each region instead: it can fold flat when one straight line
-    passes through every pin and region. A loose junction goes where the
-    other branches let it, so with it, only a loop held at one other point
-    or region surely shrinks to nothing."""
-    pins = list(
-        dict.fromkeys(
-            p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin
-        )
-    )
-    regions = [region for _, region in chain.slides]
-    loose = not chain.pinned[0]
-    if len(pins) + len(regions) + loose <= 2:
-        return False
-    if loose:
-        return True
-    if regions:
-        return not _on_one_line(pins, regions)
-    loop = [p for p, pin in zip(chain.points, chain.pinned, strict=True) if pin]
-    return enclosed_area(np.array(loop)) >= math.pi * (chain.width / 2) ** 2
-
-
-def _on_one_line(points: Sequence[Point2], regions: Sequence[BaseGeometry]) -> bool:
-    """Whether one straight line passes through all `points` and `regions`.
-
-    If one does, one passes through two of their corners too, so those
-    lines are all there is to try."""
-    corners = [
-        *points,
-        *(
-            (float(x), float(y))
-            for region in regions
-            for x, y in shapely.get_coordinates(region)
-        ),
-    ]
-    x0, y0, x1, y1 = shapely.MultiPoint(corners).bounds
-    reach = math.hypot(x1 - x0, y1 - y0)
-    for a, b in combinations(corners, 2):
-        length = math.dist(a, b)
-        if length == 0.0:
-            continue
-        dx, dy = (b[0] - a[0]) / length * reach, (b[1] - a[1]) / length * reach
-        line = LineString([(a[0] - dx, a[1] - dy), (a[0] + dx, a[1] + dy)])
-        if all(
-            line.distance(Point(p)) <= PIN_MERGE_TOLERANCE_MM for p in points
-        ) and all(line.intersects(region) for region in regions):
-            return True
-    return False
-
-
-def _surrounds_something(
-    chain: Chain, read: _Read, fields: _StaticFields, moving: Collection[str]
-) -> bool:
-    """Whether the area a loop encloses as drawn reaches anything it keeps
-    clear of: the static copper, holes and keepouts of its field, the
-    board's edge, a selected chain of a net other than its own and its
-    diff pair's other net, or another net's moving via."""
-    interior = shapely.make_valid(shapely.Polygon(chain.points))
-    ignored = diff_pair_nets(chain.net)
-    field = fields(read.snapshots[chain.layer], chain, moving)
-    if field.board_outline is not None and not field.board_outline.covers(interior):
-        return True
-    others = [
-        *(o.geometry for o in field.items),
-        *(
-            LineString(c.points)
-            for c in read.chains
-            if c.layer == chain.layer and c.net not in ignored
-        ),
-        *(
-            Point(m.via.position)
-            for m in read.movable
-            if m.via.net != chain.net and m.via.reaches(chain.layer)
-        ),
-    ]
-    return any(interior.intersects(other) for other in others)
-
-
-def _optimize(
-    read: _Read,
-    options: SmoothOptions,
-    fields: _StaticFields,
-    *,
-    earlier: _Optimized | None = None,
-    held_loops: Collection[int] = (),
-    released: Collection[int] = (),
-) -> _Optimized:
-    """Optimize the chains of `read`, again after `earlier` if given, with
-    the loops `held_loops` held since and the vias `released` fixed since,
-    by their index in that run: the run resumes from its result
-    (`_resumed_holding`), its start stays the stage's start, which the time
-    limit counts from, and its iterations, abnormal bursts and give-ups
-    count in."""
-    moving = {m.via.id for m in read.movable}
-    whole = _chain_inputs(read.chains, read.snapshots, fields, moving, read.frame)
+    whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
     # A diff pair's tracks keep their contacts where they are.
     parts = cut_parts(
         [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
     )
-    pairs = find_pairs(
-        [part.chain for part in parts], options.chord_tolerance, frame=read.frame
-    )
+    pairs = find_pairs([part.chain for part in parts], options.chord_tolerance)
 
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float
@@ -795,28 +546,20 @@ def _optimize(
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
-    if earlier is None:
-        logger.info(
-            _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
-        )
+    logger.info(
+        _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
+    )
     # One classing of the vias standing still both splits the moving vias'
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
     via_inputs = _via_inputs(
         read.movable, read.snapshots, options, read.ground_nets, static
     )
-    started = monotonic() if earlier is None else earlier.started
-    previous = (
-        None
-        if earlier is None
-        else _resumed_holding(earlier.run, layout, held_loops, released)
-    )
-    held_label = "loops"
-    iterations = 0 if earlier is None else earlier.run.iterations
-    abnormal = {} if earlier is None else dict(earlier.run.abnormal)
-    # The earlier run logged its own.
-    logged = {} if earlier is None else dict(earlier.run.gave_up)
-    gave_up = dict(logged)
+    started = monotonic()
+    again = False
+    iterations = 0
+    abnormal: dict[str, int] = {}
+    gave_up: dict[str, int] = {}
     while True:
         run = optimize_chains(
             layout.inputs,
@@ -827,8 +570,7 @@ def _optimize(
             pairs=layout.sections,
             clock=monotonic,
             started=started,
-            start=previous,
-            held_label=held_label,
+            again=again,
             static_vias=tuple(static.values()),
         )
         iterations += run.iterations
@@ -839,8 +581,7 @@ def _optimize(
         held = _bent_too_tightly(layout.sections, run.pairs)
         if not held:
             # A problem given up on stopped on abnormal bursts; a later run
-            # converging from its best state does not make that stop a
-            # convergence.
+            # converging does not make that stop a convergence.
             termination = (
                 Termination.GAVE_UP
                 if gave_up and run.termination is Termination.CONVERGED
@@ -853,58 +594,17 @@ def _optimize(
                 abnormal=tuple(abnormal.items()),
                 gave_up=tuple(gave_up.items()),
             )
-            _log_gave_up([(d, streak) for d, streak in run.gave_up if d not in logged])
+            _log_gave_up(run.gave_up)
             elapsed = monotonic() - started
-            return _Optimized(
-                whole, parts, pairs, layout, via_inputs, run, started, elapsed
-            )
+            return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
         # The other chains were smoothed around the sections' results, so
-        # the sections cannot simply keep their own tracks; the run goes on
-        # from where this one left them, with these sections held.
-        previous = run
-        held_label = "sections"
+        # the sections cannot simply keep their own tracks; the run starts
+        # over with these sections held.
+        again = True
         sections = list(layout.sections)
-        for k, hold in held.items():
-            sections[k] = replace(sections[k], hold=hold)
+        for k in held:
+            sections[k] = replace(sections[k], hold=Hold.CROWDING)
         layout = replace(layout, sections=sections)
-
-
-def _resumed_holding(
-    start: RunResult,
-    layout: Layout,
-    held: Collection[int],
-    released: Collection[int],
-) -> RunResult | None:
-    """`start`, the result of a run on `layout`'s inputs, with each chain
-    `held` since back as drawn and pinned, every chain end pinned since,
-    at a junction one hangs off or a via `released` since, back where it
-    was drawn, and those vias left out; None when a held chain is paired,
-    and the run starts over."""
-    slots = [layout.slots[k] for k in held]
-    reset = {slot for slot in slots if slot is not None}
-    if len(reset) < len(slots):
-        return None
-    chains: list[ChainResult] = []
-    for i, (given, result) in enumerate(zip(layout.inputs, start.chains, strict=True)):
-        points = given.centreline.points
-        if i in reset:
-            chains.append(
-                replace(
-                    result,
-                    polyline=points,
-                    fixed=given.fixed,
-                    contact_of=no_contacts(points),
-                )
-            )
-            continue
-        polyline, fixed = result.polyline.copy(), result.fixed.copy()
-        # A pinned end is where it was drawn, unless something carried it.
-        for end in (0, -1):
-            if given.fixed[end]:
-                polyline[end], fixed[end] = points[end], True
-        chains.append(replace(result, polyline=polyline, fixed=fixed))
-    vias = tuple(via for v, via in enumerate(start.vias) if v not in released)
-    return replace(start, chains=tuple(chains), vias=vias)
 
 
 def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
@@ -917,24 +617,21 @@ def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
 
 def _bent_too_tightly(
     sections: Sequence[PairInput], results: Sequence[PairResult]
-) -> dict[int, Hold]:
+) -> list[int]:
     """The sections the run moved but could not keep within the bend-radius
-    limit, by index, and why: its own parts beyond the turn, if they came
-    too close to each other, else the copper around it, kept it from
-    rounding a corner that resampling cut too tightly. Each logged at
-    debug."""
-    held: dict[int, Hold] = {}
+    limit, by index: the copper around them kept them from rounding a
+    corner that resampling cut too tightly. Each logged at debug."""
+    held: list[int] = []
     for k, (given, result) in enumerate(zip(sections, results, strict=True)):
         bend = result.bend
         if result.block.held or bend is None or not bend.too_tight:
             continue
-        hold = Hold.FOLDING if result.too_close else Hold.CROWDING
         logger.debug(
             f"Kept {given.a.description} and {given.b.description} as they are: "
-            f"{hold.value} (a radius of {bend.radius:.3f} mm); "
+            f"{Hold.CROWDING.value} (a radius of {bend.radius:.3f} mm); "
             "optimizing again with them held"
         )
-        held[k] = hold
+        held.append(k)
     return held
 
 
@@ -951,19 +648,14 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
-    # The statistics see the moved vias where they end up.
-    final_inputs = _with_vias(
-        optimized.whole, optimized.via_inputs, via_reports, options
-    )
     reports = _chain_reports(
         read.chains,
-        final_inputs,
-        _whole_results(optimized, final_inputs, unsimplified),
+        optimized.whole,
+        _whole_results(optimized, unsimplified),
         simplified,
     )
-    pair_reports = _pair_reports(read, optimized, chains, final_tracks)
+    pair_reports = _pair_reports(optimized, chains, final_tracks)
     return _Outcome(
-        final_inputs,
         unsimplified,
         simplified,
         reports,
@@ -1065,7 +757,7 @@ def _extract_chains(
 def _chain_inputs(
     chains: Sequence[Chain],
     snapshots: Mapping[str, LayerSnapshot],
-    fields: _StaticFields,
+    options: SmoothOptions,
     moving: Collection[str],
     frame: UserFrame,
 ) -> list[ChainInput]:
@@ -1073,9 +765,13 @@ def _chain_inputs(
     `moving` vias, which the optimizer adds where they are; chains of one
     layer, net and width share a field. Descriptions give positions in
     `frame`."""
+    fields: dict[tuple[str, str, float], Obstacles] = {}
     inputs: list[ChainInput] = []
     for chain in chains:
         snapshot = snapshots[chain.layer]
+        key = (chain.layer, chain.net, chain.width)
+        if key not in fields:
+            fields[key] = _static_field(snapshot, chain, options, moving)
         centreline = ChainCentreline(
             f"{chain.net} on {chain.layer} from {frame.point(chain.points[0])}",
             chain.net,
@@ -1088,7 +784,7 @@ def _chain_inputs(
                 centreline,
                 chain.layer,
                 np.array(chain.pinned),
-                fields(snapshot, chain, moving),
+                fields[key],
                 tuple((i, Obstacles((), region)) for i, region in chain.slides),
                 held=chain.held,
             )
@@ -1243,8 +939,7 @@ def _simplify(
         sections=blocks,
     )
     return simplified[:count], [
-        block.offset_kept(results[i].polyline, simplified[i])
-        for i, block in blocks.items()
+        block.offset(simplified[i]) for i, block in blocks.items()
     ]
 
 
@@ -1282,16 +977,12 @@ def _with_vias(
 
 
 def _whole_results(
-    optimized: _Optimized,
-    inputs: Sequence[ChainInput],
-    unsimplified: Sequence[FloatArray],
+    optimized: _Optimized, unsimplified: Sequence[FloatArray]
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
-    measured before the run among the other chains as they started."""
+    measured before the run."""
     run, layout = optimized.run, optimized.layout
-    originals = [given.centreline.points for given in inputs]
-    neighbours = same_layer_neighbours(inputs)
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
         if slot is not None:
@@ -1300,14 +991,10 @@ def _whole_results(
             continue
         stretches = layout.chain_stretches(k)
         pieces = [run.chains[s.piece] for s in stretches if s.piece is not None]
-        field = chain_field(
-            inputs[k].field,
-            neighbour_fields(inputs, k, neighbours[k], originals),
-        )
         results.append(
             _WholeResult(
                 unsimplified[k],
-                measure(originals[k], field, DEFAULT_SETTINGS.spacing),
+                measure(optimized.whole[k].centreline.points, DEFAULT_SETTINGS.spacing),
                 sum(p.rejected_edges for p in pieces),
             )
         )
@@ -1315,23 +1002,15 @@ def _whole_results(
 
 
 def _pair_reports(
-    read: _Read,
     optimized: _Optimized,
     chains: Sequence[FloatArray],
     tracks: Sequence[tuple[FloatArray, FloatArray]],
 ) -> tuple[PairReport, ...]:
-    """A report per pair of parts, from `chains` and `tracks` as simplified,
-    warning once per diff pair where the gap of its first pair of parts is
-    not its netclass's."""
+    """A report per pair of parts, from `chains` and `tracks` as simplified."""
     layout, results = optimized.layout, optimized.run.pairs
-    for group in layout.diff_pairs:
-        pair = optimized.pairs[group[0]]
-        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
-        _check_netclass_gap(read.snapshots[a.layer], a, b, pair.pair.gap)
     pair_reports: list[PairReport] = []
     for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
         a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
-        gaps = [gap_range(*tracks[k], a.width) for k in sections]
         ours = [results[k] for k in sections]
         before = (_length(np.array(a.points)), _length(np.array(b.points)))
         after = (
@@ -1342,7 +1021,6 @@ def _pair_reports(
                 nets=(a.net, b.net),
                 layer=a.layer,
                 gap=pair.pair.gap,
-                gap_after=(min(g[0] for g in gaps), max(g[1] for g in gaps)),
                 skew_before=abs(before[0] - before[1]),
                 skew_after=abs(next(after) - next(after)),
                 sections=len(sections),
@@ -1357,24 +1035,12 @@ def _length(points: FloatArray) -> float:
     return float(arc_lengths(points)[-1])
 
 
-def _check_netclass_gap(
-    snapshot: LayerSnapshot, a: Chain, b: Chain, gap: float
-) -> None:
-    expected = snapshot.diff_pair_gap(a.net) or snapshot.diff_pair_gap(b.net)
-    if expected is not None and abs(gap - expected) > GAP_TOLERANCE * expected:
-        logger.warning(
-            f"Differential pair {a.net} and {b.net} keeps its measured gap of "
-            f"{gap:.3f} mm, not its netclass's {expected:.3f} mm"
-        )
-
-
 def _chain_reports(
     chains: Sequence[Chain],
     inputs: Sequence[ChainInput],
     results: Sequence[_WholeResult],
     simplified: Sequence[FloatArray],
 ) -> tuple[ChainReport, ...]:
-    neighbours = same_layer_neighbours(inputs)
     reports: list[ChainReport] = []
     changes = _changed_with_shared_tracks(
         chains,
@@ -1383,15 +1049,11 @@ def _chain_reports(
             for s, given in zip(simplified, inputs, strict=True)
         ],
     )
-    for i, (chain, given, result, changed) in enumerate(
-        zip(chains, inputs, results, changes, strict=True)
+    for chain, given, result, polyline, changed in zip(
+        chains, inputs, results, simplified, changes, strict=True
     ):
-        given_points = given.centreline.points
-        field = chain_field(
-            given.field, neighbour_fields(inputs, i, neighbours[i], simplified)
-        )
         # An unchanged chain stays on the board as it is.
-        after = simplified[i] if changed else given_points
+        after = polyline if changed else given.centreline.points
         reports.append(
             ChainReport(
                 net=chain.net,
@@ -1400,7 +1062,7 @@ def _chain_reports(
                 description=given.centreline.description,
                 tracks=len(chain.segment_ids),
                 before=result.before,
-                after=measure(after, field, DEFAULT_SETTINGS.spacing),
+                after=measure(after, DEFAULT_SETTINGS.spacing),
                 rejected_edges=result.rejected_edges,
                 changed=changed,
             )
@@ -1425,9 +1087,15 @@ def _require_plot() -> None:
         raise PlotUnavailableError(f"{PLOT_EXTRA_MESSAGE} ({e})") from None
 
 
-def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> None:
-    """One panel per chain, over its own static field, with the start and end
-    of each via it ends at."""
+def _draw(
+    path: Path,
+    read: _Read,
+    optimized: _Optimized,
+    outcome: _Outcome,
+    options: SmoothOptions,
+) -> None:
+    """One panel per chain, over its own static field with the moved vias
+    where they end up, with the start and end of each via it ends at."""
     from kibends.plot import Panel, render
 
     run = optimized.run
@@ -1453,12 +1121,16 @@ def _draw(path: Path, read: _Read, optimized: _Optimized, outcome: _Outcome) -> 
                 title=f"{r.net} on {r.layer}"
                 + (f", pair with {partner[i]}" if i in partner else "")
                 + f": {run.termination.value}, "
-                f"length {r.before.length:.3f} → {r.after.length:.3f} mm, "
-                f"min clearance margin {r.after.min_clearance:.4f} mm",
+                f"length {r.before.length:.3f} → {r.after.length:.3f} mm",
             )
             for i, (given, unsimplified, polyline, r) in enumerate(
                 zip(
-                    outcome.final_inputs,
+                    _with_vias(
+                        optimized.whole,
+                        optimized.via_inputs,
+                        outcome.via_reports,
+                        options,
+                    ),
                     outcome.unsimplified,
                     outcome.simplified,
                     outcome.reports,

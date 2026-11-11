@@ -18,7 +18,6 @@ from kibends.pairs import (
     check_bend_radius,
     complementary_net,
     find_pair,
-    gap_range,
     nets_pair,
     offset_pair,
     offset_pair_pullback,
@@ -670,13 +669,11 @@ def test_a_fold_offsets_to_finite_tracks() -> None:
 
 def test_the_offset_pullback_at_a_fold_is_finite() -> None:
     rng = np.random.default_rng(0)
-    gaps = np.full(len(FOLDED), GAP)
     at_right, at_left = rng.normal(size=FOLDED.shape), rng.normal(size=FOLDED.shape)
 
-    gradient, at_gaps = offset_pair_pullback(FOLDED, gaps, WIDTH, at_right, at_left)
+    gradient = offset_pair_pullback(FOLDED, GAP, WIDTH, at_right, at_left)
 
     assert np.isfinite(gradient).all()
-    assert np.isfinite(at_gaps).all()
 
 
 PULLBACK_STEP = 1e-7
@@ -687,14 +684,13 @@ def test_the_offset_pullback_matches_finite_differences(turn: float) -> None:
     # 0.99π lies past the turn beyond which the miter stops growing.
     points = turned(turn)
     rng = np.random.default_rng(1)
-    gaps = np.full(len(points), GAP)
     at_right, at_left = rng.normal(size=points.shape), rng.normal(size=points.shape)
 
     def value(centreline: FloatArray) -> float:
-        right, left = offset_pair(centreline, gaps, WIDTH)
+        right, left = offset_pair(centreline, GAP, WIDTH)
         return float(np.sum(at_right * right) + np.sum(at_left * left))
 
-    analytic, _ = offset_pair_pullback(points, gaps, WIDTH, at_right, at_left)
+    analytic = offset_pair_pullback(points, GAP, WIDTH, at_right, at_left)
 
     numeric = np.zeros_like(points)
     for k in range(len(points)):
@@ -735,38 +731,6 @@ def test_a_fold_off_the_axes_is_too_tight() -> None:
             (math.cos(angle), -math.sin(angle)), (math.sin(angle), math.cos(angle))
         )
         assert check_bend_radius(FOLDED @ turn, GAP, WIDTH).too_tight, angle
-
-
-def test_gap_range_reports_narrowing() -> None:
-    a = array((0.0, 0.0), (10.0, 0.0))
-    b = array((0.0, 2 * HALF_PITCH), (5.0, 2 * HALF_PITCH), (10.0, 0.3))
-
-    smallest, largest = gap_range(a, b, WIDTH)
-
-    assert smallest == pytest.approx(0.3 - WIDTH)
-    assert largest == pytest.approx(GAP)
-
-
-@pytest.mark.parametrize("turn", [math.pi / 4, math.pi / 2])
-def test_gap_range_does_not_count_the_outer_corner_of_a_mitred_turn(
-    turn: float,
-) -> None:
-    centreline = array((0.0, 0.0), (5.0, 0.0), (5.0 + math.cos(turn), math.sin(turn)))
-    right, left = offset_pair(centreline, GAP, WIDTH)
-
-    assert gap_range(right, left, WIDTH) == pytest.approx((GAP, GAP))
-
-
-def test_offset_pair_takes_a_gap_per_vertex() -> None:
-    centreline = array((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 1.0))
-    gaps = np.array([0.2, 0.2, 0.15, 0.15])
-
-    right, left = offset_pair(centreline, gaps, WIDTH)
-
-    np.testing.assert_allclose(left[:2, 1], -(0.2 + WIDTH) / 2)
-    np.testing.assert_allclose(right[:2, 1], (0.2 + WIDTH) / 2)
-    _, uniform = offset_pair(centreline, 0.15, WIDTH)
-    np.testing.assert_allclose(left[2:], uniform[2:])
 
 
 def pinned(net: str, points: FloatArray, *at: int) -> Chain:

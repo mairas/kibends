@@ -18,12 +18,11 @@ halfway along it where the straight is shorter, so that a corner beyond
 stays free to round. A section is held as it is where its routing, without
 its direction pins, already bends tighter than the limit, or where the
 turns its fixed vertices keep do. Both tracks are the centreline offset by
-half the pitch, through their own ends and pins; where an end's own gap
-differs from the pair's, the gap tapers between the two beyond that end's
-direction pin. The
-centreline is a little wider than the pair, by as far as the outer track's
-mitred corners reach beyond half the pitch at the bend-radius limit, so
-that its clearance covers them.
+half the pitch at the section's routed gap all along, through their own
+ends and pins: where an end's own gap differs from it, the track's end edge
+takes up the difference. The centreline is a little wider than the pair,
+by as far as the outer track's mitred corners reach beyond half the pitch
+at the bend-radius limit, so that its clearance covers them.
 
 The other blocks see the two tracks at the centreline's current shape. The
 centreline sees every other chain, and every track of another diff pair,
@@ -60,19 +59,11 @@ STUB_SPACINGS = 2
 """An edge leaving a pin this many spacings long or longer gets a direction
 pin a spacing along it; an edge between two pins needs one more."""
 
-TAPER_SLOPE = 0.01
-"""Where an end's gap differs from the pair's, each track turns by at most
-this much, as a tangent, to take up the difference beyond the end's
-direction pin; less where the section is too short."""
-
-MIN_TAPER = 1e-6
-"""mm: the shortest taper, to keep it finite where the gaps agree."""
-
 ROUTING_TOLERANCE = 1e-3
 """mm a track's routing may be simplified by before its section moves:
 well above the jogs and slivers KiCad's nanometre grid leaves, well below
-the micrometres a pair's end gap may differ from its gap by, which the run
-tapers, and below the fold a short chamfer leaves in the inner track."""
+the micrometres a pair's end gap may differ from its gap by, which its end
+edges take up, and below the fold a short chamfer leaves in the inner track."""
 
 _NOWHERE = CompositeField(())
 """No obstacles, for merging a track's routing."""
@@ -87,10 +78,6 @@ class Hold(Enum):
     CROWDING = (
         "the copper around it kept it from rounding a corner too tight for "
         "the inner track"
-    )
-    FOLDING = (
-        "rounding a corner too tight for the inner track would bring its "
-        "parts beyond the corner closer together than they are routed"
     )
 
 
@@ -114,96 +101,6 @@ class PairInput:
     """Obstacles for the centreline, from `obstacles.build_pair_obstacles`."""
     hold: Hold | None = None
     """Why it stays as it is regardless of its own routing."""
-
-
-@dataclass(frozen=True)
-class _Gaps:
-    """The gap along a section: the pair's, turning into each end's own gap
-    over a taper beyond the end's direction pin, so that both tracks keep
-    their end directions where the routing left them a little apart."""
-
-    middle: float
-    start: float
-    end: float
-    held_start: float
-    held_end: float
-    """Arc length from each end to its direction pin, mm."""
-    taper_start: float
-    taper_end: float
-
-    @staticmethod
-    def uniform(gap: float) -> _Gaps:
-        """`gap` all along."""
-        return _Gaps(gap, gap, gap, 0.0, 0.0, MIN_TAPER, MIN_TAPER)
-
-    @staticmethod
-    def of(a: FloatArray, b: FloatArray, gap: float, width: float) -> _Gaps:
-        """For track `b` beside `a`, with `a`'s direction pins at its
-        second and second-to-last vertices."""
-        arc = arc_lengths(a)
-        held_start, held_end = float(arc[1]), float(arc[-1] - arc[-2])
-        start, end = end_gaps(a, b, width)
-        room = max((float(arc[-1]) - held_start - held_end) / 2, MIN_TAPER)
-
-        def taper(other: float) -> float:
-            return min(max(abs(other - gap) / 2 / TAPER_SLOPE, MIN_TAPER), room)
-
-        return _Gaps(gap, start, end, held_start, held_end, taper(start), taper(end))
-
-    @property
-    def widest(self) -> float:
-        return max(self.middle, self.start, self.end)
-
-    def at(self, points: FloatArray) -> FloatArray:
-        """The gap at each vertex of a centreline."""
-        arc = arc_lengths(points)
-        near_start = _ramp(arc - self.held_start, self.taper_start)
-        near_end = _ramp(arc[-1] - arc - self.held_end, self.taper_end)
-        return (
-            self.middle
-            + (self.start - self.middle) * near_start
-            + (self.end - self.middle) * near_end
-        )
-
-    def pullback(self, points: FloatArray, gradient: FloatArray) -> FloatArray:
-        """The gradient of a function of `at(points)`, `gradient` at each
-        vertex, taken back to the vertices: a gap depends on how far along
-        the centreline its vertex lies from each end."""
-        arc = arc_lengths(points)
-        from_start = (self.start - self.middle) * _ramp_slope(
-            arc - self.held_start, self.taper_start
-        )
-        from_end = (self.end - self.middle) * _ramp_slope(
-            arc[-1] - arc - self.held_end, self.taper_end
-        )
-        # Edge e counts in the arc length from the start of every vertex
-        # after it, and in that from the end of every vertex up to it.
-        after = np.cumsum((gradient * from_start)[::-1])[::-1]
-        upto = np.cumsum(gradient * from_end)
-        at_length = after[1:] + upto[:-1]
-        delta = np.diff(points, axis=0)
-        along = delta / np.hypot(delta[:, 0], delta[:, 1])[:, None]
-        result = np.zeros_like(points)
-        result[1:] += at_length[:, None] * along
-        result[:-1] -= at_length[:, None] * along
-        return result
-
-
-def end_gaps(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
-    """The gap at each end of track `b` beside `a`, across `a`'s end edges."""
-    start = _separation(a[0], a[1], b[0]) - width
-    end = _separation(a[-1], a[-2], b[-1]) - width
-    return start, end
-
-
-def _ramp(beyond: FloatArray, length: float) -> FloatArray:
-    """1 up to 0, falling to 0 at `length`."""
-    return np.clip(1.0 - beyond / length, 0.0, 1.0)
-
-
-def _ramp_slope(beyond: FloatArray, length: float) -> FloatArray:
-    """The slope of `_ramp` in `beyond`."""
-    return np.where((beyond > 0.0) & (beyond < length), -1.0 / length, 0.0)
 
 
 def _separation(end: FloatArray, toward: FloatArray, point: FloatArray) -> float:
@@ -267,9 +164,12 @@ class PairBlock:
     tight_start: BendCheck | None
     """The starting centreline's bend, when it is too tight: then the
     section is held, since no result could be checked against it."""
-    gaps: _Gaps
     limit: float
     """The centreline's smallest bend radius, mm."""
+    uneven: FloatArray
+    """The direction pins bounding an end edge whose own gap differs from
+    the section's, so that track b's end edge, from the end to the pin,
+    takes up the difference."""
 
     @property
     def nets(self) -> frozenset[str]:
@@ -280,18 +180,10 @@ class PairBlock:
     def held(self) -> bool:
         return self.hold is not None
 
-    @property
-    def apart(self) -> float:
-        """How far apart, mm, the centreline keeps its own parts beyond a
-        turn: the pair's outer extent plus the larger of its clearances, so
-        that one part's tracks keep clear of the other's."""
-        facing = self.facing.centreline
-        return facing.width + facing.clearance
-
     def offset(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
         """Tracks a and b along the centreline at `points`, through the
         section's own ends and pins."""
-        return self._offset(self.gaps.at(points), points)
+        return _offset(self.given, self.a_on_right, self.pins, self.held, points)
 
     def offset_pullback(
         self, points: FloatArray, at_a: FloatArray, at_b: FloatArray
@@ -309,50 +201,25 @@ class PairBlock:
             np.where(held_b[:, None], 0.0, at_b),
         )
         right, left = (at_a, at_b) if self.a_on_right else (at_b, at_a)
-        gaps = self.gaps.at(points)
-        gradient, at_gaps = offset_pair_pullback(
-            points, gaps, self.given.a.width, right, left
+        return offset_pair_pullback(
+            points, self.given.gap, self.given.a.width, right, left
         )
-        return gradient + self.gaps.pullback(points, at_gaps)
-
-    def offset_kept(
-        self, optimised: FloatArray, kept: FloatArray
-    ) -> tuple[FloatArray, FloatArray]:
-        """Tracks a and b along `kept`, vertices of the centreline at
-        `optimised`, each at its gap there, as the run offset them."""
-        gaps = self.gaps.at(optimised)
-        index = {(float(x), float(y)): k for k, (x, y) in enumerate(optimised)}
-        at = gaps[[index[float(x), float(y)] for x, y in kept]]
-        return self._offset(at, kept)
-
-    def _offset(
-        self, gaps: FloatArray, points: FloatArray
-    ) -> tuple[FloatArray, FloatArray]:
-        return _offset(self.given, self.a_on_right, self.pins, self.held, gaps, points)
-
-    def taper_bounds(self, points: FloatArray) -> BoolArray:
-        """Which vertices of the centreline at `points` bound the stretch
-        between the tapers of ends whose gaps differ from the pair's: there
-        and beyond, the gap is the pair's."""
-        arc = arc_lengths(points)
-        bounds = np.zeros(len(points), dtype=bool)
-        gaps = self.gaps
-        if abs(gaps.start - gaps.middle) > INSIDE_TOLERANCE:
-            flat = np.flatnonzero(arc >= gaps.held_start + gaps.taper_start)
-            bounds[flat[:1]] = True
-        if abs(gaps.end - gaps.middle) > INSIDE_TOLERANCE:
-            flat = np.flatnonzero(arc[-1] - arc >= gaps.held_end + gaps.taper_end)
-            bounds[flat[-1:]] = True
-        return bounds
 
     def bend(self, points: FloatArray) -> BendCheck:
         """The centreline at `points` against the bend-radius limit."""
-        return check_bend_radius(points, self.gaps.widest, self.given.a.width)
+        return check_bend_radius(points, self.given.gap, self.given.a.width)
 
     def direction_pins(self, points: FloatArray) -> BoolArray:
         """Which vertices of the centreline at `points` are its direction
         pins, which stay where they started."""
-        return (points[:, None] == self.directions[None]).all(axis=2).any(axis=1)
+        return _at(points, self.directions).any(axis=1)
+
+    def mergeable_pins(self, points: FloatArray) -> BoolArray:
+        """The direction pins of the centreline at `points` that
+        simplification may merge across: all but those bounding an uneven
+        end's edge (`uneven`), where merging would slant track b along the
+        merged edge."""
+        return self.direction_pins(points) & ~_at(points, self.uneven).any(axis=1)
 
 
 def pair_block(given: PairInput, spacing: float) -> PairBlock:
@@ -360,10 +227,10 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
     its ends and pins, or at the end of a shorter edge."""
     width = given.a.width
     a_on_right = centreline(given.a.points, given.b.points, width).a_on_right
-    (fixed, pins, gaps, line), hold, tight_start = _start(given, spacing, a_on_right)
+    (fixed, pins, line), hold, tight_start = _start(given, spacing, a_on_right)
     held = hold is not None
-    limit = bend_radius_limit(gaps.widest, width)
-    half_pitch = (gaps.widest + width) / 2
+    limit = bend_radius_limit(given.gap, width)
+    half_pitch = (given.gap + width) / 2
     # A mitred outer corner lies half_pitch / cos(turn / 2) from the
     # centreline's vertex. At the bend-radius limit a vertex turns at most
     # 2·atan(spacing / limit) between edges as long as the spacing.
@@ -377,7 +244,7 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
     )
     chain = ChainInput(pseudo, given.layer, fixed, given.field, held=held)
     facing = replace(chain, centreline=replace(pseudo, width=2 * half_pitch + width))
-    start_a, start_b = _offset(given, a_on_right, pins, held, gaps.at(line), line)
+    start_a, start_b = _offset(given, a_on_right, pins, held, line)
     track_a, track_b = (
         ChainInput(
             replace(track, points=points),
@@ -391,19 +258,30 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
         )
     )
     held_a, held_b = pins.held(line)
+    directions = fixed & ~held_a & ~held_b
     return PairBlock(
         given,
         chain,
         (track_a, track_b),
         facing,
-        directions=line[fixed & ~held_a & ~held_b],
+        directions=line[directions],
         pins=pins,
         a_on_right=a_on_right,
         hold=hold,
         tight_start=tight_start,
-        gaps=gaps,
         limit=limit,
+        uneven=line[[1, -2]][directions[[1, -2]] & _uneven_ends(given)],
     )
+
+
+def _uneven_ends(given: PairInput) -> BoolArray:
+    """Whether the gap at each end of the section, across track a's end
+    edges, differs from its routed gap."""
+    a, b = given.a.points, given.b.points
+    width = given.a.width
+    start = _separation(a[0], a[1], b[0]) - width
+    end = _separation(a[-1], a[-2], b[-1]) - width
+    return np.abs(np.array([start, end]) - given.gap) > INSIDE_TOLERANCE
 
 
 class _Start(NamedTuple):
@@ -413,7 +291,6 @@ class _Start(NamedTuple):
     pins: _Pins
     """Its ends and pins; the rest of its fixed vertices are direction
     pins."""
-    gaps: _Gaps
     line: FloatArray
 
 
@@ -432,7 +309,7 @@ def _start(
     # Its routing as drawn, whose straights its direction pins lie on, and
     # the turns its fixed vertices keep, which nothing rounds.
     routing = start.line[~start.fixed | held_a | held_b]
-    gap, width = start.gaps.widest, given.a.width
+    gap, width = given.gap, given.a.width
     bend = min(
         check_bend_radius(routing, gap, width),
         check_bend_radius(start.line, gap, width, start.fixed),
@@ -481,7 +358,7 @@ def _moving_start(given: PairInput, spacing: float, a_on_right: bool) -> _Start:
     b = given.b.points
     on_b = np.flatnonzero(given.b_pinned[1:-1]) + 1
     # Where track a lies across from each pin of b, at the section's gap.
-    centre_b = _line(b, _Gaps.uniform(given.gap), width, not a_on_right)
+    centre_b = _line(b, given.gap, width, not a_on_right)
     track, across = with_nearest_vertices(
         Track(given.a.points, given.a_pinned),
         2 * centre_b[on_b] - b[on_b],
@@ -497,29 +374,27 @@ def _moving_start(given: PairInput, spacing: float, a_on_right: bool) -> _Start:
     pins = own_a.copy()
     pins[across_b] = True
     a, fixed, kept = _pin_directions(track.points, pins, spacing)
-    gaps = _Gaps.of(a, b, given.gap, width)
-    line = _line(a, gaps, width, a_on_right)
-    from_b = _line(b, gaps, width, not a_on_right)
+    line = _line(a, given.gap, width, a_on_right)
+    from_b = _line(b, given.gap, width, not a_on_right)
     b_only = ~own_a[across_b]
     line[kept[across_b[b_only]]] = from_b[pins_b[b_only]]
     at_b = np.concatenate([[0], kept[across_b], [len(line) - 1]])
     own_b = b[np.concatenate([[0], pins_b, [len(b) - 1]])]
     held = _Pins(line[kept[own_a]], track.points[own_a], line[at_b], own_b)
-    return _Start(fixed, held, gaps, line)
+    return _Start(fixed, held, line)
 
 
 def _held_start(given: PairInput, a_on_right: bool) -> _Start:
     a = given.a.points
-    gaps = _Gaps.uniform(given.gap)
     fixed = np.ones(len(a), dtype=bool)
-    line = _line(a, gaps, given.a.width, a_on_right)
+    line = _line(a, given.gap, given.a.width, a_on_right)
     ends = given.b.points[[0, -1]]
-    return _Start(fixed, _Pins(line, a, line[[0, -1]], ends), gaps, line)
+    return _Start(fixed, _Pins(line, a, line[[0, -1]], ends), line)
 
 
-def _line(a: FloatArray, gaps: _Gaps, width: float, a_on_right: bool) -> FloatArray:
-    """The centreline beside track `a`."""
-    right, left = offset_pair(a, gaps.at(a), width)
+def _line(a: FloatArray, gap: float, width: float, a_on_right: bool) -> FloatArray:
+    """The centreline beside track `a`, at `gap`."""
+    right, left = offset_pair(a, gap, width)
     return left if a_on_right else right
 
 
@@ -528,14 +403,13 @@ def _offset(
     a_on_right: bool,
     pins: _Pins,
     held: bool,
-    gaps: FloatArray,
     points: FloatArray,
 ) -> tuple[FloatArray, FloatArray]:
-    """The tracks along the centreline at `points`, each vertex at its
-    gap in `gaps`, through the points it holds (`pins`)."""
+    """The tracks along the centreline at `points`, at the section's gap,
+    through the points it holds (`pins`)."""
     if held:
         return given.a.points, given.b.points
-    right, left = offset_pair(points, gaps, given.a.width)
+    right, left = offset_pair(points, given.gap, given.a.width)
     a, b = (right, left) if a_on_right else (left, right)
     pins.keep(points, a, b)
     return a, b

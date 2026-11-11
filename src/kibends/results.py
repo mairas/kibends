@@ -40,10 +40,6 @@ class PolylineStats:
     tightest_bend_radius: float
     """Smallest discrete radius of curvature after resampling at the spacing;
     infinite for a straight polyline, mm."""
-    min_clearance: float
-    """Smallest signed distance to the clearance boundary along the edges, mm."""
-    mean_clearance: float
-    """Length-weighted mean of that distance, mm."""
 
 
 @dataclass(frozen=True)
@@ -89,21 +85,19 @@ class PairResult:
     centreline: FloatArray
     fixed: BoolArray
     """The vertices of `centreline` that simplification keeps: those the run
-    pinned, but the direction pins of a section it moved, as a
-    merged edge stays within the chord tolerance of them."""
+    pinned, but the direction pins of a section it moved that
+    `PairBlock.mergeable_pins` gives, as a merged edge stays within the
+    chord tolerance of them. Those bounding an uneven end's edge stay."""
     a: FloatArray
     b: FloatArray
     """The two tracks along `centreline`, b running the same way as a; the
     section's own tracks when the run did nothing."""
     rejected_edges: int
-    too_close: int
-    """Of `rejected_edges`, the vertex pairs that came closer than the
-    section keeps its parts beyond a turn (`polylines.close_to_itself`)."""
     before: PolylineStats
     """Of the starting centreline."""
     bend: BendCheck | None
     """The centreline's bend radius against the limit of the section's
-    widest gap: its routing's for a section held because that bends too
+    gap: its routing's for a section held because that bends too
     tightly, its result's for one the run moved; else None."""
 
     def kept(self) -> tuple[FloatArray, FloatArray]:

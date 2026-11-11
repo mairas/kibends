@@ -20,7 +20,6 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
-from loguru import logger
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, ObstacleField
@@ -30,7 +29,6 @@ from kibends.neighbours import (
     neighbour_field,
     same_layer_neighbours,
 )
-from kibends.obstacles import CompositeField
 
 if TYPE_CHECKING:
     # Both import pair_blocks, which simplifies a section's routing.
@@ -64,18 +62,12 @@ def simplify_chains(
 
     Each of `sections` stands in for the chain of its index, its polyline
     a coupled section's centreline. A section merges within its block's
-    tolerance, never across the vertices that bound its ends' gap tapers,
-    and keeps its merged edges clear of its field as the block's `facing`,
+    tolerance and keeps its merged edges clear of its field as the block's `facing`,
     which leaves out the chains of its two nets. Its tracks' mitred corners
     at kept vertices next to a merged edge reach farther out than the
     edges: where one enters the field, the vertices on either side of it
     are kept and the section merged again. The others see its two tracks,
-    offset from its centreline at its latest shape with each kept vertex at
-    its optimised gap.
-
-    Since the pairwise clearance is symmetric, every merged edge keeps
-    clear of the final neighbours; a chain whose merged edges do not is
-    logged as an error and left as optimised.
+    offset from its centreline at its latest shape.
     """
     if len(run.chains) != len(chains):
         raise ValueError(
@@ -85,59 +77,19 @@ def simplify_chains(
     seen = _Neighbours(chains, optimised, sections or {})
     neighbours = same_layer_neighbours(chains)
     current = list(optimised)
-    kept = [list(range(len(polyline))) for polyline in optimised]
     for i in range(len(chains)):
         result = run.chains[i]
         field = chain_field(chains[i].field, seen.fields(i, neighbours[i], current))
-        fixed = result.fixed | seen.bounds(i)
+        fixed = result.fixed
         allowed = seen.tolerances(i, result.polyline, tolerance)
         while True:
-            kept[i] = kept_vertices(result.polyline, fixed, field, allowed)
-            loose = seen.loose_corners(i, kept[i], field)
+            kept = kept_vertices(result.polyline, fixed, field, allowed)
+            loose = seen.loose_corners(i, kept, field)
             if not loose.any():
                 break
             fixed = fixed | loose
-        current[i] = result.polyline[kept[i]]
-    cutting = cutting_chains(
-        chains, optimised, current, kept, neighbours, sections=sections
-    )
-    for i in cutting:
-        logger.error(
-            f"Chain {chains[i].centreline.description} left unsimplified at"
-            f" {len(optimised[i]) - 1} tracks: its simplified edges cut into"
-            " a neighbour's clearance"
-        )
-        current[i] = optimised[i]
+        current[i] = result.polyline[kept]
     return current
-
-
-def cutting_chains(
-    chains: Sequence[ChainInput],
-    optimised: Sequence[FloatArray],
-    simplified: Sequence[FloatArray],
-    kept: Sequence[Sequence[int]],
-    neighbours: Sequence[Sequence[int]] | None = None,
-    *,
-    sections: Mapping[int, PairBlock] | None = None,
-) -> list[int]:
-    """Chains whose merged edges, `optimised[i][kept[i]]` spanning more than
-    one optimised edge, enter a neighbour at its `simplified` shape; by
-    default every other chain on its layer is its neighbour. `sections` are
-    as `simplify_chains` takes them."""
-    seen = _Neighbours(chains, optimised, sections or {})
-    cutting: list[int] = []
-    if neighbours is None:
-        neighbours = same_layer_neighbours(chains)
-    for i, indices in enumerate(np.asarray(k) for k in kept):
-        merged = np.diff(indices) > 1
-        if not (merged.any() and neighbours[i]):
-            continue
-        starts = optimised[i][indices[:-1][merged]]
-        ends = optimised[i][indices[1:][merged]]
-        field = CompositeField(seen.fields(i, neighbours[i], simplified))
-        if not field.segments_clear(starts, ends).all():
-            cutting.append(i)
-    return cutting
 
 
 class _Neighbours:
@@ -186,27 +138,19 @@ class _Neighbours:
         # Each corner keeps the clearance of a track, half the pair's
         # extent less half a track width inside the centreline's.
         inside = (block.facing.centreline.width - block.given.a.width) / 2
-        for track in block.offset_kept(polyline, polyline[at]):
+        for track in block.offset(polyline[at]):
             distance, _ = field.signed_distance(track[1:-1])
             entering = beside & (distance < -inside - INSIDE_TOLERANCE)
             for vertex in at[1:-1][entering]:
                 loose[[vertex - 1, vertex + 1]] = True
         return loose
 
-    def bounds(self, i: int) -> BoolArray:
-        """The vertices of chain i that merging must keep beyond its fixed
-        ones: a section's taper bounds."""
-        block = self.sections.get(i)
-        if block is None:
-            return np.zeros(len(self.optimised[i]), dtype=bool)
-        return block.taper_bounds(self.optimised[i])
-
     def shown(self, j: int, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
         """What the others see of chain j at `points`: a section's tracks."""
         block = self.sections.get(j)
         if block is None:
             return [(self.chains[j], points)]
-        tracks = block.offset_kept(self.optimised[j], points)
+        tracks = block.offset(points)
         return list(zip(block.tracks, tracks, strict=True))
 
     def fields(

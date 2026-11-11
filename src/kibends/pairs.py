@@ -60,8 +60,9 @@ SAMPLES_PER_WIDTH = 4
 """Both tracks are sampled at this many points per track width."""
 
 SQUARE_SLACK = 1e-9
-"""mm: a foot this close to an edge's end still counts as inside it, so that
-a point opposite a straight vertex does not drop out."""
+"""mm: a point or projection this close to an edge's end counts as at it, so
+that a point on a vertex lies on both edges there and edges that end square
+across each other still face each other."""
 
 BEND_RADIUS_TOLERANCE = 1e-3
 """Relative: a dense polyline drawn at the radius limit measures a hair below
@@ -200,21 +201,8 @@ def _pieces(count: int, spans: list[tuple[int, int, int]]) -> list[Piece]:
     return pieces
 
 
-def runs_coupled(a: Chain, b: Chain, chord_tolerance: float) -> bool:
-    """Whether two chains of one width have a stretch that `find_pair` would
-    take as coupled, whatever their nets."""
-    return bool(
-        _coupled_spans(
-            np.array(a.points, dtype=float),
-            np.array(b.points, dtype=float),
-            a.width,
-            chord_tolerance,
-        )
-    )
-
-
 def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
-    """Find the coupled sections of two chains whose nets pair.
+    """Find the coupled sections of two chains on one layer whose nets pair.
 
     A coupled section is a stretch, however short, where each track runs
     parallel to the other within a band around the pair's pitch, edge
@@ -229,11 +217,6 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     """
     if not nets_pair(a.net, b.net):
         raise PairError(f"nets {a.net} and {b.net} do not form a differential pair")
-    if a.layer != b.layer:
-        raise PairError(
-            f"differential pair {a.net}/{b.net} is on two layers: "
-            f"{a.layer} and {b.layer}"
-        )
     if a.width != b.width:
         raise PairError(
             f"differential pair {a.net}/{b.net} has two track widths: "
@@ -693,39 +676,13 @@ def centreline(a: FloatArray, b: FloatArray, width: float) -> Centreline:
     return Centreline(a + shift * miter, a_on_right=shift < 0.0)
 
 
-def gap_range(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
-    """The smallest and largest edge-to-edge gap between two tracks.
-
-    The smallest is exact: between polylines it occurs at a vertex. The
-    largest is sampled, square across: from points whose nearest point on
-    the other track lies inside an edge. A mitred pair's outer corner lies
-    farther from the inner track than either of its edges, by
-    pitch·(1/cos(turn/2) - 1), but the gap across the edges stays the pair's.
-    """
-    near = _centre_nearest(a, b, width)
-    square = near.distance[near.square] if near.square.any() else near.distance
-    return float(near.distance.min()) - width, float(square.max()) - width
-
-
 def _centre_distances(a: FloatArray, b: FloatArray, width: float) -> FloatArray:
     """Distances from samples along each track to the other track's centre."""
-    return _centre_nearest(a, b, width).distance
-
-
-class _Across(NamedTuple):
-    distance: FloatArray
-    square: BoolArray
-    """Whether the nearest point lies inside an edge, not at its end."""
-
-
-def _centre_nearest(a: FloatArray, b: FloatArray, width: float) -> _Across:
     step = width / SAMPLES_PER_WIDTH
     samples_a = shapely.get_coordinates(shapely.segmentize(LineString(a), step))
     samples_b = shapely.get_coordinates(shapely.segmentize(LineString(b), step))
-    near_a, near_b = _nearest(samples_a, b), _nearest(samples_b, a)
-    return _Across(
-        np.concatenate([near_a.distance, near_b.distance]),
-        np.concatenate([near_a.square, near_b.square]),
+    return np.concatenate(
+        [_nearest(samples_a, b).distance, _nearest(samples_b, a).distance]
     )
 
 
@@ -736,8 +693,6 @@ class _Nearest(NamedTuple):
     foot: FloatArray
     along: FloatArray
     distance: FloatArray
-    square: BoolArray
-    """Whether the foot lies inside its edge rather than at one of its ends."""
     edge: IntArray
     """The index of the polyline's edge the foot lies on."""
 
@@ -755,23 +710,15 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
     t = np.clip(projection, 0.0, line.lengths[index])
     foot = line.starts[index] + t[:, None] * line.directions[index]
     offset = points - foot
-    square = (projection > -SQUARE_SLACK) & (
-        projection < line.lengths[index] + SQUARE_SLACK
-    )
     return _Nearest(
-        foot,
-        line.arc[index] + t,
-        np.hypot(offset[:, 0], offset[:, 1]),
-        square,
-        index,
+        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), index
     )
 
 
 def offset_pair(
-    centreline: FloatArray, gap: float | FloatArray, width: float
+    centreline: FloatArray, gap: float, width: float
 ) -> tuple[FloatArray, FloatArray]:
-    """The two tracks of a pair at ±(gap + width)/2 from `centreline`, with
-    `gap` one for the whole pair or one per vertex.
+    """The two tracks of a pair at ±(gap + width)/2 from `centreline`.
 
     The first track lies to the right of the direction of travel as seen with
     y down, the second to the left. Vertices are mitred, so every offset
@@ -779,21 +726,20 @@ def offset_pair(
     The centreline must have no repeated points, and neither track folds
     while `check_bend_radius` passes.
     """
-    half_pitch = np.broadcast_to((gap + width) / 2, len(centreline))
-    shift = half_pitch[:, None] * _miters(centreline)
+    shift = (gap + width) / 2 * _miters(centreline)
     return centreline + shift, centreline - shift
 
 
 def offset_pair_pullback(
     centreline: FloatArray,
-    gap: FloatArray,
+    gap: float,
     width: float,
     right: FloatArray,
     left: FloatArray,
-) -> tuple[FloatArray, FloatArray]:
+) -> FloatArray:
     """The gradient of a function of `offset_pair`'s two tracks, `right` and
     `left` at each of their vertices, taken back to the centreline's
-    vertices and to each vertex's gap."""
+    vertices."""
     half_pitch = (gap + width) / 2
     delta = np.diff(centreline, axis=0)
     lengths = np.hypot(delta[:, 0], delta[:, 1])
@@ -804,9 +750,7 @@ def offset_pair_pullback(
     total = before + after
     one_plus_cos = 1.0 + np.sum(before * after, axis=1)
     scale = np.maximum(one_plus_cos, MITER_FLOOR)
-    apart = right - left
-    miter = total / scale[:, None]
-    at_miter = half_pitch[:, None] * apart
+    at_miter = half_pitch * (right - left)
     # The miter (b + a) / max(1 + b·a, MITER_FLOOR) of the normals b before
     # and a after a vertex, differentiated in each.
     weight = np.where(
@@ -828,7 +772,7 @@ def offset_pair_pullback(
     gradient = right + left
     gradient[1:] += at_delta
     gradient[:-1] -= at_delta
-    return gradient, np.sum(apart * miter, axis=1) / 2
+    return gradient
 
 
 def _miters(polyline: FloatArray) -> FloatArray:

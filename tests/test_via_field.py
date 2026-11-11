@@ -11,6 +11,8 @@ import pytest
 from conftest import (
     PAD_HALF_SIZE,
     FakeBoard,
+    build_via_obstacles,
+    contained,
     kipy_pad,
     kipy_rect,
     kipy_segment,
@@ -34,8 +36,6 @@ from kibends.obstacles import (
     ChainCentreline,
     Obstacles,
     build_obstacles,
-    build_via_obstacles,
-    contained,
     moving_via_obstacles,
     own_net_stops,
     split_via_obstacles,

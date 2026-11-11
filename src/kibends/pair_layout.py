@@ -21,7 +21,7 @@ After the run, the pieces and the sections' tracks join back into one
 polyline per selected chain, which the commit takes like any other chain.
 """
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from itertools import combinations
 from typing import NamedTuple
@@ -30,11 +30,10 @@ import numpy as np
 from loguru import logger
 
 from kibends.chain import Chain
-from kibends.coords import UserFrame
 from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.pair_blocks import Hold, PairInput, end_gaps
+from kibends.pair_blocks import Hold, PairInput
 from kibends.pairs import (
     Opposite,
     Pair,
@@ -47,7 +46,6 @@ from kibends.pairs import (
     nets_pair,
     reach,
     reached,
-    runs_coupled,
     vertex_snap,
 )
 from kibends.vias import ChainEnd
@@ -119,17 +117,13 @@ class ChainPair:
     pair: Pair
 
 
-def find_pairs(
-    chains: Sequence[Chain], chord_tolerance: float, *, frame: UserFrame
-) -> list[ChainPair]:
+def find_pairs(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPair]:
     """The differential pairs among `chains`, each chain in at most one.
 
     Warns about two chains whose nets pair and run coupled but that cannot
-    be smoothed as a pair, and about a chain that runs coupled with a chain
-    its net pairs with but that pairs with another chain of its net, at its
-    start in `frame`; both are smoothed as chains.
+    be smoothed as a pair; they are smoothed as chains.
     """
-    found, taken, missed, skipped, uncoupled = _pair_up(chains, chord_tolerance)
+    found, taken, missed, uncoupled = _pair_up(chains, chord_tolerance)
     for k, m, message in missed:
         if not {k, m} & taken:
             logger.warning(message)
@@ -140,7 +134,6 @@ def find_pairs(
                 f"{a.net} and {b.net} on {a.layer} form a differential pair "
                 f"by name but do not run coupled; {UNPAIRED}"
             )
-    _warn_partners_taken(chains, skipped, taken, chord_tolerance, frame)
     return found
 
 
@@ -149,8 +142,6 @@ class _Pairing(NamedTuple):
     taken: set[int]
     missed: list[tuple[int, int, str]]
     """Two chains whose nets pair that cannot pair, and why."""
-    skipped: list[tuple[int, int]]
-    """Two chains whose nets pair, one of which paired before."""
     uncoupled: list[tuple[int, int]]
     """Two chains whose nets pair that do not run coupled."""
 
@@ -159,14 +150,12 @@ def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
     found: list[ChainPair] = []
     taken: set[int] = set()
     missed: list[tuple[int, int, str]] = []
-    skipped: list[tuple[int, int]] = []
     uncoupled: list[tuple[int, int]] = []
     for k, m in combinations(range(len(chains)), 2):
         a, b = chains[k], chains[m]
         if a.layer != b.layer or not nets_pair(a.net, b.net):
             continue
         if {k, m} & taken:
-            skipped.append((k, m))
             continue
         try:
             pair = find_pair(a, b, chord_tolerance)
@@ -178,32 +167,7 @@ def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
             continue
         found.append(ChainPair(k, m, pair))
         taken |= {k, m}
-    return _Pairing(found, taken, missed, skipped, uncoupled)
-
-
-def _warn_partners_taken(
-    chains: Sequence[Chain],
-    skipped: Sequence[tuple[int, int]],
-    taken: Collection[int],
-    chord_tolerance: float,
-    frame: UserFrame,
-) -> None:
-    """Warn about each chain of `skipped` left unpaired that runs coupled
-    with a chain of its pair net that pairs with another chain."""
-    warned: set[int] = set()
-    for k, m in skipped:
-        if (k in taken) == (m in taken):
-            continue
-        alone, partner = (m, k) if k in taken else (k, m)
-        a, b = chains[alone], chains[partner]
-        if alone in warned or not runs_coupled(a, b, chord_tolerance):
-            continue
-        warned.add(alone)
-        logger.warning(
-            f"{a.net} on {a.layer} from {frame.point(a.points[0])} runs coupled with "
-            f"{b.net}, which pairs with another chain of {a.net}; smoothing it "
-            "on its own"
-        )
+    return _Pairing(found, taken, missed, uncoupled)
 
 
 SectionField = Callable[[str, ChainCentreline, ChainCentreline, float], ObstacleField]
@@ -246,13 +210,7 @@ def split_pair(
                 pinned_b,
                 s.gap,
                 a.layer,
-                # As wide as its widest, where an end's gap is wider.
-                field(
-                    a.layer,
-                    track_a,
-                    track_b,
-                    max(s.gap, *end_gaps(points_a, points_b, a.centreline.width)),
-                ),
+                field(a.layer, track_a, track_b, s.gap),
                 Hold.GROUP if a.held or b.held else None,
             )
         )

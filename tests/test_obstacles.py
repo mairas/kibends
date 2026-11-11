@@ -18,6 +18,8 @@ from conftest import (
     kipy_zone,
     layer_snapshot,
     netclass,
+    obstacle_energy,
+    total_energy,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
@@ -32,9 +34,7 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
     ObstacleField,
-    clearance_energy,
     smooth_minimum,
-    total_energy,
     weighted_sum,
 )
 from kibends.obstacles import (
@@ -618,9 +618,15 @@ class TestAsDistanceField:
         field: DistanceField = obstacles_of(fake)
         polyline = points((0, 0), (5, 0), (10, 0))
 
-        value, gradient = clearance_energy(
-            polyline, np.zeros(3, dtype=bool), field, standoff=0.2, points_per_edge=3
+        params = EnergyParams(
+            repulsion=0.0,
+            falloff_range=1.0,
+            clearance_weight=1.0,
+            standoff=0.2,
+            points_per_edge=3,
         )
+
+        value, gradient = obstacle_energy(polyline, field, params)
 
         assert value > 0
         assert np.all(np.isfinite(gradient))

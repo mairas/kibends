@@ -9,6 +9,7 @@ import kipy.board
 import kipy.board_types as kbt
 import pytest
 from conftest import (
+    BOARD_FRAME,
     PAD_HALF_SIZE,
     TEXT_HALF_HEIGHT,
     TEXT_HALF_WIDTH,
@@ -33,6 +34,7 @@ from conftest import (
     layer_snapshot,
     netclass,
     nm,
+    one_chain,
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -44,8 +46,8 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
 from kibends import snapshot as snapshot_module
-from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment, extract_chain
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment
+from kibends.coords import UserFrame
 from kibends.snapshot import (
     CONTACT_MARGIN,
     MIN_ARC_SEGMENTS,
@@ -408,24 +410,6 @@ class TestClearances:
         assert snapshot(fake, frozenset({"sel"})).clearance("HV") == pytest.approx(0.5)
 
 
-class TestDiffPairGaps:
-    def test_netclass_diff_pair_gap_is_read_when_set(self) -> None:
-        fake = FakeBoard(
-            tracks=[kipy_track("t", "USB_D+", (0, 0), (1, 0))],
-            netclasses={"USB_D+": netclass("USB", diff_pair_gap=0.15)},
-        )
-
-        assert snapshot(fake).diff_pair_gap("USB_D+") == pytest.approx(0.15)
-
-    def test_unset_netclass_diff_pair_gap_is_unknown(self) -> None:
-        fake = FakeBoard(
-            tracks=[kipy_track("t", "USB_D+", (0, 0), (1, 0))],
-            netclasses={"USB_D+": netclass("Bare")},
-        )
-
-        assert snapshot(fake).diff_pair_gap("USB_D+") is None
-
-
 class TestSameNetCopper:
     def test_same_net_pads_vias_tracks_and_copper_shapes(self) -> None:
         fake = FakeBoard(
@@ -473,7 +457,7 @@ class TestSameNetCopper:
         )
         chain_segment = Segment("a", (0, 0), (10 * NM_PER_MM, 0), 250_000, LAYER, "SIG")
 
-        chain = extract_chain(
+        chain = one_chain(
             [chain_segment], snapshot(fake).same_net_copper("SIG"), frame=BOARD_FRAME
         )
 
