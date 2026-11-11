@@ -1,5 +1,6 @@
 import math
 from collections.abc import Callable
+from dataclasses import replace
 from itertools import pairwise
 
 import pytest
@@ -1044,6 +1045,17 @@ class TestCuts:
         assert a.pinned == (True, True)
         assert bc.pinned == (True, False, True)
         assert a.slides == bc.slides == ()
+
+    def test_held_segments_are_a_held_chain_of_their_own(self) -> None:
+        # "b" and "c" came from a selected group.
+        segments = [replace(s, held=s.id != "a") for s in l_z_segments()]
+
+        a, bc = extract_chains(segments, frame=BOARD_FRAME)
+
+        assert_points(a, [(0, 0), (10, 0)])
+        assert_points(bc, [(10, 0), (10, 5), (20, 5)])
+        assert (a.held, a.pinned) == (False, (True, True))
+        assert (bc.held, bc.pinned) == (True, (True, True, True))
 
     def test_a_cut_away_from_every_vertex_leaves_the_chain_whole(self) -> None:
         (chain,) = extract_chains(

@@ -2,17 +2,19 @@
 for the optimizer.
 
 Two selected chains on one layer whose nets KiCad pairs by name form a diff
-pair where they run coupled (`pairs.find_pair`). Where a stub junction or
-unselected copper such as a length-tuning pattern cuts one net of a diff
-pair into several chains, the track of the other net is cut between two
-of its coupled sections, where a section ends opposite an end of a chain
-of the cut net, within about a pitch (`cut_parts`), and the parts pair
-one to one. The sections then run up to the stub or the pattern on both
-tracks. A stretch of either track between a cut and a section, or beside
-the pattern, pairs with nothing and is held as drawn; a fan-out to a pad
-or via smooths. The optimizer sees a diff pair as its coupled sections,
-each a block of its own (`pair_blocks`), and its uncoupled pieces, each an
-ordinary chain; the other selected chains stay as they are.
+pair where they run coupled (`pairs.find_pair`). Where a stub junction,
+a selected group's held chain (`chain.Chain.held`), such as a length-tuning
+pattern, or unselected copper cuts one net of a diff pair into several
+chains, the track of the other net is cut between two of its coupled
+sections, where a section ends opposite an end of a chain of the cut net,
+within about a pitch (`cut_parts`), and the parts pair one to one. The
+sections then run up to the cut on both tracks. A stretch of either track
+between a cut and a section is held as drawn; a fan-out to a pad or via
+smooths, and so does a part that pairs with nothing, pinned at both ends.
+A section or piece of a held chain is held. The optimizer sees a diff pair
+as its coupled sections, each a block of its own (`pair_blocks`), and its
+uncoupled pieces, each an ordinary chain; the other selected chains stay
+as they are.
 No via moves at a paired chain, as a diff pair's vias stay fixed
 (`vias.may_move`).
 After the run, the pieces and the sections' tracks join back into one
@@ -32,7 +34,7 @@ from kibends.coords import UserFrame
 from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-from kibends.pair_blocks import PairInput, end_gaps
+from kibends.pair_blocks import Hold, PairInput, end_gaps
 from kibends.pairs import (
     Opposite,
     Pair,
@@ -251,6 +253,7 @@ def split_pair(
                     track_b,
                     max(s.gap, *end_gaps(points_a, points_b, a.centreline.width)),
                 ),
+                Hold.GROUP if a.held or b.held else None,
             )
         )
     pieces_a, pieces_b = (
@@ -270,12 +273,15 @@ def _piece_input(
     chain: ChainInput, track: Track, piece: Piece, cut: tuple[bool, bool]
 ) -> ChainInput:
     """An uncoupled piece of `chain`, whose points and pins `track` holds,
-    pinned at both ends, as a chain input. A piece that reaches a `cut` end
-    of its chain pairs with nothing there, as a stretch beside a stub or a
-    length-tuning pattern does, and is held as drawn; a fan-out to a pad or
-    via smooths."""
+    pinned at both ends, as a chain input. A piece of a held chain, or one
+    that reaches a `cut` end of its chain, between a section and a stub, is
+    held as drawn; a fan-out to a pad or via smooths."""
     fixed = track.pinned[piece.start : piece.end + 1].copy()
-    held = (piece.after is None and cut[0]) or (piece.before is None and cut[1])
+    held = (
+        chain.held
+        or (piece.after is None and cut[0])
+        or (piece.before is None and cut[1])
+    )
     fixed[[0, -1]] = True
     fixed |= held
     return replace(
@@ -406,8 +412,8 @@ def lay_out(
     diff pairs among those, with `field` building each section's field.
 
     A selected chain of one part that does not pair is laid out whole; a
-    part of a cut chain that does not pair is an uncoupled piece of its own
-    (`_piece_input`)."""
+    part of a cut chain that does not pair is an uncoupled piece pinned at
+    both ends."""
     paired = {k for p in pairs for k in (p.a, p.b)}
     of_chain: list[list[int]] = [[] for _ in whole]
     for i, part in enumerate(parts):
@@ -464,12 +470,10 @@ def lay_out(
     for i, part in enumerate(parts):
         if i in paired or slots[part.selected] is not None:
             continue
-        points = np.array(part.chain.points, dtype=float)
-        track = Track(points, np.array(part.chain.pinned))
-        piece = Piece(0, len(track.points) - 1, None, None)
-        stretches[i] = [_Stretch(piece.start, piece.end, piece=len(inputs))]
-        given = part_input(i, track.points, track.pinned)
-        inputs.append(_piece_input(given, track, piece, part.cut))
+        fixed = np.array(part.chain.pinned)
+        fixed[[0, -1]] = True
+        stretches[i] = [_Stretch(0, len(fixed) - 1, piece=len(inputs))]
+        inputs.append(part_input(i, np.array(part.chain.points, dtype=float), fixed))
     inputs = _pinned_where_fixed(inputs, sections)
     joined = [(parts[p.a].selected, parts[p.b].selected) for p in pairs]
     diff_pairs = _diff_pairs(joined)

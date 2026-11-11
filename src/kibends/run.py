@@ -1089,6 +1089,7 @@ def _chain_inputs(
                 np.array(chain.pinned),
                 fields(snapshot, chain, moving),
                 tuple((i, Obstacles((), region)) for i, region in chain.slides),
+                held=chain.held,
             )
         )
     return inputs

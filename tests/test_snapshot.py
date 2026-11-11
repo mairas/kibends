@@ -21,6 +21,7 @@ from conftest import (
     kipy_copper_zone,
     kipy_field,
     kipy_footprint,
+    kipy_group,
     kipy_pad,
     kipy_rect,
     kipy_rectangle,
@@ -59,6 +60,7 @@ from kibends.snapshot import (
     Via,
     ViaContact,
     ViaZone,
+    arc_from_kipy,
     arc_points,
     edge_paths_closed,
     outline_from_edge_paths,
@@ -107,6 +109,31 @@ class TestReadSelection:
                 locked=True,
             ),
         ]
+
+    def test_groups_are_read_as_their_items_held(self) -> None:
+        # A tuning pattern inside a group inside a group, the pattern also
+        # selected on its own.
+        loose = kipy_track("loose", "SIG", (0, 0), (1, 0))
+        straight = kipy_track("straight", "SIG", (1, 0), (2, 0))
+        bump = kipy_arc("bump", "SIG", (2, 0), (2.5, 0.5), (3, 0))
+        via = kipy_via("v", "SIG", 3, 0)
+        pattern = kipy_group("Tuning Pattern", [straight, bump])
+        middle = kipy_group("middle", [pattern, via])
+        outer = kipy_group("outer", [middle])
+        fake = FakeBoard(
+            selection=[loose, outer, pattern],
+            tracks=[loose, straight, bump],
+            vias=[via],
+            groups=[pattern, middle, outer],
+        )
+
+        selection = read_selection(board(fake))
+
+        held = {s.id: s.held for s in selection.segments}
+        assert held == {"loose": False, "straight": True, "bump": True}
+        assert len(selection.segments) == 1 + 1 + len(arc_from_kipy(bump).segments())
+        assert [a.held for a in selection.arcs] == [True]
+        assert [(v.id, v.locked) for v in selection.vias] == [("v", True)]
 
     def test_layer_is_canonical(self) -> None:
         fake = FakeBoard(

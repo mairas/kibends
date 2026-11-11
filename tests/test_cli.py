@@ -26,6 +26,7 @@ from conftest import (
     Ticking,
     kipy_arc,
     kipy_copper_zone,
+    kipy_group,
     kipy_pad,
     kipy_rect,
     kipy_track,
@@ -35,6 +36,7 @@ from conftest import (
     neutral_distance,
     nm,
     return_via_board,
+    vec,
     via_ids,
 )
 from kipy.errors import ApiError
@@ -3805,14 +3807,13 @@ MEANDER = [
     (11.0, 3.0 - PAIR_HALF_PITCH - MEANDER_DEPTH),
     (11.0, 3.0 - PAIR_HALF_PITCH),
 ]
-"""An unselected meander on USB_D-'s last straight, as a length-tuning
-pattern whose tracks the selection leaves out."""
+"""An unselected meander on USB_D-'s last straight, copper the selection
+leaves out."""
 
 
-def cut_partner_board(*, stub: bool = True) -> CommitBoard:
-    """`pair_board` with USB_D- cut by a selected stub on its first straight,
-    unless not `stub`, and by `MEANDER` on its last, USB_D+ running past
-    both."""
+def cut_partner_board() -> CommitBoard:
+    """`pair_board` with USB_D- cut by a selected stub on its first straight
+    and by `MEANDER` on its last, USB_D+ running past both."""
     h = PAIR_HALF_PITCH
     mitre = math.tan(math.pi / 8) * h
     p = [t for t in pair_tracks() if t.net.name == USB[0]]
@@ -3830,19 +3831,77 @@ def cut_partner_board(*, stub: bool = True) -> CommitBoard:
     ]
     end = (13.0, 3.0 - h)
     n.append(kipy_track("n_end", USB[1], MEANDER[-1], end, width=PAIR_WIDTH))
-    foot, top = (N_STUB_AT, -h), (N_STUB_AT, -2.0)
-    stubs = [kipy_track("n_stub", USB[1], foot, top, width=PAIR_WIDTH)] if stub else []
+    stub = kipy_track(
+        "n_stub", USB[1], (N_STUB_AT, -h), (N_STUB_AT, -2.0), width=PAIR_WIDTH
+    )
     meander = [
         kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
         for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
     ]
     usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
-    selected = [*p, *n, *stubs]
+    selected = [*p, *n, stub]
     return CommitBoard(
         selection=list(selected),
         tracks=[*selected, *meander],
         netclasses={net: usb for net in USB},
     )
+
+
+PATTERN_END = 17.0
+"""x where `pattern_board`'s diff pair ends, mm, long enough for the
+pattern's straights to run coupled."""
+PATTERN_X = (8.3, 10.5, 12.0, 14.2)
+"""x of `pattern_board`'s pattern's start, its bump's two sides, and its
+end, mm."""
+
+
+def pattern_board(nesting: int) -> CommitBoard:
+    """`pair_board` run on to x `PATTERN_END`, USB_D- through a selected
+    length-tuning pattern group, inside `nesting` more groups: two coupled
+    straights and a bump between them, away from USB_D+, of two tracks and
+    an arc."""
+    h = PAIR_HALF_PITCH
+    y = 3.0 - h
+    deep = y - MEANDER_DEPTH
+    tracks = pair_tracks()
+    for t in tracks:
+        if t.end.x == nm(13.0):
+            t.end = vec(PATTERN_END, t.end.y / 1e6)
+    n_end = next(t for t in tracks if t.id.value == "n4")
+    n_end.end = vec(PATTERN_X[0], y)
+    start, left, right, end = ((x, y) for x in PATTERN_X)
+    pattern_items: list[kbt.BoardItem] = [
+        kipy_track("pt_left", USB[1], start, left, width=PAIR_WIDTH),
+        kipy_track("pt_down", USB[1], left, (left[0], deep), width=PAIR_WIDTH),
+        kipy_arc(
+            "pt_bump",
+            USB[1],
+            (left[0], deep),
+            ((left[0] + right[0]) / 2, deep - MEANDER_DEPTH / 2),
+            (right[0], deep),
+            width=PAIR_WIDTH,
+        ),
+        kipy_track("pt_up", USB[1], (right[0], deep), right, width=PAIR_WIDTH),
+        kipy_track("pt_right", USB[1], right, end, width=PAIR_WIDTH),
+    ]
+    after = kipy_track("n5", USB[1], end, (PATTERN_END, y), width=PAIR_WIDTH)
+    groups = [kipy_group("Tuning Pattern", pattern_items)]
+    for k in range(nesting):
+        groups.append(kipy_group(f"outer{k}", [groups[-1]]))
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    return CommitBoard(
+        selection=[*tracks, after, groups[-1]],
+        tracks=[
+            *tracks,
+            after,
+            *cast(list[kbt.Track | kbt.ArcTrack], pattern_items),
+        ],
+        groups=groups,
+        netclasses={net: usb for net in USB},
+    )
+
+
+PATTERN_IDS = {"pt_left", "pt_down", "pt_bump", "pt_up", "pt_right"}
 
 
 def corner_stub_board(at: float) -> CommitBoard:
@@ -4195,8 +4254,8 @@ class TestPairs:
         log: list[str],
         reports: list[pipeline.RunReport],
     ) -> None:
-        # USB_D- is cut by a selected stub and by an unselected meander, as
-        # a length-tuning pattern leaves it; USB_D+ runs past both.
+        # USB_D- is cut by a selected stub and by an unselected meander;
+        # USB_D+ runs past both.
         board = connect.to(cut_partner_board())
 
         run()
@@ -4248,25 +4307,32 @@ class TestPairs:
         (pairs,) = (r.pairs for r in reports)
         assert [(p.sections, p.held) for p in pairs] == [(1, 1)]
 
-    def test_a_stretch_beside_a_meander_stays_as_drawn(
-        self, connect: Connector, log: list[str]
+    @pytest.mark.parametrize("nesting", [0, 2])
+    def test_a_selected_tuning_pattern_stays_and_pairs(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+        nesting: int,
     ) -> None:
-        # USB_D+ beside the meander pairs with nothing there.
-        board = connect.to(cut_partner_board(stub=False))
+        board = connect.to(pattern_board(nesting))
 
         run()
 
         assert board.calls == COMMIT_CALLS
         assert not unexpected_warnings(log)
+        assert not [line for line in log if "do not run coupled" in line]
+        assert not PATTERN_IDS & set(board.deleted)
+        # The pattern's straights pair with USB_D+, which stays at its
+        # routed gap beside them.
+        (pairs,) = (r.pairs for r in reports)
+        assert (2, 2) in [(p.sections, p.held) for p in pairs]
+        p = linemerge(by_net(board)[USB[0]])
+        beside = p.intersection(box(PATTERN_X[0], -FAR, PATTERN_X[-1], FAR))
         y = 3.0 + PAIR_HALF_PITCH
-        beside = [(MEANDER[0][0], y), (MEANDER[-1][0], y)]
-        p = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
-        assert [[(nm(x), nm(y)) for x, y in beside]] == [
-            [(t.start.x, t.start.y), (t.end.x, t.end.y)]
-            for t in p
-            if MEANDER[0][0] <= t.start.x / 1e6 <= MEANDER[-1][0]
-            and MEANDER[0][0] <= t.end.x / 1e6 <= MEANDER[-1][0]
-        ]
+        assert [y for _, y in beside.coords] == pytest.approx(
+            [y] * len(beside.coords), abs=NM_ROUNDING
+        )
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]

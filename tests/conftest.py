@@ -216,6 +216,16 @@ def kipy_arc(
     return a
 
 
+def kipy_group(name: str, items: Sequence[kbt.BoardItem]) -> kbt.Group:
+    """A group of `items` as KiCad's selection hands it over: its `items` is
+    empty and only its proto lists their ids."""
+    g = kbt.Group()
+    g.proto.id.value = f"group-{name}"
+    g.proto.name = name
+    g.proto.items.extend(KIID(value=i.id.value) for i in items)
+    return g
+
+
 def kipy_pad(
     pad_id: str,
     net: str,
@@ -508,6 +518,8 @@ class FakeBoard:
         default_factory=list[kbt.FootprintInstance]
     )
     zones: list[kbt.Zone] = field(default_factory=list[kbt.Zone])
+    groups: list[kbt.Group] = field(default_factory=list[kbt.Group])
+    """Groups that `get_items_by_id` finds, as members of other groups."""
     netclasses: dict[str, NetClass] = field(default_factory=dict[str, NetClass])
     default_clearance: float | None = 0.2
     drops_pads: bool = False
@@ -528,6 +540,12 @@ class FakeBoard:
     def get_selection(self) -> list[Wrapper]:
         self.reads["get_selection"] += 1
         return self.selection
+
+    def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
+        self.reads["get_items_by_id"] += 1
+        wanted = {i.value for i in ids}
+        items = [*self.tracks, *self.vias, *self.groups]
+        return [i for i in items if i.id.value in wanted]
 
     def selected_ids(self) -> list[str]:
         return [cast(kbt.BoardItem, i).id.value for i in self.selection]
@@ -673,11 +691,6 @@ class CommitBoard(FakeBoard):
 
     def __post_init__(self) -> None:
         self.client = CommitClient(board=self)
-
-    def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
-        self.reads["get_items_by_id"] += 1
-        wanted = {i.value for i in ids}
-        return [i for i in [*self.tracks, *self.vias] if i.id.value in wanted]
 
     def begin_commit(self) -> Commit:
         self.calls.append("begin_commit")

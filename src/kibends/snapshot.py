@@ -55,11 +55,13 @@ from kipy.proto.board.board_types_pb2 import (
 )
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
+from kipy.proto.common.types import KIID
 from kipy.util.board_layer import (
     canonical_name,
     is_copper_layer,
     layer_from_canonical_name,
 )
+from kipy.wrapper import Wrapper
 from loguru import logger
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
@@ -294,6 +296,8 @@ class Arc:
     layer: str
     net: str
     locked: bool = False
+    held: bool = False
+    """As `Segment.held`."""
 
     def segments(self) -> list[Segment]:
         """Straight segments along the arc, as `arc_points` tessellates it,
@@ -307,7 +311,9 @@ class Arc:
         ]
         path = [self.start, *between, self.end]
         return [
-            Segment(self.id, a, b, self.width, self.layer, self.net, self.locked)
+            Segment(
+                self.id, a, b, self.width, self.layer, self.net, self.locked, self.held
+            )
             for a, b in pairwise(path)
         ]
 
@@ -593,24 +599,50 @@ class BoardSnapshot:
 def read_selection(board: kipy.board.Board) -> Selection:
     """The selected tracks and vias, either of which may be absent, anything
     else ignored. An arc becomes the straight segments of `Arc.segments`,
-    which chain extraction treats as one track split into several edges."""
+    which chain extraction treats as one track split into several edges.
+
+    A selected group, such as a length-tuning pattern, counts as its items
+    and those of the groups in it, at any depth (`_grouped`): its tracks
+    and arcs are held as drawn (`Segment.held`), and its vias stay fixed as
+    locked ones do."""
     items = board.get_selection()
+    grouped = _grouped(board, items)
     segments: list[Segment] = []
     arcs: list[Arc] = []
-    for item in items:
+    vias: list[Via] = []
+    for item, held in [*((i, False) for i in items), *((i, True) for i in grouped)]:
         if isinstance(item, kbt.Track):
-            segments.append(segment_from_track(item))
+            segments.append(replace(segment_from_track(item), held=held))
         elif isinstance(item, kbt.ArcTrack):
-            arcs.append(arc_from_kipy(item))
+            arcs.append(replace(arc_from_kipy(item), held=held))
             segments += arcs[-1].segments()
-    vias = [i for i in items if isinstance(i, kbt.Via)]
+        elif isinstance(item, kbt.Via):
+            via = via_from_kipy(item)
+            vias.append(replace(via, locked=True) if held else via)
     if not segments and not vias:
         raise SelectionError("selection has no tracks or vias")
-    read = tuple(map(via_from_kipy, vias))
+    read = tuple(vias)
     # A locked via stays fixed whatever its net.
     unlocked = any(not v.locked for v in read)
     nets = frozenset(n.name for n in board.get_nets()) if unlocked else frozenset[str]()
     return Selection(segments, read, tuple(arcs), nets)
+
+
+def _grouped(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[Wrapper]:
+    """The items of the groups among `items`, and of the groups in those,
+    each group read once. kipy leaves a selected group's `items` empty; its
+    proto lists their ids."""
+    members: list[Wrapper] = []
+    seen: set[str] = set()
+    groups = [i for i in items if isinstance(i, kbt.Group)]
+    while groups:
+        fresh = {g.id.value: g for g in groups if g.id.value not in seen}
+        seen |= fresh.keys()
+        ids = [KIID(value=i.value) for g in fresh.values() for i in g.proto.items]
+        found: Sequence[Wrapper] = board.get_items_by_id(ids) if ids else []
+        members += [i for i in found if not isinstance(i, kbt.Group)]
+        groups = [i for i in found if isinstance(i, kbt.Group)]
+    return members
 
 
 def read_user_frame(board: kipy.board.Board) -> UserFrame:

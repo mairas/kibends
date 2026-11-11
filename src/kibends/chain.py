@@ -89,6 +89,8 @@ class Segment:
     layer: str
     net: str
     locked: bool = False
+    held: bool = False
+    """It came from a selected group, and stays as drawn (`Chain.held`)."""
 
 
 Adjacency = dict[NmPoint, list[Segment]]
@@ -153,6 +155,9 @@ class Chain:
     net: str
     segment_ids: tuple[str, ...]
     slides: tuple[tuple[int, BaseGeometry], ...] = ()
+    held: bool = False
+    """Its segments are held (`Segment.held`): it stays as drawn, every
+    vertex pinned."""
 
     def with_slides_pinned(self) -> Chain:
         """The chain with each sliding vertex pinned where it is."""
@@ -194,7 +199,9 @@ def extract_chains(
     apart. `cuts(layer, net)` gives the points, in mm, at which to end
     chains, the centres of vias that may move or that move: the pieces are
     also split at each one that is a vertex, into chains that end there,
-    pinned, as at any chain end, unless it is a junction.
+    pinned, as at any chain end, unless it is a junction. Held segments
+    (`Segment.held`) and the others are split apart in the same way, and a
+    chain of held ones is held whole (`Chain.held`).
     Locked segments stay out of every chain, with a warning, and pin the
     chains they touch on their layer.
 
@@ -255,7 +262,11 @@ def split_chains(
         }
         # Exact float equality is nanometre equality: see `Contact.anchor`.
         cut_mm = set(cuts(layer, net))
-        cut_vertices = {p for p in adjacency if _mm(p) in cut_mm} - junctions
+        cut_vertices = {
+            p
+            for p, segs in adjacency.items()
+            if _mm(p) in cut_mm or len({s.held for s in segs}) > 1
+        } - junctions
         pieces: list[tuple[int, Adjacency, list[str]]] = []
         for width, (of_width, edges, dots) in by_width.items():
             of_width_pieces = _split(_adjacency(edges, dots), junctions | cut_vertices)
@@ -303,7 +314,7 @@ def split_chains(
         ]
         bodies = _CopperIndex([t for _, t in tracks], [k for k, _ in tracks])
         net_chains = [
-            chain
+            _held(chain) if all(s.held for s in _edges_of(adjacency)) else chain
             for k, (width, adjacency, piece_ids) in enumerate(pieces)
             if (
                 chain := _chain(
@@ -328,6 +339,12 @@ def split_chains(
     return sorted(
         chains, key=lambda c: (c.net, c.layer, c.points[0], c.width, c.points)
     )
+
+
+def _held(chain: Chain) -> Chain:
+    """`chain` held as drawn."""
+    pinned = (True,) * len(chain.points)
+    return replace(chain.with_slides_pinned(), pinned=pinned, held=True)
 
 
 def shared_track_groups(segment_ids: Sequence[Collection[str]]) -> list[int]:

@@ -58,6 +58,7 @@ class Hold(Enum):
     """Why a coupled section stays as it is."""
 
     COPPER = "same-net copper touches it between its ends"
+    GROUP = "a track of it is in a selected group, held as drawn"
     SHORT = "it is too short between the copper at its ends to move"
     ROUTING = "its routing bends too tightly for the inner track"
     CROWDING = (

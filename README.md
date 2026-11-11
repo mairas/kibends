@@ -323,17 +323,22 @@ stays as it is. Copper anywhere else, such as near a corner, leaves the
 whole section as it is.
 
 A selected stub, such as a test pad's or an ESD diode's, splits the track
-it branches off into separate chains, and so does a length-tuning pattern,
-whose tracks KiCad leaves out of the selection it hands to kibends. The
-other track of the diff pair is then cut opposite each end where the two
-run coupled up to it, or to within one pitch of it, and each part pairs
-with the part beside it. The stub's junction, the pattern and the points
-opposite them stay where they are. On a straight the diff pair stays
-coupled at its gap up to the stub or the pattern on both tracks. Within
+it branches off into separate chains. The other track of the diff pair is
+then cut opposite each end where the two run coupled up to it, or to within
+one pitch of it, and each part pairs with the part beside it. The stub's
+junction and the points opposite it stay where they are. On a straight the
+diff pair stays coupled at its gap up to the stub on both tracks. Within
 about a pitch of a corner, coupling ends at the corner's vertex, and the
 stretch of either track between it and the stub stays as drawn, at its
-routed gap. Beside the pattern, where only one track is selected, that
-track stays as drawn too.
+routed gap.
+
+A selected group, such as a length-tuning pattern, counts as its tracks,
+arcs and vias and those of every group inside it. They stay exactly as
+drawn, and the tracks they touch end there. They still pair like any
+track: where a tuning pattern's straight runs beside the other track of
+its diff pair, that track keeps its routed gap, and the diff pair on
+either side of the pattern pairs up to it as at a stub. Beside the
+pattern's bumps, the other track is smoothed on its own.
 
 A run warns when two chains whose nets pair run coupled but have
 different widths, when a chain runs coupled with one of its pair net that
