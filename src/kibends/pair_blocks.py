@@ -4,8 +4,11 @@ A coupled section moves as its centreline: a chain as wide as the pair's
 outer extent, two track widths plus the gap, that keeps the larger of the
 two nets' clearances, in a static field from
 `obstacles.build_pair_obstacles`. The bend-radius hinge of
-`energy.bend_radius_energy` keeps its inner track from folding; a section
-whose own routing already bends tighter is held as it is. Its two ends are
+`energy.bend_radius_energy` keeps its inner track from folding. Each
+track's routing is first merged within a micrometre (`ROUTING_TOLERANCE`),
+through its ends and pins, as `simplify` merges a result, so that a jog or
+sliver too short to see bends nothing; a section whose routing still bends
+tighter is held as it is. Its two ends are
 pinned, and so is a vertex a spacing in from each, so that the pair meets
 its fan-outs in the direction it did. Same-net copper that touches a track
 between the ends pins the centreline where that puts the track through the
@@ -35,7 +38,7 @@ import numpy as np
 from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField, arc_lengths
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline
+from kibends.obstacles import ChainCentreline, CompositeField
 from kibends.pairs import (
     VERTEX_SNAP,
     BendCheck,
@@ -47,6 +50,7 @@ from kibends.pairs import (
     offset_pair_pullback,
     with_nearest_vertices,
 )
+from kibends.simplify import kept_vertices
 
 STUB_SPACINGS = 2
 """An edge leaving a pin this many spacings long or longer gets a direction
@@ -59,6 +63,15 @@ direction pin; less where the section is too short."""
 
 MIN_TAPER = 1e-6
 """mm: the shortest taper, to keep it finite where the gaps agree."""
+
+ROUTING_TOLERANCE = 1e-3
+"""mm a track's routing may be simplified by before its section moves:
+well above the jogs and slivers KiCad's nanometre grid leaves, well below
+the micrometres a pair's end gap may differ from its gap by, which the run
+tapers, and below the fold a short chamfer leaves in the inner track."""
+
+_NOWHERE = CompositeField(())
+"""No obstacles, for merging a track's routing."""
 
 
 class Hold(Enum):
@@ -407,13 +420,31 @@ def _start(
     starting bend if that is why."""
     if given.hold is not None:
         return _held_start(given, a_on_right), given.hold, None
-    start = _moving_start(given, spacing, a_on_right)
-    if not _has_room(given, start, spacing):
+    routed = _routed(given)
+    start = _moving_start(routed, spacing, a_on_right)
+    if not _has_room(routed, start, spacing):
         return _held_start(given, a_on_right), Hold.SHORT, None
     bend = check_bend_radius(start.line, start.gaps.widest, given.a.width)
     if not bend.too_tight:
         return start, None, None
     return _held_start(given, a_on_right), Hold.ROUTING, bend
+
+
+def _routed(given: PairInput) -> PairInput:
+    """The section with each track's routing simplified within
+    `ROUTING_TOLERANCE`, through the track's ends and pins: a jog or sliver
+    too short to see is no bend. A track merges as it is, not its offset,
+    whose mitres may fold across a corner. Its end edges merge only along
+    their lines, so that the section keeps its ends' directions and gaps."""
+    simplified: list[tuple[ChainCentreline, BoolArray]] = []
+    for track, pinned in ((given.a, given.a_pinned), (given.b, given.b_pinned)):
+        fixed = pinned | _fixed_ends(len(pinned))
+        tolerances = np.full(len(pinned), ROUTING_TOLERANCE)
+        tolerances[[1, -2]] = INSIDE_TOLERANCE
+        kept = kept_vertices(track.points, fixed, _NOWHERE, tolerances)
+        simplified.append((replace(track, points=track.points[kept]), pinned[kept]))
+    (a, a_pinned), (b, b_pinned) = simplified
+    return replace(given, a=a, b=b, a_pinned=a_pinned, b_pinned=b_pinned)
 
 
 def _has_room(given: PairInput, start: _Start, spacing: float) -> bool:

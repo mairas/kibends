@@ -285,7 +285,8 @@ rest of each chain, such as its fan-outs to pads or vias, is smoothed as an
 ordinary chain, and each section meets it where and in the direction it
 did. A section's centreline never bends tighter than its inner track
 allows, half the pitch plus half the track width. A section whose routing
-already bends tighter keeps its own tracks. So does one whose corner the
+already bends tighter keeps its own tracks; a jog or sliver of less than a
+micrometre, such as KiCad leaves on its nanometre grid, does not count. So does one whose corner the
 copper around it keeps from rounding, such as a pad inside a sharp corner,
 or its own parts beyond the corner: the run is repeated with that section
 held, so that the other chains keep clear of its tracks. The repeat goes on from

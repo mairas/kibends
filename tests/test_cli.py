@@ -3764,6 +3764,10 @@ ROUNDED_OFF = 0.05
 at least."""
 GAP_SLACK = GAP_TOLERANCE * PAIR_GAP
 """How far, mm, a pair's gap may stray and still count as coupled."""
+JOG_NM = 100
+"""A sideways jog in a track, nm."""
+JOG_AT_NM = 200_000
+"""nm along a pair's coupled start where its tracks jog."""
 STUB_NEAR_CORNER = 0.02
 """mm before a corner of the pair's inner track where a stub leaves it."""
 STUBS_APART = 0.05
@@ -4094,6 +4098,44 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert pair.held == 0
         assert sorted(board.deleted) == sorted([*PAIR_IDS, "dot"])
+
+    def test_a_sideways_jog_in_both_tracks_is_smoothed_away(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = pair_board()
+        jogs: list[kbt.Track] = []
+        for prefix, net in zip(("p", "n"), USB, strict=True):
+            (straight,) = (t for t in board.tracks if t.id.value == f"{prefix}2")
+            beyond_ids = {f"{prefix}3", f"{prefix}4"}
+            later = [t for t in board.tracks if t.id.value in beyond_ids]
+            # As KiCad leaves one where a track was nudged: the rest of it
+            # moved aside, toward N, so near the section's start that the
+            # centreline's offset turns there within 0.03 mm of it.
+            at = Vector2.from_xy(straight.start.x + JOG_AT_NM, straight.start.y)
+            aside = Vector2.from_xy(at.x, at.y - JOG_NM)
+            step = kipy_track(f"{prefix}jog", net, (0, 0), (0, 0), width=PAIR_WIDTH)
+            step.start, step.end = at, aside
+            beyond = kipy_track(f"{prefix}on", net, (0, 0), (0, 0), width=PAIR_WIDTH)
+            beyond.start = aside
+            beyond.end = Vector2.from_xy(straight.end.x, straight.end.y - JOG_NM)
+            straight.end = at
+            for track in later:
+                track.start = Vector2.from_xy(track.start.x, track.start.y - JOG_NM)
+                track.end = Vector2.from_xy(track.end.x, track.end.y - JOG_NM)
+            jogs += [step, beyond]
+        board.selection = [*board.selection, *jogs]
+        board.tracks = [*board.tracks, *jogs]
+        connect.to(board)
+
+        run()
+
+        ((pair,),) = (r.pairs for r in reports)
+        assert pair.held == 0
+        assert sorted(board.deleted) == sorted(
+            [*PAIR_IDS, "pjog", "pon", "njog", "non"]
+        )
+        gaps = coupled_gaps(*by_net(board).values())
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
     def test_two_pairs_commit_each_joined_and_at_its_gap(
         self, connect: Connector, log: list[str]
