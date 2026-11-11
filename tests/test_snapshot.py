@@ -33,6 +33,7 @@ from conftest import (
     layer_snapshot,
     netclass,
     nm,
+    one_chain,
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -44,7 +45,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
 from kibends import snapshot as snapshot_module
-from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment, extract_chain
+from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment
 from kibends.coords import BOARD_FRAME, UserFrame
 from kibends.snapshot import (
     CONTACT_MARGIN,
@@ -473,7 +474,7 @@ class TestSameNetCopper:
         )
         chain_segment = Segment("a", (0, 0), (10 * NM_PER_MM, 0), 250_000, LAYER, "SIG")
 
-        chain = extract_chain(
+        chain = one_chain(
             [chain_segment], snapshot(fake).same_net_copper("SIG"), frame=BOARD_FRAME
         )
 

@@ -5,7 +5,14 @@ tests/test_snapshot.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 from collections import Counter
-from collections.abc import Callable, Collection, Generator, Iterator, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -40,7 +47,14 @@ from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
 from kibends.bursts import FALLBACK_WARNING
-from kibends.chain import NM_PER_MM
+from kibends.chain import (
+    NM_PER_MM,
+    Chain,
+    SameNetCopper,
+    Segment,
+    extract_chains,
+)
+from kibends.coords import UserFrame
 from kibends.energy import (
     EnergyParams,
     ObstacleField,
@@ -156,6 +170,19 @@ def log() -> Iterator[list[str]]:
 
 def nm(v: float) -> int:
     return round(v * NM_PER_MM)
+
+
+def one_chain(
+    segments: Sequence[Segment],
+    same_net_copper: Iterable[SameNetCopper] = (),
+    *,
+    frame: UserFrame,
+) -> Chain:
+    """The one chain `extract_chains` gives `segments`, with `same_net_copper`
+    on every layer and net."""
+    copper = tuple(same_net_copper)
+    (chain,) = extract_chains(segments, lambda _layer, _net: copper, frame=frame)
+    return chain
 
 
 def vec(x: float, y: float) -> Vector2:

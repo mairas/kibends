@@ -78,7 +78,7 @@ NO_PIECE = -1
 
 
 class ChainError(ValueError):
-    """The selection holds no chain, or `extract_chain`'s tracks are not one."""
+    """The selection holds no track that can be modified."""
 
 
 @dataclass(frozen=True)
@@ -196,8 +196,12 @@ def extract_chains(
     reaches the copper of another track inside it meets it at a junction:
     the other is split at the point of its centreline nearest the end, and
     the end moves there (`_join_mid_track_ends`). `same_net_copper(layer,
-    net)` returns the copper of `net` on `layer` that pins its chains, as
-    for `extract_chain`; a via joining chains on two layers pins both, and a
+    net)` returns the copper of `net` on `layer` that pins its chains: pad,
+    via and copper shape outlines (polygons) and unselected tracks, a track
+    touching a chain where its copper reaches the chain's copper, and pads
+    and vias given as `Contact`s holding it by one sliding vertex instead
+    (`_slides`); zones must not be given, since they reflow after the edit
+    and never pin. A via joining chains on two layers pins both, and a
     net's chain on one layer pins another where its end's copper reaches the
     other's. Where they overlap or cross away from their ends, nothing pins
     either: copper of one net does not interact, and the run may move them
@@ -427,47 +431,6 @@ def _edges_of(adjacency: Adjacency) -> list[Segment]:
     return [s for segs in adjacency.values() for s in segs]
 
 
-def extract_chain(
-    segments: Sequence[Segment],
-    same_net_copper: Iterable[SameNetCopper] = (),
-    *,
-    frame: UserFrame,
-) -> Chain:
-    """Build the one chain that `segments` form, or raise `ChainError`; a
-    zero-length segment off it is left out, as `extract_chains` does.
-
-    `same_net_copper` holds the copper of the chain's net on its layer: pad,
-    via and copper shape outlines (polygons) and unselected tracks. A track
-    touches the chain where its copper reaches the chain's copper. Pads and
-    vias given as `Contact`s hold the chain by one sliding vertex instead
-    (`_slides`).
-    Zones must not be passed: they reflow after the edit, so they never pin.
-    Locked segments stay out of the chain, with a warning; where one touches
-    the chain, it pins it like unselected copper.
-
-    The chain starts at the end with the smaller (x, y).
-    """
-    kept, locked = split_locked(segments)
-    kept = _short_tracks_merged(kept)
-    copper = tuple(same_net_copper)
-    if kept:
-        _, layer, net = _uniform_attributes(kept)
-        joined, _ = _join_mid_track_ends(
-            kept, _fixed_copper(copper, locked, layer, net)
-        )
-        edges, _ = _unique_edges(joined)
-        if edges:
-            _check_degrees(_adjacency(edges, ()), frame)
-            _check_one_piece(
-                _adjacency(edges, ()), _locked_on(locked, layer, net), frame
-            )
-    chains = split_chains(kept, locked, lambda _layer, _net: copper, frame=frame)
-    if not chains:
-        raise ChainError("selected tracks form a closed loop that nothing touches")
-    (chain,) = chains
-    return chain
-
-
 def _fixed_copper(
     copper: Iterable[SameNetCopper], locked: Iterable[Segment], layer: str, net: str
 ) -> list[SameNetCopper]:
@@ -598,42 +561,6 @@ def _mm(p: NmPoint) -> Point2:
 
 def _fmt(p: NmPoint, frame: UserFrame) -> str:
     return f"{frame.point(_mm(p))} mm"
-
-
-def _fmt_width(width_nm: int) -> str:
-    return f"{width_nm / NM_PER_MM:g} mm"
-
-
-def _uniform_attributes(segments: Sequence[Segment]) -> tuple[int, str, str]:
-    width = _single_value(segments, "widths", lambda s: s.width, _fmt_width)
-    layer = _single_value(
-        segments,
-        "layers",
-        lambda s: s.layer,
-        str,
-        "; tracks on several layers do not form one chain",
-    )
-    net = _single_value(segments, "nets", lambda s: s.net, str)
-    return width, layer, net
-
-
-def _single_value[Attribute: (int, str)](
-    segments: Sequence[Segment],
-    what: str,
-    key: Callable[[Segment], Attribute],
-    fmt: Callable[[Attribute], str],
-    hint: str = "",
-) -> Attribute:
-    ids_by_value: dict[Attribute, list[str]] = defaultdict(list)
-    for s in segments:
-        ids_by_value[key(s)].append(s.id)
-    if len(ids_by_value) == 1:
-        return next(iter(ids_by_value))
-    listing = ", ".join(
-        f"{fmt(value)} ({', '.join(ids)})"
-        for value, ids in sorted(ids_by_value.items())
-    )
-    raise ChainError(f"selected tracks have different {what}: {listing}{hint}")
 
 
 def _short_tracks_merged(segments: Sequence[Segment]) -> list[Segment]:
@@ -853,15 +780,6 @@ def _other_end(s: Segment, p: NmPoint) -> NmPoint:
     return s.end if p == s.start else s.start
 
 
-def _check_degrees(adjacency: Adjacency, frame: UserFrame) -> None:
-    for p, segs in sorted(adjacency.items()):
-        if len(segs) > MAX_CHAIN_DEGREE:
-            ids = ", ".join(dict.fromkeys(s.id for s in segs))
-            raise ChainError(
-                f"selected tracks branch at {_fmt(p, frame)}: {ids} meet there"
-            )
-
-
 def _pieces(adjacency: Adjacency) -> list[set[NmPoint]]:
     visited: set[NmPoint] = set()
     pieces: list[set[NmPoint]] = []
@@ -908,39 +826,6 @@ def _split(adjacency: Adjacency, junctions: Collection[NmPoint]) -> list[Adjacen
                             stack.append(onward)
             pieces.append(piece)
     return pieces
-
-
-def _check_one_piece(
-    adjacency: Adjacency, locked: Sequence[Segment], frame: UserFrame
-) -> None:
-    pieces = _pieces(adjacency)
-    if len(pieces) == 1:
-        return
-    piece_of = {p: i for i, piece in enumerate(pieces) for p in piece}
-    locked_adjacency = _adjacency(locked, ())
-    splitters = sorted(
-        {
-            s.id
-            for locked_piece in _pieces(locked_adjacency)
-            if len({piece_of[p] for p in locked_piece if p in piece_of}) > 1
-            for p in locked_piece
-            for s in locked_adjacency[p]
-        }
-    )
-    if splitters:
-        raise ChainError(
-            f"locked segments {', '.join(splitters)} split the selected chain; "
-            "unlock them or select one side only"
-        )
-    described = "; ".join(_describe(piece, adjacency, frame) for piece in pieces)
-    raise ChainError(f"selected tracks form {len(pieces)} separate pieces: {described}")
-
-
-def _describe(piece: set[NmPoint], adjacency: Adjacency, frame: UserFrame) -> str:
-    ends = sorted(p for p in piece if len(adjacency[p]) < MAX_CHAIN_DEGREE)
-    if not ends:
-        return f"loop through {_fmt(min(piece), frame)}"
-    return " to ".join(_fmt(p, frame) for p in ends)
 
 
 def _walk(adjacency: Adjacency, junctions: Collection[NmPoint]) -> list[NmPoint]:

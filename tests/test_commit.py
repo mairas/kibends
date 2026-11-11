@@ -5,14 +5,22 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
-from conftest import COMMIT_CALLS, CommitBoard, kipy_arc, kipy_track, kipy_via, nm
+from conftest import (
+    COMMIT_CALLS,
+    CommitBoard,
+    kipy_arc,
+    kipy_track,
+    kipy_via,
+    nm,
+    one_chain,
+)
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 
 from kibends import commit
-from kibends.chain import Chain, Segment, extract_chain
+from kibends.chain import Chain, Segment
 from kibends.coords import BOARD_FRAME
 from kibends.energy import FloatArray
 from kibends.snapshot import read_selection, segment_from_track, via_from_kipy
@@ -47,7 +55,7 @@ def setup(
         push_error=push_error,
     )
     selected = [segment_from_track(t) for t in tracks]
-    return board, extract_chain(selected, frame=BOARD_FRAME), selected
+    return board, one_chain(selected, frame=BOARD_FRAME), selected
 
 
 def run_commit(
@@ -100,7 +108,7 @@ class TestCommitChain:
         board = CommitBoard(selection=list(tracks), tracks=list(tracks))
         selected = [segment_from_track(t) for t in tracks]
 
-        run_commit(board, extract_chain(selected, frame=BOARD_FRAME), selected)
+        run_commit(board, one_chain(selected, frame=BOARD_FRAME), selected)
 
         assert sorted(board.deleted) == ["a", "b"]
 
@@ -162,7 +170,7 @@ ARC_EDITS: dict[str, list[kbt.Track | kbt.ArcTrack]] = {
 
 def commit_selection(board: CommitBoard) -> None:
     selection = read_selection(cast(kipy.board.Board, board))
-    chain = extract_chain(selection.segments, frame=BOARD_FRAME)
+    chain = one_chain(selection.segments, frame=BOARD_FRAME)
     commit.commit_chains(
         cast(kipy.board.Board, board),
         [(chain, NEW_PATH)],
@@ -274,8 +282,8 @@ def two_chains(
     )
     selected = [segment_from_track(t) for t in tracks]
     chains = [
-        (extract_chain(selected[:2], frame=BOARD_FRAME), NEW_PATH),
-        (extract_chain(selected[2:], frame=BOARD_FRAME), SECOND_PATH),
+        (one_chain(selected[:2], frame=BOARD_FRAME), NEW_PATH),
+        (one_chain(selected[2:], frame=BOARD_FRAME), SECOND_PATH),
     ]
     return board, chains, selected
 
@@ -378,11 +386,11 @@ def via_route(
     selected = [segment_from_track(t) for t in tracks]
     chains = [
         (
-            extract_chain(selected[:1], frame=BOARD_FRAME),
+            one_chain(selected[:1], frame=BOARD_FRAME),
             np.array([[0.0, 0.0], MOVED_TO]),
         ),
         (
-            extract_chain(selected[1:], frame=BOARD_FRAME),
+            one_chain(selected[1:], frame=BOARD_FRAME),
             np.array([MOVED_TO, [10.0, 0.0]]),
         ),
     ]
@@ -509,7 +517,7 @@ class TestSelection:
         board = CommitBoard(selection=list(tracks), tracks=list(tracks))
         selected = [segment_from_track(t) for t in tracks]
 
-        run_commit(board, extract_chain(selected, frame=BOARD_FRAME), selected)
+        run_commit(board, one_chain(selected, frame=BOARD_FRAME), selected)
 
         assert board.selected_ids() == ["c", *board.assigned_ids]
         assert len(board.assigned_ids) == len(NEW_PATH) - 1

@@ -4,6 +4,7 @@ from dataclasses import replace
 from itertools import pairwise
 
 import pytest
+from conftest import one_chain
 from shapely.geometry import LineString, Point, Polygon, box
 
 from kibends.chain import (
@@ -13,7 +14,6 @@ from kibends.chain import (
     Contact,
     SameNetTrack,
     Segment,
-    extract_chain,
     extract_chains,
     shared_track_groups,
 )
@@ -87,7 +87,7 @@ def test_shared_track_groups_join_chains_through_others(
 
 class TestOrdering:
     def test_out_of_order_mixed_direction_segments_form_one_polyline(self) -> None:
-        chain = extract_chain(l_z_segments(), frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, False, False, True)
@@ -103,19 +103,19 @@ class TestOrdering:
             seg("c", (10, 0), (0, 0)),
         ]
 
-        chain = extract_chain(reversed_input, frame=BOARD_FRAME)
+        chain = one_chain(reversed_input, frame=BOARD_FRAME)
 
         assert chain.points[0] == pytest.approx((0, 0))
         assert chain.points[-1] == pytest.approx((20, 5))
 
     def test_single_segment(self) -> None:
-        chain = extract_chain([seg("a", (3, 4), (1, 2))], frame=BOARD_FRAME)
+        chain = one_chain([seg("a", (3, 4), (1, 2))], frame=BOARD_FRAME)
 
         assert_points(chain, [(1, 2), (3, 4)])
         assert chain.pinned == (True, True)
 
     def test_chain_is_frozen(self) -> None:
-        chain = extract_chain(l_z_segments(), frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), frame=BOARD_FRAME)
 
         # The write pyright rejects statically is the one under test.
         with pytest.raises(AttributeError):
@@ -130,7 +130,7 @@ class TestDedupe:
             seg("dot", (10, 5), (10, 5)),
         ]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, False, False, True)
@@ -142,7 +142,7 @@ class TestDedupe:
             seg("dot", (10, 5), (10, 5)),
         ]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert sorted(chain.segment_ids) == ["a", "b", "c", "dot", "dup"]
 
@@ -157,7 +157,7 @@ class TestDedupe:
             c,
         ]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, False, False, True)
@@ -166,20 +166,20 @@ class TestDedupe:
     def test_zero_length_segment_away_from_chain_is_left_out(self) -> None:
         segments = [*l_z_segments(), seg("stray", (50, 50), (50, 50))]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert sorted(chain.segment_ids) == ["a", "b", "c"]
 
     def test_only_zero_length_segments_is_an_error(self) -> None:
         with pytest.raises(ChainError, match="no tracks"):
-            extract_chain([seg("dot", (1, 1), (1, 1))], frame=BOARD_FRAME)
+            one_chain([seg("dot", (1, 1), (1, 1))], frame=BOARD_FRAME)
 
 
 class TestPinning:
     def test_unselected_track_ending_mid_segment_inserts_pinned_vertex(self) -> None:
         tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [tee], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [tee], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, False, True)
@@ -187,7 +187,7 @@ class TestPinning:
     def test_track_ending_at_existing_vertex_pins_it_without_insertion(self) -> None:
         tee = SameNetTrack(LineString([(10, -3), (10, 0)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [tee], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [tee], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, True)
@@ -195,7 +195,7 @@ class TestPinning:
     def test_track_crossing_the_chain_pins_the_crossing(self) -> None:
         crossing = SameNetTrack(LineString([(10 - 2, 2.5), (10 + 2, 2.5)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [crossing], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [crossing], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 2.5), (10, 5), (20, 5)])
         assert chain.pinned == (True, False, True, False, True)
@@ -203,7 +203,7 @@ class TestPinning:
     def test_track_overlapping_the_chain_pins_both_overlap_ends(self) -> None:
         overlap = SameNetTrack(LineString([(2, 0), (6, 0)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [overlap], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [overlap], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (2, 0), (6, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, True, False, False, True)
@@ -213,7 +213,7 @@ class TestPinning:
     ) -> None:
         branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.2)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (2.5, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, False, True)
@@ -221,7 +221,7 @@ class TestPinning:
     def test_wide_track_reaches_further(self) -> None:
         branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.6)]), 1.0)
 
-        chain = extract_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
 
         assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
 
@@ -230,14 +230,14 @@ class TestPinning:
     ) -> None:
         branch = SameNetTrack(LineString([(2.5, 3), (2.5, 0.3)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
 
     def test_pad_outline_crossed_pins_entry_and_exit(self) -> None:
         pad = box(4, -1, 6, 1)
 
-        chain = extract_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (4, 0), (6, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, True, False, False, True)
@@ -245,7 +245,7 @@ class TestPinning:
     def test_round_via_around_a_corner_pins_both_crossings(self) -> None:
         via = Point(10, 0).buffer(0.3)
 
-        chain = extract_chain(l_z_segments(), [via], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [via], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (9.7, 0), (10, 0), (10, 0.3), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, True, False, True)
@@ -253,7 +253,7 @@ class TestPinning:
     def test_chain_ending_inside_pad_pins_endpoint_and_exit(self) -> None:
         pad = box(-1, -1, 1, 1)
 
-        chain = extract_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (1, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, False, True)
@@ -262,7 +262,7 @@ class TestPinning:
         half_width = WIDTH_NM / NM_PER_MM / 2
         pad = box(4, half_width / 2, 6, 2)
 
-        chain = extract_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
 
         assert len(pinned_points(chain)) == 3
         assert pinned_points(chain)[1][1] == pytest.approx(0)
@@ -271,19 +271,19 @@ class TestPinning:
     def test_copper_beyond_the_chain_copper_does_not_pin(self) -> None:
         pad = box(4, 1, 6, 2)
 
-        chain = extract_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [pad], frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
 
     def test_same_net_fill_containing_the_chain_pins_only_endpoints(self) -> None:
         fill = Polygon([(-5, -5), (30, -5), (30, 10), (-5, 10)])
 
-        chain = extract_chain(l_z_segments(), [fill], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [fill], frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
 
     def test_no_surrounding_copper_pins_only_endpoints(self) -> None:
-        chain = extract_chain(l_z_segments(), [], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [], frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
 
@@ -322,7 +322,7 @@ class TestContacts:
         pad = box(-0.6, -0.4, 0.5, 0.4)
         segments = [seg("in", (0, 0), (0.5, 0)), seg("out", (0.5, 0), (3, 3))]
 
-        chain = extract_chain(segments, [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(segments, [contact(pad)], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (0.5, 0), (3, 3)])
         assert chain.pinned == (False, False, True)
@@ -334,7 +334,7 @@ class TestContacts:
     ) -> None:
         pad = box(4, -1, 6, 1)
 
-        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, False, False, False, True)
@@ -353,7 +353,7 @@ class TestContacts:
             seg("e", (8, 0), (14, 0)),
         ]
 
-        chain = extract_chain(segments, [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(segments, [contact(pad)], frame=BOARD_FRAME)
 
         assert sum(chain.pinned) == 2
         assert slide_points(chain) == [
@@ -364,7 +364,7 @@ class TestContacts:
     def test_an_end_inside_a_via_slides_within_its_ring(self) -> None:
         via = Point(0.1, 0).buffer(0.3)
 
-        chain = extract_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
 
         assert chain.pinned == (False, False, False, True)
         assert_slides_within(chain, 0, via)
@@ -373,7 +373,7 @@ class TestContacts:
         # KiCad drags only the track ends at a via's centre along with it.
         via = Point(0, 0).buffer(0.3)
 
-        chain = extract_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(via)], frame=BOARD_FRAME)
 
         assert chain.points[0] == (0, 0)
         assert chain.pinned == (True, False, False, True)
@@ -382,7 +382,7 @@ class TestContacts:
     def test_a_vertex_on_a_contact_s_anchor_is_pinned_there(self) -> None:
         pad = box(9, -1, 11, 1)
 
-        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, True)
@@ -394,7 +394,7 @@ class TestContacts:
         pad = box(8, -1, 11, 1)
         via = Point(10, 0).buffer(0.3)
 
-        chain = extract_chain(
+        chain = one_chain(
             l_z_segments(), [contact(pad), contact(via)], frame=BOARD_FRAME
         )
 
@@ -406,7 +406,7 @@ class TestContacts:
         pad = box(-1, -1, 1, 1)
         stub = SameNetTrack(LineString([(0, -3), (0, 0)]), WIDTH_MM)
 
-        chain = extract_chain(
+        chain = one_chain(
             l_z_segments(), [contact(pad, (0.5, 0)), stub], frame=BOARD_FRAME
         )
 
@@ -417,7 +417,7 @@ class TestContacts:
         pad = box(-1, -1, 1, 1)
         via = Point(0.2, 0).buffer(0.3)
 
-        chain = extract_chain(
+        chain = one_chain(
             l_z_segments(),
             [contact(pad, (0.5, 0)), contact(via)],
             frame=BOARD_FRAME,
@@ -435,7 +435,7 @@ class TestContacts:
         half_width = WIDTH_NM / NM_PER_MM / 2
         pad = box(4, half_width / 2, 6, 2)
 
-        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
 
         assert len(pinned_points(chain)) == 3
         assert chain.slides == ()
@@ -469,7 +469,7 @@ class TestContacts:
         pad = box(4, -1, 6, 1)
         via = Point(5, 0).buffer(0.3)
 
-        chain = extract_chain(
+        chain = one_chain(
             l_z_segments(), [contact(pad), contact(via)], frame=BOARD_FRAME
         )
 
@@ -486,7 +486,7 @@ class TestContacts:
         via = Point(10, 0).buffer(0.3)
         pad = box(14, 4, 16, 6)
 
-        chain = extract_chain(
+        chain = one_chain(
             l_z_segments(), [contact(via), contact(pad)], frame=BOARD_FRAME
         )
 
@@ -500,7 +500,7 @@ class TestContacts:
         pad = box(-0.6, -0.4, 0.6, 0.4)
         segments = [seg("in", (0, 0), (0.5, 0)), seg("out", (0.5, 0), (3, 3))]
 
-        chain = extract_chain(segments, [contact(pad, (0.5, 0))], frame=BOARD_FRAME)
+        chain = one_chain(segments, [contact(pad, (0.5, 0))], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (0.5, 0), (3, 3)])
         assert chain.pinned == (False, True, True)
@@ -510,7 +510,7 @@ class TestContacts:
         pad = box(4, -1, 6, 1)
         stub = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
 
-        chain = extract_chain(l_z_segments(), [contact(pad), stub], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(pad), stub], frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (5, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, False, True)
@@ -529,7 +529,7 @@ class TestContacts:
 
     def test_pinning_the_slides_pins_their_vertices(self) -> None:
         pad = box(4, -1, 6, 1)
-        chain = extract_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
+        chain = one_chain(l_z_segments(), [contact(pad)], frame=BOARD_FRAME)
 
         pinned = chain.with_slides_pinned()
 
@@ -541,7 +541,7 @@ class TestLocked:
     def test_locked_end_segment_is_dropped_with_warning(self, log: list[str]) -> None:
         segments = [*l_z_segments(), seg("lock", (20, 5), (25, 5), locked=True)]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert "lock" not in chain.segment_ids
@@ -550,14 +550,14 @@ class TestLocked:
     def test_locked_segment_continuing_the_chain_pins_only_the_ends(self) -> None:
         segments = [*l_z_segments(), seg("lock", (20, 5), (25, 5), locked=True)]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert chain.pinned == (True, False, False, True)
 
     def test_locked_branch_whose_copper_reaches_the_chain_pins_it(self) -> None:
         segments = [*l_z_segments(), seg("lock", (2.5, 3), (2.5, 0.2), locked=True)]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
 
@@ -591,20 +591,10 @@ class TestLocked:
         assert pinned_points(first) == [(0, 0), (10, 0)]
         assert pinned_points(second) == [(15, 0), (15, 10)]
 
-    def test_extract_chain_still_refuses_a_locked_splitter(self) -> None:
-        segments = [
-            seg("a", (0, 0), (10, 0)),
-            seg("lock", (10, 0), (10, 5), locked=True),
-            seg("c", (10, 5), (20, 5)),
-        ]
-
-        with pytest.raises(ChainError, match=r"locked.*lock.*split"):
-            extract_chain(segments, frame=BOARD_FRAME)
-
     def test_locked_branch_mid_chain_is_dropped_and_its_junction_pinned(self) -> None:
         segments = [*l_z_segments(), seg("lock", (10, 0), (15, -5), locked=True)]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert chain.pinned == (True, True, False, True)
@@ -613,30 +603,18 @@ class TestLocked:
         segments = [seg("a", (0, 0), (10, 0), locked=True)]
 
         with pytest.raises(ChainError, match="no tracks"):
-            extract_chain(segments, frame=BOARD_FRAME)
+            one_chain(segments, frame=BOARD_FRAME)
 
 
 class TestTopologyErrors:
     def test_empty_selection_is_an_error(self) -> None:
         with pytest.raises(ChainError, match="no tracks"):
-            extract_chain([], frame=BOARD_FRAME)
-
-    def test_branch_is_an_error_naming_the_branch_point(self) -> None:
-        segments = [*l_z_segments(), seg("d", (10, 0), (15, -5))]
-
-        with pytest.raises(ChainError, match=r"branch.*\(10\.000, 0\.000\)"):
-            extract_chain(segments, frame=BOARD_FRAME)
-
-    def test_selected_track_ending_mid_segment_is_a_branch(self) -> None:
-        segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0))]
-
-        with pytest.raises(ChainError, match=r"branch.*\(5\.000, 0\.000\).*tee"):
-            extract_chain(segments, frame=BOARD_FRAME)
+            one_chain([], frame=BOARD_FRAME)
 
     def test_track_ending_inside_a_collinear_one_merges_with_it(self) -> None:
         segments = [seg("a", (0, 0), (10, 0)), seg("b", (0, 0), (5, 0))]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert_points(chain, [(0, 0), (5, 0), (10, 0)])
         assert chain.pinned == (True, False, True)
@@ -665,41 +643,13 @@ class TestTopologyErrors:
 
 
 class TestMixedAttributes:
-    def test_mixed_widths_are_an_error_naming_the_widths(self) -> None:
-        segments = [
-            seg("a", (0, 0), (10, 0)),
-            seg("b", (10, 0), (20, 0), width=400_000),
-        ]
-
-        with pytest.raises(ChainError, match=r"widths.*0\.25.*a.*0\.4.*b"):
-            extract_chain(segments, frame=BOARD_FRAME)
-
-    def test_mixed_nets_are_an_error_naming_the_nets(self) -> None:
-        segments = [seg("a", (0, 0), (10, 0)), seg("b", (10, 0), (20, 0), net="GND")]
-
-        with pytest.raises(ChainError, match=r"nets.*GND.*b.*SIG.*a"):
-            extract_chain(segments, frame=BOARD_FRAME)
-
-    def test_two_layers_joined_at_a_via_are_not_one_chain(self) -> None:
-        segments = [
-            seg("a", (0, 0), (10, 0)),
-            seg("b", (10, 0), (20, 0), layer="B.Cu"),
-        ]
-
-        with pytest.raises(
-            ChainError,
-            match=r"layers.*B\.Cu.*F\.Cu.*; tracks on several layers do "
-            r"not form one chain$",
-        ):
-            extract_chain(segments, frame=BOARD_FRAME)
-
     def test_locked_segment_on_another_layer_does_not_count(self) -> None:
         segments = [
             *l_z_segments(),
             seg("lock", (20, 5), (25, 5), layer="B.Cu", locked=True),
         ]
 
-        chain = extract_chain(segments, frame=BOARD_FRAME)
+        chain = one_chain(segments, frame=BOARD_FRAME)
 
         assert chain.layer == LAYER
 
@@ -724,14 +674,6 @@ class TestSeveralChains:
         assert sorted(gnd.segment_ids) == ["g1", "g2"]
         assert_points(sig, [(0, 0), (10, 0), (10, 5), (20, 5)])
         assert sig.pinned == (True, False, False, True)
-
-    def test_one_chain_is_what_extract_chain_gives(self) -> None:
-        segments = [*l_z_segments(), seg("dup", (10, 0), (0, 0))]
-        tee = SameNetTrack(LineString([(5, -3), (5, 0)]), WIDTH_MM)
-
-        assert extract_chains(
-            segments, lambda _layer, _net: [tee], frame=BOARD_FRAME
-        ) == [extract_chain(segments, [tee], frame=BOARD_FRAME)]
 
     def test_selected_chains_of_one_net_crossing_away_from_their_ends_do_not_pin(
         self,
@@ -786,12 +728,6 @@ class TestSeveralChains:
         assert_points(first, [(0, 0), (10, 0)])
         assert_points(second, [(20, 0), (30, 0)])
         assert (first.segment_ids, second.segment_ids) == (("a",), ("b",))
-
-    def test_extract_chain_still_refuses_several_pieces(self) -> None:
-        segments = [seg("a", (0, 0), (10, 0)), seg("b", (20, 0), (30, 0))]
-
-        with pytest.raises(ChainError, match=r"2 separate pieces.*\(20\.000, 0\.000\)"):
-            extract_chain(segments, frame=BOARD_FRAME)
 
     def test_a_width_change_gives_a_chain_per_width(self) -> None:
         segments = [
@@ -937,7 +873,7 @@ class TestLoops:
     def test_a_pad_on_a_corner_cuts_the_loop_there(self) -> None:
         pad = contact(box(9.5, -0.5, 10.5, 0.5))
 
-        chain = extract_chain(square_loop(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(square_loop(), [pad], frame=BOARD_FRAME)
 
         assert chain.points[0] == chain.points[-1] == (10, 0)
         assert chain.pinned == (True, False, False, False, True)
@@ -953,7 +889,7 @@ class TestLoops:
             SameNetTrack(LineString([(5, 13), (5, 10)]), WIDTH_MM),
         ]
 
-        chain = extract_chain(square_loop(), tees, frame=BOARD_FRAME)
+        chain = one_chain(square_loop(), tees, frame=BOARD_FRAME)
 
         assert chain.points[0] == chain.points[-1]
         assert chain.pinned[0] and chain.pinned[-1]
@@ -964,7 +900,7 @@ class TestLoops:
     def test_a_pad_the_loop_passes_pins_the_vertex_it_keeps_there(self) -> None:
         pad = contact(box(4, -1, 6, 1))
 
-        chain = extract_chain(square_loop(), [pad], frame=BOARD_FRAME)
+        chain = one_chain(square_loop(), [pad], frame=BOARD_FRAME)
 
         assert chain.points[0] == chain.points[-1]
         assert chain.points[0] == pytest.approx((5, 0), abs=PIN_TOLERANCE_MM)
@@ -979,7 +915,7 @@ class TestLoops:
         pad = box(-0.5, -0.5, 0.5, 0.5)
         tee = SameNetTrack(LineString([(5, 13), (5, 10)]), WIDTH_MM)
 
-        chain = extract_chain(
+        chain = one_chain(
             square_loop(), [contact(pad, anchor=(0.2, 0.2)), tee], frame=BOARD_FRAME
         )
 
@@ -1018,26 +954,7 @@ class TestLoops:
         assert chain.segment_ids == ("other",)
 
     def test_a_loop_nothing_touches_is_no_chain(self) -> None:
-        with pytest.raises(ChainError, match="loop"):
-            extract_chain(square_loop(), frame=BOARD_FRAME)
-
-
-def test_extract_chain_gives_separate_pieces_in_the_frame() -> None:
-    segments = [seg("a", (0, 0), (10, 0)), seg("b", (20, 0), (30, 0))]
-
-    with pytest.raises(
-        ChainError, match=r"pieces: \(-10\.000, -20\.000\) mm to \(0\.000, -20"
-    ):
-        extract_chain(segments, frame=GRID_FRAME)
-
-
-def test_extract_chain_gives_a_branch_in_the_frame() -> None:
-    segments = [*l_z_segments(), seg("tee", (5, -3), (5, 0))]
-
-    with pytest.raises(
-        ChainError, match=r"branch at \(-5\.000, -20\.000\) mm: a, tee meet"
-    ):
-        extract_chain(segments, frame=GRID_FRAME)
+        assert extract_chains(square_loop(), frame=BOARD_FRAME) == []
 
 
 def cut_at(
