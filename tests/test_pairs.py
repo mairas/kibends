@@ -18,7 +18,6 @@ from kibends.pairs import (
     check_bend_radius,
     complementary_net,
     find_pair,
-    gap_range,
     nets_pair,
     offset_pair,
     offset_pair_pullback,
@@ -732,26 +731,6 @@ def test_a_fold_off_the_axes_is_too_tight() -> None:
             (math.cos(angle), -math.sin(angle)), (math.sin(angle), math.cos(angle))
         )
         assert check_bend_radius(FOLDED @ turn, GAP, WIDTH).too_tight, angle
-
-
-def test_gap_range_reports_narrowing() -> None:
-    a = array((0.0, 0.0), (10.0, 0.0))
-    b = array((0.0, 2 * HALF_PITCH), (5.0, 2 * HALF_PITCH), (10.0, 0.3))
-
-    smallest, largest = gap_range(a, b, WIDTH)
-
-    assert smallest == pytest.approx(0.3 - WIDTH)
-    assert largest == pytest.approx(GAP)
-
-
-@pytest.mark.parametrize("turn", [math.pi / 4, math.pi / 2])
-def test_gap_range_does_not_count_the_outer_corner_of_a_mitred_turn(
-    turn: float,
-) -> None:
-    centreline = array((0.0, 0.0), (5.0, 0.0), (5.0 + math.cos(turn), math.sin(turn)))
-    right, left = offset_pair(centreline, GAP, WIDTH)
-
-    assert gap_range(right, left, WIDTH) == pytest.approx((GAP, GAP))
 
 
 def pinned(net: str, points: FloatArray, *at: int) -> Chain:

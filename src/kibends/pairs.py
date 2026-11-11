@@ -60,8 +60,9 @@ SAMPLES_PER_WIDTH = 4
 """Both tracks are sampled at this many points per track width."""
 
 SQUARE_SLACK = 1e-9
-"""mm: a foot this close to an edge's end still counts as inside it, so that
-a point opposite a straight vertex does not drop out."""
+"""mm: a point or projection this close to an edge's end counts as at it, so
+that a point on a vertex lies on both edges there and edges that end square
+across each other still face each other."""
 
 BEND_RADIUS_TOLERANCE = 1e-3
 """Relative: a dense polyline drawn at the radius limit measures a hair below
@@ -675,39 +676,13 @@ def centreline(a: FloatArray, b: FloatArray, width: float) -> Centreline:
     return Centreline(a + shift * miter, a_on_right=shift < 0.0)
 
 
-def gap_range(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
-    """The smallest and largest edge-to-edge gap between two tracks.
-
-    The smallest is exact: between polylines it occurs at a vertex. The
-    largest is sampled, square across: from points whose nearest point on
-    the other track lies inside an edge. A mitred pair's outer corner lies
-    farther from the inner track than either of its edges, by
-    pitch·(1/cos(turn/2) - 1), but the gap across the edges stays the pair's.
-    """
-    near = _centre_nearest(a, b, width)
-    square = near.distance[near.square] if near.square.any() else near.distance
-    return float(near.distance.min()) - width, float(square.max()) - width
-
-
 def _centre_distances(a: FloatArray, b: FloatArray, width: float) -> FloatArray:
     """Distances from samples along each track to the other track's centre."""
-    return _centre_nearest(a, b, width).distance
-
-
-class _Across(NamedTuple):
-    distance: FloatArray
-    square: BoolArray
-    """Whether the nearest point lies inside an edge, not at its end."""
-
-
-def _centre_nearest(a: FloatArray, b: FloatArray, width: float) -> _Across:
     step = width / SAMPLES_PER_WIDTH
     samples_a = shapely.get_coordinates(shapely.segmentize(LineString(a), step))
     samples_b = shapely.get_coordinates(shapely.segmentize(LineString(b), step))
-    near_a, near_b = _nearest(samples_a, b), _nearest(samples_b, a)
-    return _Across(
-        np.concatenate([near_a.distance, near_b.distance]),
-        np.concatenate([near_a.square, near_b.square]),
+    return np.concatenate(
+        [_nearest(samples_a, b).distance, _nearest(samples_b, a).distance]
     )
 
 
@@ -718,8 +693,6 @@ class _Nearest(NamedTuple):
     foot: FloatArray
     along: FloatArray
     distance: FloatArray
-    square: BoolArray
-    """Whether the foot lies inside its edge rather than at one of its ends."""
     edge: IntArray
     """The index of the polyline's edge the foot lies on."""
 
@@ -737,15 +710,8 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
     t = np.clip(projection, 0.0, line.lengths[index])
     foot = line.starts[index] + t[:, None] * line.directions[index]
     offset = points - foot
-    square = (projection > -SQUARE_SLACK) & (
-        projection < line.lengths[index] + SQUARE_SLACK
-    )
     return _Nearest(
-        foot,
-        line.arc[index] + t,
-        np.hypot(offset[:, 0], offset[:, 1]),
-        square,
-        index,
+        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), index
     )
 
 

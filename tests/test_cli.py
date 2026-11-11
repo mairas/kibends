@@ -24,6 +24,7 @@ from conftest import (
     CommitBoard,
     FakeKiCad,
     Ticking,
+    gap_range,
     kipy_arc,
     kipy_copper_zone,
     kipy_group,
@@ -72,7 +73,7 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput
-from kibends.pairs import GAP_TOLERANCE, BendCheck, gap_range, offset_pair
+from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.results import PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 from kibends.vias import StaticVia, ViaInput
@@ -3319,7 +3320,6 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
         nets=("USB_D+", "USB_D-"),
         layer="F.Cu",
         gap=0.15,
-        gap_after=(0.14, 0.16),
         skew_before=0.0,
         skew_after=0.1,
         sections=1,
@@ -3816,7 +3816,6 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.nets, pair.layer) == (USB, "F.Cu")
         assert pair.gap == pytest.approx(PAIR_GAP, abs=REPORTED)
-        assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         # The two corners turn opposite ways, so the tracks start equally long.
         assert pair.skew_before == pytest.approx(0.0, abs=REPORTED)
 
@@ -4037,8 +4036,6 @@ class TestPairs:
         assert board.calls == COMMIT_CALLS
         (pairs,) = (r.pairs for r in reports)
         assert [(p.sections, p.held) for p in pairs] == [(1, 0), (1, 0)]
-        for pair in pairs:
-            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         assert not [w for w in log if "on its own" in w or "do not run coupled" in w]
         lines = by_net(board)
         p = [line for line in lines[USB[0]] if {x for x, _ in line.coords} != {STUB_AT}]
@@ -4062,8 +4059,6 @@ class TestPairs:
         assert board.calls == COMMIT_CALLS
         (pairs,) = (r.pairs for r in reports)
         assert [(p.sections, p.held) for p in pairs] == [(1, 0)] * 3
-        for pair in pairs:
-            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
         assert not unexpected_warnings(log)
         assert not {f"m{k}" for k in range(len(MEANDER) - 1)} & set(board.deleted)
         # USB_D+ is cut opposite the stub and both ends of the meander.
@@ -4657,11 +4652,11 @@ SPLIT_SECTIONS = ((0.0, 4.0), (6.0, 11.0))
 SPLIT_DETOUR = 1.2
 
 
-def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
+def split_pair_board() -> CommitBoard:
     """Pair USB_D+/USB_D- fanned out at both ends, coupled along y = 0 in
     two straight sections, split by a detour of each track outward around a
-    pad of another net; the second section at `second_gap`."""
-    h, h2 = PAIR_HALF_PITCH, (second_gap + PAIR_WIDTH) / 2
+    pad of another net."""
+    h = PAIR_HALF_PITCH
     (start, split), (rejoin, end) = SPLIT_SECTIONS
     tracks: list[kbt.Track] = []
     for net, side, prefix in (("USB_D+", 1.0, "p"), ("USB_D-", -1.0, "n")):
@@ -4671,9 +4666,9 @@ def split_pair_board(second_gap: float = PAIR_GAP) -> CommitBoard:
             (split, side * h),
             (split + 0.5, side * SPLIT_DETOUR),
             (rejoin - 0.5, side * SPLIT_DETOUR),
-            (rejoin, side * h2),
-            (end, side * h2),
-            (end + 1.0, side * (1.0 + h2)),
+            (rejoin, side * h),
+            (end, side * h),
+            (end + 1.0, side * (1.0 + h)),
         ]
         tracks += [
             kipy_track(f"{prefix}{k + 1}", net, a, b, width=PAIR_WIDTH)
@@ -4766,22 +4761,6 @@ def test_two_pairs_at_clearance_both_smooth_and_simplify(
     usb = unary_union([*lines["USB_D+"], *lines["USB_D-"]])
     eth = unary_union([*lines["ETH_P"], *lines["ETH_N"]])
     assert usb.distance(eth) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
-
-
-NARROWER_GAP = 0.14
-"""Of the second section of a split pair: within the pair's tolerance."""
-
-
-@pytest.mark.usefixtures("coarse_optimizer")
-def test_reports_the_gap_range_over_every_section(
-    connect: Connector, reports: list[pipeline.RunReport]
-) -> None:
-    connect.to(split_pair_board(NARROWER_GAP))
-
-    run("--dry-run")
-
-    ((pair,),) = (r.pairs for r in reports)
-    assert pair.gap_after == pytest.approx((NARROWER_GAP, PAIR_GAP), abs=REPORTED)
 
 
 def routed_too_tightly_board() -> CommitBoard:
@@ -5082,8 +5061,7 @@ def test_a_pair_turning_back_around_a_pad_keeps_clear_of_itself(
 
     run(f"--repulsion={V_REPULSION}")
 
-    ((pair,),) = (r.pairs for r in reports)
-    assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+    ((_,),) = (r.pairs for r in reports)
     p, n = (unary_union(lines) for lines in by_net(board).values())
     assert p.distance(n) - PAIR_WIDTH >= PAIR_GAP - NM_ROUNDING
 

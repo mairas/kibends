@@ -22,6 +22,7 @@ import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
+import shapely
 from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
@@ -190,6 +191,50 @@ def clearances(polyline: FloatArray, field: DistanceField) -> FloatArray:
     ]
     distance, _ = field.signed_distance(np.concatenate(points))
     return distance
+
+
+GAP_SAMPLES_PER_WIDTH = 4
+"""Points per track width at which `gap_range` samples each track."""
+CORNER_SLACK = 1e-9
+"""mm: a nearest point this close to a vertex lies at it, for `gap_range`."""
+
+
+def gap_range(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]:
+    """The smallest and largest edge-to-edge gap between two tracks of
+    `width`.
+
+    The smallest is exact: between polylines it occurs at a vertex. The
+    largest is sampled, square across: from points whose nearest point on
+    the other track lies inside an edge, not at a vertex. A mitred pair's
+    outer corner lies farther from the inner track than either of its
+    edges, but the gap across the edges stays the pair's."""
+    smallest = shapely.LineString(a).distance(shapely.LineString(b))
+    step = width / GAP_SAMPLES_PER_WIDTH
+    across: list[FloatArray] = []
+    for here, there in ((a, b), (b, a)):
+        samples = shapely.points(
+            shapely.get_coordinates(shapely.segmentize(shapely.LineString(here), step))
+        )
+        other = shapely.LineString(there)
+        # types-shapely leaves the vectorised functions' kwargs untyped.
+        at: FloatArray = np.asarray(
+            shapely.line_locate_point(other, samples),  # pyright: ignore[reportUnknownMemberType]
+            dtype=float,
+        )
+        distance: FloatArray = np.asarray(
+            shapely.distance(samples, other),  # pyright: ignore[reportUnknownMemberType]
+            dtype=float,
+        )
+        vertices = np.concatenate(
+            [[0.0], np.cumsum(np.hypot(*np.diff(there, axis=0).T))]
+        )
+        square = np.abs(at[:, None] - vertices[None]).min(axis=1) > CORNER_SLACK
+        across.append(distance[square])
+    square_distances = np.concatenate(across)
+    largest = (
+        float(square_distances.max()) if len(square_distances) else float(smallest)
+    )
+    return float(smallest) - width, largest - width
 
 
 def one_chain(

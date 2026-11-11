@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import Ticking
+from conftest import Ticking, gap_range
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
@@ -55,7 +55,6 @@ from kibends.pairs import (
     GAP_TOLERANCE,
     bend_radius_limit,
     check_bend_radius,
-    gap_range,
     offset_pair,
 )
 from kibends.polylines import SelfCheck, resample

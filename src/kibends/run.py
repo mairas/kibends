@@ -89,7 +89,6 @@ from kibends.pair_layout import (
     find_pairs,
     lay_out,
 )
-from kibends.pairs import gap_range
 from kibends.polylines import measure
 from kibends.results import (
     ChainResult,
@@ -210,8 +209,6 @@ class PairReport:
     layer: str
     gap: float
     """The measured gap its coupled sections keep, their median, mm."""
-    gap_after: tuple[float, float]
-    """Smallest and largest gap along the result's coupled sections, mm."""
     skew_before: float
     skew_after: float
     """Length difference of its two tracks, mm."""
@@ -1014,7 +1011,6 @@ def _pair_reports(
     pair_reports: list[PairReport] = []
     for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
         a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
-        gaps = [gap_range(*tracks[k], a.width) for k in sections]
         ours = [results[k] for k in sections]
         before = (_length(np.array(a.points)), _length(np.array(b.points)))
         after = (
@@ -1025,7 +1021,6 @@ def _pair_reports(
                 nets=(a.net, b.net),
                 layer=a.layer,
                 gap=pair.pair.gap,
-                gap_after=(min(g[0] for g in gaps), max(g[1] for g in gaps)),
                 skew_before=abs(before[0] - before[1]),
                 skew_after=abs(next(after) - next(after)),
                 sections=len(sections),
