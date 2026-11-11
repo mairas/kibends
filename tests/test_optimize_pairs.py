@@ -1045,18 +1045,21 @@ The other two mirror them, run the other way."""
 ACROSS_N_CORNER = 9.0
 """x of a point on P's middle straight whose nearest point on N is N's
 corner at the straight's end."""
+QUICK_SETTLE = 0.02
+"""mm, the settled change of the runs below: four times a real run's, so
+that they converge in under a second. They run to convergence, since where
+a run cut off unconverged stops depends on the CPU."""
 DEFAULT_SPACING = replace(
-    COARSE, spacing=OptimizerSettings().spacing, settled_change=0.002, max_iterations=4
+    COARSE, spacing=OptimizerSettings().spacing, settled_change=QUICK_SETTLE
 )
 """The default spacing, at which a section's direction pins and its starting
 bend are those of a real run, with short bursts to run fast."""
-COARSE_CAPPED = replace(COARSE, max_iterations=12)
-"""`COARSE`, stopped before rounding a corner close to a pin's direction
-pin settles fully, about 35 iterations, to run fast."""
+COARSE_QUICK = replace(COARSE, settled_change=QUICK_SETTLE)
 SPACINGS = [
-    pytest.param(COARSE_CAPPED, id="coarse"),
+    pytest.param(COARSE_QUICK, id="coarse"),
     pytest.param(DEFAULT_SPACING, id="default"),
 ]
+CONVERGED = {Termination.CONVERGED, Termination.NOTHING_TO_DO}
 PINNED_HOLDS = {None, Hold.SHORT, Hold.ROUTING}
 """How a section with pins between its ends may be held: as routed, where
 what a pin keeps of its routing bends too tightly or leaves nothing to
@@ -1102,11 +1105,12 @@ def pinned_near(
 def assert_kept_or_held(
     chains: Sequence[Chain], settings: OptimizerSettings, gap: float = DP_GAP
 ) -> Smoothed:
-    """Smooth `chains`: every pin stays, the joined tracks keep the pair's
-    gap, so they neither narrow nor overlap, and no section is held after
-    the run for its bend, nor ends it bending too tightly."""
+    """Smooth `chains` to convergence: every pin stays, the joined tracks
+    keep the pair's gap, so they neither narrow nor overlap, and no section
+    is held after the run for its bend, nor ends it bending too tightly."""
     out = smoothed(chains, settings)
 
+    assert out.result.termination in CONVERGED
     assert_pins_kept(chains, out.joined)
     p, n = out.joined
     low, high = gap_range(p, n, PAIR_WIDTH)
