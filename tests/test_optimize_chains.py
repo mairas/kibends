@@ -1534,6 +1534,25 @@ def test_a_burst_minimises_over_its_scaled_variables(
     assert np.median(middle) < PRESSED_SCALE
 
 
+def test_a_free_interior_vertex_between_edges_of_the_spacing_is_the_reference() -> None:
+    spacing = DEFAULT_SETTINGS.spacing
+    points = np.array([(0.0, 0.0), (spacing, 0.0), (2 * spacing, 0.0)])
+    layout = optimize_module._Layout(  # pyright: ignore[reportPrivateUsage]
+        starts=[points],
+        positions=[],
+        index=[np.array([-1, 0, -1], dtype=np.intp)],
+        offsets=[np.zeros_like(points)],
+        via_index=np.zeros(0, dtype=np.intp),
+        count=1,
+    )
+
+    stiffness = optimize_module._length_stiffness(  # pyright: ignore[reportPrivateUsage]
+        layout
+    )
+
+    np.testing.assert_array_equal(stiffness, [REFERENCE_STIFFNESS])
+
+
 def test_no_variable_scales_above_one() -> None:
     scale = optimize_module._scale(  # pyright: ignore[reportPrivateUsage]
         np.array([0.0, REFERENCE_STIFFNESS, 4 * REFERENCE_STIFFNESS]),
