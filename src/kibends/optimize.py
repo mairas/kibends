@@ -164,7 +164,7 @@ its clearance of any obstacle, or its stops, than it started.
 When it stops
 -------------
 A problem settles when its burst moves nothing by `settled_change` and
-moves nothing back but a section's own parts, when its lowest energy and
+moves nothing back, when its lowest energy and
 its tracks' length stall over `stall_window` bursts, the energy by a
 tolerance for each moving member and via and the length by one
 (`stalled`), or after MAX_ABNORMAL_BURSTS abnormal bursts in a row. The
@@ -626,7 +626,8 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
 
 def _starting(problems: Sequence[_Problem], setup: float, *, again: bool) -> str:
     """One line on the run about to start, after `setup` seconds of setup,
-    `again` when it repeats a run from an earlier one's result."""
+    `again` when it repeats an earlier run, from the inputs, with sections
+    held."""
     count = len(problems)
     return (
         f"Optimizer set up{' again' if again else ''} in {setup:.1f} s: "
