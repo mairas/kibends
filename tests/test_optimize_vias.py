@@ -14,7 +14,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import neutral_distance
+from conftest import build_via_obstacles, neutral_distance
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
 from shapely.geometry import LineString, Point, box
@@ -49,7 +49,6 @@ from kibends.obstacles import (
     ChainCentreline,
     Obstacle,
     Obstacles,
-    build_via_obstacles,
     own_net_stops,
     split_via_obstacles,
     via_via_inflation,

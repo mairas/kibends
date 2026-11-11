@@ -9,6 +9,7 @@ import kipy.board
 import kipy.board_types as kbt
 import pytest
 from conftest import (
+    BOARD_FRAME,
     PAD_HALF_SIZE,
     TEXT_HALF_HEIGHT,
     TEXT_HALF_WIDTH,
@@ -46,7 +47,7 @@ from shapely.geometry.base import BaseGeometry
 
 from kibends import snapshot as snapshot_module
 from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.coords import UserFrame
 from kibends.snapshot import (
     CONTACT_MARGIN,
     MIN_ARC_SEGMENTS,

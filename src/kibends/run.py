@@ -224,7 +224,7 @@ class PairReport:
 @dataclass(frozen=True)
 class OptimizerReport:
     chains: tuple[ChainReport, ...]
-    """In the order `extract_chains` gives."""
+    """In the order `chain.split_chains` gives."""
     vias: tuple[ViaReport, ...]
     """The movable vias, in selection order."""
     pairs: tuple[PairReport, ...]

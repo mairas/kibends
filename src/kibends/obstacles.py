@@ -46,7 +46,7 @@ A chain's static field is one per (layer, net, width), from other nets'
 copper, holes, keepouts and the board edge, with every selected track and
 moving via removed (`build_obstacles`); no copper of the chain's net is an
 obstacle. A moving via's field spans every layer it spans, including rule
-areas keeping out vias (`build_via_obstacles`). What only limits a via
+areas keeping out vias (`split_via_obstacles`). What only limits a via
 without repelling it is held apart, as the board edge is: the outside of
 where its zones connect it (`containment`) and the fabrication rules
 within its net, hole-to-hole and pad overlap (`own_net_stops`). On a
@@ -2118,16 +2118,17 @@ def _layer_obstacles(
     return Obstacles(items, outline, edge_clearance + keeper.radius)
 
 
-def build_via_obstacles(
+def split_via_obstacles(
     layers: Sequence[LayerSnapshot],
     via: Via,
+    split: Callable[[Via], bool],
     *,
     moving: Collection[str] = frozenset(),
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     zones: Sequence[ViaZone] = (),
-) -> ObstacleField:
+) -> tuple[ObstacleField, Obstacles | None]:
     """Obstacles for `via` at any position, over every layer of `layers` it
     spans. The outside of the regions of `zones` is not among them, nor is
     anything of its own net: those only limit where the via may go and do
@@ -2146,26 +2147,11 @@ def build_via_obstacles(
     minimum. The via itself and the vias in `moving`, which the caller adds
     at their current positions, are left out; so is the copper of zones,
     which KiCad refills.
+
+    The vias of other nets that `split` picks are left out of the field and
+    come back apart, as obstacles to `via`, each as the field would count
+    it, or None if it picks none; both from one reading of the layers.
     """
-    found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
-    return _via_field(found, via, found.others, edge_clearance, zones)
-
-
-def split_via_obstacles(
-    layers: Sequence[LayerSnapshot],
-    via: Via,
-    split: Callable[[Via], bool],
-    *,
-    moving: Collection[str] = frozenset(),
-    edge_clearance: float = EDGE_CLEARANCE,
-    hole_clearance: float = HOLE_CLEARANCE,
-    hole_to_hole: float = HOLE_TO_HOLE,
-    zones: Sequence[ViaZone] = (),
-) -> tuple[ObstacleField, Obstacles | None]:
-    """`build_via_obstacles` without the vias of other nets that `split`
-    picks, and those vias as obstacles to `via`, each as the field would
-    count it, or None if it picks none; both from one reading of the
-    layers."""
     found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
     picked = [v for v in found.others if split(v)]
     kept = [v for v in found.others if not split(v)]
@@ -2188,8 +2174,8 @@ def _via_field(
     edge_clearance: float,
     zones: Sequence[ViaZone],
 ) -> ObstacleField:
-    """`build_via_obstacles` of `via` in `found`, with only `others` of the
-    vias of other nets there."""
+    """`split_via_obstacles`' field of `via` in `found`, with only `others`
+    of the vias of other nets there."""
     spanned, keeper = found.spanned, found.keeper
     drilled = [p for p in spanned[0].pads if not _plated_of(p, via)]
 
@@ -2331,13 +2317,6 @@ def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
     return CompositeField(parts) if parts else None
 
 
-def contained(field: ObstacleField, zones: Iterable[ViaZone]) -> ObstacleField:
-    """`field` with the outside of the regions of `zones`: every limit on
-    where a via may go."""
-    inside = containment(zones)
-    return field if inside is None else CompositeField([field, inside])
-
-
 def moving_via_obstacles(
     layer: str,
     net: str,
@@ -2379,7 +2358,7 @@ def via_via_inflation(
     other_zones: Sequence[ViaZone] = (),
 ) -> float | None:
     """The distance `via`'s centre keeps from `other`'s, mm, as
-    `build_via_obstacles` counts a via on the board; None if no rule
+    `split_via_obstacles` counts a via on the board; None if no rule
     applies, as for two vias whose spans do not overlap.
 
     Rings and holes of another net keep the copper and hole clearances,

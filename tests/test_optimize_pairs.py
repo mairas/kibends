@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import Ticking, gap_range
+from conftest import Ticking, gap_range, layer_energy, total_energy
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
@@ -38,14 +38,8 @@ from kibends.bursts import (
 )
 from kibends.chain import Chain
 from kibends.contacts import no_contacts
-from kibends.energy import (
-    EnergyParams,
-    ObstacleField,
-    TermValue,
-    arc_lengths,
-    total_energy,
-)
-from kibends.members import Member, layer_energy, seen_parts
+from kibends.energy import EnergyParams, ObstacleField, TermValue, arc_lengths
+from kibends.members import Member, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import optimize_chains

@@ -20,6 +20,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import violations
 from distance_fields import FloatArray, FreeSpace
 from reference_fields import chain_obstacles_for_via
 from scenarios import (
@@ -76,7 +77,6 @@ from kibends.obstacles import (
 from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
 from kibends.pairs import complementary_net
-from kibends.polylines import violations
 from kibends.seen import (
     SKIN_LEAST,
     STATIC_SKIN,

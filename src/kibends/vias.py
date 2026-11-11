@@ -93,7 +93,7 @@ class ViaInput:
     via's centre."""
     field: ObstacleField
     """Obstacles for the via over every layer it spans, as
-    `build_via_obstacles` gives them: without the selected chains and the
+    `obstacles.split_via_obstacles` gives them: without the selected chains and the
     moving vias, which the optimizer adds at their current shapes."""
     clearance: float
     """Its net's netclass clearance, mm."""

@@ -3,9 +3,9 @@
 
 `resample` lays each span between fixed vertices out at uniform arc-length
 spacing, as every burst starts. `measure` gives a polyline's length and
-bend statistics (`results.PolylineStats`), and `violations`
-counts where it enters its static clearance away from its anchors, which
-the best state may not add to. `shape_change` is how far a burst moved a
+bend statistics (`results.PolylineStats`), and `count_violations`
+counts where it enters its clearance away from its anchors, which the best
+state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
 bend an edge newly below the limit.
@@ -16,12 +16,10 @@ from itertools import pairwise
 
 import numpy as np
 
-from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import (
     MIN_EDGE_LENGTH,
     BoolArray,
     FloatArray,
-    ObstacleField,
     arc_lengths,
 )
 from kibends.pairs import bend_radii, too_tight
@@ -43,39 +41,21 @@ SHAPE_WINDOW = 3
 BEND_REACH = np.arange(-1, 3)
 
 
-def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> int:
-    """Places where the polyline enters the clearance away from its anchors.
-
-    Each corner cut, an edge with both ends clear that passes through an
-    obstacle, counts once, and so does each run of consecutive vertices
-    inside the clearance that holds no anchor. A run that holds an anchor
-    in the clearance cannot move away and is not counted.
-    A run is consecutive in the chain, so inside vertices in two touching
-    or overlapping obstacles form one. The count says nothing about how deep
-    a violation goes, and an edge from any run to a clear vertex adds nothing
-    to it whatever obstacles the edge passes through. Vertices and edges
-    within INSIDE_TOLERANCE of the clearance count as clear, so a track
+def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
+    """Places where a polyline enters the clearance away from its
+    `anchors`, given the vertices `inside` the clearance and the edges that
+    `cut` into it, each by more than INSIDE_TOLERANCE, so that a track
     routed at exactly the clearance starts with no violations.
 
-    This is the count's definition, against one field. The optimizer asks
-    its fields for every member at once and counts with `count_violations`
-    (`optimize._Problem.violations`); the tests hold the two to the same
-    answer.
-    """
-    distance, _ = field.signed_distance(points)
-    inside = distance < -INSIDE_TOLERANCE
-    ends_clear = ~inside[:-1] & ~inside[1:]
-    cut = np.zeros(len(ends_clear), dtype=bool)
-    cut[ends_clear] = ~field.segments_clear(
-        points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
-    )
-    return count_violations(inside, cut, anchors)
-
-
-def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
-    """`violations` of a polyline whose vertices `inside` lie in the
-    clearance and whose edges `cut` enter it, each by more than
-    INSIDE_TOLERANCE; only the cut edges with both ends clear count."""
+    Each corner cut, an edge with both ends clear that enters the
+    clearance, counts once, and so does each run of consecutive vertices
+    inside the clearance that holds no anchor; only the cut edges with both
+    ends clear count. A run that holds an anchor in the clearance cannot
+    move away and is not counted. A run is consecutive in the chain, so
+    inside vertices in two touching or overlapping obstacles form one. The
+    count says nothing about how deep a violation goes, and an edge from
+    any run to a clear vertex adds nothing to it whatever obstacles the edge
+    passes through."""
     ends_clear = ~inside[:-1] & ~inside[1:]
     cuts = np.count_nonzero(cut & ends_clear)
     run_starts = inside & ~np.concatenate(([False], inside[:-1]))

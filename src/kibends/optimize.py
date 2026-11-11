@@ -985,7 +985,7 @@ class _Problem:
         positions: Sequence[FloatArray],
         seen: Seen,
     ) -> list[int]:
-        """Per member at `polylines`, its `polylines.violations` of its
+        """Per member at `polylines`, its `polylines.count_violations` of its
         static copper, the other members and the vias at `positions`
         together, every member's at once through `seen`, what they see
         there."""

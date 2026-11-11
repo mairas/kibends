@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
-from conftest import clearances
+from conftest import clearances, total_energy, violations
 from distance_fields import Box, Disc, FloatArray, FreeSpace, MisleadingWalls, Union
 from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
@@ -25,11 +25,11 @@ from kibends.bursts import (
     Revert,
     Stop,
 )
-from kibends.energy import BoolArray, ObstacleField, total_energy
+from kibends.energy import BoolArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
-from kibends.polylines import measure, resample, violations
+from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
 

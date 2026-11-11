@@ -49,25 +49,45 @@ from loguru import logger
 from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
-from kibends.bursts import FALLBACK_WARNING
+from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE
 from kibends.chain import (
     NM_PER_MM,
     Chain,
+    Point2,
     SameNetCopper,
     Segment,
-    extract_chains,
+    split_chains,
+    split_locked,
 )
 from kibends.coords import UserFrame
 from kibends.energy import (
+    BoolArray,
     DistanceField,
     EnergyParams,
     FloatArray,
     ObstacleField,
+    TermValue,
     attraction_integrand,
+    bend_radius_energy,
+    edge_integral,
     obstacle_integrand,
+    obstacle_reach,
+    quadrature_points,
+    shape_energy,
 )
-from kibends.obstacles import Obstacles
-from kibends.snapshot import BoardSnapshot, LayerSnapshot
+from kibends.members import Member, members_energy, seen_parts
+from kibends.obstacles import (
+    EDGE_CLEARANCE,
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
+    CompositeField,
+    Obstacles,
+    containment,
+    split_via_obstacles,
+)
+from kibends.polylines import count_violations
+from kibends.seen import Seen
+from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
@@ -177,6 +197,9 @@ def nm(v: float) -> int:
     return round(v * NM_PER_MM)
 
 
+BOARD_FRAME = UserFrame()
+"""The board frame itself, as a grid origin at the page origin gives it."""
+
 CLEARANCE_STEP = 0.01
 """mm between the points along a polyline's edges where `clearances` looks."""
 
@@ -235,6 +258,127 @@ def gap_range(a: FloatArray, b: FloatArray, width: float) -> tuple[float, float]
         float(square_distances.max()) if len(square_distances) else float(smallest)
     )
     return float(smallest) - width, largest - width
+
+
+def obstacle_energy(
+    points: FloatArray, field: DistanceField, params: EnergyParams
+) -> TermValue:
+    """The obstacle terms of one polyline's energy in `field` alone, with
+    the gradient of every vertex, fixed ones included."""
+    distance, direction = field.smooth_distance(
+        quadrature_points(points, params.points_per_edge),
+        reach=obstacle_reach(params),
+    )
+    value, gradient, _ = edge_integral(
+        points, distance, direction, obstacle_integrand(params), params.points_per_edge
+    )
+    return value, gradient
+
+
+def total_energy(
+    points: FloatArray,
+    fixed: BoolArray,
+    field: DistanceField,
+    params: EnergyParams,
+    short_edge: float = 0.0,
+    bend_limit: float | None = None,
+) -> TermValue:
+    """One polyline's energy in `field` alone, as the optimizer sums its
+    terms, with the bend-radius hinge at `bend_limit` if given; raises
+    ValueError if it is not finite."""
+    value, gradient = shape_energy(points, fixed, short_edge)
+    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
+    value += obstacle_value
+    gradient = gradient + obstacle_gradient
+    if bend_limit is not None:
+        bend_value, bend_gradient = bend_radius_energy(
+            points, fixed, bend_limit, params
+        )
+        value += bend_value
+        gradient = gradient + bend_gradient
+    if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
+        raise ValueError(f"energy is not finite: {value}")
+    gradient[fixed] = 0.0
+    return value, gradient
+
+
+def layer_energy(
+    chains: Sequence[Member],
+    polylines: Sequence[FloatArray],
+    masks: Sequence[BoolArray],
+    params: EnergyParams,
+    short_edge: float,
+    seen: Seen | None = None,
+) -> tuple[float, list[FloatArray]]:
+    """`members.members_energy` of chains and sections of one layer without
+    vias, by default seeing each other as `members.seen_parts` finds them."""
+    if seen is None:
+        seen = seen_parts(chains, polylines)
+    value, gradients, _ = members_energy(
+        chains, polylines, masks, params, short_edge, seen, ()
+    )
+    return value, gradients
+
+
+def build_via_obstacles(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    *,
+    moving: Collection[str] = frozenset(),
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+    hole_to_hole: float = HOLE_TO_HOLE,
+    zones: Sequence[ViaZone] = (),
+) -> ObstacleField:
+    """`obstacles.split_via_obstacles`' field with every via of another net
+    in it."""
+    field, _ = split_via_obstacles(
+        layers,
+        via,
+        lambda _: False,
+        moving=moving,
+        edge_clearance=edge_clearance,
+        hole_clearance=hole_clearance,
+        hole_to_hole=hole_to_hole,
+        zones=zones,
+    )
+    return field
+
+
+def contained(field: ObstacleField, zones: Iterable[ViaZone]) -> ObstacleField:
+    """`field` with the outside of the regions of `zones`: every limit on
+    where a via may go."""
+    inside = containment(zones)
+    return field if inside is None else CompositeField([field, inside])
+
+
+def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> int:
+    """`polylines.count_violations` of a polyline against one field: the
+    definition the optimizer's count over every member at once
+    (`optimize._Problem.violations`) is held to."""
+    distance, _ = field.signed_distance(points)
+    inside = distance < -INSIDE_TOLERANCE
+    ends_clear = ~inside[:-1] & ~inside[1:]
+    cut = np.zeros(len(ends_clear), dtype=bool)
+    cut[ends_clear] = ~field.segments_clear(
+        points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
+    )
+    return count_violations(inside, cut, anchors)
+
+
+def extract_chains(
+    segments: Sequence[Segment],
+    same_net_copper: Callable[[str, str], Iterable[SameNetCopper]] = (
+        lambda _layer, _net: ()
+    ),
+    *,
+    frame: UserFrame,
+    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
+) -> list[Chain]:
+    """The chains of a selection, its locked segments split off as the run
+    splits them (`chain.split_chains`)."""
+    kept, locked = split_locked(segments)
+    return split_chains(kept, locked, same_net_copper, frame=frame, cuts=cuts)
 
 
 def one_chain(

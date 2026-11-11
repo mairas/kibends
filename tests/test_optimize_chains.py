@@ -14,22 +14,25 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, Ticking, clearances
+from conftest import (
+    BOARD_FRAME,
+    BurstClock,
+    Ticking,
+    clearances,
+    extract_chains,
+    layer_energy,
+    total_energy,
+)
 from distance_fields import Disc, FloatArray, FreeSpace
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
 from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, Stop
-from kibends.chain import NM_PER_MM, Segment, extract_chains
+from kibends.chain import NM_PER_MM, Segment
 from kibends.commit import snapped_points
-from kibends.coords import BOARD_FRAME
-from kibends.energy import (
-    EnergyParams,
-    ObstacleField,
-    total_energy,
-)
-from kibends.members import layer_energy, seen_parts
+from kibends.energy import EnergyParams, ObstacleField
+from kibends.members import seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import (

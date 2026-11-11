@@ -370,7 +370,7 @@ class LayerSnapshot:
         """Pad and via outlines, as contacts, copper shape outlines and the
         tracks of `net` on the layer, a zero-length one as its point.
 
-        This is what `extract_chains` pins the chains to, or, for the pads and
+        This is what `chain.split_chains` pins the chains to, or, for the pads and
         vias, keeps one vertex of the chain inside, unless a vertex lies on
         the pad's position or the via's centre, which pins it there.
         """

@@ -5,6 +5,7 @@ from typing import cast
 import numpy as np
 import pytest
 import scenarios
+from conftest import total_energy
 from distance_fields import BoolArray, FloatArray
 from scipy.optimize import OptimizeResult
 
@@ -15,7 +16,6 @@ from kibends.bursts import (
     revert_until_clear,
     run_burst,
 )
-from kibends.energy import total_energy
 from kibends.polylines import resample
 
 # A burst of the wrap at these settings takes a few milliseconds.

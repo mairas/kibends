@@ -4,7 +4,7 @@ from dataclasses import replace
 from itertools import pairwise
 
 import pytest
-from conftest import one_chain
+from conftest import BOARD_FRAME, extract_chains, one_chain
 from shapely.geometry import LineString, Point, Polygon, box
 
 from kibends.chain import (
@@ -14,10 +14,9 @@ from kibends.chain import (
     Contact,
     SameNetTrack,
     Segment,
-    extract_chains,
     shared_track_groups,
 )
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.coords import UserFrame
 from kibends.snapshot import Arc
 
 WIDTH_NM = 250_000

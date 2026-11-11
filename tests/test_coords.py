@@ -1,4 +1,6 @@
-from kibends.coords import BOARD_FRAME, UserFrame
+from conftest import BOARD_FRAME
+
+from kibends.coords import UserFrame
 
 
 def test_board_frame_prints_board_coordinates() -> None:

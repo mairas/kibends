@@ -6,6 +6,7 @@ import kipy.board_types as kbt
 import numpy as np
 import pytest
 from conftest import (
+    BOARD_FRAME,
     COMMIT_CALLS,
     CommitBoard,
     kipy_arc,
@@ -21,7 +22,6 @@ from kipy.proto.common.envelope_pb2 import ApiStatusCode
 
 from kibends import commit
 from kibends.chain import Chain, Segment
-from kibends.coords import BOARD_FRAME
 from kibends.energy import FloatArray
 from kibends.snapshot import read_selection, segment_from_track, via_from_kipy
 

@@ -16,6 +16,7 @@ import pytest
 import scenarios
 import shapely
 from conftest import (
+    BOARD_FRAME,
     COMMIT_CALLS,
     PAD_HALF_SIZE,
     RETURN_SIGNAL_VIA,
@@ -64,7 +65,7 @@ from kibends.bursts import (
     Stop,
 )
 from kibends.chain import NM_PER_MM, Point2
-from kibends.coords import BOARD_FRAME, UserFrame
+from kibends.coords import UserFrame
 from kibends.energy import (
     EnergyParams,
     FloatArray,

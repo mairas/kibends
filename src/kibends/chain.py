@@ -1,7 +1,7 @@
 """Order a selection of track segments into chains with pinned vertices.
 
 A chain is one connected piece of one layer, net and width
-(`extract_chains`). Same-net copper holds it where it touches: unselected
+(`split_chains`). Same-net copper holds it where it touches: unselected
 tracks and copper shapes pin it, and a pad or a via that stays is a region
 it keeps a vertex inside (`Contact`), an end sliding within it where it may
 (`_slides`), unless a vertex of the chain lies on its anchor, which pins
@@ -169,59 +169,6 @@ class Chain:
         return replace(self, pinned=pinned, slides=())
 
 
-def extract_chains(
-    segments: Sequence[Segment],
-    same_net_copper: Callable[[str, str], Iterable[SameNetCopper]] = (
-        lambda _layer, _net: ()
-    ),
-    *,
-    frame: UserFrame,
-    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
-) -> list[Chain]:
-    """Split `segments` into chains, one per connected piece, or raise when
-    none is unlocked or has length.
-
-    Selected segments are grouped by layer, net and width, and each group is
-    split into connected pieces. A closed loop is cut where its net touches
-    it, or else at its first vertex; zero-length segments that touch no
-    other of their width form no chain and are logged at debug. A segment
-    shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends merged
-    into one point (`_short_tracks_merged`). Two
-    widths that overlap along a span stay a chain each, held where the end
-    of one reaches the other. A point where three or more selected tracks of
-    one net on one layer end, or tracks of more than one width that do not
-    leave it the same way, is a junction: the
-    pieces are split there into chains that end at it, loose, unless other
-    copper pins any of them there, which pins them all. A stub whose end
-    reaches the copper of another track inside it meets it at a junction:
-    the other is split at the point of its centreline nearest the end, and
-    the end moves there (`_join_mid_track_ends`). `same_net_copper(layer,
-    net)` returns the copper of `net` on `layer` that pins its chains: pad,
-    via and copper shape outlines (polygons) and unselected tracks, a track
-    touching a chain where its copper reaches the chain's copper, and pads
-    and vias given as `Contact`s holding it by one sliding vertex instead
-    (`_slides`); zones must not be given, since they reflow after the edit
-    and never pin. A via joining chains on two layers pins both, and a
-    net's chain on one layer pins another where its end's copper reaches the
-    other's. Where they overlap or cross away from their ends, nothing pins
-    either: copper of one net does not interact, and the run may move them
-    apart. `cuts(layer, net)` gives the points, in mm, at which to end
-    chains, the centres of vias that may move or that move: the pieces are
-    also split at each one that is a vertex, into chains that end there,
-    pinned, as at any chain end, unless it is a junction. Held segments
-    (`Segment.held`) and the others are split apart in the same way, and a
-    chain of held ones is held whole (`Chain.held`).
-    Locked segments stay out of every chain, with a warning, and pin the
-    chains they touch on their layer.
-
-    Chains are ordered by net, then by layer, then by first point, then by
-    width, then by their points; each starts at its end with the smaller
-    (x, y). Messages give positions in `frame`.
-    """
-    kept, locked = split_locked(segments)
-    return split_chains(kept, locked, same_net_copper, frame=frame, cuts=cuts)
-
-
 def split_locked(
     segments: Sequence[Segment],
 ) -> tuple[list[Segment], list[Segment]]:
@@ -244,8 +191,46 @@ def split_chains(
     left_out: Callable[[str], None] = logger.debug,
     cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
 ) -> list[Chain]:
-    """`extract_chains` for segments `split_locked` has already split,
-    giving `left_out` a line on each piece that forms no chain."""
+    """Split the unlocked segments `kept` into chains, one per connected
+    piece, or raise when none is left or has length; `split_locked` splits
+    the selection into `kept` and `locked`.
+
+    Selected segments are grouped by layer, net and width, and each group is
+    split into connected pieces. A closed loop is cut where its net touches
+    it, or else at its first vertex; zero-length segments that touch no
+    other of their width form no chain, each given a line to `left_out`. A
+    segment shorter than `JUNCTION_TOLERANCE_NM` is zero-length, its ends
+    merged into one point (`_short_tracks_merged`). Two widths that overlap
+    along a span stay a chain each, held where the end of one reaches the
+    other. A point where three or more selected tracks of
+    one net on one layer end, or tracks of more than one width that do not
+    leave it the same way, is a junction: the
+    pieces are split there into chains that end at it, loose, unless other
+    copper pins any of them there, which pins them all. A stub whose end
+    reaches the copper of another track inside it meets it at a junction:
+    the other is split at the point of its centreline nearest the end, and
+    the end moves there (`_join_mid_track_ends`). `same_net_copper(layer,
+    net)` returns the copper of `net` on `layer` that pins its chains: pad,
+    via and copper shape outlines (polygons) and unselected tracks, a track
+    touching a chain where its copper reaches the chain's copper, and pads
+    and vias given as `Contact`s holding it by one sliding vertex instead
+    (`_slides`); zones must not be given, since they reflow after the edit
+    and never pin. A via joining chains on two layers pins both, and a
+    net's chain on one layer pins another where its end's copper reaches the
+    other's. Where they overlap or cross away from their ends, nothing pins
+    either: copper of one net does not interact, and the run may move them
+    apart. `cuts(layer, net)` gives the points, in mm, at which to end
+    chains, the centres of vias that may move or that move: the pieces are
+    also split at each one that is a vertex, into chains that end there,
+    pinned, as at any chain end, unless it is a junction. Held segments
+    (`Segment.held`) and the others are split apart in the same way, and a
+    chain of held ones is held whole (`Chain.held`). The `locked` segments
+    pin the chains they touch on their layer.
+
+    Chains are ordered by net, then by layer, then by first point, then by
+    width, then by their points; each starts at its end with the smaller
+    (x, y). Messages give positions in `frame`.
+    """
     if not kept:
         raise ChainError("selection has no tracks that can be modified")
     kept = _short_tracks_merged(kept)

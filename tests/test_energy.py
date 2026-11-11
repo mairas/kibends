@@ -1,8 +1,10 @@
 import math
 from collections.abc import Callable
+from dataclasses import replace
 
 import numpy as np
 import pytest
+from conftest import obstacle_energy, total_energy
 from distance_fields import Box, Disc, FloatArray, Walls
 from numpy.typing import NDArray
 
@@ -14,11 +16,8 @@ from kibends.energy import (
     TermValue,
     attraction_integrand,
     bend_radius_energy,
-    clearance_energy,
-    length_energy,
-    repulsion_energy,
+    shape_energy,
     smooth_minimum,
-    total_energy,
 )
 from kibends.obstacles import ChainCentreline, ChainField, chains_field
 
@@ -39,6 +38,39 @@ PARAMS = EnergyParams(
     standoff=STANDOFF,
     points_per_edge=POINTS_PER_EDGE,
 )
+
+
+def length_energy(points: FloatArray, fixed: NDArray[np.bool_]) -> TermValue:
+    return shape_energy(points, fixed, 0.0)
+
+
+def weighted(
+    points: FloatArray,
+    fixed: NDArray[np.bool_],
+    field: DistanceField,
+    params: EnergyParams,
+) -> TermValue:
+    value, gradient = obstacle_energy(points, field, params)
+    gradient[fixed] = 0.0
+    return value, gradient
+
+
+def repulsion_energy(
+    points: FloatArray, fixed: NDArray[np.bool_], field: DistanceField
+) -> TermValue:
+    """The repulsion term alone, unweighted."""
+    return weighted(
+        points, fixed, field, replace(PARAMS, repulsion=1.0, clearance_weight=0.0)
+    )
+
+
+def clearance_energy(
+    points: FloatArray, fixed: NDArray[np.bool_], field: DistanceField
+) -> TermValue:
+    """The clearance hinge alone, unweighted."""
+    return weighted(
+        points, fixed, field, replace(PARAMS, repulsion=0.0, clearance_weight=1.0)
+    )
 
 
 def free(n: int) -> NDArray[np.bool_]:
@@ -94,15 +126,11 @@ def with_field(
 
 
 def repulsion(field: DistanceField) -> Term:
-    return with_field(
-        lambda p, f, d: repulsion_energy(p, f, d, FALLOFF_RANGE, POINTS_PER_EDGE), field
-    )
+    return with_field(repulsion_energy, field)
 
 
 def clearance(field: DistanceField) -> Term:
-    return with_field(
-        lambda p, f, d: clearance_energy(p, f, d, STANDOFF, POINTS_PER_EDGE), field
-    )
+    return with_field(clearance_energy, field)
 
 
 def total(field: DistanceField) -> Term:
@@ -219,11 +247,11 @@ class TestTotal:
             (1.0, length_energy(points, fixed)),
             (
                 PARAMS.repulsion,
-                repulsion_energy(points, fixed, DISC, FALLOFF_RANGE, POINTS_PER_EDGE),
+                repulsion_energy(points, fixed, DISC),
             ),
             (
                 PARAMS.clearance_weight,
-                clearance_energy(points, fixed, DISC, STANDOFF, POINTS_PER_EDGE),
+                clearance_energy(points, fixed, DISC),
             ),
         ]
         value, gradient = total_energy(points, fixed, DISC, PARAMS)
