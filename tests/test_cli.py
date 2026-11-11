@@ -3793,6 +3793,58 @@ def pair_board(
     )
 
 
+STUB_AT = 2.5
+"""x where a stub leaves a pair's first straight, mm."""
+N_STUB_AT = 2.0
+"""x where `cut_partner_board`'s stub leaves USB_D-, mm."""
+MEANDER_DEPTH = 0.8
+"""How far, mm, `cut_partner_board`'s meander bulges away from USB_D+."""
+MEANDER = [
+    (9.5, 3.0 - PAIR_HALF_PITCH),
+    (9.5, 3.0 - PAIR_HALF_PITCH - MEANDER_DEPTH),
+    (11.0, 3.0 - PAIR_HALF_PITCH - MEANDER_DEPTH),
+    (11.0, 3.0 - PAIR_HALF_PITCH),
+]
+"""An unselected meander on USB_D-'s last straight, as a length-tuning
+pattern whose tracks the selection leaves out."""
+
+
+def cut_partner_board() -> CommitBoard:
+    """`pair_board` with USB_D- cut by a selected stub on its first straight
+    and by `MEANDER` on its last, USB_D+ running past both."""
+    h = PAIR_HALF_PITCH
+    mitre = math.tan(math.pi / 8) * h
+    p = [t for t in pair_tracks() if t.net.name == USB[0]]
+    n_points = [
+        (PAIR_FAN[0], -PAIR_FAN[1]),
+        (0.0, -h),
+        (N_STUB_AT, -h),
+        (5.0 + mitre, -h),
+        (8.0 + mitre, 3.0 - h),
+        MEANDER[0],
+    ]
+    n = [
+        kipy_track(f"n{k}", USB[1], start, end, width=PAIR_WIDTH)
+        for k, (start, end) in enumerate(itertools.pairwise(n_points))
+    ]
+    end = (13.0, 3.0 - h)
+    n.append(kipy_track("n_end", USB[1], MEANDER[-1], end, width=PAIR_WIDTH))
+    stub = kipy_track(
+        "n_stub", USB[1], (N_STUB_AT, -h), (N_STUB_AT, -2.0), width=PAIR_WIDTH
+    )
+    meander = [
+        kipy_track(f"m{k}", USB[1], start, end, width=PAIR_WIDTH)
+        for k, (start, end) in enumerate(itertools.pairwise(MEANDER))
+    ]
+    usb = netclass("USB", PAIR_CLEARANCE, PAIR_GAP)
+    selected = [*p, *n, stub]
+    return CommitBoard(
+        selection=list(selected),
+        tracks=[*selected, *meander],
+        netclasses={net: usb for net in USB},
+    )
+
+
 PAIR_SECOND_TRACK = 5.0
 """How far, mm, track USB_D- moves away to not pair."""
 PAIR_WIDER = 0.25
@@ -4095,6 +4147,60 @@ class TestPairs:
         assert (pair.sections, pair.held) == (3, 1)
         assert board.calls == COMMIT_CALLS
         assert not unexpected_warnings(log)
+
+    def test_a_selected_stub_on_one_track_keeps_both_sides_coupled(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # The stub cuts USB_D+ into two chains at its foot; USB_D- is cut
+        # opposite it, and each part pairs with the one beside it.
+        foot = (STUB_AT, PAIR_HALF_PITCH)
+        stub = kipy_track("stub", USB[0], foot, (STUB_AT, 2.0), width=PAIR_WIDTH)
+        board = pair_board(extra=[stub])
+        board.selection = [*board.selection, stub]
+        connect.to(board)
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 0), (1, 0)]
+        for pair in pairs:
+            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert not [w for w in log if "on its own" in w or "do not run coupled" in w]
+        lines = by_net(board)
+        p = [line for line in lines[USB[0]] if {x for x, _ in line.coords} != {STUB_AT}]
+        gaps = coupled_gaps(p, lines[USB[1]])
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
+        n_tracks = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[1]]
+        assert (nm(STUB_AT), nm(-PAIR_HALF_PITCH)) in ends(n_tracks)
+
+    def test_a_track_cut_by_a_stub_and_a_meander_pairs_part_by_part(
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # USB_D- is cut by a selected stub and by an unselected meander, as
+        # a length-tuning pattern leaves it; USB_D+ runs past both.
+        board = connect.to(cut_partner_board())
+
+        run()
+
+        assert board.calls == COMMIT_CALLS
+        (pairs,) = (r.pairs for r in reports)
+        assert [(p.sections, p.held) for p in pairs] == [(1, 0)] * 3
+        for pair in pairs:
+            assert pair.gap_after == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert not unexpected_warnings(log)
+        assert not {f"m{k}" for k in range(len(MEANDER) - 1)} & set(board.deleted)
+        # USB_D+ is cut opposite the stub and both ends of the meander.
+        p = [t for t in created_on(board, BL.BL_F_Cu) if t.net.name == USB[0]]
+        h = PAIR_HALF_PITCH
+        cuts = [(N_STUB_AT, h), (MEANDER[0][0], 3.0 + h), (MEANDER[-1][0], 3.0 + h)]
+        assert {(nm(x), nm(y)) for x, y in cuts} <= ends(p)
 
     def test_netclass_gap_unlike_the_measured_one_warns(
         self, connect: Connector, log: list[str]

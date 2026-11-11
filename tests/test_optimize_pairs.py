@@ -52,7 +52,7 @@ from kibends.neighbours import ChainInput, chain_field, neighbour_field
 from kibends.obstacles import ChainCentreline
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
-from kibends.pair_layout import find_pairs, lay_out
+from kibends.pair_layout import cut_parts, find_pairs, lay_out
 from kibends.pairs import (
     GAP_TOLERANCE,
     bend_radius_limit,
@@ -1096,9 +1096,11 @@ def test_a_junction_where_a_pair_starts_stays_whole() -> None:
     ) -> ObstacleField:
         return FreeSpace()
 
-    layout = lay_out(
-        whole, find_pairs(chains, DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME), free
+    parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
+    pairs = find_pairs(
+        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
     )
+    layout = lay_out(whole, parts, pairs, free)
 
     result = optimize_chains(
         layout.inputs, scenarios.PARAMS, COARSE, pairs=layout.sections
@@ -1177,8 +1179,11 @@ def smoothed(chains: Sequence[Chain], settings: OptimizerSettings = COARSE) -> S
         )
         for c in chains
     ]
-    pairs = find_pairs(chains, DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME)
-    layout = lay_out(whole, pairs, free_section)
+    parts = cut_parts(chains, DEFAULT_CHORD_TOLERANCE)
+    pairs = find_pairs(
+        [p.chain for p in parts], DEFAULT_CHORD_TOLERANCE, frame=BOARD_FRAME
+    )
+    layout = lay_out(whole, parts, pairs, free_section)
     result = optimize_chains(
         layout.inputs, scenarios.PARAMS, settings, pairs=layout.sections
     )

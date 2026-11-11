@@ -1,9 +1,15 @@
 """Differential pairs among the selected chains, and how a run lays them out
 for the optimizer.
 
-Two selected chains on one layer whose nets KiCad pairs by name form a pair
-where they run coupled (`pairs.find_pair`). The optimizer sees a pair as its
-coupled sections, each a block of its own (`pair_blocks`), and its uncoupled
+Two selected chains on one layer whose nets KiCad pairs by name form a diff
+pair where they run coupled (`pairs.find_pair`). A track that runs coupled
+with two or more chains of the other net, where a stub junction or
+unselected copper such as a length-tuning pattern cuts that net, is cut
+opposite each of their ends that a coupled section reaches (`cut_parts`),
+and the parts pair one to one; so the sections run up to the stub or the
+pattern on both tracks, and a stretch beside the pattern with no partner
+stays an uncoupled piece. The optimizer sees a diff pair as its coupled
+sections, each a block of its own (`pair_blocks`), and its uncoupled
 pieces, each an ordinary chain; the other selected chains stay as they are.
 No via moves at a paired chain, as a diff pair's vias stay fixed
 (`vias.may_move`).
@@ -21,7 +27,7 @@ from loguru import logger
 
 from kibends.chain import Chain
 from kibends.coords import UserFrame
-from kibends.energy import FloatArray, ObstacleField
+from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
 from kibends.pair_blocks import PairInput, end_gaps
@@ -30,9 +36,12 @@ from kibends.pairs import (
     PairError,
     Piece,
     Track,
+    cut_chain,
     find_pair,
     nets_pair,
+    opposite_ends,
     runs_coupled,
+    vertex_snap,
 )
 from kibends.vias import ChainEnd
 
@@ -40,10 +49,51 @@ UNPAIRED = "smoothing them as two chains"
 
 
 @dataclass(frozen=True)
+class ChainPart:
+    selected: int
+    """Index of the selected chain it is a part of."""
+    chain: Chain
+    """Its stretch of that chain, the whole chain unless `cut_parts` cut it."""
+
+
+def cut_parts(chains: Sequence[Chain], chord_tolerance: float) -> list[ChainPart]:
+    """The parts of `chains`, chain by chain and in order along each.
+
+    A chain that runs coupled with two or more chains of its diff pair's
+    other net on its layer is cut, at a pinned vertex, opposite each of
+    their ends that a coupled section reaches; any other chain is one part.
+    Then a chain of a diff pair that a stub or unselected copper cuts pairs
+    part by part with the track beside it (`find_pairs`).
+    """
+    opposite: dict[int, list[list[float]]] = {}
+    for k, m in combinations(range(len(chains)), 2):
+        a, b = chains[k], chains[m]
+        if a.layer != b.layer or not nets_pair(a.net, b.net):
+            continue
+        try:
+            pair = find_pair(a, b, chord_tolerance)
+        except PairError:
+            continue
+        if pair is None:
+            continue
+        on_a, on_b = opposite_ends(pair)
+        opposite.setdefault(k, []).append(on_a)
+        opposite.setdefault(m, []).append(on_b)
+    snap = vertex_snap(chord_tolerance)
+    parts: list[ChainPart] = []
+    for k, chain in enumerate(chains):
+        partners = opposite.get(k, [])
+        cuts = [at for ends in partners for at in ends] if len(partners) > 1 else []
+        parts += [ChainPart(k, part) for part in cut_chain(chain, cuts, snap)]
+    return parts
+
+
+@dataclass(frozen=True)
 class ChainPair:
     a: int
     b: int
-    """Indices of the pair's two chains among the selected ones."""
+    """Indices of the diff pair's two chains among those `find_pairs` took:
+    the parts of the selected chains, in a run."""
     pair: Pair
 
 
@@ -57,10 +107,17 @@ def find_pairs(
     its net pairs with but that pairs with another chain of its net, at its
     start in `frame`; both are smoothed as chains.
     """
-    found, taken, missed, skipped = _pair_up(chains, chord_tolerance)
+    found, taken, missed, skipped, uncoupled = _pair_up(chains, chord_tolerance)
     for k, m, message in missed:
         if not {k, m} & taken:
             logger.warning(message)
+    for k, m in uncoupled:
+        if not {k, m} & taken:
+            a, b = chains[k], chains[m]
+            logger.debug(
+                f"{a.net} and {b.net} on {a.layer} form a differential pair "
+                f"by name but do not run coupled; {UNPAIRED}"
+            )
     _warn_partners_taken(chains, skipped, taken, chord_tolerance, frame)
     return found
 
@@ -72,6 +129,8 @@ class _Pairing(NamedTuple):
     """Two chains whose nets pair that cannot pair, and why."""
     skipped: list[tuple[int, int]]
     """Two chains whose nets pair, one of which paired before."""
+    uncoupled: list[tuple[int, int]]
+    """Two chains whose nets pair that do not run coupled."""
 
 
 def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
@@ -79,6 +138,7 @@ def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
     taken: set[int] = set()
     missed: list[tuple[int, int, str]] = []
     skipped: list[tuple[int, int]] = []
+    uncoupled: list[tuple[int, int]] = []
     for k, m in combinations(range(len(chains)), 2):
         a, b = chains[k], chains[m]
         if a.layer != b.layer or not nets_pair(a.net, b.net):
@@ -92,14 +152,11 @@ def _pair_up(chains: Sequence[Chain], chord_tolerance: float) -> _Pairing:
             missed.append((k, m, f"{e}; {UNPAIRED}"))
             continue
         if pair is None:
-            logger.debug(
-                f"{a.net} and {b.net} on {a.layer} form a differential pair "
-                f"by name but do not run coupled; {UNPAIRED}"
-            )
+            uncoupled.append((k, m))
             continue
         found.append(ChainPair(k, m, pair))
         taken |= {k, m}
-    return _Pairing(found, taken, missed, skipped)
+    return _Pairing(found, taken, missed, skipped, uncoupled)
 
 
 def _warn_partners_taken(
@@ -198,8 +255,9 @@ def _piece_input(chain: ChainInput, track: Track, piece: Piece) -> ChainInput:
 
 @dataclass(frozen=True)
 class _Stretch:
-    """A stretch of a paired chain, by vertex indices into its pair track:
-    an uncoupled piece, an optimizer chain, or a track of a section."""
+    """A stretch of a part of a selected chain, by vertex indices into its
+    pair track: an uncoupled piece, an optimizer chain, or a track of a
+    section."""
 
     start: int
     end: int
@@ -218,15 +276,20 @@ class Layout:
     """The selected chains as the optimizer takes them."""
 
     inputs: list[ChainInput]
-    """The unpaired chains in selection order, then the uncoupled pieces of
-    each pair."""
+    """The selected chains laid out whole, in selection order, then the
+    uncoupled pieces of each diff pair, then the unpaired parts of cut
+    chains."""
     sections: list[PairInput]
     slots: list[int | None]
-    """For each selected chain, its index among `inputs`, or None if paired."""
+    """For each selected chain, its index among `inputs`, or None if paired
+    or cut."""
     stretches: dict[int, list[_Stretch]]
-    """For each paired chain, its stretches in order along it."""
+    """For each part that is paired or of a cut chain, by its index among
+    the parts, its stretches in order along it."""
+    parts: list[list[int]]
+    """For each selected chain, the indices of its parts, in order along it."""
     pair_sections: list[range]
-    """For each pair, the indices of its sections."""
+    """For each diff pair, the indices of its sections."""
 
     def whole_polylines(
         self,
@@ -236,17 +299,26 @@ class Layout:
         """One polyline per selected chain, from `chains`, a polyline per
         optimizer input, and `tracks`, the two tracks of each section, b
         running the same way as a."""
-        whole: list[FloatArray] = []
-        for k, slot in enumerate(self.slots):
-            if slot is not None:
-                whole.append(chains[slot])
-                continue
-            parts: list[FloatArray] = []
-            for stretch in self.stretches[k]:
-                line = _line(stretch, chains, tracks)
-                parts.append(line[1:] if parts else line)
-            whole.append(np.concatenate(parts))
-        return whole
+        return [
+            chains[slot]
+            if slot is not None
+            else _joined(self.chain_stretches(k), chains, tracks)
+            for k, slot in enumerate(self.slots)
+        ]
+
+    def part_polyline(
+        self,
+        part: int,
+        chains: Sequence[FloatArray],
+        tracks: Sequence[tuple[FloatArray, FloatArray]],
+    ) -> FloatArray:
+        """The polyline of a paired part, by its index, from `chains` and
+        `tracks` as `whole_polylines` takes them."""
+        return _joined(self.stretches[part], chains, tracks)
+
+    def chain_stretches(self, chain: int) -> list[_Stretch]:
+        """The stretches of a selected chain not laid out whole, in order."""
+        return [s for part in self.parts[chain] for s in self.stretches[part]]
 
     def ends(self, ends: Sequence[ChainEnd]) -> tuple[ChainEnd, ...]:
         """Chain ends of the selected chains, none of them paired, as ends
@@ -257,6 +329,18 @@ class Layout:
             assert slot is not None
             moved.append(end._replace(chain=slot))
         return tuple(moved)
+
+
+def _joined(
+    stretches: Sequence[_Stretch],
+    chains: Sequence[FloatArray],
+    tracks: Sequence[tuple[FloatArray, FloatArray]],
+) -> FloatArray:
+    lines: list[FloatArray] = []
+    for stretch in stretches:
+        line = _line(stretch, chains, tracks)
+        lines.append(line[1:] if lines else line)
+    return np.concatenate(lines)
 
 
 def _line(
@@ -274,43 +358,61 @@ def _line(
 
 
 def lay_out(
-    whole: Sequence[ChainInput], pairs: Sequence[ChainPair], field: SectionField
+    whole: Sequence[ChainInput],
+    parts: Sequence[ChainPart],
+    pairs: Sequence[ChainPair],
+    field: SectionField,
 ) -> Layout:
     """The optimizer's chains and coupled sections for the selected chains,
-    `whole` their inputs, with `field` building each section's field."""
+    `whole` their inputs, `parts` their parts (`cut_parts`) and `pairs` the
+    diff pairs among those, with `field` building each section's field.
+
+    A selected chain of one part that does not pair is laid out whole; a
+    part of a cut chain that does not pair is an uncoupled piece pinned at
+    both ends."""
     paired = {k for p in pairs for k in (p.a, p.b)}
-    unpaired = [k for k in range(len(whole)) if k not in paired]
-    inputs = [whole[k] for k in unpaired]
+    of_chain: list[list[int]] = [[] for _ in whole]
+    for i, part in enumerate(parts):
+        of_chain[part.selected].append(i)
+    kept = [
+        k for k, own in enumerate(of_chain) if len(own) == 1 and own[0] not in paired
+    ]
+    inputs = [whole[k] for k in kept]
     slots: list[int | None] = [None] * len(whole)
-    for slot, k in enumerate(unpaired):
+    for slot, k in enumerate(kept):
         slots[k] = slot
+
+    def part_input(i: int, points: FloatArray, fixed: BoolArray) -> ChainInput:
+        given = whole[parts[i].selected]
+        return replace(
+            given,
+            centreline=replace(given.centreline, points=points),
+            fixed=fixed,
+            contacts=(),
+        )
+
     sections: list[PairInput] = []
-    by_chain: dict[int, list[_Stretch]] = {}
+    stretches: dict[int, list[_Stretch]] = {}
     pair_sections: list[range] = []
     for p in pairs:
         pair = p.pair
         a, b = (
-            replace(
-                whole[k],
-                centreline=replace(whole[k].centreline, points=track.points),
-                fixed=track.pinned,
-                contacts=(),
-            )
-            for k, track in ((p.a, pair.a), (p.b, pair.b))
+            part_input(i, track.points, track.pinned)
+            for i, track in ((p.a, pair.a), (p.b, pair.b))
         )
         first = len(sections)
         new_sections, pieces_a, pieces_b = split_pair(pair, a, b, field)
         sections += new_sections
         pair_sections.append(range(first, len(sections)))
-        for k, pieces, on_b in ((p.a, pieces_a, False), (p.b, pieces_b, True)):
-            stretches = [
+        for i, pieces, on_b in ((p.a, pieces_a, False), (p.b, pieces_b, True)):
+            own = [
                 _Stretch(piece.start, piece.end, piece=len(inputs) + n)
                 for n, (piece, _) in enumerate(pieces)
             ]
             inputs += [given for _, given in pieces]
             for n, s in enumerate(pair.sections):
                 start, end = (s.b_start, s.b_end) if on_b else (s.a_start, s.a_end)
-                stretches.append(
+                own.append(
                     _Stretch(
                         start,
                         end,
@@ -319,9 +421,16 @@ def lay_out(
                         reverse=on_b and s.b_reversed,
                     )
                 )
-            by_chain[k] = sorted(stretches, key=lambda stretch: stretch.start)
+            stretches[i] = sorted(own, key=lambda stretch: stretch.start)
+    for i, part in enumerate(parts):
+        if i in paired or slots[part.selected] is not None:
+            continue
+        fixed = np.array(part.chain.pinned)
+        fixed[[0, -1]] = True
+        stretches[i] = [_Stretch(0, len(fixed) - 1, piece=len(inputs))]
+        inputs.append(part_input(i, np.array(part.chain.points, dtype=float), fixed))
     inputs = _pinned_where_fixed(inputs, sections)
-    return Layout(inputs, sections, slots, by_chain, pair_sections)
+    return Layout(inputs, sections, slots, stretches, of_chain, pair_sections)
 
 
 def _pinned_where_fixed(

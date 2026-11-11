@@ -15,7 +15,7 @@ Units are mm floats in KiCad's board frame, with y pointing down.
 
 import math
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -260,7 +260,7 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
     spans = _coupled_spans(points_a, points_b, a.width, chord_tolerance)
     if not spans:
         return None
-    snap = max(VERTEX_SNAP, chord_tolerance)
+    snap = vertex_snap(chord_tolerance)
     pinned_a, pinned_b = np.array(a.pinned), np.array(b.pinned)
     stations = [
         _stations(points_a, pinned_a, points_b, pinned_b, ends, a.width, snap)
@@ -294,6 +294,55 @@ def find_pair(a: Chain, b: Chain, chord_tolerance: float) -> Pair | None:
         sections.append(Section(a_start, a_end, b_start, b_end, b_first > b_last, gap))
     gap = float(np.median(np.concatenate(distances))) - a.width
     return Pair(track_a, track_b, tuple(sections), a.width, gap)
+
+
+def vertex_snap(chord_tolerance: float) -> float:
+    """How near, mm, a point must lie to a chain vertex to count as on it."""
+    return max(VERTEX_SNAP, chord_tolerance)
+
+
+def opposite_ends(pair: Pair) -> tuple[list[float], list[float]]:
+    """Arc lengths along chain a opposite each end of chain b that a section
+    reaches, and along b opposite such ends of a, leaving out the ends of
+    the chain they lie on."""
+    last_a, last_b = len(pair.a.points) - 1, len(pair.b.points) - 1
+    on_a: list[int] = []
+    on_b: list[int] = []
+    for s in pair.sections:
+        # (end of a, end of b) opposite each other.
+        across = [(s.a_start, s.b_start), (s.a_end, s.b_end)]
+        if s.b_reversed:
+            across = [(s.a_start, s.b_end), (s.a_end, s.b_start)]
+        for a, b in across:
+            if b in (0, last_b) and a not in (0, last_a):
+                on_a.append(a)
+            if a in (0, last_a) and b not in (0, last_b):
+                on_b.append(b)
+    arc_a, arc_b = _polyline(pair.a.points).arc, _polyline(pair.b.points).arc
+    return [float(arc_a[k]) for k in on_a], [float(arc_b[k]) for k in on_b]
+
+
+def cut_chain(chain: Chain, at: list[float], snap: float) -> list[Chain]:
+    """`chain` cut into parts, in order along it, at each arc length of `at`
+    more than `snap` from its ends, at a vertex pinned there: one within
+    `snap` of the arc length, or else one inserted."""
+    track, cuts = _with_vertices(
+        np.array(chain.points, dtype=float), np.array(chain.pinned), at, snap
+    )
+    last = len(track.points) - 1
+    inner = sorted({k for k in cuts if 0 < k < last})
+    if not inner:
+        return [chain]
+    points = [(float(x), float(y)) for x, y in track.points]
+    pinned = [bool(p) or k in inner for k, p in enumerate(track.pinned)]
+    return [
+        replace(
+            chain,
+            points=tuple(points[start : end + 1]),
+            pinned=tuple(pinned[start : end + 1]),
+        )
+        for start, end in pairwise([0, *inner, last])
+    ]
 
 
 def _stations(
