@@ -1736,25 +1736,10 @@ class _Problem:
             _StaticLists(static_list(self.members, self.reach), self.via_static_list()),
         )
 
-    def objective(
-        self,
-        layout: _Layout,
-        seen: Seen | None = None,
-        listed: bool = True,
-    ) -> Objective:
+    def objective(self, layout: _Layout, seen: Seen, lookups: _Lookups) -> Objective:
         """The problem's energy as a function of `layout`'s variables, with
-        what each member sees of the others measured at the layout's start
-        unless given, through a `NeighbourList` and `StaticList`s unless
-        not `listed`."""
-        if seen is None:
-            seen = self.seeing(layout.starts)
-        lookups = self.lookups(seen) if listed else _Lookups(None, None)
-        return self.objective_from(layout, seen, lookups)
-
-    def objective_from(
-        self, layout: _Layout, seen: Seen, lookups: _Lookups
-    ) -> Objective:
-        """`objective`, searching through `lookups`."""
+        what each member sees of the others as `seen`, searching through
+        `lookups`."""
         masks = self.masks
         neighbours, statics = lookups
 
@@ -1772,7 +1757,7 @@ class _Problem:
         the length term (`_length_stiffness`), of the members' obstacle
         terms (`members.members_stiffness`) and of the moving vias' own
         (`via_stiffness`), summed over the vertices it moves. `seen` and
-        `lookups` are as for `objective_from`."""
+        `lookups` are as for `objective`."""
         neighbours, statics = lookups
         per_member = members_stiffness(
             self.members,
@@ -1810,7 +1795,7 @@ class _Problem:
         free = [i >= 0 for i in index]
         seen = self.seeing(starts)
         lookups = self.lookups(seen)
-        objective = self.objective_from(layout, seen, lookups)
+        objective = self.objective(layout, seen, lookups)
         scale = _scale(self.stiffness(layout, seen, lookups), self.settings.spacing)
         x0 = layout.x0
         flat_start = shown_flat(members, starts, positions)

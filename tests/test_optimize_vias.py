@@ -1595,7 +1595,8 @@ class TestGradient:
         )
         problem = placed.problem
         layout = problem.layout(problem.points)
-        objective = problem.objective(layout)
+        seen = problem.seeing(layout.starts)
+        objective = problem.objective(layout, seen, problem.lookups(seen))
         rng = np.random.default_rng(seed)
         x = layout.x0 + rng.normal(scale=0.05, size=len(layout.x0))
         _, gradient = objective(x)
@@ -1616,8 +1617,10 @@ class TestGradient:
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
         vias = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
         (placed,) = optimize_module._problems(scenario.chains, [], vias, params, COARSE)
-        layout = placed.problem.layout(placed.problem.points)
-        objective = placed.problem.objective(layout)
+        problem = placed.problem
+        layout = problem.layout(problem.points)
+        seen = problem.seeing(layout.starts)
+        objective = problem.objective(layout, seen, problem.lookups(seen))
         x = layout.x0
         _, gradient = objective(x)
         step = 1e-7

@@ -53,8 +53,12 @@ def test_the_listed_energy_is_the_searched_one(
     problem = placed.problem
     layout = problem.layout(problem.points)
     seen = seen_parts(problem.members, layout.starts, problem.rings)
-    searched = problem.objective(layout, seen, listed=False)
-    listed = problem.objective(layout, seen)
+    searched = problem.objective(
+        layout,
+        seen,
+        optimize_module._Lookups(None, None),  # pyright: ignore[reportPrivateUsage]
+    )
+    listed = problem.objective(layout, seen, problem.lookups(seen))
     searches = 0
     real = Seen.candidates
 
