@@ -2204,12 +2204,15 @@ def _via_field(
 
 @dataclass(frozen=True)
 class _ViaSurroundings:
-    """The layers a moving via spans, its keeper, and the other-net vias
-    there that stand still."""
+    """The layers a moving via spans, its net's clearance and its keeper
+    there, and the vias there that stand still, of other nets and of its
+    own."""
 
     spanned: Sequence[LayerSnapshot]
+    clearance: float
     keeper: _Keeper
     others: Sequence[Via]
+    own: Sequence[Via]
 
     @classmethod
     def of(
@@ -2224,16 +2227,18 @@ class _ViaSurroundings:
         if not spanned:
             raise ValueError(f"no layer that via {via.id} spans was given")
         left_out = {via.id, *moving}
-        keeper = _via_keeper(
-            via, spanned[0].clearance(via.net), hole_clearance, hole_to_hole
+        clearance = spanned[0].clearance(via.net)
+        keeper = _via_keeper(via, clearance, hole_clearance, hole_to_hole)
+        standing = {
+            v.id: v for s in spanned for v in s.vias if v.id not in left_out
+        }.values()
+        return cls(
+            spanned,
+            clearance,
+            keeper,
+            tuple(v for v in standing if v.net != via.net),
+            tuple(v for v in standing if v.net == via.net),
         )
-        others = {
-            v.id: v
-            for s in spanned
-            for v in s.vias
-            if v.id not in left_out and v.net != via.net
-        }
-        return cls(spanned, keeper, tuple(others.values()))
 
     def via_keeper(self, zones: Sequence[ViaZone]) -> Callable[[Via], _Keeper]:
         """The keeper of another via's ring: with `zones` on the layers both
@@ -2266,15 +2271,7 @@ def own_net_stops(
     it, unless `allow_via_in_pad`, which KiCad's DRC does not check either.
     """
     found = _ViaSurroundings.of(layers, via, moving, hole_clearance, hole_to_hole)
-    spanned, keeper = found.spanned, found.keeper
-    left_out = {via.id, *moving}
-    own = {
-        v.id: v
-        for s in spanned
-        for v in s.vias
-        if v.id not in left_out and v.net == via.net
-    }.values()
-    clearance = spanned[0].clearance(via.net)
+    spanned, keeper, clearance = found.spanned, found.keeper, found.clearance
     plated = [p for p in spanned[0].pads if _plated_of(p, via)]
     items = _hole_items(plated, (), keeper)
     if not allow_via_in_pad:
@@ -2285,7 +2282,7 @@ def own_net_stops(
             if pad.net == via.net and pad.shape is not None
         ]
     parts: list[ObstacleField] = [Obstacles(items)] if items else []
-    vias = _vias_field(keeper, own, lambda _: clearance)
+    vias = _vias_field(keeper, found.own, lambda _: clearance)
     if vias is not None:
         parts.append(vias)
     if not parts:
