@@ -19,6 +19,14 @@ as in a U or a meander, or of copper that one obstacle joins elsewhere.
 Where n obstacles are equally near, the energy sees the point τ·ln n
 nearer than it is. Every clearance judgement takes the exact distance
 (`DistanceField.signed_distance`).
+
+The optimizer scales its variables by each one's stiffness, which
+`edge_curvature` and `point_stiffness` build from an integrand's second
+derivative: `obstacle_curvature` for `obstacle_integrand` and
+`hinge_curvature` for `hinge_integrand`, from `_falloff_curvature` and
+`_hinge_curvature`. Nothing derives one from the other: a change to an
+integrand must change its curvature too, which the tests check against
+central differences.
 """
 
 import math
