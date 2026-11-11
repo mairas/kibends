@@ -113,6 +113,7 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
 import kibends  # noqa: E402
+from kibends import bursts as bursts_module  # noqa: E402
 from kibends import cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
@@ -188,9 +189,16 @@ def counted() -> Generator[Count]:
         count.bursts += 1
         checking = 0.0
 
-        def evaluated(x: FloatArray) -> tuple[float, FloatArray]:
+        def counting(x: FloatArray) -> tuple[float, FloatArray]:
             count.evaluations += 1
             return objective(x)
+
+        # A scaled objective keeps its scale; an older tree has none.
+        evaluated: Objective = counting
+        if hasattr(bursts_module, "ScaledObjective") and isinstance(
+            objective, bursts_module.ScaledObjective
+        ):
+            evaluated = bursts_module.ScaledObjective(counting, objective.scale)
 
         def checked(x: FloatArray) -> int:
             nonlocal checking

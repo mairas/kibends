@@ -13,6 +13,7 @@ import kibends.bursts as bursts_module
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     FALLBACK_WARNING,
+    ScaledObjective,
     revert_until_clear,
     run_burst,
 )
@@ -98,6 +99,55 @@ def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
     run_burst(squared, np.array([1.0, 2.0]), nothing_crosses, settings)
 
     assert (seen["ftol"], seen["gtol"]) == (1e-8, 1e-6)
+
+
+VALLEY_SCALE = np.array([1.0, 1.0 / np.sqrt(STEEPNESS)])
+"""The steep valley's coordinates scaled by 1/sqrt of its curvatures, so
+that it is round."""
+NEAR_MINIMUM = 1e-6
+
+
+def test_a_scale_that_rounds_the_valley_reaches_its_minimum_in_two_iterations() -> None:
+    # The first step is a line search along the gradient, which in a round
+    # valley points at the minimum; the second lands on it.
+    two_iterations = replace(DEFAULT_SETTINGS, burst_maxiter=2)
+    start = np.array([1.0, 2.0])
+    scaled = ScaledObjective(steep_valley, VALLEY_SCALE)
+
+    plain = run_burst(steep_valley, start, nothing_crosses, two_iterations)
+    burst = run_burst(scaled, start, nothing_crosses, two_iterations)
+
+    assert np.abs(plain.points).max() > NEAR_MINIMUM
+    assert np.abs(burst.points).max() < NEAR_MINIMUM
+
+
+def test_a_scaled_burst_checks_and_returns_the_coordinates_unscaled() -> None:
+    start = np.array([1.0, 2.0])
+    checked: list[FloatArray] = []
+
+    def first_back(x: FloatArray) -> int:
+        checked.append(x.copy())
+        x[0] = start[0]
+        return 1
+
+    burst = run_burst(
+        ScaledObjective(steep_valley, VALLEY_SCALE), start, first_back, DEFAULT_SETTINGS
+    )
+
+    assert np.abs(checked[0]).max() < NEAR_MINIMUM
+    assert burst.points[0] == start[0]
+    assert abs(burst.points[1]) < NEAR_MINIMUM
+
+
+def test_a_scaled_objective_answers_as_its_objective() -> None:
+    x = np.array([1.0, 2.0])
+    scaled = ScaledObjective(steep_valley, VALLEY_SCALE)
+
+    value, gradient = scaled(x)
+
+    expected_value, expected_gradient = steep_valley(x)
+    assert value == expected_value
+    np.testing.assert_array_equal(gradient, expected_gradient)
 
 
 @pytest.mark.fallback
