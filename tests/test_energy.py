@@ -4,7 +4,13 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from conftest import obstacle_energy, total_energy
+from conftest import (
+    CURVATURE_ATOL,
+    CURVATURE_RTOL,
+    CURVATURE_STEP,
+    obstacle_energy,
+    total_energy,
+)
 from distance_fields import Box, Disc, FloatArray, Walls
 from numpy.typing import NDArray
 
@@ -16,6 +22,13 @@ from kibends.energy import (
     TermValue,
     attraction_integrand,
     bend_radius_energy,
+    edge_curvature,
+    edge_integral,
+    hinge_curvature,
+    hinge_integrand,
+    obstacle_curvature,
+    obstacle_integrand,
+    quadrature_points,
     shape_energy,
     smooth_minimum,
 )
@@ -558,3 +571,85 @@ def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
     assert gradient[2, 1] == pytest.approx(0.0, abs=EXACT)
     assert up == pytest.approx(gradient[2, 1], abs=scale)
     assert down == pytest.approx(gradient[2, 1], abs=scale)
+
+
+WIDE = 5.0
+"""Half the gap of a channel whose far wall is beyond every term's reach, mm."""
+NARROW = 0.1
+"""Half the gap of a channel within the standoff of both walls, mm."""
+
+
+def channel_gradient(points: FloatArray, walls: Walls) -> FloatArray:
+    """The gradient of `edge_integral` of PARAMS' obstacle terms at `points`
+    in the channel of `walls`."""
+    at = quadrature_points(points, POINTS_PER_EDGE)
+    distance, direction = walls.smooth_distance(at)
+    return edge_integral(
+        points, distance, direction, obstacle_integrand(PARAMS), POINTS_PER_EDGE
+    )[1]
+
+
+@pytest.mark.parametrize(
+    ("half_gap", "y"),
+    [
+        (WIDE, -WIDE + 0.1),
+        (WIDE, -WIDE + 0.7),
+        (WIDE, -WIDE + 2.0),
+        (NARROW, 0.0),
+        (NARROW, 0.004),
+    ],
+    ids=["within standoff", "within falloff", "beyond", "midway", "off midway"],
+)
+def test_edge_curvature_is_the_diagonal_curvature_between_flat_walls(
+    half_gap: float, y: float
+) -> None:
+    # Edges parallel to flat walls: each wall's distance is linear, and moves
+    # across the walls do not change edge lengths to first order, so the
+    # diagonal curvature across them is exactly the terms edge_curvature
+    # keeps, the smooth minimum's between the walls among them.
+    walls = Walls(half_gap)
+    points = np.column_stack([[0.0, 0.3, 0.5, 0.9, 1.0], np.full(5, y)])
+    at = quadrature_points(points, POINTS_PER_EDGE)
+    distance, direction = walls.smooth_distance(at)
+
+    stiffness = edge_curvature(
+        points,
+        distance,
+        direction,
+        obstacle_integrand(PARAMS),
+        obstacle_curvature(PARAMS),
+        POINTS_PER_EDGE,
+    )
+
+    numeric = np.zeros(len(points))
+    for i in range(len(points)):
+        step = np.zeros_like(points)
+        step[i, 1] = CURVATURE_STEP
+        numeric[i] = (
+            channel_gradient(points + step, walls)[i, 1]
+            - channel_gradient(points - step, walls)[i, 1]
+        ) / (2 * CURVATURE_STEP)
+    np.testing.assert_allclose(
+        stiffness, numeric, rtol=CURVATURE_RTOL, atol=CURVATURE_ATOL
+    )
+
+
+def test_inside_an_obstacle_the_curvature_is_the_boundary_s() -> None:
+    inside, boundary = obstacle_curvature(PARAMS)(np.array([-0.05, 0.0]))
+    hinge_inside, hinge_boundary = hinge_curvature(PARAMS)(np.array([-0.05, 0.0]))
+
+    assert inside == boundary > 0.0
+    assert hinge_inside == hinge_boundary > 0.0
+
+
+def test_the_hinge_curvature_is_its_slope_s_derivative_within_the_standoff() -> None:
+    distance = PARAMS.standoff * np.array([0.1, 0.5, 0.9])
+    _, up = hinge_integrand(PARAMS)(distance + CURVATURE_STEP)
+    _, down = hinge_integrand(PARAMS)(distance - CURVATURE_STEP)
+
+    np.testing.assert_allclose(
+        hinge_curvature(PARAMS)(distance),
+        (up - down) / (2 * CURVATURE_STEP),
+        rtol=CURVATURE_RTOL,
+        atol=CURVATURE_ATOL,
+    )

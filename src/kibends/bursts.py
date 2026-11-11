@@ -4,6 +4,16 @@ importing them takes from here.
 
 A burst does not bound its coordinates; a check after the run moves back
 whatever newly crosses an obstacle.
+
+A burst whose objective is a `ScaledObjective` minimises over y, with
+x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS-B's
+one curvature model fits stiff and soft coordinates alike. The scale
+travels with the objective rather than as an argument of its own, so that
+whatever wraps `run_burst` and passes the objective on keeps it; the check
+and the burst's result stay in x. Wrapping the objective itself in a plain
+function drops the scale without an error, and the burst runs unscaled: a
+wrapper of the objective must build a `ScaledObjective` again with the
+scale, as the bench's counting does.
 """
 
 from collections.abc import Callable
@@ -119,6 +129,25 @@ Stop = Callable[[], bool]
 Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 
+class ScaledObjective:
+    """An objective, answering as itself, and the scale of each coordinate
+    that a burst of it minimises over (`run_burst`). A function wrapping it
+    is a plain objective, without the scale; to keep it, wrap `objective`
+    and build a `ScaledObjective` of the wrapper with `scale`."""
+
+    def __init__(self, objective: Objective, scale: FloatArray) -> None:
+        self.objective = objective
+        self.scale = scale
+
+    def __call__(self, x: FloatArray) -> tuple[float, FloatArray]:
+        return self.objective(x)
+
+    def over_scaled(self, y: FloatArray) -> tuple[float, FloatArray]:
+        """The objective and its gradient by y at x = scale ⊙ y."""
+        value, gradient = self.objective(self.scale * y)
+        return value, self.scale * gradient
+
+
 @dataclass(frozen=True)
 class Burst:
     points: FloatArray
@@ -181,8 +210,9 @@ def run_burst(
     an obstacle, and returns how many edges crossed. `stop`, asked after
     each L-BFGS-B iteration, ends the run there when it answers True, such
     as when the time limit has passed. With no coordinate to move, the
-    burst ends where it is without running L-BFGS-B. The burst carries what
-    L-BFGS-B reports of its run.
+    burst ends where it is without running L-BFGS-B. A `ScaledObjective`
+    runs L-BFGS-B over the coordinates divided by its scale. The burst
+    carries what L-BFGS-B reports of its run.
     """
     if len(start) == 0:
         # L-BFGS-B would return a result without a status.
@@ -196,9 +226,15 @@ def run_burst(
             halted = True
             raise StopIteration
 
+    if isinstance(objective, ScaledObjective):
+        scale = objective.scale
+        posed, y0 = objective.over_scaled, start / scale
+    else:
+        scale = None
+        posed, y0 = objective, start.copy()
     result = minimize(
-        objective,
-        start.copy(),
+        posed,
+        y0,
         jac=True,
         method="L-BFGS-B",
         options={
@@ -209,6 +245,8 @@ def run_burst(
         callback=asked,
     )
     current = np.array(result.x, dtype=float)
+    if scale is not None:
+        current *= scale
     revert(current)
     cut = halted and result.nit < settings.burst_maxiter
     return Burst(

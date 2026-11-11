@@ -200,6 +200,12 @@ def nm(v: float) -> int:
 BOARD_FRAME = UserFrame()
 """The board frame itself, as a grid origin at the page origin gives it."""
 
+CURVATURE_STEP = 1e-7
+"""mm of a central difference of a gradient, for a curvature."""
+CURVATURE_RTOL = 1e-5
+CURVATURE_ATOL = 1e-6
+"""How near an analytic curvature lies to its central difference."""
+
 CLEARANCE_STEP = 0.01
 """mm between the points along a polyline's edges where `clearances` looks."""
 

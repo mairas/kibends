@@ -28,13 +28,21 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
-from kibends.bursts import Burst, Objective, OptimizerSettings, Revert, Stop
+from kibends.bursts import (
+    DEFAULT_SETTINGS,
+    Burst,
+    Objective,
+    OptimizerSettings,
+    Revert,
+    ScaledObjective,
+    Stop,
+)
 from kibends.chain import NM_PER_MM, Segment
 from kibends.commit import snapped_points
 from kibends.energy import EnergyParams, ObstacleField
 from kibends.members import seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import ChainCentreline
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
@@ -44,6 +52,7 @@ from kibends.optimize import (
 from kibends.polylines import resample
 from kibends.results import RunResult, Termination
 from kibends.simplify import simplify_chains
+from kibends.via_moves import MovingVias
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -1439,3 +1448,115 @@ def test_an_equally_spaced_bus_moves() -> None:
         for c in result.chains
     )
     assert BUS_STRAIGHT < length < BUS_SHORTENED
+
+
+PRESSED_PITCH = scenarios.PAIR_WIDTH + scenarios.PAIR_CLEARANCE
+"""Centre to centre of two tracks at exactly their clearance, mm."""
+FREE_SCALE = 0.9
+"""A free vertex between edges about the spacing long scales about by 1;
+those next to a pin may have a shorter edge."""
+PRESSED_SCALE = 0.5
+REFERENCE_STIFFNESS = optimize_module.REFERENCE_EDGES / DEFAULT_SETTINGS.spacing
+"""A free vertex's length stiffness between edges of the default spacing."""
+
+
+FAR_Y = -20.0
+"""Where the free track lies, mm: beyond every term's reach of the others."""
+PRESSED_PARAMS = replace(scenarios.PARAMS, repulsion=0.5)
+
+
+def pressed_and_free() -> list[ChainInput]:
+    """A straight track at FAR_Y, then three pressed together at their
+    clearance from y = 0 up."""
+    far = selected("far", "far", FreeSpace(), (0.0, FAR_Y), (10.0, FAR_Y))
+    pressed = [
+        selected(f"S{i}", f"S{i}", FreeSpace(), (0.0, y), (10.0, y))
+        for i, y in enumerate(i * PRESSED_PITCH for i in range(3))
+    ]
+    return [far, *pressed]
+
+
+def pressed_and_free_scales() -> list[FloatArray]:
+    """Per chain of `pressed_and_free`, its free vertices' scales in the
+    first burst."""
+    chains = pressed_and_free()
+    vias = MovingVias(chains, [], HOLE_CLEARANCE, HOLE_TO_HOLE)
+    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+        chains, [], vias, PRESSED_PARAMS, DEFAULT_SETTINGS
+    )
+    problem = placed.problem
+    layout = problem.layout(problem.points)
+    seen = seen_parts(problem.members, layout.starts, problem.rings)
+    stiffness = problem.stiffness(layout, seen, problem.lookups(seen))
+    scale = optimize_module._scale(  # pyright: ignore[reportPrivateUsage]
+        stiffness, DEFAULT_SETTINGS.spacing
+    ).reshape(-1, 2)[:, 0]
+    return [scale[index[index >= 0]] for index in layout.index]
+
+
+def test_a_burst_scales_down_a_track_pressed_between_two_and_not_a_free_one() -> None:
+    far, outer, middle, _ = pressed_and_free_scales()
+
+    assert far.min() > FREE_SCALE
+    assert far.max() == 1.0
+    assert np.median(middle) < PRESSED_SCALE
+    assert np.median(middle) < np.median(outer) < 1.0
+
+
+def test_a_burst_minimises_over_its_scaled_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = optimize_module.run_burst
+    given: list[tuple[Objective, FloatArray]] = []
+
+    def capturing(
+        objective: Objective,
+        start: FloatArray,
+        revert: Revert,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        given.append((objective, start.reshape(-1, 2).copy()))
+        return real(objective, start, revert, settings, stop)
+
+    monkeypatch.setattr(optimize_module, "run_burst", capturing)
+
+    optimize_chains(
+        pressed_and_free(), PRESSED_PARAMS, replace(DEFAULT_SETTINGS, max_iterations=1)
+    )
+
+    objective, start = given[0]
+    assert isinstance(objective, ScaledObjective)
+    scale = objective.scale.reshape(-1, 2)[:, 0]
+    far = scale[start[:, 1] == FAR_Y]
+    middle = scale[start[:, 1] == PRESSED_PITCH]
+    assert np.median(far) == 1.0
+    assert np.median(middle) < PRESSED_SCALE
+
+
+def test_a_free_interior_vertex_between_edges_of_the_spacing_is_the_reference() -> None:
+    spacing = DEFAULT_SETTINGS.spacing
+    points = np.array([(0.0, 0.0), (spacing, 0.0), (2 * spacing, 0.0)])
+    layout = optimize_module._Layout(  # pyright: ignore[reportPrivateUsage]
+        starts=[points],
+        positions=[],
+        index=[np.array([-1, 0, -1], dtype=np.intp)],
+        offsets=[np.zeros_like(points)],
+        via_index=np.zeros(0, dtype=np.intp),
+        count=1,
+    )
+
+    stiffness = optimize_module._length_stiffness(  # pyright: ignore[reportPrivateUsage]
+        layout
+    )
+
+    np.testing.assert_array_equal(stiffness, [REFERENCE_STIFFNESS])
+
+
+def test_no_variable_scales_above_one() -> None:
+    scale = optimize_module._scale(  # pyright: ignore[reportPrivateUsage]
+        np.array([0.0, REFERENCE_STIFFNESS, 4 * REFERENCE_STIFFNESS]),
+        DEFAULT_SETTINGS.spacing,
+    )
+
+    np.testing.assert_array_equal(scale, [1.0, 1.0, 1.0, 1.0, 0.5, 0.5])
