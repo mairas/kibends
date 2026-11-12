@@ -30,11 +30,11 @@ end stubs on the track or check the ratsnest.
 
 A route through a via is one chain per layer. A selected via that may move
 cuts the chains with a vertex on its centre into chains that end there,
-pinned, and its copper does not pin, so that it does not tether the chains
-it carries; `vias` then decides which do move, and `run` extracts the
-chains again with the fixed ones whole and their copper pinning. A chain
-that passes a via with no vertex on its centre is not cut there, and holds
-it fixed.
+pinned. Neither its copper nor the chain ends it carries (`carries`) pin,
+so that they do not tether the chains it carries; `vias` then decides which
+do move, and `run` extracts the chains again with the fixed ones whole and
+their copper pinning. A chain that passes a via with no vertex on its
+centre is not cut there, and holds it fixed.
 
 Units: segment endpoints and widths are integer nanometres, as KiCad stores
 them, so that endpoint matching and deduplication are exact. Same-net copper
@@ -49,7 +49,7 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 from functools import cached_property
 from itertools import accumulate, combinations, pairwise
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import shapely
 from loguru import logger
@@ -58,6 +58,10 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 
 from kibends.coords import UserFrame
+
+if TYPE_CHECKING:
+    # snapshot imports this module.
+    from kibends.snapshot import Disc
 
 Point2 = tuple[float, float]
 NmPoint = tuple[int, int]
@@ -189,7 +193,7 @@ def split_chains(
     *,
     frame: UserFrame,
     left_out: Callable[[str], None] = logger.debug,
-    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
+    cuts: Callable[[str, str], Collection[Disc]] = lambda _layer, _net: (),
 ) -> list[Chain]:
     """Split the unlocked segments `kept` into chains, one per connected
     piece, or raise when none is left or has length; `split_locked` splits
@@ -217,12 +221,13 @@ def split_chains(
     (`_slides`); zones must not be given, since they reflow after the edit
     and never pin. A via joining chains on two layers pins both, and a
     net's chain on one layer pins another where its end's copper reaches the
-    other's. Where they overlap or cross away from their ends, nothing pins
-    either: copper of one net does not interact, and the run may move them
-    apart. `cuts(layer, net)` gives the points, in mm, at which to end
-    chains, the centres of vias that may move or that move: the pieces are
-    also split at each one that is a vertex, into chains that end there,
-    pinned, as at any chain end, unless it is a junction. Held segments
+    other's, unless a via of `cuts` carries that end. Where they overlap or
+    cross away from their ends, nothing pins either: copper of one net does
+    not interact, and the run may move them apart. `cuts(layer, net)` gives
+    the copper, in mm, of the vias that may move or that move: the pieces
+    are also split at each centre that is a vertex, into chains that end
+    there, pinned, as at any chain end, unless it is a junction, and the
+    chain ends each carries (`carries`) pin no other chain. Held segments
     (`Segment.held`) and the others are split apart in the same way, and a
     chain of held ones is held whole (`Chain.held`). The `locked` segments
     pin the chains they touch on their layer.
@@ -256,7 +261,8 @@ def split_chains(
             if len(segs) > MAX_CHAIN_DEGREE or _width_change(p, segs)
         }
         # Exact float equality is nanometre equality: see `Contact.anchor`.
-        cut_mm = set(cuts(layer, net))
+        rings = cuts(layer, net)
+        cut_mm = {ring.centre for ring in rings}
         cut_vertices = {
             p
             for p, segs in adjacency.items()
@@ -288,13 +294,15 @@ def split_chains(
             ]
         # Copper of one net does not interact, so selected chains pin each
         # other only where one ends in the other's copper: there the end's
-        # copper pins like unselected copper. Where they overlap or cross
-        # away from their ends, nothing pins either.
+        # copper pins like unselected copper, unless a cut's via carries the
+        # end. Where they overlap or cross away from their ends, nothing pins
+        # either.
         ends = [
             (k, SameNetTrack(Point(_mm(p)), width / NM_PER_MM))
             for k, (width, adjacency, _) in enumerate(pieces)
             for p, at in adjacency.items()
             if len(at) == 1
+            and not any(carries(ring, _mm(p), width / NM_PER_MM) for ring in rings)
         ]
         copper = _CopperIndex(
             [*fixed, *(t for _, t in ends)],
@@ -334,6 +342,12 @@ def split_chains(
     return sorted(
         chains, key=lambda c: (c.net, c.layer, c.points[0], c.width, c.points)
     )
+
+
+def carries(ring: Disc, end: Point2, width: float) -> bool:
+    """Whether a via of copper `ring` carries the end at `end` of a chain
+    of `width` on a layer it reaches: their copper overlaps."""
+    return math.dist(end, ring.centre) <= ring.radius + width / 2
 
 
 def _held(chain: Chain) -> Chain:

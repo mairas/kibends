@@ -17,7 +17,7 @@ from kibends.chain import (
     shared_track_groups,
 )
 from kibends.coords import UserFrame
-from kibends.snapshot import Arc
+from kibends.snapshot import Arc, Disc
 
 WIDTH_NM = 250_000
 LAYER = "F.Cu"
@@ -937,10 +937,9 @@ class TestLoops:
         assert stub.pinned == (False, True)
 
     def test_a_cut_on_the_loop_opens_it_there_with_both_ends_pinned(self) -> None:
-        def cuts(_layer: str, _net: str) -> list[tuple[float, float]]:
-            return [(10.0, 10.0)]
-
-        (chain,) = extract_chains(square_loop(), frame=BOARD_FRAME, cuts=cuts)
+        (chain,) = extract_chains(
+            square_loop(), frame=BOARD_FRAME, cuts=cut_at((10, 10))
+        )
 
         assert chain.points[0] == chain.points[-1] == (10, 10)
         assert chain.pinned == (True, False, False, False, True)
@@ -955,13 +954,16 @@ class TestLoops:
         assert chain.pinned == (True, False, False, False, True)
 
 
+VIA_RADIUS_MM = 0.3
+
+
 def cut_at(
     point: tuple[float, float], layer: str = LAYER, net: str = NET
-) -> Callable[[str, str], list[tuple[float, float]]]:
-    """Cuts at `point` for `net` on `layer` alone."""
+) -> Callable[[str, str], list[Disc]]:
+    """Cuts at a via centred on `point` for `net` on `layer` alone."""
 
-    def cuts(on: str, of: str) -> list[tuple[float, float]]:
-        return [point] if (on, of) == (layer, net) else []
+    def cuts(on: str, of: str) -> list[Disc]:
+        return [Disc(point, VIA_RADIUS_MM)] if (on, of) == (layer, net) else []
 
     return cuts
 
@@ -1009,8 +1011,8 @@ class TestCuts:
         assert len(chain.points) == 4
 
     def test_a_loop_cut_at_two_points_is_two_pieces_pinned_at_both(self) -> None:
-        def cuts(_layer: str, _net: str) -> list[tuple[float, float]]:
-            return [(10.0, 0.0), (0.0, 10.0)]
+        def cuts(_layer: str, _net: str) -> list[Disc]:
+            return [Disc((10.0, 0.0), VIA_RADIUS_MM), Disc((0.0, 10.0), VIA_RADIUS_MM)]
 
         chains = extract_chains(square_loop(), frame=BOARD_FRAME, cuts=cuts)
 
@@ -1027,6 +1029,33 @@ class TestCuts:
         )
 
         assert (a.pinned[-1], bc.pinned[0], d.pinned[0]) == (False, False, False)
+
+    def test_an_end_the_via_carries_does_not_pin_another_chain(self) -> None:
+        # A stub ending inside the via's ring reaches the copper of the track
+        # leaving the via; the via carries both, so the stub must not pin it.
+        stub, track = extract_chains(
+            via_stub_segments(), frame=BOARD_FRAME, cuts=cut_at((10, 0))
+        )
+
+        assert_points(stub, [(9.9, 0.1), (10, 0)])
+        assert_points(track, [(10, 0), (10, 2.5), (15, 2.5)])
+        assert track.pinned == (True, False, True)
+
+    def test_a_stub_at_a_via_that_stays_is_part_of_one_chain(self) -> None:
+        (chain,) = extract_chains(via_stub_segments(), frame=BOARD_FRAME)
+
+        assert_points(chain, [(9.9, 0.1), (10, 0), (10, 2.5), (15, 2.5)])
+        assert chain.pinned == (True, False, False, True)
+
+
+def via_stub_segments() -> list[Segment]:
+    """A stub from a via's centre at (10, 0) to a dead end inside its ring,
+    and a track leaving the centre, both 0.2 mm wide."""
+    return [
+        seg("stub", (10, 0), (9.9, 0.1), width=200_000),
+        seg("t1", (10, 0), (10, 2.5), width=200_000),
+        seg("t2", (10, 2.5), (15, 2.5), width=200_000),
+    ]
 
 
 def tee_segments() -> list[Segment]:

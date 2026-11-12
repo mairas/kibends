@@ -2266,6 +2266,10 @@ def created_vias(board: CommitBoard) -> list[kbt.Via]:
 THROUGH = (5.0, 6.0)
 """Where the route of `through_via_board` turns at its via."""
 
+STUB_END = (5.1408, 5.9872)
+"""Inside the ring of `through_via_board`'s via, 0.1 mm along and 0.1 mm
+beside its track to (10, 0)."""
+
 
 def through_via_board(
     down: kbt.Track | None = None, unselected: kbt.Track | None = None
@@ -2396,6 +2400,26 @@ class TestMovingVias:
         assert at[1] < nm(1)
         on_front = created_on(board, BL.BL_F_Cu)
         assert [(p.x, p.y) for t in on_front for p in (t.start, t.end)].count(at) == 2
+
+    def test_a_stub_ending_in_a_moving_via_does_not_kink_the_track_beside(
+        self, connect: Connector
+    ) -> None:
+        # The stub's dead end, inside the via's ring, reaches the copper of
+        # "c": the via carries it, so it must not pin "c" where it was.
+        stub = kipy_track("s", "SIG", THROUGH, STUB_END, width=WIDTH)
+        board = connect.to(through_via_board(down=stub))
+
+        run()
+
+        (moved,) = created_vias(board)
+        at = (moved.position.x, moved.position.y)
+        assert math.dist(at, (nm(THROUGH[0]), nm(THROUGH[1]))) > nm(1)
+        straight = [
+            t
+            for t in created_on(board, BL.BL_F_Cu)
+            if {(t.start.x, t.start.y), (t.end.x, t.end.y)} == {at, (nm(10), nm(0))}
+        ]
+        assert len(straight) == 1
 
     def test_a_via_a_chain_runs_through_carries_a_track_of_another_layer(
         self, connect: Connector

@@ -28,6 +28,7 @@ from kibends.obstacles import containment
 from kibends.snapshot import (
     KICAD_MAX_ERROR,
     BoardSnapshot,
+    Disc,
     Via,
     ViaZone,
     read_selection,
@@ -939,10 +940,10 @@ def test_a_via_cuts_only_its_own_net_on_the_layers_it_spans() -> None:
 
     cuts = chain_cuts([blind_via, other_net])
 
-    assert cuts("F.Cu", "SIG") == [CORNER]
-    assert cuts("In1.Cu", "SIG") == [CORNER]
+    assert cuts("F.Cu", "SIG") == [Disc(CORNER, 0.3)]
+    assert cuts("In1.Cu", "SIG") == [Disc(CORNER, 0.3)]
     assert cuts("B.Cu", "SIG") == []
-    assert cuts("F.Cu", "GND") == [VIA]
+    assert cuts("F.Cu", "GND") == [Disc(VIA, 0.3)]
     assert cuts("F.Cu", "OTHER") == []
 
 
