@@ -2576,14 +2576,38 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Bursts that move chain 1's free vertices of `beside_held` onto
-    /// chain 2, then let the check move back what that crossed, keeping
-    /// chain 1 as it was moved back.
-    struct OntoChain2 {
+    /// Bursts that move chain 1's free vertices of `beside_held` to `x` and `y`,
+    /// then let the check move back what that crossed, keeping chain 1 as
+    /// it was moved back and whether the held section had a variable.
+    struct MoveChain1 {
+        /// Where chain 1's free vertices go: x, or each keeps its own, and y.
+        x: Option<f64>,
+        y: f64,
         reverted: Option<Vec<V2>>,
+        held_free: Option<bool>,
     }
 
-    impl Bursts<NotFinite> for OntoChain2 {
+    impl MoveChain1 {
+        fn to(to: V2) -> Self {
+            Self {
+                x: Some(to.x),
+                y: to.y,
+                reverted: None,
+                held_free: None,
+            }
+        }
+
+        fn to_y(y: f64) -> Self {
+            Self {
+                x: None,
+                y,
+                reverted: None,
+                held_free: None,
+            }
+        }
+    }
+
+    impl Bursts<NotFinite> for MoveChain1 {
         fn run(
             &mut self,
             objective: Objective,
@@ -2595,8 +2619,12 @@ mod tests {
             let layout = &objective.layout;
             let mut point = start;
             for &k in layout.index[1].iter().flatten() {
-                point[2 * k + 1] = 3.0;
+                if let Some(x) = self.x {
+                    point[2 * k] = x;
+                }
+                point[2 * k + 1] = self.y;
             }
+            self.held_free = Some(layout.index[0].iter().any(Option::is_some));
             check.revert(&mut point);
             self.reverted = Some(layout.unflatten(&point).0[1].clone());
             Ok((
@@ -2618,9 +2646,25 @@ mod tests {
     fn a_chain_entering_the_member_after_a_held_section_moves_back() {
         let mut p = beside_held(None);
         let start = p.now.points[1].clone();
-        let mut bursts = OntoChain2 { reverted: None };
+        let mut bursts = MoveChain1::to_y(3.0);
         run(&mut p, &mut bursts, 1);
         assert_eq!(bursts.reverted, Some(start));
+    }
+
+    #[test]
+    fn a_chain_entering_a_held_sections_extra_vertices_moves_back() {
+        let mut p = beside_held(None);
+        let start = p.now.points.clone();
+        let tracks = HELD_A + HELD_B;
+        let held_before = p.shared().flat(&start, &[])[..tracks].to_vec();
+        // Track b's vertex 4, past the centreline's last vertex.
+        let mut bursts = MoveChain1::to(V2::new(8.0, 10.2));
+        run(&mut p, &mut bursts, 1);
+        assert_eq!(bursts.held_free, Some(false));
+        assert_eq!(bursts.reverted.as_ref(), Some(&start[1]));
+        assert_eq!(p.now.points[0], start[0]);
+        let held_after = p.shared().flat(&p.now.points, &[])[..tracks].to_vec();
+        assert_eq!(held_after, held_before);
     }
 
     #[test]
