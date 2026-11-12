@@ -221,8 +221,7 @@ burst leaves it in more clearance violations than it started with goes
 back to its last good shape while the others keep theirs, and the result
 is always at the final spacing. With so few vertices, a chain may pass
 another moving chain in one burst and settle on its far side, where the
-shorter route is clear. Results differ from those of kibends versions that
-ran at 0.1 mm alone; `--spacing 0.1` runs that way again.
+shorter route is clear.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
