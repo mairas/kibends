@@ -67,6 +67,10 @@ fn run_burst(
     max_iterations: u64,
     ftol: f64,
     gtol: f64,
+    #[gen_stub(override_type(
+        type_repr = "typing.Optional[collections.abc.Callable[[], builtins.bool]]",
+        imports = ("typing", "collections.abc", "builtins")
+    ))]
     stop: Option<Py<PyAny>>,
 ) -> PyResult<BurstResult> {
     let start = floats_of(&start);

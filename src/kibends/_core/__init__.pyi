@@ -2,6 +2,8 @@
 # ruff: noqa: E501, F401, F403, F405
 
 import builtins
+import collections.abc
+from kibends import bursts
 from kibends import energy
 import numpy
 import numpy.typing
@@ -1159,7 +1161,7 @@ class Zone:
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[typing.Any], burst: typing.Any, report: typing.Any) -> tuple[builtins.str, builtins.int]:
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
     Outer iterations of `problems` from `iteration` until `cap`, each giving
     every problem that has not settled one burst, until every problem has
@@ -1420,7 +1422,7 @@ def reset_statistics() -> None:
     Every statistic back to zero.
     """
 
-def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[typing.Any] = None) -> BurstResult:
+def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[collections.abc.Callable[[], builtins.bool]] = None) -> BurstResult:
     r"""
     Minimises `objective` from `start` with L-BFGS, over y with x =
     `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or

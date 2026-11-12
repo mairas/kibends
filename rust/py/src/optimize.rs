@@ -842,8 +842,20 @@ fn advance(
     iteration: u64,
     cap: u64,
     gave_up: bool,
+    #[gen_stub(override_type(
+        type_repr = "typing.Optional[collections.abc.Callable[[], builtins.bool]]",
+        imports = ("typing", "collections.abc", "builtins")
+    ))]
     expired: Option<Bound<'_, PyAny>>,
+    #[gen_stub(override_type(
+        type_repr = "collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst]",
+        imports = ("collections.abc", "numpy", "numpy.typing", "kibends.bursts")
+    ))]
     burst: Bound<'_, PyAny>,
+    #[gen_stub(override_type(
+        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]",
+        imports = ("collections.abc",)
+    ))]
     report: Py<PyAny>,
 ) -> PyResult<(&'static str, u64)> {
     let mut borrowed: Vec<PyRefMut<'_, ProblemState>> = problems
