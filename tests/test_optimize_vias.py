@@ -69,6 +69,13 @@ from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
 
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+ONE_SPACING_OR_LEVELS = pytest.mark.parametrize(
+    "coarse", [(), COARSE_LEVELS], ids=["one spacing", "levels"]
+)
+
+
 def run(scenario: ViasScenario, settings: OptimizerSettings = COARSE) -> RunResult:
     return optimize_chains(scenario.chains, scenario.params, settings, scenario.vias)
 
@@ -144,8 +151,11 @@ def off_centre() -> ViasScenario:
     )
 
 
-def test_ends_off_the_via_s_centre_keep_their_offsets_exactly() -> None:
-    result = run(off_centre())
+@ONE_SPACING_OR_LEVELS
+def test_ends_off_the_via_s_centre_keep_their_offsets_exactly(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(off_centre(), replace(COARSE, coarse_spacings=coarse))
 
     given = off_centre()
     (via,) = result.vias
@@ -159,8 +169,11 @@ def test_ends_off_the_via_s_centre_keep_their_offsets_exactly() -> None:
     )
 
 
-def test_chains_on_one_layer_move_with_their_via_together() -> None:
-    result = run(scenarios.via_on_one_layer())
+@ONE_SPACING_OR_LEVELS
+def test_chains_on_one_layer_move_with_their_via_together(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(scenarios.via_on_one_layer(), replace(COARSE, coarse_spacings=coarse))
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
@@ -486,8 +499,11 @@ def test_a_via_is_not_held_back_by_a_chain_it_passes(nudge: float) -> None:
     assert via.position[1] < 0.1
 
 
-def test_three_chains_meet_where_the_via_joins_them_shortest() -> None:
-    result = run(scenarios.via_fermat())
+@ONE_SPACING_OR_LEVELS
+def test_three_chains_meet_where_the_via_joins_them_shortest(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(scenarios.via_fermat(), replace(COARSE, coarse_spacings=coarse))
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
