@@ -1527,8 +1527,8 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
 
 SHARP_SPACING = 1.0
 """A spacing at which the section's corner may turn by 100 degrees within
-the bend-radius limit, run alone: it is coarser than the default coarse
-levels."""
+the bend-radius limit, run alone: the default coarse levels must each be
+above the final spacing, and 0.4 mm is not."""
 TURN = math.radians(60.0)
 SHARPENING = math.radians(40.0)
 LEG = 5.0
