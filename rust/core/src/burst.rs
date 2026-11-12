@@ -38,6 +38,18 @@
 //! accepted point along the gradient, and a failure without pairs ends the
 //! burst abnormally at that point, as scipy's status 2 did.
 //!
+//! L-BFGS keeps a correction pair only when it curves upward, s·y > ε·(−g·s)
+//! with s the step, y the change of the gradient along it and g the
+//! gradient at its start, as scipy requires. A More-Thuente search may end
+//! on its width tolerance without the curvature condition and argmin's
+//! L-BFGS keeps every pair, where s·y ≤ 0 would turn the next direction
+//! uphill or make it 0/0. An accepted iteration whose pair does not curve
+//! upward is kept without its pair, as scipy skips it, and so is a lowest
+//! trial taken after a search that ended above its start, which argmin
+//! paired with the search's end point. argmin's pairs are private, so the
+//! wrapper keeps a copy of `LBFGS` from before each step and takes it back
+//! to drop the step's pair.
+//!
 //! The line search's width tolerance is scipy's too, since argmin's default
 //! keeps narrowing an interval that round-off already decides, and so is
 //! its first step: the burst's first search, along the gradient, starts
@@ -440,6 +452,28 @@ impl<E> Record<E> {
         at(state, self.point.clone(), (self.energy, gradient))
     }
 
+    /// Whether the step from the last accepted point to `state`'s gives a
+    /// correction pair that L-BFGS may keep: s·y > ε·(−g·s), with s the
+    /// step, y the change of the gradient along it and g the gradient at
+    /// its start, as scipy's L-BFGS-B requires.
+    fn curves_up(&self, state: &Iterate) -> bool {
+        let (Some(param), Some(gradient)) = (state.get_param(), state.get_gradient()) else {
+            return false;
+        };
+        let (mut sy, mut gs) = (0.0, 0.0);
+        for (((y, y0), g), g0) in param
+            .iter()
+            .zip(&self.point)
+            .zip(gradient)
+            .zip(&self.gradient)
+        {
+            let s = y - y0;
+            sy += s * (g - g0);
+            gs += s * g0;
+        }
+        sy > f64::EPSILON * -gs
+    }
+
     /// Whether energy `f` at `y` lies below the last accepted point's by
     /// the line search's sufficient decrease along the step to it.
     fn sufficiently_below(&self, y: &[f64], f: f64) -> bool {
@@ -465,7 +499,7 @@ fn at(mut state: Iterate, y: Vec<f64>, (f, gradient): Evaluation) -> Iterate {
 /// argmin's `LBFGS` with scipy's ending rules.
 struct Wrapper<'r, E> {
     lbfgs: Lbfgs,
-    /// The iterations since `lbfgs` last started without correction pairs.
+    /// The correction pairs `lbfgs` took since it last started without any.
     pairs: u64,
     settings: Settings,
     record: &'r mut Record<E>,
@@ -479,6 +513,23 @@ impl<E> Wrapper<'_, E> {
         self.record.decrease = (before - next.cost) / before.abs().max(next.cost.abs()).max(1.0);
         self.record.iterations += 1;
         next
+    }
+
+    /// Starts `lbfgs` again without correction pairs.
+    fn restart(&mut self) {
+        self.lbfgs = lbfgs(false);
+        self.pairs = 0;
+    }
+
+    /// Drops the pair the last step gave `lbfgs` by taking back `kept`,
+    /// `lbfgs` before that step. Without pairs it starts again instead:
+    /// `kept` may still start its search as the burst's first does.
+    fn unpair(&mut self, kept: Lbfgs) {
+        if self.pairs == 0 {
+            self.restart();
+        } else {
+            self.lbfgs = kept;
+        }
     }
 
     fn end(&mut self, ending: Ending) -> TerminationStatus {
@@ -523,6 +574,7 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
             if let Some(s) = scaled {
                 s.begin_search();
             }
+            let kept = self.lbfgs.clone();
             let stepped = self.lbfgs.next_iter(problem, state);
             let lowest = scaled.and_then(|s| {
                 // A failed line search drops the problem it took.
@@ -543,14 +595,20 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
                 _ => None,
             };
             let Some(reason) = failure else {
-                self.pairs += 1;
+                if self.record.curves_up(&next) {
+                    self.pairs += 1;
+                } else {
+                    self.unpair(kept);
+                }
                 return Ok((self.accept(next, before), kv));
             };
             if let Some((y, evaluation)) = lowest
                 && self.record.sufficiently_below(&y, evaluation.0)
             {
                 // Without a pair: the step did not meet the curvature
-                // condition.
+                // condition. A search that ended above its start left
+                // LBFGS a pair for its end point.
+                self.unpair(kept);
                 return Ok((self.accept(at(next, y, evaluation), before), kv));
             }
             if self.pairs == 0 {
@@ -561,8 +619,7 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
                     kv,
                 ));
             }
-            self.lbfgs = lbfgs(false);
-            self.pairs = 0;
+            self.restart();
             state = self.record.restore(next);
         }
     }
@@ -886,6 +943,89 @@ mod tests {
 
         assert!(!b.abnormal(), "{:?}", b.ending);
         assert!((b.point[0] - WALL_MINIMUM).abs() < 1e-9, "{:?}", b.point);
+    }
+
+    #[test]
+    fn a_step_along_a_straight_stretch_keeps_every_trial_finite() {
+        // The first search ends on the straight stretch, where the gradient
+        // is the start's: its pair has s·y = 0, which would scale the next
+        // direction by 0/0.
+        let mut nonfinite = 0;
+        let mut counted = |x: &[f64]| {
+            if !x.iter().all(|x| x.is_finite()) {
+                nonfinite += 1;
+            }
+            wall(x)
+        };
+
+        let b = burst(&mut counted, &[0.5], &SETTINGS);
+
+        assert_eq!(nonfinite, 0);
+        assert!(!b.abnormal(), "{:?}", b.ending);
+    }
+
+    /// Falling as -x², ever steeper, up to a wall at 1 that rises as
+    /// 10⁴·d².
+    fn concave_wall(x: &[f64]) -> Result<Evaluation, ()> {
+        let inside = (x[0] - 1.0).max(0.0);
+        Ok((
+            -x[0] * x[0] + STEEPNESS * inside * inside,
+            vec![-2.0 * x[0] + 2.0 * STEEPNESS * inside],
+        ))
+    }
+
+    /// `concave_wall` with a wall rising as 10⁵·d², beside a valley across
+    /// it of curvature 10.
+    fn concave_valley(x: &[f64]) -> Result<Evaluation, ()> {
+        let inside = (x[0] - 1.0).max(0.0);
+        Ok((
+            -x[0] * x[0] + VALLEY_WALL * inside * inside + 10.0 * x[1] * x[1],
+            vec![-2.0 * x[0] + 2.0 * VALLEY_WALL * inside, 20.0 * x[1]],
+        ))
+    }
+
+    const VALLEY_WALL: f64 = 1e5;
+
+    #[test]
+    fn a_pair_that_does_not_curve_upward_is_skipped_and_the_others_kept() {
+        // Keeping the pair, or dropping every pair with it, leaves the
+        // burst creeping toward the wall to its cap.
+        let minimum = VALLEY_WALL / (VALLEY_WALL - 1.0);
+
+        let b = burst(&mut concave_valley, &[0.3, 0.5], &SETTINGS);
+
+        assert!(
+            matches!(b.ending, Ending::Gradient | Ending::Decrease),
+            "{:?}",
+            b.ending
+        );
+        assert!((b.point[0] - minimum).abs() < 1e-9, "{:?}", b.point);
+        assert!(b.point[1].abs() < 1e-9, "{:?}", b.point);
+    }
+
+    #[test]
+    fn a_step_along_a_concave_stretch_drops_its_pair_and_converges() {
+        let start = [0.5];
+        let once = Settings {
+            max_iterations: 1,
+            ..SETTINGS
+        };
+        let first = burst(&mut concave_wall, &start, &once);
+        let (s, y) = (
+            first.point[0] - start[0],
+            concave_wall(&first.point).unwrap().1[0] - concave_wall(&start).unwrap().1[0],
+        );
+        assert!(s * y < 0.0, "the first pair has s·y = {}", s * y);
+        let minimum = STEEPNESS / (STEEPNESS - 1.0);
+
+        let b = burst(&mut concave_wall, &start, &SETTINGS);
+
+        assert!(
+            matches!(b.ending, Ending::Gradient | Ending::Decrease),
+            "{:?}",
+            b.ending
+        );
+        assert!((b.point[0] - minimum).abs() < 1e-9, "{:?}", b.point);
     }
 
     #[test]
