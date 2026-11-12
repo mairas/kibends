@@ -66,13 +66,11 @@ from kibends.energy import (
     ObstacleField,
     arc_lengths,
 )
-from kibends.neighbours import (
-    ChainInput,
-    chain_field,
-)
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     HOLE_TO_HOLE,
     ChainCentreline,
+    CompositeField,
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
@@ -936,7 +934,7 @@ def _with_vias(
         out.append(
             given
             if part is None
-            else replace(given, field=chain_field(given.field, part))
+            else replace(given, field=CompositeField([given.field, part]))
         )
     return out
 

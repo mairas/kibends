@@ -24,6 +24,7 @@ from conftest import (
     total_energy,
 )
 from distance_fields import Disc, FloatArray, FreeSpace
+from reference_fields import chain_field, neighbour_field
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
@@ -42,7 +43,7 @@ from kibends.chain import NM_PER_MM, Segment
 from kibends.commit import snapped_points
 from kibends.energy import EnergyParams, ObstacleField
 from kibends.members import seen_parts
-from kibends.neighbours import ChainInput, chain_field, neighbour_field
+from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,

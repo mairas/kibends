@@ -1,28 +1,21 @@
 """Selected chains as obstacles to each other.
 
 Each chain has a static field of everything on the board but the selected
-chains. The other selected chains on its layer are added to it as obstacles
-in one field (`neighbour_field`), at whatever shape the caller holds them
-in. The optimizer asks the same of all its members at once instead
-(`members.seen_parts`), with no field per member, and simplification
-builds each member's field in Rust (`kibends_core::simplify`). A chain ignores
+chains. The other selected chains on its layer are its obstacles too, at
+whatever shape the caller holds them in: the optimizer asks what each
+member sees of the others at once (`members.seen_parts`, through
+`kibends_core::members`), and simplification builds each member's field
+from the same rule (`kibends_core::simplify`). A chain ignores
 the chains of its net and of the other net of its diff pair
 (`pairs.diff_pair_nets`), and a coupled section those of its two nets:
 they may come close, overlap or cross. KiCad's DRC reports what that lets
 through between the two nets of a diff pair.
 """
 
-from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-from kibends.energy import BoolArray, DistanceField, FloatArray, ObstacleField
-from kibends.obstacles import (
-    ChainCentreline,
-    CompositeField,
-    chain_inflation,
-    chains_field,
-)
-from kibends.pairs import diff_pair_nets
+from kibends.energy import BoolArray, DistanceField, ObstacleField
+from kibends.obstacles import ChainCentreline
 
 
 @dataclass(frozen=True, eq=False)
@@ -44,33 +37,3 @@ class ChainInput:
     held: bool = False
     """It stays as drawn: every vertex is fixed, and none is added between
     them, as resampling a chain does."""
-
-
-def chain_field(
-    static: ObstacleField, neighbours: ObstacleField | None
-) -> ObstacleField:
-    """A chain's field: `static` alone, or with `neighbours` if not None."""
-    return static if neighbours is None else CompositeField([static, neighbours])
-
-
-def neighbour_field(
-    own: ChainInput,
-    shown: Iterable[tuple[ChainInput, FloatArray]],
-    *,
-    ignored: frozenset[str] | None = None,
-) -> ObstacleField | None:
-    """The chains of `shown`, each at its points and an obstacle of its own,
-    as obstacles to `own` in one field, inflated as `obstacles.chain_inflation`
-    gives it; None if nothing is left. Chains of the nets `ignored`, by
-    default `own`'s and the other net of its diff pair, are no obstacles."""
-    me = own.centreline
-    nets = diff_pair_nets(me.net) if ignored is None else ignored
-    parts: list[tuple[list[ChainCentreline], float]] = []
-    for other, points in shown:
-        them = other.centreline
-        inflation = chain_inflation(nets, me.width, me.clearance, them)
-        if inflation is not None:
-            parts.append(([replace(them, points=points)], inflation))
-    if not parts:
-        return None
-    return chains_field(parts)

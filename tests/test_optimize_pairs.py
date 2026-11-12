@@ -15,6 +15,7 @@ import pytest
 import scenarios
 from conftest import BurstClock, first_check, gap_range, layer_energy, total_energy
 from distance_fields import BoolArray, FloatArray, FreeSpace
+from reference_fields import chain_field, neighbour_field
 from scenarios import (
     DP_GAP,
     DP_PAD,
@@ -43,7 +44,7 @@ from kibends.chain import Chain
 from kibends.contacts import no_contacts
 from kibends.energy import EnergyParams, ObstacleField, arc_lengths
 from kibends.members import Member, seen_parts
-from kibends.neighbours import ChainInput, chain_field, neighbour_field
+from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, core_field
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block

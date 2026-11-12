@@ -28,7 +28,7 @@ The other blocks see the two tracks at the centreline's current shape. The
 centreline sees every other chain, and every track of another diff pair,
 as a track of the diff pair's outer extent would. The section and the chains of its
 two nets ignore each other, as chains of one net and the two nets of a diff
-pair do (`neighbours.neighbour_field`), so its fan-outs leave it freely.
+pair do (`kibends_core::members`), so its fan-outs leave it freely.
 """
 
 import math

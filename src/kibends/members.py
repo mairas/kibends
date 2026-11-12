@@ -42,7 +42,7 @@ def body_of(member: Member) -> ChainInput:
 
 def viewer_of(member: Member) -> tuple[ChainInput, frozenset[str]]:
     """The chain a member keeps clear of the others as, and the nets whose
-    tracks it ignores, as `neighbours.neighbour_field` takes them: a
+    tracks it ignores, as `kibends_core::members` takes them: a
     chain's own and the other net of its diff pair, a section's two."""
     if isinstance(member, PairBlock):
         return member.facing, member.nets
@@ -102,7 +102,7 @@ def seen_parts(
     rings: Sequence[Mapping[int, float]] = (),
 ) -> Seen:
     """For each chain or section at its polyline, the others on its layer at
-    theirs as `neighbours.neighbour_field` shows them to it. A section sees
+    theirs as `kibends_core::members` shows them to it. A section sees
     as its centreline of the diff pair's outer extent, and is seen as its two
     tracks. Each via of `rings` is seen by the members it names, inflated
     by the distance it gives."""
