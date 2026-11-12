@@ -1,4 +1,5 @@
-"""The extension module `kibends._core` is built and current."""
+"""The extension module `kibends._core` imports and reports the version of
+the installed `kibends` package."""
 
 from importlib.metadata import version
 
