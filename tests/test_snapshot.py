@@ -19,6 +19,7 @@ from conftest import (
     kipy_bezier,
     kipy_board_arc,
     kipy_circle,
+    kipy_circular_outline,
     kipy_copper_zone,
     kipy_field,
     kipy_footprint,
@@ -1348,6 +1349,29 @@ class TestGeometryHelpers:
         assert pts[0] == start and pts[-1] == end
         assert all(math.hypot(x, y) == pytest.approx(1.0) for x, y in pts)
         assert all(y >= -1e-12 for _, y in pts)
+
+    def test_arc_ending_where_it_starts_is_the_circle_through_mid(self) -> None:
+        # KiCad gives a circular zone outline as one such arc.
+        start, mid = (1.0, 0.0), (-1.0, 0.0)
+
+        pts = arc_points(start, mid, start)
+
+        assert pts[0] == start and pts[-1] == start
+        assert all(math.hypot(x, y) == pytest.approx(1.0) for x, y in pts)
+        assert Polygon(pts).area == pytest.approx(math.pi, rel=0.01)
+
+    def test_arc_of_no_length_stays_one_point_pair(self) -> None:
+        p = (1.0, 2.0)
+
+        assert arc_points(p, p, p) == [p, p]
+
+    def test_circular_zone_outline_reads_as_its_disc(self) -> None:
+        outline = kipy_circular_outline((5.0, 5.0), 2.0)
+
+        poly = snapshot_module._polygon(outline)  # pyright: ignore[reportPrivateUsage]
+
+        assert poly.is_valid
+        assert poly.area == pytest.approx(math.pi * 2.0**2, rel=0.01)
 
     def test_open_outline_is_not_closed(self) -> None:
         square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]

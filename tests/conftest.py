@@ -25,7 +25,7 @@ import pytest
 import shapely
 from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
-from kipy.geometry import PolygonWithHoles, PolyLineNode, Vector2
+from kipy.geometry import ArcStartMidEnd, PolygonWithHoles, PolyLineNode, Vector2
 from kipy.project_types import NetClass
 from kipy.proto.board.board_commands_pb2 import BoardOriginType
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -455,6 +455,24 @@ def kipy_polygon(points: Sequence[tuple[float, float]]) -> PolygonWithHoles:
     pwh = PolygonWithHoles()
     for x, y in points:
         pwh.outline.append(PolyLineNode.from_xy(nm(x), nm(y)))
+    pwh.outline.closed = True
+    return pwh
+
+
+def kipy_circular_outline(
+    centre: tuple[float, float], radius: float
+) -> PolygonWithHoles:
+    """A circular zone's outline as KiCad gives it: one arc that ends where it
+    starts, with mid opposite."""
+    cx, cy = centre
+    arc = ArcStartMidEnd()
+    arc.start = vec(cx + radius, cy)
+    arc.mid = vec(cx - radius, cy)
+    arc.end = vec(cx + radius, cy)
+    node = PolyLineNode()
+    node.arc = arc
+    pwh = PolygonWithHoles()
+    pwh.outline.append(node)
     pwh.outline.closed = True
     return pwh
 

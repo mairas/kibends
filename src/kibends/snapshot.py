@@ -679,19 +679,29 @@ def arc_from_kipy(a: kbt.ArcTrack) -> Arc:
 
 
 def arc_points(start: Point2, mid: Point2, end: Point2) -> list[Point2]:
-    """Tessellate the circular arc through start, mid and end."""
-    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
-    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
-    if abs(d) < COLLINEAR_EPSILON:
+    """Tessellate the circular arc through start, mid and end. An arc that
+    ends where it starts is the whole circle with mid opposite start, as
+    KiCad gives a circular zone outline."""
+    if start == end == mid:
         return [start, end]
-    s1, s2, s3 = x1**2 + y1**2, x2**2 + y2**2, x3**2 + y3**2
-    ux = (s1 * (y2 - y3) + s2 * (y3 - y1) + s3 * (y1 - y2)) / d
-    uy = (s1 * (x3 - x2) + s2 * (x1 - x3) + s3 * (x2 - x1)) / d
-    r = math.hypot(x1 - ux, y1 - uy)
-    a1, a2, a3 = (math.atan2(p[1] - uy, p[0] - ux) for p in (start, mid, end))
-    sweep = (a3 - a1) % (2 * math.pi)
-    if (a2 - a1) % (2 * math.pi) > sweep:
-        sweep -= 2 * math.pi
+    if start == end:
+        ux, uy = (start[0] + mid[0]) / 2, (start[1] + mid[1]) / 2
+        r = math.hypot(start[0] - ux, start[1] - uy)
+        a1 = math.atan2(start[1] - uy, start[0] - ux)
+        sweep = 2 * math.pi
+    else:
+        (x1, y1), (x2, y2), (x3, y3) = start, mid, end
+        d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+        if abs(d) < COLLINEAR_EPSILON:
+            return [start, end]
+        s1, s2, s3 = x1**2 + y1**2, x2**2 + y2**2, x3**2 + y3**2
+        ux = (s1 * (y2 - y3) + s2 * (y3 - y1) + s3 * (y1 - y2)) / d
+        uy = (s1 * (x3 - x2) + s2 * (x1 - x3) + s3 * (x2 - x1)) / d
+        r = math.hypot(x1 - ux, y1 - uy)
+        a1, a2, a3 = (math.atan2(p[1] - uy, p[0] - ux) for p in (start, mid, end))
+        sweep = (a3 - a1) % (2 * math.pi)
+        if (a2 - a1) % (2 * math.pi) > sweep:
+            sweep -= 2 * math.pi
     n = max(MIN_ARC_SEGMENTS, math.ceil(abs(sweep) / ARC_SEGMENT_ANGLE))
     pts = [
         (ux + r * math.cos(a1 + sweep * i / n), uy + r * math.sin(a1 + sweep * i / n))
