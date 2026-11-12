@@ -58,7 +58,9 @@
 //! moves nothing back, when its lowest energy and its tracks' length stall
 //! over `stall_window` bursts, the energy by a tolerance for each moving
 //! member and via and the length by one (`stalled`), or after
-//! MAX_ABNORMAL_BURSTS abnormal bursts in a row. The settle threshold and
+//! MAX_ABNORMAL_BURSTS abnormal bursts in a row. At a coarse level any of
+//! these hands over to the next level instead (`state`), so only the final
+//! level gives up. The settle threshold and
 //! the energy's tolerance hold per member, so that a problem and far-apart
 //! copies of it stall together. Members that have settled still add their
 //! tolerance, so one still gaining energy while its length grows may stop
@@ -67,7 +69,8 @@
 //! cap or at the time limit, which ends the running burst at its next
 //! L-BFGS iteration; that burst's state goes through the checks and the
 //! guard as any, and it settles nothing. Each problem keeps its best state
-//! either way.
+//! either way. A run where every problem settled without moving anything
+//! had nothing to do.
 
 pub mod checks;
 pub mod layout;
@@ -282,7 +285,8 @@ pub trait Bursts<E> {
 /// How an `advance` ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The first outer iteration settled every problem and moved nothing.
+    /// Every problem settled, none on abnormal bursts, and none moved
+    /// anything.
     NothingToDo,
     /// Every problem settled, none on abnormal bursts.
     Converged,
@@ -331,11 +335,10 @@ pub fn advance<E: From<NotFinite>>(
             energies: problems.iter().map(|p| p.energy).collect(),
         })?;
         if problems.iter().all(|p| p.settled) {
-            if *iteration == 1 && !problems.iter().any(|p| p.moved) {
-                return Ok(Outcome::NothingToDo);
-            }
             return Ok(if gave_up || problems.iter().any(|p| p.gave_up()) {
                 Outcome::GaveUp
+            } else if !problems.iter().any(|p| p.moved) {
+                Outcome::NothingToDo
             } else {
                 Outcome::Converged
             });

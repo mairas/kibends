@@ -322,6 +322,9 @@ def optimize_chains(
         moving = [p for p in problems if p.moving]
         report.problems = moving
         cap = iteration + settings.max_iterations
+    # A run stopped at a coarse level still ends at the final spacing.
+    for p in moving:
+        p.state.finish()
     final = result(termination, iteration, best=True)
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
         p.input_energy for p in moving

@@ -147,6 +147,7 @@ mod tests {
                         &positions,
                         &masks,
                         &contact_of,
+                        &problem.short_edges(1.0),
                         &seen,
                         listed.then_some(&mut lookups),
                     )

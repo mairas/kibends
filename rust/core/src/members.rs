@@ -359,8 +359,9 @@ impl Members {
     /// `polylines` as `seen` shows them, with vias at `positions` among
     /// them, a section with its bend-radius hinge; its gradient at every
     /// vertex of every chain and centreline, with the vertices of `masks`
-    /// zeroed; and the gradient at each via's centre. Err with the value if
-    /// it is not finite.
+    /// zeroed; and the gradient at each via's centre. Each member's
+    /// short-edge barrier starts at its own of `short_edges`. Err with the
+    /// value if it is not finite.
     ///
     /// A section's centreline is what it keeps clear as, and its two
     /// tracks, offset from it, are what the others keep clear of: their
@@ -376,7 +377,7 @@ impl Members {
         polylines: &[&[V2]],
         masks: &[&[bool]],
         params: &EnergyParams,
-        short_edge: f64,
+        short_edges: &[f64],
         seen: &Seen,
         positions: &[V2],
         listed: Option<&mut NeighbourList>,
@@ -402,7 +403,7 @@ impl Members {
                     &integrand,
                     k,
                 );
-                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edge);
+                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edges[i]);
                 let mut gradient: Vec<V2> = shape_gradient
                     .iter()
                     .zip(&obstacle_gradient)
@@ -654,7 +655,16 @@ mod tests {
         let masks: [&[bool]; 2] = [&mask, &mask];
         let seen = members.seen(&polylines, &[]);
         let energy = members
-            .energy(&polylines, &masks, &params(), 0.0, &seen, &[], None, None)
+            .energy(
+                &polylines,
+                &masks,
+                &params(),
+                &[0.0; 2],
+                &seen,
+                &[],
+                None,
+                None,
+            )
             .expect("finite");
         // A's free vertices are pushed down, away from B, and B's up.
         assert!(energy.gradients[0][2].y > 0.0);
@@ -672,7 +682,16 @@ mod tests {
         let masks: [&[bool]; 2] = [&mask, &mask];
         let seen = members.seen(&polylines, &[]);
         let both = members
-            .energy(&polylines, &masks, &params(), 0.0, &seen, &[], None, None)
+            .energy(
+                &polylines,
+                &masks,
+                &params(),
+                &[0.0; 2],
+                &seen,
+                &[],
+                None,
+                None,
+            )
             .expect("finite");
         let one: [&[V2]; 1] = [&a];
         let own = alone
@@ -680,7 +699,7 @@ mod tests {
                 &one,
                 &masks[..1],
                 &params(),
-                0.0,
+                &[0.0],
                 &alone.seen(&one, &[]),
                 &[],
                 None,

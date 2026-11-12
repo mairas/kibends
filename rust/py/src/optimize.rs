@@ -516,8 +516,23 @@ impl ProblemState {
                 .stiffness(&layout, &seen.inner, lookups.as_mut().map(|l| &mut l.inner));
         Ok(floats(
             py,
-            layout::scale(&stiffness, self.inner.shared().settings().spacing),
+            layout::scale(&stiffness, self.inner.level_spacing()),
         ))
+    }
+
+    /// The level of the schedule it runs at: its coarse spacings, then the
+    /// final one.
+    #[getter]
+    fn level(&self) -> usize {
+        self.inner.level
+    }
+
+    /// End a run stopped at a coarse level at the final spacing: its best
+    /// state subdivided there if that passes the guard and its energy is
+    /// no higher than the inputs', else the inputs. Does nothing at the
+    /// final level. Raises ValueError if the energy there is not finite.
+    fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.inner.finish().map_err(|e| not_finite(py, e.0))
     }
 
     /// Take `earlier`'s best state, keeping the sections held only here as

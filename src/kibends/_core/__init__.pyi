@@ -792,6 +792,12 @@ class ProblemState:
         r"""
         Its abnormal bursts in a row, up to the last.
         """
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule it runs at: its coarse spacings, then the
+        final one.
+        """
     def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its
@@ -868,6 +874,13 @@ class ProblemState:
         Each flat coordinate's scale for a burst from `starts`, the
         stiffness taken as `seen` shows the members there, searching
         through `lookups` if given.
+        """
+    def finish(self) -> None:
+        r"""
+        End a run stopped at a coarse level at the final spacing: its best
+        state subdivided there if that passes the guard and its energy is
+        no higher than the inputs', else the inputs. Does nothing at the
+        final level. Raises ValueError if the energy there is not finite.
         """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
         r"""
