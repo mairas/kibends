@@ -64,6 +64,20 @@ fn shape_change(
     Ok(polylines::shape_change(&before, &after))
 }
 
+/// A polyline's length, mm, and its tightest bend radius at `spacing`,
+/// infinite for a straight one (`kibends_core::polylines::measure`).
+#[gen_stub_pyfunction]
+#[pyfunction]
+fn measure(polyline: PyReadonlyArray2<'_, f64>, spacing: f64) -> PyResult<(f64, f64)> {
+    let polyline = points_of(&polyline)?;
+    if polyline.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "a polyline of no vertex has no measure",
+        ));
+    }
+    Ok(polylines::measure(&polyline, spacing))
+}
+
 /// What a burst may not do to a coupled section's centreline: bend an edge
 /// below its limit that was not already there where the burst started
 /// (`kibends_core::polylines::SelfCheck`).
@@ -108,5 +122,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(count_violations, m)?)?;
     m.add_function(wrap_pyfunction!(shape_change, m)?)?;
+    m.add_function(wrap_pyfunction!(measure, m)?)?;
     Ok(())
 }

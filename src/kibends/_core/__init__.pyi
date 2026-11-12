@@ -88,6 +88,7 @@ __all__ = [
     "hinge_integrand",
     "interp",
     "kept_vertices",
+    "measure",
     "moving_via_obstacles",
     "newly_inside",
     "obstacle_curvature",
@@ -1319,6 +1320,12 @@ def kept_vertices(polyline: numpy.typing.NDArray[numpy.float64], fixed: numpy.ty
     The vertices of `polyline` that merging keeps: no vertex of `fixed` is
     merged, and each merged vertex lies within its `tolerances` of a chord
     clear in `field` (`kibends_core::simplify::kept_vertices`).
+    """
+
+def measure(polyline: numpy.typing.NDArray[numpy.float64], spacing: builtins.float) -> tuple[builtins.float, builtins.float]:
+    r"""
+    A polyline's length, mm, and its tightest bend radius at `spacing`,
+    infinite for a straight one (`kibends_core::polylines::measure`).
     """
 
 def moving_via_obstacles(ordinal: builtins.int, net: builtins.str, width: builtins.float, clearance: builtins.float, vias: typing.Sequence[Via], clearances: typing.Sequence[builtins.float], hole_clearance: builtins.float, zones: typing.Sequence[typing.Sequence[Zone]]) -> typing.Optional[ChainField]:

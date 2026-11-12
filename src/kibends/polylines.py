@@ -8,18 +8,13 @@ counts where it enters its clearance away from its anchors, which the best
 state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
-bend an edge newly below the limit. All but `measure` are Rust's
-(`kibends_core::polylines`).
+bend an edge newly below the limit. All are Rust's
+(`kibends_core::polylines`, whose docs hold their design).
 """
-
-import numpy as np
 
 from kibends import _core
 from kibends.energy import FloatArray
 from kibends.results import PolylineStats
-
-# Below this turning angle a vertex counts as straight (infinite radius).
-STRAIGHT_TURN = 1e-9
 
 resample = _core.resample
 """Each span between fixed vertices resampled to uniform arc-length
@@ -59,24 +54,9 @@ def measure(polyline: FloatArray, spacing: float) -> PolylineStats:
     polyline resampled at `spacing` with every vertex kept, so a sharp corner
     reports a radius below the spacing however long its edges are.
     """
-    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    length, tightest = _core.measure(polyline, spacing)
     return PolylineStats(
-        length=float(lengths.sum()),
+        length=length,
         segment_count=len(polyline) - 1,
-        tightest_bend_radius=_tightest_bend_radius(
-            resample(polyline, np.ones(len(polyline), dtype=bool), spacing)[0]
-        ),
+        tightest_bend_radius=tightest,
     )
-
-
-def _tightest_bend_radius(points: FloatArray) -> float:
-    edges = np.diff(points, axis=0)
-    lengths = np.linalg.norm(edges, axis=1)
-    incoming, outgoing = edges[:-1], edges[1:]
-    cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
-    turn = np.abs(np.arctan2(cross, np.einsum("ij,ij->i", incoming, outgoing)))
-    bending = turn > STRAIGHT_TURN
-    if not bending.any():
-        return float("inf")
-    span = (lengths[:-1] + lengths[1:])[bending]
-    return float(np.min(span / (4 * np.tan(turn[bending] / 2))))

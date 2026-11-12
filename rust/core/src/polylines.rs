@@ -9,7 +9,16 @@
 //! best state may not add to. `shape_change` is how far a burst moved a
 //! shape, not counting vertices sliding along it, which settles a problem.
 //! `SelfCheck` is what a burst may not do to a coupled section's
-//! centreline: bend an edge newly below the limit.
+//! centreline: bend an edge newly below the limit. `measure` gives a
+//! polyline's length and tightest bend, which the run reports before and
+//! after.
+//!
+//! Its bend radius is the discrete curvature radius l/(4·tan(φ/2)) of the
+//! polyline resampled at a spacing with every vertex kept, l the two edges
+//! meeting at a vertex and φ their turn, so that a sharp corner reports a
+//! radius below the spacing however long its edges are. The turn's arctangent
+//! and tangent are the `libm` crate's, so that it is the same on every
+//! platform.
 
 use crate::energy::MIN_EDGE_LENGTH;
 use crate::energy::polyline::arc_lengths;
@@ -20,6 +29,9 @@ use crate::pairs::{bend_radii, too_tight};
 /// A span only slightly longer than a multiple of the spacing gets no extra
 /// vertex, so float noise in re-measured lengths does not change the count.
 pub const RESAMPLE_SLACK: f64 = 1e-6;
+
+/// Below this turning angle a vertex counts as straight (infinite radius).
+pub const STRAIGHT_TURN: f64 = 1e-9;
 
 /// Shape change is measured from each vertex to the other polyline's edges
 /// within this many edges of the same index.
@@ -101,6 +113,27 @@ pub fn count_violations(inside: &[bool], cut: &[bool], anchors: &[bool]) -> usiz
 pub fn length(points: &[V2]) -> f64 {
     let lengths: Vec<f64> = points.windows(2).map(|w| (w[1] - w[0]).norm()).collect();
     numpy_sum(&lengths)
+}
+
+/// A polyline's length, mm, and its tightest bend radius at `spacing`,
+/// infinite for a straight one.
+pub fn measure(polyline: &[V2], spacing: f64) -> (f64, f64) {
+    let (resampled, _) = resample(polyline, &vec![true; polyline.len()], spacing);
+    (length(polyline), tightest_bend_radius(&resampled))
+}
+
+fn tightest_bend_radius(points: &[V2]) -> f64 {
+    let edges: Vec<V2> = points.windows(2).map(|w| w[1] - w[0]).collect();
+    edges
+        .windows(2)
+        .filter_map(|pair| {
+            let (incoming, outgoing) = (pair[0], pair[1]);
+            let turn = libm::atan2(incoming.cross(outgoing), incoming.dot(outgoing)).abs();
+            (turn > STRAIGHT_TURN)
+                .then(|| (incoming.norm() + outgoing.norm()) / (4.0 * libm::tan(turn / 2.0)))
+        })
+        .reduce(minimum)
+        .unwrap_or(f64::INFINITY)
 }
 
 /// Local symmetric distance between two polylines, mm.
@@ -239,6 +272,17 @@ mod tests {
         assert!(shape_change(&before, &after) < 1e-15);
         let moved = line(&[(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)]);
         assert_eq!(shape_change(&before, &moved), 0.5);
+    }
+
+    #[test]
+    fn a_right_angle_reports_its_discrete_radius_and_a_line_none() {
+        let corner = line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]);
+        let (length, radius) = measure(&corner, 1.0);
+        assert_eq!(length, 2.0);
+        // Two unit edges turning by 90°: 2 / (4·tan 45°).
+        assert!((radius - 0.5).abs() < 1e-15);
+        let straight = line(&[(0.0, 0.0), (3.0, 0.0)]);
+        assert_eq!(measure(&straight, 1.0), (3.0, f64::INFINITY));
     }
 
     #[test]
