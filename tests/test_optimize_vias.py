@@ -2703,10 +2703,11 @@ def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
 
 
 CREEP_SETTINGS = replace(STITCHED_SETTINGS, stall_tolerance=5e-4, max_iterations=20)
-"""A stall tolerance at which the grid's last stall check lies well between
-the members' share and the members' and vias': measured, it stalls at
-iteration 12 on a gain of 2.0 µm, twice the members' share and a third of
-both shares. At the default tolerance the gain sat at the members' share."""
+"""A stall tolerance at which the grid stalls well inside the iteration cap:
+measured on macOS, at iteration 12 on a gain of 2.0 µm. Whether the gain
+lies above the members' own share depends on the last bits of the platform's
+libm (on Linux it stalls at iteration 13 on 0.72 µm), so the test does not
+assert it; `TestStalled` checks that each moving via adds a share."""
 
 
 def test_moving_vias_end_a_stitched_grid_s_creep(
@@ -2717,9 +2718,7 @@ def test_moving_vias_end_a_stitched_grid_s_creep(
 
     result = optimize_chains(chains, DEFAULT_PARAMS, CREEP_SETTINGS, vias)
 
-    lowest, lengths, members, counted, answer = calls[-1]
+    *_, members, counted, answer = calls[-1]
     assert result.termination is Termination.CONVERGED
     assert answer
     assert (members, counted) == (len(chains), len(vias))
-    # Without the vias' share the problem would have gone on.
-    assert not stalled(lowest, lengths, CREEP_SETTINGS, members)
