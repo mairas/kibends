@@ -20,11 +20,11 @@ use kibends_core::field::obstacles::Item;
 use kibends_core::field::{Kind, edges, obstacles, pairs, search};
 use kibends_core::geometry::{PlainShapes, Shape, V2, zone_depth as core_zone_depth};
 
-type Floats<'py> = Bound<'py, PyArray1<f64>>;
-type Points<'py> = Bound<'py, PyArray2<f64>>;
-type Indices<'py> = IntpArray<'py>;
-type Flags<'py> = BoolArray<'py>;
-type Complexes<'py> = Bound<'py, PyArray1<Complex64>>;
+pub(crate) type Floats<'py> = Bound<'py, PyArray1<f64>>;
+pub(crate) type Points<'py> = Bound<'py, PyArray2<f64>>;
+pub(crate) type Indices<'py> = IntpArray<'py>;
+pub(crate) type Flags<'py> = BoolArray<'py>;
+pub(crate) type Complexes<'py> = Bound<'py, PyArray1<Complex64>>;
 
 /// `StaticEdges.search`'s pairs as arrays, in `obstacles.Found`'s order.
 type FoundArrays<'py> = (
@@ -39,7 +39,7 @@ type FoundArrays<'py> = (
     Flags<'py>,
 );
 
-fn points_of(array: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<V2>> {
+pub(crate) fn points_of(array: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<V2>> {
     if array.shape()[1] != 2 {
         return Err(PyValueError::new_err("points must be an (n, 2) array"));
     }
@@ -51,7 +51,7 @@ fn points_of(array: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<V2>> {
         .collect())
 }
 
-fn complex_of(array: &PyReadonlyArray1<'_, Complex64>) -> Vec<V2> {
+pub(crate) fn complex_of(array: &PyReadonlyArray1<'_, Complex64>) -> Vec<V2> {
     array
         .as_array()
         .iter()
@@ -59,15 +59,15 @@ fn complex_of(array: &PyReadonlyArray1<'_, Complex64>) -> Vec<V2> {
         .collect()
 }
 
-fn floats_of(array: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
+pub(crate) fn floats_of(array: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
     array.as_array().to_vec()
 }
 
-fn flags_of(array: &BoolArg<'_>) -> Vec<bool> {
+pub(crate) fn flags_of(array: &BoolArg<'_>) -> Vec<bool> {
     array.0.as_array().to_vec()
 }
 
-fn indices_of(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<usize>> {
+pub(crate) fn indices_of(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<usize>> {
     array
         .0
         .as_array()
@@ -81,7 +81,7 @@ fn indices_of(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<usize>> {
         .collect()
 }
 
-fn same_lengths(lengths: &[usize]) -> PyResult<()> {
+pub(crate) fn same_lengths(lengths: &[usize]) -> PyResult<()> {
     if lengths.windows(2).any(|w| w[0] != w[1]) {
         return Err(PyValueError::new_err(format!(
             "arrays of unequal lengths {lengths:?}"
@@ -90,11 +90,11 @@ fn same_lengths(lengths: &[usize]) -> PyResult<()> {
     Ok(())
 }
 
-fn floats<'py>(py: Python<'py>, values: Vec<f64>) -> Floats<'py> {
+pub(crate) fn floats<'py>(py: Python<'py>, values: Vec<f64>) -> Floats<'py> {
     values.into_pyarray(py)
 }
 
-fn indices<'py>(py: Python<'py>, values: &[usize]) -> Indices<'py> {
+pub(crate) fn indices<'py>(py: Python<'py>, values: &[usize]) -> Indices<'py> {
     // An index into a Rust slice fits an isize.
     IntpArray(
         values
@@ -105,14 +105,14 @@ fn indices<'py>(py: Python<'py>, values: &[usize]) -> Indices<'py> {
     )
 }
 
-fn vectors<'py>(py: Python<'py>, values: &[V2]) -> PyResult<Points<'py>> {
+pub(crate) fn vectors<'py>(py: Python<'py>, values: &[V2]) -> PyResult<Points<'py>> {
     let flat: Vec<f64> = values.iter().flat_map(|v| [v.x, v.y]).collect();
     let array = Array2::from_shape_vec((values.len(), 2), flat)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(array.into_pyarray(py))
 }
 
-fn complexes<'py>(py: Python<'py>, values: &[V2]) -> Complexes<'py> {
+pub(crate) fn complexes<'py>(py: Python<'py>, values: &[V2]) -> Complexes<'py> {
     values
         .iter()
         .map(|v| Complex64::new(v.x, v.y))
@@ -209,7 +209,7 @@ impl Shapes {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct StaticEdges {
-    inner: Arc<edges::StaticEdges>,
+    pub(crate) inner: Arc<edges::StaticEdges>,
 }
 
 #[gen_stub_pymethods]
@@ -382,7 +382,7 @@ impl StaticItems {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Obstacles {
-    inner: obstacles::Obstacles,
+    pub(crate) inner: Arc<obstacles::Obstacles>,
     edges: Py<StaticEdges>,
 }
 
@@ -436,7 +436,7 @@ impl Obstacles {
                 _ => return Err(PyValueError::new_err("the outline must be one shape")),
             },
         };
-        let inner = obstacles::Obstacles::new(items, outline, edge_inflation);
+        let inner = Arc::new(obstacles::Obstacles::new(items, outline, edge_inflation));
         let edges = Py::new(
             py,
             StaticEdges {

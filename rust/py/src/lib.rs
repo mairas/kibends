@@ -4,13 +4,32 @@
 //! from the stub information `stub_info` gathers.
 
 mod arrays;
+mod energy;
 mod field;
+mod fields;
+mod testing;
 
 use std::path::Path;
 
 use pyo3::prelude::*;
 use pyo3_stub_gen::StubInfo;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
+use pyo3_stub_gen::runtime::PyModuleTypeAliasExt;
+
+pyo3_stub_gen::type_alias!(
+    "kibends._core",
+    Field = field::Obstacles
+        | fields::ChainField
+        | fields::CompositeField
+        | testing::FreeSpace
+        | testing::Disc
+        | testing::Box
+        | testing::Walls
+        | testing::MisleadingWalls
+        | testing::Union
+        | testing::NanField,
+    "A field implemented here, which a `CompositeField` can join."
+);
 
 /// The version of the extension module, which is kibends' version.
 #[gen_stub_pyfunction]
@@ -23,6 +42,10 @@ fn version() -> &'static str {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     field::register(m)?;
+    fields::register(m)?;
+    energy::register(m)?;
+    testing::register(m)?;
+    m.add_type_alias::<Field>()?;
     Ok(())
 }
 

@@ -2,37 +2,163 @@
 # ruff: noqa: E501, F401, F403, F405
 
 import builtins
+from kibends import energy
 import numpy
 import numpy.typing
 import typing
+from typing import TypeAlias
+from . import testing
 __all__ = [
     "AREA",
+    "ChainField",
+    "CompositeField",
+    "Curvature",
+    "DEFAULT_ATTRACTION_RANGE",
+    "Field",
     "INDEXED_EDGES",
+    "Integrand",
     "LINE",
+    "MAX_SMOOTH_TURN",
+    "MIN_EDGE_LENGTH",
     "OUTSIDE",
     "Obstacles",
+    "PairIntegrand",
+    "SMOOTH_REACH",
+    "SMOOTH_WIDTH",
     "Shapes",
     "StaticEdges",
     "StaticItems",
+    "arc_lengths",
+    "attraction_integrand",
+    "bend_radius_energy",
     "candidate_pairs",
+    "chains_field",
+    "combine_fields",
+    "edge_bend_radii",
+    "edge_curvature",
+    "edge_integral",
+    "hinge_curvature",
+    "hinge_integrand",
     "near_segments",
     "nearest_of_pairs",
+    "obstacle_curvature",
+    "obstacle_integrand",
     "obstacle_order",
+    "obstacle_reach",
     "pair_depths",
     "pairs_inside",
     "parts_smooth_distance",
+    "point_stiffness",
+    "quadrature_points",
+    "repulsion_integrand",
     "search_parts",
+    "shape_energy",
+    "smooth_minimum",
     "smooth_of_pairs",
+    "smooth_reach",
     "static_distances",
     "static_smooth",
+    "testing",
     "version",
+    "weighted_sum",
     "zone_depth",
 ]
 
+Field: TypeAlias = Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField
+r"""
+A field implemented here, which a `CompositeField` can join.
+"""
+
 AREA: builtins.int = 1
+DEFAULT_ATTRACTION_RANGE: builtins.float = 3.0
 INDEXED_EDGES: builtins.int = 128
 LINE: builtins.int = 0
+MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
+MIN_EDGE_LENGTH: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
+SMOOTH_REACH: builtins.float = 0.05
+SMOOTH_WIDTH: builtins.float = 0.005
+@typing.final
+class ChainField:
+    r"""
+    Signed distance to other chains' inflated centrelines, and edge checks
+    (`kibends_core::field::chain`).
+    """
+    @property
+    def static_edges(self) -> StaticEdges:
+        r"""
+        The field as `StaticEdges`, each edge an item of its own.
+        """
+    def __new__(cls, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> ChainField:
+        r"""
+        Edges from starts[i] to ends[i], (m, 2) in mm, each inflated by
+        inflations[i] and part of the obstacle obstacles[i].
+        """
+    def __len__(self) -> builtins.int: ...
+    def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
+        """
+    def nearest(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp]]:
+        r"""
+        `signed_distance`, and the index of the edge that answers each
+        point, -1 where none does.
+        """
+    def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        `signed_distance` as the energy takes it: the smooth minimum over
+        the obstacles of each one's nearest edge.
+        """
+    def smooth_answers(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        `smooth_distance`, and what answers it: per obstacle that has a
+        share at a point, the point, its nearest edge by index, its share
+        and its unit gradient.
+        """
+    def segments_clear(self, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each segment from starts[i] to ends[i] stays out of every
+        inflated edge, by at most `tolerance`.
+        """
+
+@typing.final
+class CompositeField:
+    r"""
+    The union of several fields: the nearest of them answers each point,
+    and the smooth distance is over all their obstacles
+    (`kibends_core::field::composite`).
+    """
+    def __new__(cls, fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]) -> CompositeField: ...
+    def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
+        """
+    def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        The smooth minimum of the fields' smooth distances.
+        """
+    def segments_clear(self, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each segment from starts[i] to ends[i] is clear in every
+        field, each allowing `tolerance` inside its clearance.
+        """
+
+@typing.final
+class Curvature:
+    r"""
+    An integrand's second derivative by the distance: called with
+    distances, it gives the curvature at each.
+    """
+    def __call__(self, distance: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]: ...
+
+@typing.final
+class Integrand:
+    r"""
+    A function of the distance to an obstacle: called with distances, it
+    gives its value and slope at each.
+    """
+    def __call__(self, distance: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]: ...
+
 @typing.final
 class Obstacles:
     r"""
@@ -65,6 +191,14 @@ class Obstacles:
         inflated obstacle, by at most `tolerance`, and inside the inflated
         board edge.
         """
+
+@typing.final
+class PairIntegrand:
+    r"""
+    A function of two vias' centre distance and their limit distance:
+    called with both, it gives its value and slope at each.
+    """
+    def __call__(self, distance: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]: ...
 
 @typing.final
 class Shapes:
@@ -159,11 +293,76 @@ class StaticItems:
         across the parts.
         """
 
+def arc_lengths(points: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    Cumulative arc length at each vertex, starting at 0.
+    """
+
+def attraction_integrand(params: energy.EnergyParams) -> PairIntegrand:
+    r"""
+    The pull of two vias on each other, and its slope, at centre distances
+    r with limit distances r_min (`kibends_core::energy::integrands::Attraction`).
+    """
+
+def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
+    bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+    """
+
 def candidate_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], within: numpy.typing.NDArray[numpy.float64], slack: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
     r"""
     Which (point, segment) pairs can answer their point within within[k]
     once the distance from each point to each segment has changed by at most
     `slack`, mm.
+    """
+
+def chains_field(polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> ChainField:
+    r"""
+    The polylines, (n, 2) each, as a field: each split into edges of at
+    most `MAX_EDGE_LENGTH`, inflated by inflations[i] and part of the
+    obstacle obstacles[i].
+    """
+
+def combine_fields(*distances: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], builtins.list[numpy.typing.NDArray[numpy.float64]]]:
+    r"""
+    The smooth minimum over fields, each of `distances` one field's (n,)
+    smooth distances, and each field's share at each point.
+    """
+
+def edge_bend_radii(lengths: numpy.typing.NDArray[numpy.float64], half_turns: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    Each edge's bend radius, from the edges' `lengths` and tan(φ/2) of the
+    turn φ at each interior vertex, and the signed sum of those tangents at
+    each edge's two ends: its length over the absolute sum, infinite where
+    the sum is 0.
+    """
+
+def edge_curvature(points: numpy.typing.NDArray[numpy.float64], distance: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], integrand: Integrand, curvature: Curvature, points_per_edge: builtins.int) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    Each vertex's stiffness under `edge_integral` of `integrand`
+    (`kibends_core::energy::quadrature::edge_curvature`).
+    """
+
+def edge_integral(points: numpy.typing.NDArray[numpy.float64], distance: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], integrand: Integrand, points_per_edge: builtins.int) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    ∫ f(d(s)) ds along the polyline by the trapezoid rule on each edge,
+    from the distances and their unit gradients at `quadrature_points`
+    (`kibends_core::energy::quadrature::edge_integral`): the value, its
+    gradient at every vertex, and its derivative by the distance at each
+    quadrature point.
+    """
+
+def hinge_curvature(params: energy.EnergyParams) -> Curvature:
+    r"""
+    The second derivative of `hinge_integrand` by the distance, inside an
+    obstacle taken at its boundary.
+    """
+
+def hinge_integrand(params: energy.EnergyParams) -> Integrand:
+    r"""
+    The clearance hinge of `obstacle_integrand` alone, weighted: for what
+    only limits where a thing may go and does not repel it.
     """
 
 def near_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], points: numpy.typing.NDArray[numpy.float64], radius: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp]]:
@@ -180,10 +379,27 @@ def nearest_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy
     none does.
     """
 
+def obstacle_curvature(params: energy.EnergyParams) -> Curvature:
+    r"""
+    The second derivative of `obstacle_integrand` by the distance, and
+    inside an obstacle that at its boundary.
+    """
+
+def obstacle_integrand(params: energy.EnergyParams) -> Integrand:
+    r"""
+    Repulsion plus clearance, weighted, and its slope, at given distances.
+    """
+
 def obstacle_order(point: numpy.typing.NDArray[numpy.intp], obstacle: numpy.typing.NDArray[numpy.intp], tiebreak: numpy.typing.NDArray[numpy.intp]) -> numpy.typing.NDArray[numpy.intp]:
     r"""
     The order of (point, segment) pairs by point, then obstacle, then
     tiebreak.
+    """
+
+def obstacle_reach(params: energy.EnergyParams) -> builtins.float:
+    r"""
+    Distance from an obstacle beyond which both obstacle terms of the
+    energy are zero, mm, so farther copper need not be looked up.
     """
 
 def pair_depths(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
@@ -204,10 +420,44 @@ def parts_smooth_distance(parts: typing.Sequence[StaticEdges], points: numpy.typ
     The smooth distance over the obstacles of `parts`, from one search.
     """
 
+def point_stiffness(distance: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], integrand: Integrand, curvature: Curvature) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    The diagonal second derivative of `integrand` at points by x and by y,
+    (n, 2), from their smooth distances (n,) and gradients (n, 2)
+    (`kibends_core::energy::quadrature::point_stiffness`).
+    """
+
+def quadrature_points(points: numpy.typing.NDArray[numpy.float64], points_per_edge: builtins.int) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    The points at which `edge_integral` takes distances: the vertices, then
+    each edge's interior points in order.
+    """
+
+def repulsion_integrand(params: energy.EnergyParams) -> Integrand:
+    r"""
+    The repulsion of `obstacle_integrand` alone, weighted: for what pushes
+    away without being a wall.
+    """
+
 def search_parts(parts: typing.Sequence[tuple[StaticEdges, builtins.int]], coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
     r"""
     `StaticEdges.search` over several parts, each with the number its items
     start at, their obstacles numbered one part after another.
+    """
+
+def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], short_edge: builtins.float) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The terms of a member's energy that depend on the polyline alone: its
+    length and, with a positive `short_edge`, mm, the short-edge barrier
+    (`kibends_core::energy::polyline::shape_energy`); and the gradient,
+    zero at `fixed` vertices.
+    """
+
+def smooth_minimum(point: numpy.typing.NDArray[numpy.intp], distance: numpy.typing.NDArray[numpy.float64], count: builtins.int) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    -τ·log Σ exp(-d/τ), τ = SMOOTH_WIDTH, at each of `count` points over the
+    obstacles' distances d, obstacle k's distance[k] at point[k], +inf at a
+    point with none; and each obstacle's share of the gradient there.
     """
 
 def smooth_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64], obstacle: numpy.typing.NDArray[numpy.intp]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
@@ -215,6 +465,12 @@ def smooth_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.
     The smooth distance at each point of `query` over (point, segment)
     pairs, each of an obstacle: distance, gradient, and per answering
     obstacle the point, the pair, its share and its unit gradient.
+    """
+
+def smooth_reach(reach: builtins.float) -> builtins.float:
+    r"""
+    How far from a point the smooth distance looks for obstacles, for an
+    energy whose terms end at `reach`, mm (SMOOTH_REACH).
     """
 
 def static_distances(parts: typing.Sequence[StaticEdges], coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
@@ -233,6 +489,12 @@ def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.ty
 def version() -> builtins.str:
     r"""
     The version of the extension module, which is kibends' version.
+    """
+
+def weighted_sum(point: numpy.typing.NDArray[numpy.intp], share: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], count: builtins.int) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    At each of `count` points, the sum of the (m, 2) `direction`s at it,
+    each weighted by its `share`; the smooth minimum's gradient.
     """
 
 def zone_depth(area: Shapes, points: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
