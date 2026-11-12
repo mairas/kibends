@@ -991,6 +991,12 @@ def test_pairs_are_ground_and_regular_or_two_ground_nets(
     assert pairs_with(via_on(net), net in GROUND, standing) is expected
 
 
+DEPTH_ROUNDING = 1e-12
+"""How far the containment field's distance may differ from the zone depth
+(`_core.zone_depth`) it is built from, mm: their round-off, as the two
+reach it by different operations."""
+
+
 class TestZoneDepth:
     """`_edge_reason` and the containment field judge a zone's edge by one
     zone depth (`_core.zone_depth`)."""
@@ -1014,4 +1020,4 @@ class TestZoneDepth:
         distance, _ = field.signed_distance(np.array([at]))
 
         depth = _depth(centres, Point(at))
-        assert distance[0] == pytest.approx(depth, abs=1e-12)
+        assert distance[0] == pytest.approx(depth, abs=DEPTH_ROUNDING)
