@@ -12,7 +12,6 @@ the optimizer.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -22,10 +21,8 @@ from kibends.energy import BoolArray, FloatArray, ObstacleField
 from kibends.members import core_member
 from kibends.neighbours import ChainInput
 from kibends.obstacles import core_field
-
-if TYPE_CHECKING:
-    from kibends.pair_blocks import PairBlock
-    from kibends.results import RunResult
+from kibends.pair_blocks import PairBlock
+from kibends.results import RunResult
 
 _NO_POINTS = np.empty((0, 2))
 """A chain's direction pins: it has none."""

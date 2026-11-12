@@ -329,6 +329,8 @@ def _routed(given: PairInput) -> PairInput:
         fixed = pinned | _fixed_ends(len(pinned))
         tolerances = np.full(len(pinned), ROUTING_TOLERANCE)
         tolerances[[1, -2]] = INSIDE_TOLERANCE
+        # Not `simplify.simplify`: the end edges need their own tolerance,
+        # and the pins follow the kept vertices by index.
         kept = _core.kept_vertices(track.points, fixed, _NOWHERE, tolerances)
         simplified.append((replace(track, points=track.points[kept]), pinned[kept]))
     (a, a_pinned), (b, b_pinned) = simplified
