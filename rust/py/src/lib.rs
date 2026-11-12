@@ -8,6 +8,7 @@ mod build;
 mod energy;
 mod field;
 mod fields;
+mod helpers;
 mod testing;
 
 use std::path::Path;
@@ -46,6 +47,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     build::register(m)?;
     fields::register(m)?;
     energy::register(m)?;
+    helpers::register(m)?;
     testing::register(m)?;
     m.add_type_alias::<Field>()?;
     Ok(())

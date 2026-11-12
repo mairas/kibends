@@ -33,17 +33,25 @@ __all__ = [
     "Zone",
     "arc_lengths",
     "attraction_integrand",
+    "bend_radii",
     "bend_radius_energy",
+    "bend_radius_limit",
     "build_obstacles",
     "build_pair_obstacles",
     "candidate_pairs",
     "chains_field",
+    "check_bend_radius",
     "combine_fields",
+    "complementary_net",
+    "contact_stops",
+    "contacts_left",
+    "diff_pair_nets",
     "edge_bend_radii",
     "edge_curvature",
     "edge_integral",
     "hinge_curvature",
     "hinge_integrand",
+    "kept_vertices",
     "moving_via_obstacles",
     "near_segments",
     "nearest_of_pairs",
@@ -67,6 +75,7 @@ __all__ = [
     "static_distances",
     "static_smooth",
     "testing",
+    "too_tight",
     "track_inflation",
     "version",
     "via_chain_inflation",
@@ -354,10 +363,23 @@ def attraction_integrand(params: energy.EnergyParams) -> PairIntegrand:
     r with limit distances r_min (`kibends_core::energy::integrands::Attraction`).
     """
 
+def bend_radii(centreline: numpy.typing.NDArray[numpy.float64], turning: typing.Optional[numpy.typing.NDArray[numpy.bool_]] = None) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    Each edge's bend radius, 0 beside a fold and for an edge of no length;
+    only the turns and folds at the vertices `turning` count, every vertex
+    by default (`kibends_core::pairs::bend_radii`).
+    """
+
 def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
     The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
     bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+    """
+
+def bend_radius_limit(gap: builtins.float, width: builtins.float) -> builtins.float:
+    r"""
+    The smallest centreline bend radius at which the inner track's inner
+    edge still has a radius of at least zero.
     """
 
 def build_obstacles(layer: BoardLayer, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
@@ -388,10 +410,42 @@ def chains_field(polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]]
     obstacle obstacles[i].
     """
 
+def check_bend_radius(centreline: numpy.typing.NDArray[numpy.float64], gap: builtins.float, width: builtins.float, turning: typing.Optional[numpy.typing.NDArray[numpy.bool_]] = None) -> tuple[builtins.float, builtins.bool]:
+    r"""
+    The centreline's smallest bend radius and whether it is below the limit
+    for tracks of `width` `gap` apart, counting the turns at the vertices
+    `turning` (`kibends_core::pairs::check_bend_radius`).
+    """
+
 def combine_fields(*distances: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], builtins.list[numpy.typing.NDArray[numpy.float64]]]:
     r"""
     The smooth minimum over fields, each of `distances` one field's (n,)
     smooth distances, and each field's share at each point.
+    """
+
+def complementary_net(name: builtins.str) -> typing.Optional[builtins.str]:
+    r"""
+    The name the other net of a diff pair would have, by KiCad's router's
+    rule, or None (`kibends_core::pairs::complementary_net`).
+    """
+
+def contact_stops(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], width: builtins.float, limit: Integrand) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    The stops that keep each vertex of `points` that keeps a contact inside
+    its region among `within`, and their gradient at every vertex
+    (`kibends_core::contacts::contact_stops`).
+    """
+
+def contacts_left(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
+    r"""
+    The vertices of `points` that keep a contact and lie outside its region
+    among `within` by more than `tolerance`
+    (`kibends_core::contacts::contacts_left`).
+    """
+
+def diff_pair_nets(net: builtins.str) -> builtins.frozenset[builtins.str]:
+    r"""
+    `net` and the other net of its diff pair, if it has one.
     """
 
 def edge_bend_radii(lengths: numpy.typing.NDArray[numpy.float64], half_turns: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
@@ -427,6 +481,13 @@ def hinge_integrand(params: energy.EnergyParams) -> Integrand:
     r"""
     The clearance hinge of `obstacle_integrand` alone, weighted: for what
     only limits where a thing may go and does not repel it.
+    """
+
+def kept_vertices(polyline: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField, tolerances: numpy.typing.NDArray[numpy.float64]) -> builtins.list[builtins.int]:
+    r"""
+    The vertices of `polyline` that merging keeps: no vertex of `fixed` is
+    merged, and each merged vertex lies within its `tolerances` of a chord
+    clear in `field` (`kibends_core::simplify::kept_vertices`).
     """
 
 def moving_via_obstacles(ordinal: builtins.int, net: builtins.str, width: builtins.float, clearance: builtins.float, vias: typing.Sequence[Via], clearances: typing.Sequence[builtins.float], hole_clearance: builtins.float, zones: typing.Sequence[typing.Sequence[Zone]]) -> typing.Optional[ChainField]:
@@ -571,6 +632,11 @@ def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.ty
     The smooth distance at each point of `query` and its gradient over the
     pairs of `obstacles.Found`'s fields, their items numbered as `items`
     numbers them.
+    """
+
+def too_tight(radius: numpy.typing.NDArray[numpy.float64], limit: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
+    r"""
+    Whether each bend radius is below `limit`, beyond round-off.
     """
 
 def track_inflation(width: builtins.float, clearance: builtins.float, other_width: builtins.float, other_clearance: builtins.float) -> builtins.float:
