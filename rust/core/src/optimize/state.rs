@@ -1394,10 +1394,14 @@ impl State {
     /// spacing (`bring`), each unit that fails the guard there from the
     /// inputs (`merge`).
     ///
-    /// `probed` does not carry: its energy was measured with the sections
-    /// moving, so the state this problem keeps at the final spacing is its
-    /// own inputs. Returns how many members that move and how many vias
-    /// went back.
+    /// Of the schedule, `level`, `probing`, `handed_over`, `descended`,
+    /// `coarse_descended` and `moved` carry from `earlier`; `held` starts
+    /// over, so a lone chain held at a coarse level is tried again, and
+    /// `from_input` is set for what came from the start. `probed` does not
+    /// carry: its energy was measured with the sections moving, so the
+    /// state this problem keeps at the final spacing is its own inputs.
+    /// `laid_out` comes with each member's shape. Returns how many members
+    /// that move and how many vias went back.
     pub fn go_on_from(&mut self, earlier: &State) -> Result<(usize, usize), NotFinite> {
         self.put_back(earlier, State::failing)
     }
@@ -1438,25 +1442,30 @@ impl State {
         let vias = back[count..].iter().filter(|&&b| b).count();
         self.level = earlier.level;
         self.probing = earlier.probing;
+        self.handed_over = earlier.handed_over;
+        self.descended = earlier.descended;
         self.coarse_descended = earlier.coarse_descended;
         self.moved = earlier.moved;
         self.rejected_edges = earlier.rejected_edges.clone();
         self.via_rejected = earlier.via_rejected.clone();
         self.abnormal_bursts = earlier.abnormal_bursts;
-        if self.coarse() {
-            // What went back is at the final spacing: brought to the
+        let (now, seen, from_input) = if self.coarse() {
+            // What went back is laid out at the final spacing (`laid_out`)
+            // and what a burst moved is at the level's: all brought to the
             // level's, unit by unit where that passes the guard.
-            let brought = self.bring(&now, self.level_spacing(), self.level_spacing());
+            let spacing = self.level_spacing();
+            let brought = self.bring(&now, spacing, spacing);
             let (now, seen, back) = self.merge_guarded(&brought, &self.input);
             let from_input = from_input
                 .iter()
                 .zip(&back)
                 .map(|(&a, &b)| a || b)
                 .collect();
-            self.reseed(now, seen, from_input)?;
+            (now, seen, from_input)
         } else {
-            self.reseed(now, seen, from_input)?;
-        }
+            (now, seen, from_input)
+        };
+        self.reseed(now, seen, from_input)?;
         Ok((members, vias))
     }
 }
@@ -2417,5 +2426,23 @@ mod tests {
             assert_eq!(again.best.points == earlier.best.points, !back);
             assert_eq!(again.from_input[0], back);
         }
+    }
+
+    #[test]
+    fn a_problem_built_again_after_a_descent_keeps_it() {
+        let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        earlier.probing = false;
+        earlier.enter(0).expect("finite");
+        earlier
+            .step(0, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
+            .expect("finite");
+        assert_eq!(earlier.level, 0);
+        assert!(earlier.descended);
+
+        let mut again = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        again.go_on_from(&earlier).expect("finite");
+
+        assert!(again.descended);
+        assert_eq!(again.handed_over, earlier.handed_over);
     }
 }
