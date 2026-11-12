@@ -21,6 +21,7 @@ __all__ = [
     "LINE",
     "MAX_SMOOTH_TURN",
     "MIN_EDGE_LENGTH",
+    "MovingVias",
     "OUTSIDE",
     "Obstacles",
     "PairIntegrand",
@@ -30,6 +31,7 @@ __all__ = [
     "StaticEdges",
     "StaticItems",
     "Via",
+    "ViaPairs",
     "Zone",
     "arc_lengths",
     "attraction_integrand",
@@ -61,6 +63,7 @@ __all__ = [
     "obstacle_reach",
     "own_net_stops",
     "pair_depths",
+    "pair_kind",
     "pairs_inside",
     "parts_smooth_distance",
     "point_stiffness",
@@ -200,6 +203,41 @@ class Integrand:
     gives its value and slope at each.
     """
     def __call__(self, distance: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]: ...
+
+@typing.final
+class MovingVias:
+    r"""
+    The moving vias of a run and the chains they move among
+    (`kibends_core::vias::moves::MovingVias`).
+    """
+    def __new__(cls, nets: typing.Sequence[builtins.str], layers: typing.Sequence[builtins.int], widths: numpy.typing.NDArray[numpy.float64], clearances: numpy.typing.NDArray[numpy.float64], firsts: numpy.typing.NDArray[numpy.float64], lasts: numpy.typing.NDArray[numpy.float64], vias: typing.Sequence[Via], via_clearances: typing.Sequence[builtins.float], zones: typing.Sequence[typing.Sequence[Zone]], ends: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], hole_clearance: builtins.float, hole_to_hole: builtins.float) -> MovingVias:
+        r"""
+        The chains, by their nets, layer ordinals, widths, netclass
+        clearances and first and last points, (n, 2) each; and the vias,
+        each with its netclass clearance, its zones, and the ends it
+        carries, each a chain index and whether it is the chain's last
+        point.
+        """
+    def ends(self, v: builtins.int) -> builtins.list[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]:
+        r"""
+        The chain ends via v carries: each chain's index, whether it is the
+        chain's last point, and its offset from the via's centre.
+        """
+    def via_obstacles_for_chain(self, i: builtins.int, positions: numpy.typing.NDArray[numpy.float64]) -> typing.Optional[ChainField]:
+        r"""
+        The vias near chain i, at (n, 2) `positions`, as obstacles to it;
+        None when none is one.
+        """
+    def apart(self, v: builtins.int, u: builtins.int) -> typing.Optional[builtins.float]:
+        r"""
+        The distance via v's centre keeps from via u's; None if no rule
+        applies.
+        """
+    def rings(self, v: builtins.int) -> builtins.list[tuple[builtins.int, builtins.float]]:
+        r"""
+        The chains near via v, and how far each keeps its centreline from
+        v's centre.
+        """
 
 @typing.final
 class Obstacles:
@@ -342,6 +380,41 @@ class Via:
     drill, and the span of its drill as copper layer ordinals.
     """
     def __new__(cls, id: builtins.str, net: builtins.str, x: builtins.float, y: builtins.float, diameter: builtins.float, drill: builtins.float, low: builtins.int, high: builtins.int) -> Via: ...
+
+@typing.final
+class ViaPairs:
+    r"""
+    The pairwise term of a problem's moving vias, with each other and with
+    the vias standing still (`kibends_core::vias::pairs::ViaPairs`).
+    """
+    @property
+    def empty(self) -> builtins.bool:
+        r"""
+        Whether the term has no pair.
+        """
+    @property
+    def paired(self) -> builtins.list[builtins.set[builtins.int]]:
+        r"""
+        Per via, the problem's vias it pairs with.
+        """
+    def __new__(cls, vias: typing.Sequence[Via], grounds: typing.Sequence[builtins.bool], clearances: typing.Sequence[builtins.float], zones: typing.Sequence[typing.Sequence[Zone]], apart: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], statics: typing.Sequence[Via], static_grounds: typing.Sequence[builtins.bool], static_clearances: typing.Sequence[builtins.float], params: energy.EnergyParams, hole_clearance: builtins.float, hole_to_hole: builtins.float) -> ViaPairs:
+        r"""
+        The moving `vias`, each a ground via or not, with its netclass
+        clearance and zones, keeping the distances `apart` gives from each
+        other; and the `statics`, each a ground via or not with its netclass
+        clearance.
+        """
+    def kept(self, k: builtins.int, other: Via, clearance: builtins.float) -> typing.Optional[builtins.float]:
+        r"""
+        The distance moving via k's centre keeps from `other`, of netclass
+        `clearance`, as its static field would count it; None if they share
+        no layer.
+        """
+    def energy(self, positions: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        The term's value with the problem's vias at (n, 2) `positions`, and
+        its gradient at each via's centre.
+        """
 
 @typing.final
 class Zone:
@@ -547,6 +620,13 @@ def pair_depths(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDAr
     r"""
     The gap between each segment and edge of `pairs_inside` less the
     edge's inflation.
+    """
+
+def pair_kind(via: Via, ground: builtins.bool, other: Via, other_ground: builtins.bool) -> typing.Optional[builtins.int]:
+    r"""
+    How `via` and `other`, each a ground via or not, interact in the
+    pairwise term, as `vias.PairKind`'s value; None if they do not
+    (`kibends_core::vias::pairs::pair_kind`).
     """
 
 def pairs_inside(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:

@@ -10,6 +10,7 @@ pub mod pairs;
 pub mod rules;
 pub mod simplify;
 pub mod testing;
+pub mod vias;
 
 /// The crate's version, which is kibends' version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
