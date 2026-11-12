@@ -105,9 +105,11 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 WRAP_SETTINGS = replace(
     SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
 )
-# A rerun on the wrap's own output wanders along the flat stretches before
-# it settles, by amounts that vary with the platform's floating point.
-# Measured on macOS: 4 iterations, 9.5 µm moved, the length 0.18 µm longer.
+# A rerun at the defaults on the wrap's own output settles within these.
+# Measured: 1 iteration, 1.2 µm moved, the length 4 nm longer. At
+# WRAP_SETTINGS' coarser final spacing, resampling the output cuts its
+# chords into the repulsion, and pushing them out runs the coarse levels
+# again, rejecting edge moves.
 RERUN_ITERATIONS = 6
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3
@@ -143,13 +145,14 @@ class TestWrap:
             scenarios.ENVELOPE, rel=0.3
         )
 
-    def test_rerun_on_own_output_is_near_no_op(self, wrapped: OptimizeResult) -> None:
+    def test_rerun_on_own_output_is_near_no_op(self) -> None:
+        wrapped = run(scenarios.wrap(), SETTINGS)
         again = optimize(
             wrapped.polyline,
             wrapped.fixed,
             scenarios.WRAP_BOX,
             scenarios.wrap().params,
-            WRAP_SETTINGS,
+            SETTINGS,
         )
 
         assert again.rejected_edges == 0

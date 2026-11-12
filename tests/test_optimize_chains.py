@@ -768,10 +768,13 @@ def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> Non
         assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
 
 
-# A rerun on the squeeze's own output settles within these, which vary with
-# the platform's floating point. Measured on macOS: 4 iterations and 10 µm
-# moved; under scipy, 4 to 5 iterations and 32 µm on Linux.
-REPEAT_ITERATIONS = 8
+# A rerun on the squeeze's own output settles within these. Measured with
+# the default coarse levels: 13 iterations and 23 µm moved, and as many
+# iterations at the default final spacing: the first burst moves the
+# output by more than the settle threshold without shortening it, and the
+# problem runs the coarse levels again. At one spacing it took 4
+# iterations and 10 µm.
+REPEAT_ITERATIONS = 16
 REPEAT_DRIFT = 0.06
 
 
