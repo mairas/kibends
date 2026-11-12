@@ -10,11 +10,11 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use pyo3_stub_gen::{PyStubType, TypeInfo};
 
-use crate::arrays::{BoolArray, IntpArg};
-use crate::field::{
-    Flags, Floats, Indices, Obstacles, Points, StaticEdges, floats, floats_of, indices, indices_of,
+use crate::arrays::{
+    BoolArray, Flags, Floats, Indices, IntpArg, Points, floats, floats_of, indices, indices_of,
     points_of, same_lengths, vectors,
 };
+use crate::field::{Obstacles, StaticEdges};
 use crate::testing;
 use kibends_core::field::Field;
 use kibends_core::field::chain;

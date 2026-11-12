@@ -8,15 +8,17 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
+use numpy::{IntoPyArray, PyReadonlyArray1};
 use pyo3::prelude::*;
-use pyo3::types::PyFloat;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{BoolArg, BoolArray, IntpArg};
+use crate::arrays::{
+    BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, Points, Polyline, check_count, check_rows,
+    floats, indices, invalid, masks_of, not_finite, optional_indices, points_of, polylines_of,
+    refs, vectors, vectors_list,
+};
 use crate::energy::Params;
-use crate::field::{Flags, Floats, Indices, Points, floats, indices, points_of, vectors};
+
 use crate::fields::FieldArg;
 use crate::vias::ViaPairs;
 use kibends_core::field::pairs::SmoothAnswer as CoreSmoothAnswer;
@@ -28,63 +30,6 @@ use kibends_core::pair_blocks::{self, Pins};
 use kibends_core::seen;
 use kibends_core::stats;
 use kibends_core::vias::{free, sight};
-
-pub(crate) type Polyline<'py> = PyReadonlyArray2<'py, f64>;
-
-pub(crate) fn polylines_of(arrays: &[Polyline<'_>]) -> PyResult<Vec<Vec<V2>>> {
-    arrays.iter().map(points_of).collect()
-}
-
-fn refs(polylines: &[Vec<V2>]) -> Vec<&[V2]> {
-    polylines.iter().map(Vec::as_slice).collect()
-}
-
-pub(crate) fn vectors_list<'py>(py: Python<'py>, values: &[Vec<V2>]) -> PyResult<Vec<Points<'py>>> {
-    values.iter().map(|v| vectors(py, v)).collect()
-}
-
-fn invalid(message: String) -> PyErr {
-    PyValueError::new_err(message)
-}
-
-/// The value of an energy that is not finite, as Python says it.
-pub(crate) fn not_finite(py: Python<'_>, value: f64) -> PyErr {
-    let said = PyFloat::new(py, value)
-        .str()
-        .map_or_else(|_| value.to_string(), |s| s.to_string());
-    invalid(format!("energy is not finite: {said}"))
-}
-
-/// Per vertex, its index, -1 for none.
-pub(crate) fn optional_indices(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<Option<usize>>> {
-    array
-        .0
-        .as_array()
-        .iter()
-        .map(|&i| match usize::try_from(i) {
-            Ok(i) if i < below => Ok(Some(i)),
-            _ if i == -1 => Ok(None),
-            _ => Err(invalid(format!("index {i} out of range -1..{below}"))),
-        })
-        .collect()
-}
-
-pub(crate) fn check_count(what: &str, got: usize, want: usize) -> PyResult<()> {
-    if got == want {
-        Ok(())
-    } else {
-        Err(invalid(format!("{got} {what} for {want}")))
-    }
-}
-
-/// Each polyline has as many entries of `what` as it has vertices.
-fn check_rows<T>(what: &str, rows: &[Vec<T>], polylines: &[Vec<V2>]) -> PyResult<()> {
-    check_count(what, rows.len(), polylines.len())?;
-    for (row, points) in rows.iter().zip(polylines) {
-        check_count(what, row.len(), points.len())?;
-    }
-    Ok(())
-}
 
 fn rings_of(rings: &[BTreeMap<usize, f64>], members: usize) -> PyResult<Vec<Vec<(usize, f64)>>> {
     rings
@@ -973,12 +918,6 @@ impl Problem {
     }
 }
 
-pub(crate) fn masks_of(masks: &[BoolArg<'_>], polylines: &[Vec<V2>]) -> PyResult<Vec<Vec<bool>>> {
-    let masks: Vec<Vec<bool>> = masks.iter().map(|m| m.0.as_array().to_vec()).collect();
-    check_rows("mask entries", &masks, polylines)?;
-    Ok(masks)
-}
-
 #[gen_stub_pymethods]
 #[pymethods]
 impl Problem {
@@ -1214,7 +1153,7 @@ impl Problem {
         check_rows("variables", &index, &starts)?;
         let offsets = polylines_of(&offsets)?;
         check_rows("offsets", &offsets, &starts)?;
-        let via_index = crate::field::indices_of(&via_index, count)?;
+        let via_index = crate::arrays::indices_of(&via_index, count)?;
         check_count("via variables", via_index.len(), self.inner.vias.len())?;
         let masks = masks_of(&masks, &starts)?;
         let contact_of = self.contact_of(&contact_of, &starts)?;

@@ -11,10 +11,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{BoolArg, IntpArg, IntpArray};
-use crate::field::{
-    Floats, Indices, Obstacles, Shapes, flags_of, floats, floats_of, points_of, same_lengths,
+use crate::arrays::{
+    BoolArg, Floats, Indices, IntpArg, IntpArray, flags_of, floats, floats_of, points_of,
+    same_lengths,
 };
+use crate::field::{Obstacles, Shapes};
 use crate::fields::ChainField;
 use kibends_core::field::build::{self, BuiltField, Layer, MovingVia, PairTrack, ViaRules};
 use kibends_core::geometry::{Shape, V2};

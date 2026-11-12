@@ -8,9 +8,10 @@ use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
+use crate::arrays::{Points, floats_of, points_of, same_lengths, vectors};
 use crate::build::{Via, Zone, zones_of};
 use crate::energy::Params;
-use crate::field::{Points, floats_of, points_of, same_lengths, vectors};
+
 use crate::fields::ChainField;
 
 /// `k` if it is below `count`.

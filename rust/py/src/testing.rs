@@ -7,7 +7,7 @@ use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::field::{Flags, Floats, Points};
+use crate::arrays::{Flags, Floats, Points};
 use crate::fields::{FieldArg, segments_clear, signed_distance, smooth_distance};
 use crate::problem::Objective;
 use kibends_core::field::Field;

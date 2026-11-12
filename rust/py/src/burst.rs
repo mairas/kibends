@@ -6,7 +6,7 @@ use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction};
 
-use crate::field::{Floats, floats, floats_of};
+use crate::arrays::{Floats, floats, floats_of};
 use crate::problem::Objective;
 use kibends_core::burst::{self, Settings};
 
@@ -76,7 +76,7 @@ fn run_burst(
     let start = floats_of(&start);
     let scale = scale.map(|s| floats_of(&s));
     if let Some(s) = &scale {
-        crate::problem::check_count("scales", s.len(), start.len())?;
+        crate::arrays::check_count("scales", s.len(), start.len())?;
     }
     let settings = Settings {
         max_iterations,

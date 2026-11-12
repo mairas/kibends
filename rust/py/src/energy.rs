@@ -11,10 +11,11 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use pyo3_stub_gen::{PyStubType, TypeInfo};
 
-use crate::arrays::{BoolArg, IntpArg};
-use crate::field::{
-    Floats, Points, flags_of, floats, floats_of, indices_of, points_of, same_lengths, vectors,
+use crate::arrays::{
+    BoolArg, Floats, IntpArg, Points, flags_of, floats, floats_of, indices_of, points_of,
+    same_lengths, vectors,
 };
+
 use kibends_core::energy::integrands::{
     Attraction, Curvature as CoreCurvature, Integrand as CoreIntegrand,
 };

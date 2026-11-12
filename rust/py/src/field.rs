@@ -3,89 +3,19 @@
 
 use std::sync::Arc;
 
-use numpy::ndarray::Array2;
-use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
-};
+use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{BoolArg, BoolArray, IntpArg, IntpArray};
+use crate::arrays::{
+    BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, Points, flags_of, floats, floats_of,
+    indices, indices_of, points_of, same_lengths, vectors,
+};
 use kibends_core::field::edges::StaticDistances;
 use kibends_core::field::obstacles::Item;
 use kibends_core::field::{Kind, edges, obstacles};
-use kibends_core::geometry::{PlainShapes, Shape, V2, zone_depth as core_zone_depth};
-
-pub(crate) type Floats<'py> = Bound<'py, PyArray1<f64>>;
-pub(crate) type Points<'py> = Bound<'py, PyArray2<f64>>;
-pub(crate) type Indices<'py> = IntpArray<'py>;
-pub(crate) type Flags<'py> = BoolArray<'py>;
-
-pub(crate) fn points_of(array: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<V2>> {
-    if array.shape()[1] != 2 {
-        return Err(PyValueError::new_err("points must be an (n, 2) array"));
-    }
-    Ok(array
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|r| V2::new(r[0], r[1]))
-        .collect())
-}
-
-pub(crate) fn floats_of(array: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
-    array.as_array().to_vec()
-}
-
-pub(crate) fn flags_of(array: &BoolArg<'_>) -> Vec<bool> {
-    array.0.as_array().to_vec()
-}
-
-pub(crate) fn indices_of(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<usize>> {
-    array
-        .0
-        .as_array()
-        .iter()
-        .map(|&i| {
-            usize::try_from(i)
-                .ok()
-                .filter(|&i| i < below)
-                .ok_or_else(|| PyValueError::new_err(format!("index {i} out of range 0..{below}")))
-        })
-        .collect()
-}
-
-pub(crate) fn same_lengths(lengths: &[usize]) -> PyResult<()> {
-    if lengths.windows(2).any(|w| w[0] != w[1]) {
-        return Err(PyValueError::new_err(format!(
-            "arrays of unequal lengths {lengths:?}"
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) fn floats<'py>(py: Python<'py>, values: Vec<f64>) -> Floats<'py> {
-    values.into_pyarray(py)
-}
-
-pub(crate) fn indices<'py>(py: Python<'py>, values: &[usize]) -> Indices<'py> {
-    // An index into a Rust slice fits an isize.
-    IntpArray(
-        values
-            .iter()
-            .map(|&i| i as isize)
-            .collect::<Vec<_>>()
-            .into_pyarray(py),
-    )
-}
-
-pub(crate) fn vectors<'py>(py: Python<'py>, values: &[V2]) -> PyResult<Points<'py>> {
-    let flat: Vec<f64> = values.iter().flat_map(|v| [v.x, v.y]).collect();
-    let array = Array2::from_shape_vec((values.len(), 2), flat)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(array.into_pyarray(py))
-}
+use kibends_core::geometry::{PlainShapes, Shape, zone_depth as core_zone_depth};
 
 fn distances_arrays<'py>(
     py: Python<'py>,

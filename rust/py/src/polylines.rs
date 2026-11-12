@@ -5,9 +5,8 @@ use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{BoolArg, BoolArray};
-use crate::field::{Flags, Points, flags_of, points_of, vectors};
-use crate::problem::check_count;
+use crate::arrays::{BoolArg, BoolArray, Flags, Points, check_count, flags_of, points_of, vectors};
+
 use kibends_core::polylines;
 
 /// Each span between fixed vertices resampled to uniform arc-length

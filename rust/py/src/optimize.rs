@@ -12,13 +12,13 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{BoolArg, BoolArray, IntpArray};
-use crate::field::{Flags, Floats, Indices, Points, floats, points_of, vectors};
-use crate::fields::FieldArg;
-use crate::problem::{
-    FreeDistances, Lookups, Objective, Polyline, Problem, Seen, ViaSight, check_count, masks_of,
-    not_finite, polylines_of, vectors_list,
+use crate::arrays::{
+    BoolArg, Flags, Floats, Indices, IntpArray, Points, Polyline, check_count, flags, floats,
+    masks_of, not_finite, points_of, polylines_of, vectors, vectors_list,
 };
+
+use crate::fields::FieldArg;
+use crate::problem::{FreeDistances, Lookups, Objective, Problem, Seen, ViaSight};
 use kibends_core::burst;
 use kibends_core::geometry::V2;
 use kibends_core::optimize::checks::{Check, Round};
@@ -73,10 +73,6 @@ fn contacts<'py>(py: Python<'py>, contact_of: &[Option<usize>]) -> Indices<'py> 
             .collect::<Vec<_>>()
             .into_pyarray(py),
     )
-}
-
-fn flags<'py>(py: Python<'py>, values: &[bool]) -> Flags<'py> {
-    BoolArray(values.to_vec().into_pyarray(py))
 }
 
 /// One problem of a run (`kibends_core::optimize::state::State`): its
@@ -576,7 +572,7 @@ impl BurstLayout {
     /// Each via's variable.
     #[getter]
     fn via_index<'py>(&self, py: Python<'py>) -> Indices<'py> {
-        crate::field::indices(py, &self.inner.via_index)
+        crate::arrays::indices(py, &self.inner.via_index)
     }
 
     /// How many variables there are.

@@ -9,11 +9,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyFrozenSet;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
-use crate::arrays::{BoolArg, BoolArray, IntpArg};
-use crate::energy::Integrand;
-use crate::field::{
-    Flags, Floats, Points, flags_of, floats, floats_of, points_of, same_lengths, vectors,
+use crate::arrays::{
+    BoolArg, BoolArray, Flags, Floats, IntpArg, Points, flags_of, floats, floats_of, points_of,
+    same_lengths, vectors,
 };
+use crate::energy::Integrand;
+
 use crate::fields::FieldArg;
 use kibends_core::field::Field;
 use kibends_core::{contacts, numeric, pairs, simplify};
