@@ -12,6 +12,7 @@ pub mod numeric;
 pub mod optimize;
 pub mod pair_blocks;
 pub mod pairs;
+pub mod parallel;
 pub mod polylines;
 pub mod results;
 pub mod rules;

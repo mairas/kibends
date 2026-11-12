@@ -6,12 +6,15 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::field::Field;
 use crate::field::edges::{Found, StaticEdges};
 use crate::field::search::{StaticItems, search_parts, static_smooth};
 use crate::field::smooth::smooth_reach;
 use crate::geometry::V2;
 use crate::numeric::maximum;
+use crate::parallel::chunks;
 use crate::seen::{Pairs, Seen};
 use crate::stats;
 
@@ -152,7 +155,9 @@ struct Asker {
     /// Its field's static edges and their items, None for a field that
     /// gives none.
     parts: Option<(Vec<Arc<StaticEdges>>, StaticItems)>,
-    found: Option<(Vec<V2>, Found)>,
+    /// The points of its last search and what it found, per chunk of them
+    /// (`parallel::chunks`), each chunk's points numbered from its first.
+    found: Option<(Vec<V2>, Vec<Found>)>,
 }
 
 /// The static fields of several askers, members or moving vias, each at
@@ -207,12 +212,15 @@ impl StaticList {
     }
 
     /// Each asker's smooth distance at its `queries` and its gradient, as
-    /// its field's `smooth_distance` with the list's reach gives them.
+    /// its field's `smooth_distance` with the list's reach gives them. Each
+    /// point's answer depends on its own pairs alone, so every asker's
+    /// points are searched and answered in chunks (`parallel`).
     pub fn smooth(&mut self, queries: &[&[V2]]) -> Vec<(Vec<f64>, Vec<V2>)> {
-        let reach = smooth_reach(self.reach);
+        let field_reach = self.reach;
+        let reach = smooth_reach(field_reach);
         let listed = self.listed;
         self.askers
-            .iter_mut()
+            .par_iter_mut()
             .zip(queries)
             .map(|(asker, &points)| {
                 let Some(field) = &asker.field else {
@@ -223,8 +231,9 @@ impl StaticList {
                 };
                 stats::queried(field, points.len());
                 let Some((parts, items)) = &asker.parts else {
-                    return field.smooth_distance(points, self.reach);
+                    return field.smooth_distance(points, field_reach);
                 };
+                let ranges = chunks(points.len());
                 let found = match &mut asker.found {
                     Some((last, found))
                         if listed
@@ -240,11 +249,25 @@ impl StaticList {
                             .map(|(part, &first)| (part.as_ref(), first))
                             .collect();
                         let slack = if listed { STATIC_SKIN } else { 0.0 };
-                        let found = search_parts(&numbered, points, reach, slack);
+                        let found = ranges
+                            .par_iter()
+                            .map(|r| search_parts(&numbered, &points[r.clone()], reach, slack))
+                            .collect();
                         &slot.insert((points.to_vec(), found)).1
                     }
                 };
-                static_smooth(points, found, items)
+                let answers: Vec<(Vec<f64>, Vec<V2>)> = ranges
+                    .par_iter()
+                    .zip(found)
+                    .map(|(r, found)| static_smooth(&points[r.clone()], found, items))
+                    .collect();
+                let mut distance = Vec::with_capacity(points.len());
+                let mut gradient = Vec::with_capacity(points.len());
+                for (d, g) in answers {
+                    distance.extend(d);
+                    gradient.extend(g);
+                }
+                (distance, gradient)
             })
             .collect()
     }

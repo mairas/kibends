@@ -28,6 +28,8 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::energy::EnergyParams;
 use crate::energy::integrands::{Curvature, Integrand};
 use crate::energy::polyline::{bend_radius_energy, shape_energy};
@@ -131,6 +133,16 @@ struct Fields {
     direction: Vec<V2>,
     /// The others' share of it.
     seen_share: Vec<f64>,
+}
+
+/// One member's terms in `Members::energy`: its shape and obstacle terms,
+/// its bend-radius hinge, their gradient at its vertices and the obstacle
+/// integrand's slope at its quadrature points.
+struct Terms {
+    own: f64,
+    bend: Option<f64>,
+    gradient: Vec<V2>,
+    slope: Vec<f64>,
 }
 
 /// The members of a problem, in order.
@@ -354,55 +366,85 @@ impl Members {
         let flat = self.shown_flat(polylines, positions);
         let mut at_shown = vec![V2::default(); flat.len()];
         let fields = self.fields(polylines, params, seen, &flat, listed, statics);
-        let mut slopes = vec![0.0; fields.distance.len()];
+        // Each member's terms on its own, summed in member order after.
+        let terms: Vec<Terms> = self
+            .members
+            .par_iter()
+            .zip(polylines)
+            .enumerate()
+            .map(|(i, (member, &points))| {
+                let mine = fields.bounds[i]..fields.bounds[i + 1];
+                let (obstacle, obstacle_gradient, slope) = edge_integral(
+                    points,
+                    &fields.distance[mine.clone()],
+                    &fields.direction[mine],
+                    &integrand,
+                    k,
+                );
+                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edge);
+                let mut gradient: Vec<V2> = shape_gradient
+                    .iter()
+                    .zip(&obstacle_gradient)
+                    .map(|(&s, &o)| s + o)
+                    .collect();
+                let bend = member.section.as_ref().and_then(|s| s.limit).map(|limit| {
+                    let (bend, bend_gradient) = bend_radius_energy(points, masks[i], limit, params);
+                    add_to(&mut gradient, &bend_gradient);
+                    bend
+                });
+                Terms {
+                    own: shape + obstacle,
+                    bend,
+                    gradient,
+                    slope,
+                }
+            })
+            .collect();
+        let mut slopes = Vec::with_capacity(fields.distance.len());
         let mut value = 0.0;
         let mut gradients = Vec::with_capacity(self.members.len());
-        for (i, (member, &points)) in self.members.iter().zip(polylines).enumerate() {
-            let mine = fields.bounds[i]..fields.bounds[i + 1];
-            let (obstacle, obstacle_gradient, slope) = edge_integral(
-                points,
-                &fields.distance[mine.clone()],
-                &fields.direction[mine.clone()],
-                &integrand,
-                k,
-            );
-            slopes[mine].copy_from_slice(&slope);
-            let (shape, shape_gradient) = shape_energy(points, masks[i], short_edge);
-            value += shape + obstacle;
-            let mut gradient: Vec<V2> = shape_gradient
-                .iter()
-                .zip(&obstacle_gradient)
-                .map(|(&s, &o)| s + o)
-                .collect();
-            if let Some(limit) = member.section.as_ref().and_then(|s| s.limit) {
-                let (bend, bend_gradient) = bend_radius_energy(points, masks[i], limit, params);
+        for Terms {
+            own,
+            bend,
+            gradient,
+            slope,
+        } in terms
+        {
+            value += own;
+            if let Some(bend) = bend {
                 value += bend;
-                add_to(&mut gradient, &bend_gradient);
             }
             gradients.push(gradient);
+            slopes.extend(slope);
         }
         // Where a member's term pulls on an edge another shows, each
         // answer's share goes to the ends of the edge, by where along it
         // the point is nearest.
-        let mut pushes = Vec::new();
-        for (i, near) in fields.answers.iter().enumerate() {
-            for n in 0..near.point.len() {
-                let at = fields.bounds[i] + near.point[n];
-                let pull = (slopes[at] * fields.seen_share[at]) * near.share[n];
-                if pull != 0.0 {
-                    let piece = near.edge[n];
-                    let start = seen.vertex()[piece];
-                    let a = flat[start];
-                    let b = a + (flat[start + 1] - a);
-                    let along = parameter(fields.queries[i][near.point[n]], a, b);
-                    pushes.push((start, scaled(pull, near.direction[n]), along));
+        let pushes: Vec<Vec<(usize, V2, f64)>> = fields
+            .answers
+            .par_iter()
+            .enumerate()
+            .map(|(i, near)| {
+                let mut pushes = Vec::new();
+                for n in 0..near.point.len() {
+                    let at = fields.bounds[i] + near.point[n];
+                    let pull = (slopes[at] * fields.seen_share[at]) * near.share[n];
+                    if pull != 0.0 {
+                        let piece = near.edge[n];
+                        let start = seen.vertex()[piece];
+                        let a = flat[start];
+                        let b = a + (flat[start + 1] - a);
+                        let along = parameter(fields.queries[i][near.point[n]], a, b);
+                        pushes.push((start, scaled(pull, near.direction[n]), along));
+                    }
                 }
-            }
-        }
-        for &(start, push, along) in &pushes {
+                pushes
+            })
+            .collect();
+        for &(start, push, along) in pushes.iter().flatten() {
             at_shown[start] = at_shown[start] + scaled(1.0 - along, -push);
         }
-        for &(start, push, along) in &pushes {
+        for &(start, push, along) in pushes.iter().flatten() {
             at_shown[start + 1] = at_shown[start + 1] + scaled(along, -push);
         }
         let mut first = 0;
@@ -466,7 +508,7 @@ impl Members {
         let integrand = Integrand::obstacle(params);
         let curvature = Curvature::obstacle(params);
         polylines
-            .iter()
+            .par_iter()
             .enumerate()
             .map(|(i, points)| {
                 let mine = fields.bounds[i]..fields.bounds[i + 1];
