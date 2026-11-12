@@ -46,6 +46,36 @@ const BEND_REACH: [isize; 4] = [-1, 0, 1, 2];
 /// first vertex starts the result, fixed; vertices after the last fixed
 /// one are dropped.
 pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bool>) {
+    resample_spans(points, fixed, |total| edges_at(total, spacing))
+}
+
+/// `resample` at a coarse `spacing`, but each span too short for
+/// `minimum_free` free vertices at it gets that many, at the coarsest
+/// spacing that gives them and never finer than `finest`.
+pub fn resample_coarse(
+    points: &[V2],
+    fixed: &[bool],
+    spacing: f64,
+    minimum_free: usize,
+    finest: f64,
+) -> (Vec<V2>, Vec<bool>) {
+    resample_spans(points, fixed, |total| {
+        edges_at(total, spacing).max((minimum_free + 1).min(edges_at(total, finest)))
+    })
+}
+
+/// How many edges a span `total` long gets at `spacing`.
+fn edges_at(total: f64, spacing: f64) -> usize {
+    ((total / spacing - RESAMPLE_SLACK).ceil() as i64).max(1) as usize
+}
+
+/// Each span between fixed vertices resampled to uniform arc-length
+/// spacing, as many edges as `edges` gives for its length.
+fn resample_spans(
+    points: &[V2],
+    fixed: &[bool],
+    edges: impl Fn(f64) -> usize,
+) -> (Vec<V2>, Vec<bool>) {
     let anchors: Vec<usize> = (0..fixed.len()).filter(|&k| fixed[k]).collect();
     let mut out = vec![points[0]];
     let mut mask = vec![true];
@@ -54,7 +84,7 @@ pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bo
         let span = &points[start..=end];
         let arc = arc_lengths(span);
         let total = arc[arc.len() - 1];
-        let count = ((total / spacing - RESAMPLE_SLACK).ceil() as i64).max(1) as usize;
+        let count = edges(total);
         let step = total / count as f64;
         let xs: Vec<f64> = span.iter().map(|p| p.x).collect();
         let ys: Vec<f64> = span.iter().map(|p| p.y).collect();
@@ -248,6 +278,26 @@ mod tests {
         let points = line(&[(0.0, 0.0), (0.1 + 1e-9, 0.0)]);
         let (out, _) = resample(&points, &[true, true], 0.1);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn a_coarse_span_too_short_keeps_the_minimum_free_vertices() {
+        let points = line(&[(0.0, 0.0), (1.0, 0.0)]);
+        // At 1.6 the span would be one chord; at 0.2 it keeps four free
+        // vertices.
+        let (out, fixed) = resample_coarse(&points, &[true, true], 1.6, 4, 0.1);
+        assert_eq!(fixed, vec![true, false, false, false, false, true]);
+        assert!((out[1].x - 0.2).abs() < 1e-15);
+        // Never finer than the finest spacing.
+        let short = line(&[(0.0, 0.0), (0.25, 0.0)]);
+        let (out, _) = resample_coarse(&short, &[true, true], 1.6, 4, 0.1);
+        assert_eq!(out.len(), 4);
+        // A span long enough at the coarse spacing resamples as `resample`.
+        let long = line(&[(0.0, 0.0), (10.0, 0.0)]);
+        assert_eq!(
+            resample_coarse(&long, &[true, true], 1.6, 4, 0.1),
+            resample(&long, &[true, true], 1.6)
+        );
     }
 
     #[test]
