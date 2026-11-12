@@ -785,7 +785,6 @@ impl Bursts<Failure> for PythonBursts<'_, '_> {
         start: Vec<f64>,
         scale: Vec<f64>,
         check: Check,
-        _report: &mut dyn FnMut(Notice) -> Result<(), Failure>,
     ) -> Result<(Ran, Option<Round>), Failure> {
         let py = self.py;
         let seen = objective.seen.clone();
@@ -848,8 +847,10 @@ fn advance(
     burst: Bound<'_, PyAny>,
     report: Py<PyAny>,
 ) -> PyResult<(&'static str, u64)> {
-    let mut borrowed: Vec<PyRefMut<'_, ProblemState>> =
-        problems.iter().map(|p| p.borrow_mut()).collect();
+    let mut borrowed: Vec<PyRefMut<'_, ProblemState>> = problems
+        .iter()
+        .map(|p| p.try_borrow_mut())
+        .collect::<Result<_, _>>()?;
     let mut states: Vec<&mut State> = borrowed.iter_mut().map(|p| &mut p.inner).collect();
     let mut iteration = iteration;
     let mut asked =

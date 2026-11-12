@@ -776,7 +776,7 @@ impl State {
         self.now.masks = masks;
         self.now.contact_of = contact_of;
         self.resampled = vec![false; starts.len()];
-        let burst = self.burst(starts, bursts, report)?;
+        let burst = self.burst(starts, bursts)?;
         let changes: Vec<f64> = self
             .free
             .iter()
@@ -870,7 +870,6 @@ impl State {
         &self,
         starts: Vec<Vec<V2>>,
         bursts: &mut dyn Bursts<E>,
-        report: &mut dyn FnMut(Notice) -> Result<(), E>,
     ) -> Result<ProblemBurst, E> {
         let shared = &self.shared;
         let layout = self.layout(starts.clone());
@@ -895,7 +894,7 @@ impl State {
             &self.now.positions,
             x0.clone(),
         );
-        let (ran, found) = bursts.run(objective, lookups, x0, scale, check, report)?;
+        let (ran, found) = bursts.run(objective, lookups, x0, scale, check)?;
         let (polylines, positions) = layout.unflatten(&ran.point);
         // An abnormally ended burst stops at its check without counting it.
         let counted = match found {
@@ -1144,7 +1143,6 @@ mod tests {
             start: Vec<f64>,
             _scale: Vec<f64>,
             _check: Check,
-            _report: &mut dyn FnMut(Notice) -> Result<(), NotFinite>,
         ) -> Result<(Ran, Option<Round>), NotFinite> {
             let members = objective.layout.starts.len();
             let vias = objective.layout.via_index.len();

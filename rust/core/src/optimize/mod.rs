@@ -74,8 +74,6 @@ pub mod layout;
 pub mod problem;
 pub mod state;
 
-use std::time::Duration;
-
 use crate::burst;
 use crate::numeric::python_max;
 use checks::{Check, Round};
@@ -248,74 +246,7 @@ pub trait Bursts<E> {
         start: Vec<f64>,
         scale: Vec<f64>,
         check: Check,
-        report: &mut dyn FnMut(Notice) -> Result<(), E>,
     ) -> Result<(Ran, Option<Round>), E>;
-}
-
-/// Bursts run here, with no stop: the argmin wrapper (`burst::run`), then
-/// the check.
-pub struct Direct;
-
-impl<E: From<NotFinite>> Bursts<E> for Direct {
-    fn run(
-        &mut self,
-        objective: Objective,
-        mut lookups: Lookups,
-        start: Vec<f64>,
-        scale: Vec<f64>,
-        mut check: Check,
-        report: &mut dyn FnMut(Notice) -> Result<(), E>,
-    ) -> Result<(Ran, Option<Round>), E> {
-        if start.is_empty() {
-            return Ok((
-                Ran {
-                    point: start,
-                    abnormal: false,
-                    iterations: 0,
-                    evaluations: 0,
-                    message: String::new(),
-                    cut: false,
-                    evaluating: 0.0,
-                },
-                None,
-            ));
-        }
-        let mut evaluate = |x: &[f64]| {
-            objective
-                .evaluate(x, Some(&mut lookups))
-                .map_err(|v| E::from(NotFinite(v)))
-        };
-        let mut never = || Ok(false);
-        let b = burst::run(
-            &mut evaluate,
-            &start,
-            Some(&scale),
-            &self.settings_of(&check),
-            &mut never,
-        )?;
-        let mut point = b.point.clone();
-        if check.revert(&mut point).fell_back {
-            report(Notice::Fallback)?;
-        }
-        Ok((
-            Ran {
-                point,
-                abnormal: b.abnormal(),
-                iterations: b.iterations,
-                evaluations: b.evaluations,
-                message: b.ending.message(),
-                cut: b.cut(),
-                evaluating: Duration::as_secs_f64(&b.evaluating),
-            },
-            check.found,
-        ))
-    }
-}
-
-impl Direct {
-    fn settings_of(&self, check: &Check) -> burst::Settings {
-        check.settings().burst
-    }
 }
 
 /// How an `advance` ended.
