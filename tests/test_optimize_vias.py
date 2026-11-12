@@ -2720,9 +2720,13 @@ def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
 
 
 DEFAULT_PARAMS = cli.smooth_options(cli.parse_args(["smooth"])).params
-STITCHED_SETTINGS = replace(DEFAULT_SETTINGS, burst_maxiter=20, max_iterations=12)
+STITCHED_SETTINGS = replace(
+    DEFAULT_SETTINGS, burst_maxiter=20, max_iterations=12, settled_change=0.0
+)
 """Short bursts keep the stitched grid's runs fast; the cap ends a run
-that the stall rule does not."""
+that the stall rule does not. Only the stall rule settles it: on
+linux-x86_64 a burst ended by ftol moved the grid less than the default
+`settled_change` six iterations in, before any stall check came near."""
 
 Stalls = list[tuple[list[float], list[float], int, int, bool]]
 
