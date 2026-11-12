@@ -54,6 +54,7 @@ __all__ = [
     "SMOOTH_WIDTH",
     "STATIC_SKIN",
     "Seen",
+    "SelfCheck",
     "Shapes",
     "SmoothAnswer",
     "StaticEdges",
@@ -78,6 +79,7 @@ __all__ = [
     "complementary_net",
     "contact_stops",
     "contacts_left",
+    "count_violations",
     "diff_pair_nets",
     "edge_bend_radii",
     "edge_curvature",
@@ -99,8 +101,10 @@ __all__ = [
     "point_stiffness",
     "quadrature_points",
     "repulsion_integrand",
+    "resample",
     "reset_statistics",
     "run_burst",
+    "shape_change",
     "shape_energy",
     "smooth_minimum",
     "smooth_reach",
@@ -429,7 +433,7 @@ class FallbackNotice:
     A burst's crossings named nothing more to move back, and the whole
     burst moved back.
     """
-    ...
+    def __new__(cls) -> FallbackNotice: ...
 
 @typing.final
 class FreeDistances:
@@ -940,6 +944,24 @@ class Seen:
         """
 
 @typing.final
+class SelfCheck:
+    r"""
+    What a burst may not do to a coupled section's centreline: bend an edge
+    below its limit that was not already there where the burst started
+    (`kibends_core::polylines::SelfCheck`).
+    """
+    @staticmethod
+    def of(original: numpy.typing.NDArray[numpy.float64], bend_limit: builtins.float) -> SelfCheck:
+        r"""
+        The check of a burst that starts at `original`.
+        """
+    def __call__(self, candidate: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.bool_], builtins.int]:
+        r"""
+        The vertices of `candidate` to move back, and how many edges newly
+        bent too tightly.
+        """
+
+@typing.final
 class Shapes:
     r"""
     Geometries as plain coordinates: each shape's parts, each part a polygon
@@ -1236,6 +1258,13 @@ def contacts_left(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy
     (`kibends_core::contacts::contacts_left`).
     """
 
+def count_violations(inside: numpy.typing.NDArray[numpy.bool_], cut: numpy.typing.NDArray[numpy.bool_], anchors: numpy.typing.NDArray[numpy.bool_]) -> builtins.int:
+    r"""
+    Places where a polyline enters the clearance away from its `anchors`,
+    given the vertices `inside` the clearance and the edges that `cut`
+    into it (`kibends_core::polylines::count_violations`).
+    """
+
 def diff_pair_nets(net: builtins.str) -> builtins.frozenset[builtins.str]:
     r"""
     `net` and the other net of its diff pair, if it has one.
@@ -1376,6 +1405,12 @@ def repulsion_integrand(params: energy.EnergyParams) -> Integrand:
     away without being a wall.
     """
 
+def resample(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], spacing: builtins.float) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.bool_]]:
+    r"""
+    Each span between fixed vertices resampled to uniform arc-length
+    `spacing`, the fixed vertices kept exactly, and the new fixed mask.
+    """
+
 def reset_statistics() -> None:
     r"""
     Every statistic back to zero.
@@ -1389,6 +1424,12 @@ def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], 
     not converge it checks for signals and asks `stop`, if given, which
     ends the burst by answering true. An exception raised there or by the
     objective ends the burst and propagates.
+    """
+
+def shape_change(before: numpy.typing.NDArray[numpy.float64], after: numpy.typing.NDArray[numpy.float64]) -> builtins.float:
+    r"""
+    Local symmetric distance between two polylines, mm, not counting
+    vertices sliding along an unchanged shape.
     """
 
 def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], short_edge: builtins.float) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:

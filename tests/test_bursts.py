@@ -3,14 +3,16 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from distance_fields import BoolArray, FloatArray
+from conftest import Ticking
+from distance_fields import FloatArray
 
+import kibends.optimize as optimize_module
+from kibends import _core
 from kibends._core.testing import quadratic
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     FALLBACK_WARNING,
     ScaledObjective,
-    revert_until_clear,
     run_burst,
 )
 
@@ -167,21 +169,11 @@ def test_a_scaled_objective_answers_as_its_objective() -> None:
 
 
 @pytest.mark.fallback
-def test_crossings_naming_nothing_to_move_back_move_all_back_and_warn(
-    log: list[str],
-) -> None:
-    start = np.zeros(4)
-    candidate = np.ones(4)
-    stuck = np.zeros(4, dtype=bool)
+def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None:
+    report = optimize_module._Report([], Ticking(), 0.0, 0.0)  # pyright: ignore[reportPrivateUsage]
 
-    def crossing_until_back(x: FloatArray) -> tuple[int, BoolArray]:
-        return int(x.any()), stuck
+    report(_core.FallbackNotice())
 
-    reverted, count = revert_until_clear(candidate, start, crossing_until_back)
-
-    assert count == 1
-    assert reverted.all()
-    assert np.array_equal(candidate, start)
     assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
 
 

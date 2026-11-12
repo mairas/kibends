@@ -21,26 +21,19 @@ burst's result stay in x.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import numpy as np
-from loguru import logger
-
 from kibends import _core
-from kibends.energy import BoolArray, DistanceField, FloatArray
+from kibends.energy import DistanceField, FloatArray
 
 FALLBACK_WARNING = (
     "A burst's crossings named nothing more to move back; moving the whole burst back"
 )
+"""Logged when a burst's check moves the whole burst back
+(`kibends_core::optimize::checks::revert_until_clear`)."""
 
-# Depth inside the clearance, mm, that the violation guard ignores as float
-# noise: a track routed at exactly the clearance resamples to vertices about
-# 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
-INSIDE_TOLERANCE = 1e-7
-
-# How much deeper than at the start something already inside may measure
-# without going deeper, mm: round-off in measuring a shape that moved along
-# what it is inside, such as an edge sliding inside a clearance, up to
-# about 1e-16 mm. A thousandth of KiCad's 1 nm coordinate step.
-DEEPER_ROUND_OFF = 1e-9
+INSIDE_TOLERANCE = _core.INSIDE_TOLERANCE
+"""Depth inside the clearance, mm, that the violation guard ignores as float
+noise: a track routed at exactly the clearance resamples to vertices about
+1e-15 mm inside. Far below KiCad's 1 nm coordinate step."""
 
 # Edges shorter than this fraction of the spacing meet the short-edge barrier.
 # Resampling leaves every edge at a free vertex at least half the spacing.
@@ -126,7 +119,6 @@ def point_distance(field: DistanceField, point: FloatArray) -> float:
 
 Revert = Callable[[FloatArray], int]
 Stop = Callable[[], bool]
-Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 
 class ScaledObjective:
@@ -160,39 +152,6 @@ class Burst:
     """Whether `stop` ended it before its iteration cap."""
     evaluating: float = 0.0
     """Seconds the evaluations took."""
-
-
-def revert_until_clear(
-    candidate: FloatArray, start: FloatArray, crossings: Crossings
-) -> tuple[BoolArray, int]:
-    """Move coordinates of `candidate` back to `start`, in place, until
-    `crossings` finds no edge newly crossing an obstacle.
-
-    `crossings` gives the number of crossings and the coordinates to move
-    back for them. Moving back can make a neighbouring edge cross, hence
-    the loop; it ends because the start, judged against itself, crosses
-    nothing. A crossing whose moving coordinates are all back already
-    moves the whole candidate back, with `FALLBACK_WARNING` logged. Returns
-    the mask of coordinates moved back and the number of crossings in the
-    candidate as given.
-    """
-    reverted = np.zeros(len(candidate), dtype=bool)
-    initial: int | None = None
-    while True:
-        count, back = crossings(candidate)
-        if initial is None:
-            initial = count
-        if count == 0:
-            return reverted, initial
-        back &= ~reverted
-        if not back.any():
-            # A crossing whose moving coordinates are all back already, so
-            # that what crosses does not move back. Moving everything back
-            # ends the loop, as the start crosses nothing.
-            logger.warning(FALLBACK_WARNING)
-            back = ~reverted
-        candidate[back] = start[back]
-        reverted |= back
 
 
 def run_burst(

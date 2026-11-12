@@ -221,14 +221,13 @@ import numpy as np
 from loguru import logger
 
 from kibends import _core
+from kibends._old_bursts import DEEPER_ROUND_OFF, revert_until_clear
 from kibends.bursts import (
-    DEEPER_ROUND_OFF,
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     OptimizerSettings,
     ScaledObjective,
     Stop,
-    revert_until_clear,
     run_burst,
 )
 from kibends.contacts import contacts_left, no_contacts

@@ -11,6 +11,7 @@ mod field;
 mod fields;
 mod helpers;
 mod optimize;
+mod polylines;
 mod problem;
 mod testing;
 mod vias;
@@ -55,6 +56,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     energy::register(m)?;
     helpers::register(m)?;
     optimize::register(m)?;
+    polylines::register(m)?;
     problem::register(m)?;
     testing::register(m)?;
     vias::register(m)?;

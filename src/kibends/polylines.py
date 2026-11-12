@@ -8,85 +8,48 @@ counts where it enters its clearance away from its anchors, which the best
 state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:
-bend an edge newly below the limit.
+bend an edge newly below the limit. All but `measure` are Rust's
+(`kibends_core::polylines`).
 """
-
-from dataclasses import dataclass
-from itertools import pairwise
 
 import numpy as np
 
-from kibends.energy import (
-    MIN_EDGE_LENGTH,
-    BoolArray,
-    FloatArray,
-    arc_lengths,
-)
-from kibends.pairs import bend_radii, too_tight
+from kibends import _core
+from kibends.energy import FloatArray
 from kibends.results import PolylineStats
-
-# A span only slightly longer than a multiple of the spacing gets no extra
-# vertex, so float noise in re-measured lengths does not change the count.
-RESAMPLE_SLACK = 1e-6
 
 # Below this turning angle a vertex counts as straight (infinite radius).
 STRAIGHT_TURN = 1e-9
 
-# Shape change is measured from each vertex to the other polyline's edges
-# within this many edges of the same index.
-SHAPE_WINDOW = 3
+resample = _core.resample
+"""Each span between fixed vertices resampled to uniform arc-length
+spacing, the fixed vertices kept exactly, and the new fixed mask. The
+first vertex must be fixed."""
 
-# Offsets from edge k of the vertices its bend radius depends on: the turns
-# at both its ends take the vertices on either side.
-BEND_REACH = np.arange(-1, 3)
+count_violations = _core.count_violations
+"""Places where a polyline enters the clearance away from its `anchors`,
+given the vertices `inside` the clearance and the edges that `cut` into
+it, each by more than INSIDE_TOLERANCE, so that a track routed at exactly
+the clearance starts with no violations.
 
+Each corner cut, an edge with both ends clear that enters the clearance,
+counts once, and so does each run of consecutive vertices inside the
+clearance that holds no anchor; only the cut edges with both ends clear
+count. A run that holds an anchor in the clearance cannot move away and is
+not counted. A run is consecutive in the chain, so inside vertices in two
+touching or overlapping obstacles form one. The count says nothing about
+how deep a violation goes, and an edge from any run to a clear vertex adds
+nothing to it whatever obstacles the edge passes through."""
 
-def count_violations(inside: BoolArray, cut: BoolArray, anchors: BoolArray) -> int:
-    """Places where a polyline enters the clearance away from its
-    `anchors`, given the vertices `inside` the clearance and the edges that
-    `cut` into it, each by more than INSIDE_TOLERANCE, so that a track
-    routed at exactly the clearance starts with no violations.
+shape_change = _core.shape_change
+"""Local symmetric distance between two polylines, mm: the largest
+distance from each vertex of either to the other's edges near the same
+arc-length fraction. Vertices sliding along an unchanged shape do not
+count."""
 
-    Each corner cut, an edge with both ends clear that enters the
-    clearance, counts once, and so does each run of consecutive vertices
-    inside the clearance that holds no anchor; only the cut edges with both
-    ends clear count. A run that holds an anchor in the clearance cannot
-    move away and is not counted. A run is consecutive in the chain, so
-    inside vertices in two touching or overlapping obstacles form one. The
-    count says nothing about how deep a violation goes, and an edge from
-    any run to a clear vertex adds nothing to it whatever obstacles the edge
-    passes through."""
-    ends_clear = ~inside[:-1] & ~inside[1:]
-    cuts = np.count_nonzero(cut & ends_clear)
-    run_starts = inside & ~np.concatenate(([False], inside[:-1]))
-    run = np.cumsum(run_starts)
-    loose_runs = np.count_nonzero(run_starts & ~np.isin(run, run[inside & anchors]))
-    return int(cuts + loose_runs)
-
-
-def resample(
-    points: FloatArray, fixed: BoolArray, spacing: float
-) -> tuple[FloatArray, BoolArray]:
-    """Resample each span between fixed vertices to uniform arc-length spacing.
-
-    Fixed vertices are kept exactly; returns the new points and fixed mask.
-    """
-    anchor_indices = np.flatnonzero(fixed)
-    pieces = [points[:1]]
-    masks = [np.ones(1, dtype=bool)]
-    for start, end in pairwise(anchor_indices):
-        span = points[start : end + 1]
-        arc = arc_lengths(span)
-        total = float(arc[-1])
-        count = max(1, int(np.ceil(total / spacing - RESAMPLE_SLACK)))
-        targets = np.linspace(0.0, total, count + 1)[1:-1]
-        interior = np.stack(
-            [np.interp(targets, arc, span[:, 0]), np.interp(targets, arc, span[:, 1])],
-            axis=1,
-        )
-        pieces += [interior, points[end : end + 1]]
-        masks += [np.zeros(count - 1, dtype=bool), np.ones(1, dtype=bool)]
-    return np.concatenate(pieces), np.concatenate(masks)
+SelfCheck = _core.SelfCheck
+"""What a burst may not do to a coupled section's centreline: bend an edge
+below the limit that was not already there where the burst started."""
 
 
 def measure(polyline: FloatArray, spacing: float) -> PolylineStats:
@@ -117,65 +80,3 @@ def _tightest_bend_radius(points: FloatArray) -> float:
         return float("inf")
     span = (lengths[:-1] + lengths[1:])[bending]
     return float(np.min(span / (4 * np.tan(turn[bending] / 2))))
-
-
-def shape_change(before: FloatArray, after: FloatArray) -> float:
-    """Local symmetric distance between two polylines, mm.
-
-    Vertices sliding along an unchanged shape do not count: resampling to
-    uniform spacing and the energy's indifference to where along the track
-    a vertex sits would otherwise keep moving vertices forever without
-    changing the track.
-    """
-    return max(_local_distance(after, before), _local_distance(before, after))
-
-
-def _local_distance(points: FloatArray, polyline: FloatArray) -> float:
-    """Largest distance from each point to the polyline's edges near it.
-
-    "Near" is within SHAPE_WINDOW edges of the edge at the same arc-length
-    fraction, so the far leg of a hairpin never counts as close.
-    """
-    last_edge = len(polyline) - 2
-    starts, ends = polyline[:-1], polyline[1:]
-    edge_starts = _arc_fractions(polyline)[:-1]
-    indices = np.searchsorted(edge_starts, _arc_fractions(points), side="right") - 1
-    nearest = np.full(len(points), np.inf)
-    for offset in range(-SHAPE_WINDOW, SHAPE_WINDOW + 1):
-        edge = np.clip(indices + offset, 0, last_edge)
-        start, delta = starts[edge], ends[edge] - starts[edge]
-        squared = np.einsum("ij,ij->i", delta, delta)
-        t = np.einsum("ij,ij->i", points - start, delta) / np.maximum(
-            squared, MIN_EDGE_LENGTH**2
-        )
-        closest: FloatArray = start + np.clip(t, 0.0, 1.0)[:, None] * delta
-        nearest = np.minimum(nearest, np.linalg.norm(points - closest, axis=1))
-    return float(nearest.max())
-
-
-def _arc_fractions(points: FloatArray) -> FloatArray:
-    arc = arc_lengths(points)
-    return arc / max(float(arc[-1]), MIN_EDGE_LENGTH)
-
-
-@dataclass(frozen=True)
-class SelfCheck:
-    """What a burst may not do to a coupled section's centreline: bend an
-    edge below `bend_limit` that was not already there where the burst
-    started (`tight_before`)."""
-
-    bend_limit: float
-    tight_before: BoolArray
-
-    @staticmethod
-    def of(original: FloatArray, bend_limit: float) -> SelfCheck:
-        return SelfCheck(bend_limit, too_tight(bend_radii(original), bend_limit))
-
-    def __call__(self, candidate: FloatArray) -> tuple[BoolArray, int]:
-        """The vertices to move back, and how many edges newly bent too
-        tightly."""
-        back = np.zeros(len(candidate), dtype=bool)
-        tight = too_tight(bend_radii(candidate), self.bend_limit) & ~self.tight_before
-        around = np.flatnonzero(tight)[:, None] + BEND_REACH
-        back[np.clip(around, 0, len(candidate) - 1).ravel()] = True
-        return back, int(tight.sum())

@@ -749,7 +749,7 @@ impl State {
         let mut starts = Vec::with_capacity(shared.count());
         let mut masks = Vec::with_capacity(shared.count());
         let mut contact_of = Vec::with_capacity(shared.count());
-        for i in 0..shared.count() {
+        for (i, kept_here) in pressed.iter().enumerate() {
             let (points, mask, kept) = (
                 &self.now.points[i],
                 &self.now.masks[i],
@@ -762,7 +762,7 @@ impl State {
                     kept,
                     &shared.loose[i],
                     spacing,
-                    Some(&pressed[i]),
+                    Some(kept_here),
                 );
                 starts.push(p);
                 masks.push(m);

@@ -56,6 +56,10 @@ impl Failure {
     }
 }
 
+/// The chain ends a via carries: per end its member, whether it is the
+/// member's last point, and its offset from the via's centre.
+type Carried = Vec<(usize, bool, (f64, f64))>;
+
 fn end(last: bool) -> End {
     if last { End::Last } else { End::First }
 }
@@ -135,7 +139,7 @@ impl ProblemState {
         held: Vec<bool>,
         limits: Vec<Option<f64>>,
         starts: Polyline<'_>,
-        carried: Vec<Vec<(usize, bool, (f64, f64))>>,
+        carried: Vec<Carried>,
         copper: Vec<FieldArg>,
         stop_parts: Vec<Vec<Option<FieldArg>>>,
         groups: Vec<Vec<(usize, bool)>>,
@@ -598,7 +602,10 @@ impl BurstLayout {
         let (polylines, positions) = self.inner.unflatten(&x);
         Ok((
             vectors_list(py, &polylines)?,
-            positions.iter().map(|p| floats(py, vec![p.x, p.y])).collect(),
+            positions
+                .iter()
+                .map(|p| floats(py, vec![p.x, p.y]))
+                .collect(),
         ))
     }
 }
@@ -648,6 +655,15 @@ impl Revert {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct FallbackNotice;
+
+#[gen_stub_pymethods]
+#[pymethods]
+impl FallbackNotice {
+    #[new]
+    fn new() -> Self {
+        FallbackNotice
+    }
+}
 
 /// L-BFGS ended a burst of a problem abnormally, `streak` in a row.
 #[gen_stub_pyclass]

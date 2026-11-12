@@ -252,33 +252,12 @@ def optimize_chains(
     logger.info(_starting(moving, begun - set_up))
     origin = begun if started is None else started
     deadline = None if settings.time_limit is None else origin + settings.time_limit
-    last_shown = begun
 
     def ended() -> bool:
         return deadline is not None and clock() >= deadline
 
     expired = None if deadline is None else ended
-
-    def report(notice: _Notice) -> None:
-        nonlocal last_shown
-        if isinstance(notice, _core.FallbackNotice):
-            logger.warning(FALLBACK_WARNING)
-        elif isinstance(notice, _core.AbnormalNotice):
-            logger.debug(
-                "L-BFGS-B ended a burst of "
-                f"{moving[notice.problem].description} abnormally, "
-                f"{notice.streak} in a row"
-            )
-        elif isinstance(notice, _core.BurstNotice):
-            _burst_done(moving[notice.problem], notice)
-        else:
-            now = clock()
-            message = _progress(notice, now - origin)
-            if now - last_shown >= PROGRESS_INTERVAL:
-                logger.info(message)
-                last_shown = now
-            else:
-                logger.debug(message)
+    report = _Report(moving, clock, origin, begun)
 
     def burst(
         objective: _core.Objective,
@@ -345,6 +324,7 @@ def optimize_chains(
             placed[n] = replace(p, problem=problem)
         problems = [p.problem for p in placed]
         moving = [p for p in problems if p.moving]
+        report.problems = moving
         cap = iteration + settings.max_iterations
     final = result(termination, iteration, best=True)
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
@@ -360,6 +340,47 @@ _Notice = (
     | _core.BurstNotice
     | _core.ProgressNotice
 )
+
+
+class _Report:
+    """What the run tells as it goes, logged: a fallback as
+    `FALLBACK_WARNING`, an abnormal burst and each burst's cost at DEBUG
+    (`_burst_done`), and the progress after each outer iteration at DEBUG,
+    and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
+    `shown`, the last INFO line. The notices name `problems` by their
+    place; the elapsed seconds count from `origin`."""
+
+    def __init__(
+        self,
+        problems: Sequence[_Problem],
+        clock: Callable[[], float],
+        origin: float,
+        shown: float,
+    ) -> None:
+        self.problems = problems
+        self.clock = clock
+        self.origin = origin
+        self.shown = shown
+
+    def __call__(self, notice: _Notice) -> None:
+        if isinstance(notice, _core.FallbackNotice):
+            logger.warning(FALLBACK_WARNING)
+        elif isinstance(notice, _core.AbnormalNotice):
+            logger.debug(
+                "L-BFGS-B ended a burst of "
+                f"{self.problems[notice.problem].description} abnormally, "
+                f"{notice.streak} in a row"
+            )
+        elif isinstance(notice, _core.BurstNotice):
+            _burst_done(self.problems[notice.problem], notice)
+        else:
+            now = self.clock()
+            message = _progress(notice, now - self.origin)
+            if now - self.shown >= PROGRESS_INTERVAL:
+                logger.info(message)
+                self.shown = now
+            else:
+                logger.debug(message)
 
 
 def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
