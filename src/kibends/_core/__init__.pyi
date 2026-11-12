@@ -86,6 +86,7 @@ __all__ = [
     "free_distances",
     "hinge_curvature",
     "hinge_integrand",
+    "interp",
     "kept_vertices",
     "moving_via_obstacles",
     "newly_inside",
@@ -1313,6 +1314,13 @@ def hinge_integrand(params: energy.EnergyParams) -> Integrand:
     r"""
     The clearance hinge of `obstacle_integrand` alone, weighted: for what
     only limits where a thing may go and does not repel it.
+    """
+
+def interp(x: numpy.typing.NDArray[numpy.float64], xp: numpy.typing.NDArray[numpy.float64], fp: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    `numpy.interp(x, xp, fp)` for ascending knots `xp`, its product fused
+    into the sum on every platform as the macOS arm64 wheel computes it
+    (`kibends_core::numeric::interp`).
     """
 
 def kept_vertices(polyline: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, tolerances: numpy.typing.NDArray[numpy.float64]) -> builtins.list[builtins.int]:

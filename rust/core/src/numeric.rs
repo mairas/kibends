@@ -2,8 +2,9 @@
 //! takes agree with the numpy code they replaced to the last bit: its
 //! `minimum`, `maximum` and `clip`, which propagate NaN where Rust's `min`
 //! and `max` drop it, the pairwise summation of `numpy.sum` and the fused
-//! products of `numpy.einsum`; and a correctly rounded sum, for the sums
-//! numpy left to its BLAS, whose order no platform shares.
+//! products of `numpy.einsum`; `numpy.interp` as the macOS arm64 wheel
+//! computes it, fused, which Linux wheels do not; and a correctly rounded
+//! sum, for the sums numpy left to its BLAS, whose order no platform shares.
 
 /// numpy's `minimum`: NaN if either is NaN.
 pub fn minimum(a: f64, b: f64) -> f64 {
@@ -67,6 +68,44 @@ fn pairwise_sum(values: &[f64]) -> f64 {
     let mut half = n / 2;
     half -= half % UNROLLED;
     pairwise_sum(&values[..half]) + pairwise_sum(&values[half..])
+}
+
+/// `numpy.interp(x, xp, fp)` with its default ends, for knots `xp` in
+/// ascending order: `fp`'s end values beyond the knots, `fp[j]` at a knot
+/// (the last of repeated ones), otherwise the slope of the knots' interval
+/// times the offset from its lower knot, fused into the sum with that
+/// knot's value as the macOS arm64 wheel compiles it. Linux wheels round
+/// the product first, which is the platform difference this removes. A NaN
+/// result is retried from the upper knot, then given the knots' value if
+/// they are equal; NaN `x` stays NaN, except with one knot.
+///
+/// Panics if `xp` is empty or longer than `fp`.
+pub fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
+    let last = xp.len() - 1;
+    if last == 0 {
+        return fp[0];
+    }
+    if x.is_nan() {
+        return x;
+    }
+    if x < xp[0] {
+        return fp[0];
+    }
+    let j = xp.partition_point(|&knot| knot <= x) - 1;
+    if j == last || xp[j] == x {
+        return fp[j];
+    }
+    let slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
+    let y = slope.mul_add(x - xp[j], fp[j]);
+    if !y.is_nan() {
+        return y;
+    }
+    let y = slope.mul_add(x - xp[j + 1], fp[j + 1]);
+    if y.is_nan() && fp[j] == fp[j + 1] {
+        fp[j]
+    } else {
+        y
+    }
 }
 
 /// Σ a[k]·b[k] in order, each product fused into the running sum, as
@@ -209,6 +248,49 @@ mod tests {
         assert_eq!(python_sum([0.1; 10]), 1.0);
         assert_eq!(python_sum([1.0, 1e100, 1.0, -1e100]), 2.0);
         assert_eq!(python_sum([]), 0.0);
+    }
+
+    #[test]
+    fn interp_fuses_the_product_into_the_sum() {
+        let x = 1.200_000_000_000_000_2;
+        let unfused = (1.0 / 3.0) * x + 1.0;
+        assert_eq!(interp(x, &[0.0, 3.0], &[1.0, 2.0]), 1.400_000_000_000_000_1);
+        assert_ne!(interp(x, &[0.0, 3.0], &[1.0, 2.0]), unfused);
+    }
+
+    #[test]
+    fn interp_holds_the_end_values_beyond_the_knots() {
+        let (xp, fp) = ([0.0, 1.0, 2.0], [5.0, 6.0, 8.0]);
+        assert_eq!(interp(-1.0, &xp, &fp), 5.0);
+        assert_eq!(interp(3.0, &xp, &fp), 8.0);
+        assert_eq!(interp(2.0, &xp, &fp), 8.0);
+        assert_eq!(interp(1.0, &xp, &fp), 6.0);
+        assert_eq!(interp(1.5, &xp, &fp), 7.0);
+    }
+
+    #[test]
+    fn interp_takes_the_last_of_repeated_knots() {
+        let (xp, fp) = ([0.0, 1.0, 1.0, 2.0], [0.0, 1.0, 3.0, 4.0]);
+        assert_eq!(interp(1.0, &xp, &fp), 3.0);
+        assert_eq!(interp(0.5, &xp, &fp), 0.5);
+        assert_eq!(interp(1.5, &xp, &fp), 3.5);
+    }
+
+    #[test]
+    fn interp_passes_nan_through_unless_there_is_one_knot() {
+        assert!(interp(f64::NAN, &[0.0, 1.0], &[0.0, 1.0]).is_nan());
+        assert_eq!(interp(f64::NAN, &[0.0], &[4.0]), 4.0);
+        assert_eq!(interp(-1.0, &[0.0], &[4.0]), 4.0);
+    }
+
+    #[test]
+    fn interp_gives_equal_infinite_knots_their_value() {
+        // Between ∞ and ∞ the slope is NaN from either end, so the knots'
+        // common value stands; between -∞ and ∞ NaN does.
+        let near_nan = interp(0.5, &[0.0, 1.0], &[f64::NEG_INFINITY, f64::INFINITY]);
+        assert!(near_nan.is_nan());
+        let flat = interp(0.5, &[0.0, 1.0], &[f64::INFINITY, f64::INFINITY]);
+        assert_eq!(flat, f64::INFINITY);
     }
 
     #[test]

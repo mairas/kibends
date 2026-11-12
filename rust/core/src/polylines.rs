@@ -13,7 +13,7 @@
 use crate::energy::MIN_EDGE_LENGTH;
 use crate::energy::polyline::arc_lengths;
 use crate::geometry::V2;
-use crate::numeric::{clip, maximum, minimum, numpy_sum};
+use crate::numeric::{clip, interp, maximum, minimum, numpy_sum};
 use crate::pairs::{bend_radii, too_tight};
 
 /// A span only slightly longer than a multiple of the spacing gets no extra
@@ -27,31 +27,6 @@ pub const SHAPE_WINDOW: isize = 3;
 /// Offsets from edge k of the vertices its bend radius depends on: the
 /// turns at both its ends take the vertices on either side.
 const BEND_REACH: [isize; 4] = [-1, 0, 1, 2];
-
-/// numpy's `interp` of `x` over the increasing `xp` with values `fp`, at a
-/// point within them: the slope's product fused into the sum.
-fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
-    let last = xp.len() - 1;
-    if x > xp[last] {
-        return fp[last];
-    }
-    if x < xp[0] {
-        return fp[0];
-    }
-    let j = xp.partition_point(|&a| a <= x) - 1;
-    if j == last || xp[j] == x {
-        return fp[j];
-    }
-    let slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
-    let mut y = slope.mul_add(x - xp[j], fp[j]);
-    if y.is_nan() {
-        y = slope.mul_add(x - xp[j + 1], fp[j + 1]);
-        if y.is_nan() && fp[j] == fp[j + 1] {
-            y = fp[j];
-        }
-    }
-    y
-}
 
 /// Each span between fixed vertices resampled to uniform arc-length
 /// spacing, the fixed vertices kept exactly, and the new fixed mask. The

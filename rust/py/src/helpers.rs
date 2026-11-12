@@ -1,5 +1,6 @@
-//! The diff pair helpers, segment merging and the contact terms as Python
-//! sees them (`kibends_core::pairs`, `kibends_core::simplify`,
+//! numpy's interpolation, the diff pair helpers, segment merging and the
+//! contact terms as Python sees them (`kibends_core::numeric`,
+//! `kibends_core::pairs`, `kibends_core::simplify`,
 //! `kibends_core::contacts`).
 
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
@@ -15,7 +16,7 @@ use crate::field::{
 };
 use crate::fields::FieldArg;
 use kibends_core::field::Field;
-use kibends_core::{contacts, pairs, simplify};
+use kibends_core::{contacts, numeric, pairs, simplify};
 
 /// The name the other net of a diff pair would have, by KiCad's router's
 /// rule, or None (`kibends_core::pairs::complementary_net`).
@@ -181,8 +182,34 @@ fn contacts_left<'py>(
     Ok(BoolArray(left.into_pyarray(py)))
 }
 
+/// `numpy.interp(x, xp, fp)` for ascending knots `xp`, its product fused
+/// into the sum on every platform as the macOS arm64 wheel computes it
+/// (`kibends_core::numeric::interp`).
+#[gen_stub_pyfunction]
+#[pyfunction]
+fn interp<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<'_, f64>,
+    xp: PyReadonlyArray1<'_, f64>,
+    fp: PyReadonlyArray1<'_, f64>,
+) -> PyResult<Floats<'py>> {
+    let (xp, fp) = (floats_of(&xp), floats_of(&fp));
+    same_lengths(&[xp.len(), fp.len()])?;
+    if xp.is_empty() {
+        return Err(PyValueError::new_err("no knot to interpolate between"));
+    }
+    Ok(floats(
+        py,
+        x.as_array()
+            .iter()
+            .map(|&x| numeric::interp(x, &xp, &fp))
+            .collect(),
+    ))
+}
+
 /// Registers the helpers in `m`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(interp, m)?)?;
     m.add_function(wrap_pyfunction!(complementary_net, m)?)?;
     m.add_function(wrap_pyfunction!(diff_pair_nets, m)?)?;
     m.add_function(wrap_pyfunction!(bend_radius_limit, m)?)?;
