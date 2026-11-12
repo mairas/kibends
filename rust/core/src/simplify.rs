@@ -387,6 +387,25 @@ mod tests {
     }
 
     #[test]
+    fn a_direction_pin_off_the_chord_is_kept() {
+        // BUMP lies within the chord tolerance, so only the direction
+        // pin's own tolerance keeps the vertex.
+        let bumped = [V2::new(0.0, 0.0), V2::new(2.5, BUMP), V2::new(5.0, 0.0)];
+        let ends = [true, false, true];
+        let members = [chain("A", "F.Cu")];
+        let simplified = |directions: &[V2]| {
+            let optimised = [Optimised {
+                polyline: &bumped,
+                fixed: &ends,
+                directions,
+            }];
+            simplify_chains(&members, &optimised, TOLERANCE)
+        };
+        assert_eq!(simplified(&[bumped[1]])[0].len(), 3);
+        assert_eq!(simplified(&[])[0].len(), 2);
+    }
+
+    #[test]
     fn a_straight_route_merges_into_one_segment_and_fixed_vertices_stay() {
         let line: Vec<V2> = (0..6).map(|k| V2::new(f64::from(k), 0.0)).collect();
         let tolerances = vec![0.01; line.len()];
