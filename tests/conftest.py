@@ -49,6 +49,7 @@ from loguru import logger
 from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE
 from kibends.chain import (
     NM_PER_MM,
@@ -127,6 +128,26 @@ class BurstClock:
 
     def __call__(self) -> float:
         return float(self.bursts)
+
+
+def first_check(
+    monkeypatch: pytest.MonkeyPatch, run: Callable[[], object]
+) -> tuple[_core.Revert, FloatArray]:
+    """The check of the first burst that `run` starts, and where the burst
+    starts."""
+    real = cast(Callable[..., object], optimize_module.run_burst)
+    captured: list[tuple[_core.Revert, FloatArray]] = []
+
+    def capturing(
+        objective: object, start: FloatArray, revert: object, *args: object
+    ) -> object:
+        assert isinstance(revert, _core.Revert)
+        captured.append((revert, start.copy()))
+        return real(objective, start, revert, *args)
+
+    monkeypatch.setattr(optimize_module, "run_burst", capturing)
+    run()
+    return captured[0]
 
 
 def _fallback_sink(warned: list[str]) -> int:

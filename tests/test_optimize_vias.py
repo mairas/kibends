@@ -18,6 +18,7 @@ from conftest import (
     CURVATURE_RTOL,
     CURVATURE_STEP,
     build_via_obstacles,
+    first_check,
     neutral_distance,
 )
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
@@ -418,23 +419,9 @@ def first_revert(
 ) -> tuple[_core.Revert, FloatArray]:
     """The check of the first burst of `scenario`'s run, and where the burst
     starts; its one via's centre is the last variable."""
-    real = optimize_module.run_burst
-    captured: list[tuple[_core.Revert, FloatArray]] = []
-
-    def capturing(
-        objective: Objective,
-        start: FloatArray,
-        revert: Revert,
-        settings: OptimizerSettings,
-        stop: Stop | None = None,
-    ) -> Burst:
-        assert isinstance(revert, _core.Revert)
-        captured.append((revert, start.copy()))
-        return real(objective, start, revert, settings, stop)
-
-    monkeypatch.setattr(optimize_module, "run_burst", capturing)
-    run(scenario, replace(COARSE, max_iterations=1))
-    return captured[0]
+    return first_check(
+        monkeypatch, lambda: run(scenario, replace(COARSE, max_iterations=1))
+    )
 
 
 @pytest.mark.parametrize(

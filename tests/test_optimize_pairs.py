@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, gap_range, layer_energy, total_energy
+from conftest import BurstClock, first_check, gap_range, layer_energy, total_energy
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from scenarios import (
     DP_GAP,
@@ -30,6 +30,7 @@ import kibends.optimize as optimize_module
 from kibends import _core
 from kibends.bursts import (
     DEFAULT_CHORD_TOLERANCE,
+    FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
     Objective,
@@ -1484,3 +1485,82 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
     out = assert_kept_or_held(chains, DEFAULT_SPACING, gap)
 
     assert len(out.result.pairs) == 1
+
+
+SHARP_SPACING = 1.0
+"""A spacing at which the section's corner may turn by 100 degrees within
+the bend-radius limit."""
+TURN = math.radians(60.0)
+SHARPENING = math.radians(40.0)
+LEG = 5.0
+CORNER_AT = (LEG, 0.0)
+BEFORE_CORNER = (LEG - SHARP_SPACING, 0.0)
+SHARPENED = (BEFORE_CORNER[0], BEFORE_CORNER[1] + SHARP_SPACING * math.tan(SHARPENING))
+AFTER_CORNER = (LEG + SHARP_SPACING * math.cos(TURN), SHARP_SPACING * math.sin(TURN))
+POST_WIDTH = 0.1
+POST_LENGTH = 0.001
+
+
+def post_past_the_corner() -> PairsScenario:
+    """A pair turning left at `CORNER_AT`, and a short pinned post of
+    another net outside it, where track N's mitred corner reaches once the
+    vertex before the corner moves to `SHARPENED`: nearer to N's edge after
+    the corner than N's clearance, but not to N's corner, before or after,
+    nor to N where it starts."""
+    end = (LEG + LEG * math.cos(TURN), LEG * math.sin(TURN))
+    corners: list[FloatArray] = [
+        scenarios.tracks(at, CORNER_AT, AFTER_CORNER)[1][1]
+        for at in (BEFORE_CORNER, SHARPENED)
+    ]
+    before, sharpened = corners
+    heading = np.array([math.cos(TURN), math.sin(TURN)])
+    outward = np.array([heading[1], -heading[0]])
+    # N's corner slides from `before` to `sharpened`; the post faces the
+    # middle of that stretch, between N's reach of the edge and of the
+    # corners at either end of the stretch.
+    reach = (POST_WIDTH + PAIR_WIDTH) / 2 + PAIR_CLEARANCE
+    half = float(np.linalg.norm(before - sharpened)) / 2
+    beside = (reach + math.sqrt(reach**2 - half**2)) / 2
+    middle = (before + sharpened) / 2 + beside * outward
+    a, b = (middle + side * POST_LENGTH / 2 * heading for side in (-1, 1))
+    post = selected(
+        "post",
+        "X",
+        FreeSpace(),
+        (float(a[0]), float(a[1])),
+        (float(b[0]), float(b[1])),
+        width=POST_WIDTH,
+    )
+    return PairsScenario(
+        "post-past-the-corner",
+        (scenarios.coupled(FreeSpace(), (0.0, 0.0), CORNER_AT, end),),
+        (replace(post, fixed=np.ones(2, dtype=bool)),),
+    )
+
+
+@pytest.mark.fallback
+def test_a_crossing_that_names_nothing_moved_moves_the_burst_back_whole(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # N's corner slides back along its edge after the corner into the post,
+    # which names that edge's ends, the corner and the vertex after it,
+    # neither of which moved; the post is pinned. The section judges its
+    # own edges by its centreline's extent, which the post starts inside
+    # and gets no deeper into.
+    settings = replace(COARSE, spacing=SHARP_SPACING, max_iterations=1)
+    revert, start = first_check(
+        monkeypatch, lambda: run(post_past_the_corner(), settings)
+    )
+    assert not any(FALLBACK_WARNING in line for line in log)
+    log.clear()
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    (moved,) = np.flatnonzero((vertices == BEFORE_CORNER).all(axis=1))
+    vertices[moved] = SHARPENED
+
+    crossings = revert(candidate)
+
+    assert crossings == 1
+    assert revert.reverted.all()
+    assert np.array_equal(candidate, start)
+    assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
