@@ -1052,6 +1052,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             spacing: 0.5,
+            coarse: crate::optimize::CoarseSpacings::default(),
             settled_change: 0.005,
             stall_window: 3,
             stall_tolerance: 1e-3,

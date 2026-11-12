@@ -122,12 +122,45 @@ impl End {
     }
 }
 
+/// The most coarse spacings a run's schedule may hold before its final
+/// spacing.
+pub const MAX_COARSE_LEVELS: usize = 7;
+
+/// The coarse spacings a problem runs at before its final spacing, mm,
+/// coarsest first; none by default. Held in a fixed array so that
+/// `Settings` stays `Copy`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CoarseSpacings {
+    values: [f64; MAX_COARSE_LEVELS],
+    count: usize,
+}
+
+impl CoarseSpacings {
+    /// `spacings`, or None if there are more than `MAX_COARSE_LEVELS`.
+    pub fn new(spacings: &[f64]) -> Option<Self> {
+        let count = spacings.len();
+        if count > MAX_COARSE_LEVELS {
+            return None;
+        }
+        let mut values = [0.0; MAX_COARSE_LEVELS];
+        values[..count].copy_from_slice(spacings);
+        Some(Self { values, count })
+    }
+
+    /// The spacings, coarsest first.
+    pub fn as_slice(&self) -> &[f64] {
+        &self.values[..self.count]
+    }
+}
+
 /// What the run loop and a problem's bursts take of the optimizer's
 /// settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
-    /// Target distance between resampled vertices, mm.
+    /// Target distance between resampled vertices at the final level, mm.
     pub spacing: f64,
+    /// The levels a problem runs at before the final spacing.
+    pub coarse: CoarseSpacings,
     /// A problem whose burst moves no shape and no via's centre by this
     /// much, mm, settles.
     pub settled_change: f64,
@@ -321,6 +354,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             spacing: 0.1,
+            coarse: CoarseSpacings::default(),
             settled_change: 0.005,
             stall_window: 3,
             stall_tolerance: 1e-3,
@@ -330,6 +364,16 @@ mod tests {
                 gtol: 1e-10,
             },
         }
+    }
+
+    #[test]
+    fn coarse_spacings_hold_up_to_the_most_levels_in_order() {
+        let most = [6.4, 3.2, 1.6, 0.8, 0.4, 0.2, 0.15];
+        assert_eq!(CoarseSpacings::new(&most).unwrap().as_slice(), most);
+        assert_eq!(CoarseSpacings::new(&[]).unwrap().as_slice(), &[] as &[f64]);
+        assert_eq!(CoarseSpacings::new(&[]), Some(CoarseSpacings::default()));
+        let too_many = [12.8, 6.4, 3.2, 1.6, 0.8, 0.4, 0.2, 0.15];
+        assert_eq!(CoarseSpacings::new(&too_many), None);
     }
 
     #[test]

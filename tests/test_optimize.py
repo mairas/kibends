@@ -27,6 +27,7 @@ from shapely import wkt
 import kibends.optimize as optimize_module
 from kibends.bursts import (
     INSIDE_TOLERANCE,
+    MAX_COARSE_LEVELS,
     Burst,
     Check,
     Objective,
@@ -467,6 +468,16 @@ def test_endpoints_must_be_fixed() -> None:
     polyline = path((0.0, 0.0), (1.0, 0.0))
     with pytest.raises(ValueError, match="endpoints"):
         optimize(polyline, np.array([True, False]), FreeSpace(), PARAMS)
+
+
+def test_the_optimizer_refuses_more_coarse_spacings_than_it_holds() -> None:
+    polyline, fixed = chain((0.0, 0.0), (1.0, 0.0), (1.0, 1.0))
+    too_many = tuple(0.2 * 2.0**k for k in reversed(range(MAX_COARSE_LEVELS + 1)))
+    settings = replace(SETTINGS)
+    # Past OptimizerSettings' own check, to reach the binding's.
+    object.__setattr__(settings, "coarse_spacings", too_many)
+    with pytest.raises(ValueError, match="coarse spacings"):
+        optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
 
 
 def test_measure_reports_bend_and_length() -> None:

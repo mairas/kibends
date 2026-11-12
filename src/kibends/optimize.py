@@ -692,6 +692,7 @@ class _Problem:
             [[(i, end == -1) for i, end in group] for group in groups],
             self.via_sight,
             settings.spacing,
+            settings.coarse_spacings,
             settings.settled_change,
             settings.stall_window,
             settings.stall_tolerance,

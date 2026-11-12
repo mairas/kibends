@@ -26,7 +26,7 @@ use kibends_core::optimize::layout;
 use kibends_core::optimize::problem::{self, Layout};
 use kibends_core::optimize::state::{MemberSetup, Setup, State, ViaSetup};
 use kibends_core::optimize::{
-    self as core, Bursts, End, NotFinite, Notice, Outcome, Ran, Settings,
+    self as core, Bursts, CoarseSpacings, End, NotFinite, Notice, Outcome, Ran, Settings,
 };
 
 /// An error of the run: Python's, or an energy that is not finite.
@@ -123,7 +123,9 @@ impl ProblemState {
     /// static `copper` and what only stops it in parts (`stop_parts`); the
     /// loose ends that share a point (`groups`, each member and whether it
     /// is its last point), what the vias' checks see (`sight`) and the
-    /// run's settings. Raises ValueError if its energy is not finite.
+    /// run's settings, the final `spacing` after the `coarse_spacings`.
+    /// Raises ValueError if its energy is not finite or there are more
+    /// than `MAX_COARSE_LEVELS` coarse spacings.
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -141,6 +143,7 @@ impl ProblemState {
         groups: Vec<Vec<(usize, bool)>>,
         sight: PyRef<'_, ViaSight>,
         spacing: f64,
+        coarse_spacings: Vec<f64>,
         settled_change: f64,
         stall_window: usize,
         stall_tolerance: f64,
@@ -148,6 +151,13 @@ impl ProblemState {
         ftol: f64,
         gtol: f64,
     ) -> PyResult<Self> {
+        let coarse = CoarseSpacings::new(&coarse_spacings).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "at most {} coarse spacings, got {}",
+                core::MAX_COARSE_LEVELS,
+                coarse_spacings.len()
+            ))
+        })?;
         let originals = polylines_of(&originals)?;
         let count = energy.inner.members.len();
         let anchors = masks_of(&anchors, &originals)?;
@@ -211,6 +221,7 @@ impl ProblemState {
             sight: sight.inner.clone(),
             settings: Settings {
                 spacing,
+                coarse,
                 settled_change,
                 stall_window,
                 stall_tolerance,
@@ -911,6 +922,7 @@ fn stalled(
     check_count("lengths", lengths.len(), lowest.len())?;
     let settings = Settings {
         spacing: 1.0,
+        coarse: CoarseSpacings::default(),
         settled_change: 0.0,
         stall_window: window,
         stall_tolerance: tolerance,
@@ -937,6 +949,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MAX_ABNORMAL_BURSTS", core::MAX_ABNORMAL_BURSTS)?;
     m.add("PRESSED_DEPTH", core::PRESSED_DEPTH)?;
     m.add("INSIDE_TOLERANCE", core::INSIDE_TOLERANCE)?;
+    m.add("MAX_COARSE_LEVELS", core::MAX_COARSE_LEVELS)?;
     Ok(())
 }
 
@@ -952,4 +965,10 @@ pyo3_stub_gen::module_variable!(
     "INSIDE_TOLERANCE",
     f64,
     core::INSIDE_TOLERANCE
+);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "MAX_COARSE_LEVELS",
+    usize,
+    core::MAX_COARSE_LEVELS
 );
