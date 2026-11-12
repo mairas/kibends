@@ -102,8 +102,7 @@ WRAP_SETTINGS = replace(
 )
 # A rerun on the wrap's own output wanders along the flat stretches before
 # it settles, by amounts that vary with the platform's floating point.
-# Measured: 4 iterations on macOS and Linux; 8.2 µm and 6.6 µm moved; the
-# length changed by -0.16 µm, -67 nm and +82 nm.
+# Measured on macOS: 4 iterations, 9.5 µm moved, the length 0.18 µm longer.
 RERUN_ITERATIONS = 6
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3

@@ -691,8 +691,8 @@ def test_straight_chains_have_nothing_to_do() -> None:
 
 
 # A rerun on the squeeze's own output settles within these, which vary with
-# the platform's floating point. Measured: 3 iterations and 18 µm moved on
-# macOS, 4 to 5 iterations and 32 µm on Linux.
+# the platform's floating point. Measured on macOS: 4 iterations and 10 µm
+# moved; under scipy, 4 to 5 iterations and 32 µm on Linux.
 REPEAT_ITERATIONS = 8
 REPEAT_DRIFT = 0.06
 

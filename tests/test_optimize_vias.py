@@ -1294,7 +1294,7 @@ def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
 
 
 # The chain wraps the via and pushes it up as it does. Each held to half
-# their gap, the two crept after each other: 81 iterations. Measured: 25.
+# their gap, the two crept after each other: 81 iterations. Measured: 15.
 PRESSING_ITERATIONS = 40
 
 
