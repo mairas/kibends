@@ -1,5 +1,5 @@
 //! What the optimizer's energy costs, counted for the whole process: the
-//! energy evaluations a burst's objective makes (`problem::Objective`), the
+//! energy evaluations a burst's objective makes (`optimize::problem::Objective`), the
 //! times a layer's neighbour list searched for its pairs
 //! (`neighbours::NeighbourList`), and the points each static field was
 //! asked about (`neighbours::StaticList`), by the field.

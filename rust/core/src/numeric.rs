@@ -77,6 +77,37 @@ pub fn fused_dot(a: impl IntoIterator<Item = f64>, b: impl IntoIterator<Item = f
         .fold(0.0, |sum, (x, y)| x.mul_add(y, sum))
 }
 
+/// The sum of `values` as Python's built-in `sum` takes floats from a start
+/// of 0: Neumaier's compensated summation, the compensation added once at
+/// the end if it is finite.
+pub fn python_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+    let mut sum = 0.0;
+    let mut compensation = 0.0;
+    for x in values {
+        let t = sum + x;
+        compensation += if f64::abs(sum) >= x.abs() {
+            (sum - t) + x
+        } else {
+            (x - t) + sum
+        };
+        sum = t;
+    }
+    if compensation != 0.0 && compensation.is_finite() {
+        sum += compensation;
+    }
+    sum
+}
+
+/// Python's `max(a, b)`: `a` unless `b` is greater.
+pub fn python_max(a: f64, b: f64) -> f64 {
+    if b > a { b } else { a }
+}
+
+/// Python's `min(a, b)`: `a` unless `b` is less.
+pub fn python_min(a: f64, b: f64) -> f64 {
+    if b < a { b } else { a }
+}
+
 /// The sum of `values` correctly rounded, as Python's `math.fsum` gives
 /// it: Shewchuk's exact partials, rounded half to even once at the end.
 /// NaN if a value is NaN or infinities of both signs meet, an infinity if
@@ -171,6 +202,13 @@ mod tests {
         assert!(exact_sum([1.0, f64::NAN]).is_nan());
         assert!(exact_sum([f64::INFINITY, f64::NEG_INFINITY]).is_nan());
         assert_eq!(exact_sum([f64::INFINITY, 1.0]), f64::INFINITY);
+    }
+
+    #[test]
+    fn python_sum_compensates() {
+        assert_eq!(python_sum([0.1; 10]), 1.0);
+        assert_eq!(python_sum([1.0, 1e100, 1.0, -1e100]), 2.0);
+        assert_eq!(python_sum([]), 0.0);
     }
 
     #[test]

@@ -24,14 +24,14 @@ use kibends_core::geometry::V2;
 use kibends_core::members::{self, Trace};
 use kibends_core::neighbours;
 use kibends_core::pair_blocks::{self, Pins};
-use kibends_core::problem::{self, Layout};
+use kibends_core::optimize::problem::{self, Layout};
 use kibends_core::seen;
 use kibends_core::stats;
 use kibends_core::vias::{free, sight};
 
-type Polyline<'py> = PyReadonlyArray2<'py, f64>;
+pub(crate) type Polyline<'py> = PyReadonlyArray2<'py, f64>;
 
-fn polylines_of(arrays: &[Polyline<'_>]) -> PyResult<Vec<Vec<V2>>> {
+pub(crate) fn polylines_of(arrays: &[Polyline<'_>]) -> PyResult<Vec<Vec<V2>>> {
     arrays.iter().map(points_of).collect()
 }
 
@@ -39,7 +39,7 @@ fn refs(polylines: &[Vec<V2>]) -> Vec<&[V2]> {
     polylines.iter().map(Vec::as_slice).collect()
 }
 
-fn vectors_list<'py>(py: Python<'py>, values: &[Vec<V2>]) -> PyResult<Vec<Points<'py>>> {
+pub(crate) fn vectors_list<'py>(py: Python<'py>, values: &[Vec<V2>]) -> PyResult<Vec<Points<'py>>> {
     values.iter().map(|v| vectors(py, v)).collect()
 }
 
@@ -48,7 +48,7 @@ fn invalid(message: String) -> PyErr {
 }
 
 /// The value of an energy that is not finite, as Python says it.
-fn not_finite(py: Python<'_>, value: f64) -> PyErr {
+pub(crate) fn not_finite(py: Python<'_>, value: f64) -> PyErr {
     let said = PyFloat::new(py, value)
         .str()
         .map_or_else(|_| value.to_string(), |s| s.to_string());
@@ -56,7 +56,7 @@ fn not_finite(py: Python<'_>, value: f64) -> PyErr {
 }
 
 /// Per vertex, its index, -1 for none.
-fn optional_indices(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<Option<usize>>> {
+pub(crate) fn optional_indices(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<Option<usize>>> {
     array
         .0
         .as_array()
@@ -457,18 +457,19 @@ impl SmoothAnswer {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Seen {
-    inner: Arc<seen::Seen>,
+    pub(crate) inner: Arc<seen::Seen>,
     /// How many vertices of what the members show it refers to.
     extent: usize,
 }
 
 impl Seen {
     fn of(inner: seen::Seen) -> Self {
+        Self::shared(Arc::new(inner))
+    }
+
+    pub(crate) fn shared(inner: Arc<seen::Seen>) -> Self {
         let extent = inner.vertex().iter().max().map_or(0, |v| v + 2);
-        Self {
-            inner: Arc::new(inner),
-            extent,
-        }
+        Self { inner, extent }
     }
 
     /// Whether it was made for `members` members showing at least as many
@@ -722,9 +723,9 @@ impl ViaSmooth {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct ViaSight {
-    inner: sight::ViaSight,
-    members: usize,
-    vias: usize,
+    pub(crate) inner: sight::ViaSight,
+    pub(crate) members: usize,
+    pub(crate) vias: usize,
 }
 
 impl ViaSight {
@@ -843,7 +844,7 @@ impl StaticFree {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct FreeDistances {
-    inner: free::FreeDistances,
+    pub(crate) inner: free::FreeDistances,
 }
 
 #[gen_stub_pymethods]
@@ -912,20 +913,20 @@ fn newly_inside<'py>(
 }
 
 /// What one objective's evaluations search through
-/// (`kibends_core::problem::Lookups`).
+/// (`kibends_core::optimize::problem::Lookups`).
 #[gen_stub_pyclass]
 #[pyclass(module = "kibends._core")]
 pub struct Lookups {
-    inner: problem::Lookups,
-    seen: Arc<seen::Seen>,
+    pub(crate) inner: problem::Lookups,
+    pub(crate) seen: Arc<seen::Seen>,
 }
 
 /// The members, moving vias and terms of one problem
-/// (`kibends_core::problem::Problem`).
+/// (`kibends_core::optimize::problem::Problem`).
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Problem {
-    inner: Arc<problem::Problem>,
+    pub(crate) inner: Arc<problem::Problem>,
 }
 
 /// The polylines and positions of a problem, checked against it.
@@ -988,7 +989,7 @@ impl Problem {
     }
 }
 
-fn masks_of(masks: &[BoolArg<'_>], polylines: &[Vec<V2>]) -> PyResult<Vec<Vec<bool>>> {
+pub(crate) fn masks_of(masks: &[BoolArg<'_>], polylines: &[Vec<V2>]) -> PyResult<Vec<Vec<bool>>> {
     let masks: Vec<Vec<bool>> = masks.iter().map(|m| m.0.as_array().to_vec()).collect();
     check_rows("mask entries", &masks, polylines)?;
     Ok(masks)
@@ -1270,7 +1271,7 @@ impl Problem {
 }
 
 /// A burst's energy as a function of its variables
-/// (`kibends_core::problem::Objective`), or a test's
+/// (`kibends_core::optimize::problem::Objective`), or a test's
 /// (`kibends._core.testing.quadratic`): called with the variables, flat,
 /// it gives the energy and its gradient.
 #[gen_stub_pyclass]
@@ -1289,6 +1290,13 @@ enum ObjectiveKind {
 }
 
 impl Objective {
+    /// A problem's objective, its evaluations searching through `lookups`.
+    pub(crate) fn of_problem(inner: problem::Objective, lookups: Option<Py<Lookups>>) -> Self {
+        Objective {
+            kind: ObjectiveKind::Problem { inner, lookups },
+        }
+    }
+
     pub(crate) fn quadratic(curvatures: Vec<f64>, uphill: bool) -> Self {
         Objective {
             kind: ObjectiveKind::Quadratic { curvatures, uphill },

@@ -10,32 +10,43 @@ from typing import TypeAlias
 from . import testing
 __all__ = [
     "AREA",
+    "AbnormalNotice",
     "BoardLayer",
+    "BurstNotice",
     "BurstResult",
     "ChainField",
     "CompositeField",
     "Curvature",
+    "DEEPER_ROUND_OFF",
     "DEFAULT_ATTRACTION_RANGE",
     "EdgesClear",
+    "FallbackNotice",
     "Field",
     "FreeDistances",
     "INDEXED_EDGES",
+    "INSIDE_TOLERANCE",
     "Integrand",
     "LINE",
     "Lookups",
+    "MAX_ABNORMAL_BURSTS",
     "MAX_SMOOTH_TURN",
     "MIN_EDGE_LENGTH",
     "Member",
     "Members",
     "MovingVias",
+    "NOTHING_MOVED",
     "NeighbourList",
     "OUTSIDE",
     "Objective",
     "ObstacleDistances",
     "Obstacles",
+    "PRESSED_DEPTH",
     "PairIntegrand",
     "PairOffset",
     "Problem",
+    "ProblemState",
+    "ProgressNotice",
+    "Revert",
     "SKIN_LEAST",
     "SKIN_MOST",
     "SMOOTH_REACH",
@@ -52,6 +63,7 @@ __all__ = [
     "ViaSight",
     "ViaSmooth",
     "Zone",
+    "advance",
     "arc_lengths",
     "attraction_integrand",
     "bend_radii",
@@ -92,6 +104,7 @@ __all__ = [
     "smooth_minimum",
     "smooth_reach",
     "split_via_obstacles",
+    "stalled",
     "statistics",
     "testing",
     "too_tight",
@@ -109,17 +122,35 @@ A field implemented here, which a `CompositeField` can join.
 """
 
 AREA: builtins.int = 1
+DEEPER_ROUND_OFF: builtins.float = 1e-09
 DEFAULT_ATTRACTION_RANGE: builtins.float = 3.0
 INDEXED_EDGES: builtins.int = 128
+INSIDE_TOLERANCE: builtins.float = 1e-07
 LINE: builtins.int = 0
+MAX_ABNORMAL_BURSTS: builtins.int = 3
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
 MIN_EDGE_LENGTH: builtins.float = 1e-06
+NOTHING_MOVED: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
+PRESSED_DEPTH: builtins.float = 0.02
 SKIN_LEAST: builtins.float = 0.05
 SKIN_MOST: builtins.float = 0.15
 SMOOTH_REACH: builtins.float = 0.05
 SMOOTH_WIDTH: builtins.float = 0.005
 STATIC_SKIN: builtins.float = 0.05
+@typing.final
+class AbnormalNotice:
+    r"""
+    L-BFGS ended a burst of a problem abnormally, `streak` in a row.
+    """
+    @property
+    def problem(self) -> builtins.int:
+        r"""
+        The problem, by its place among those advanced.
+        """
+    @property
+    def streak(self) -> builtins.int: ...
+
 @typing.final
 class BoardLayer:
     r"""
@@ -141,6 +172,51 @@ class BoardLayer:
         None if Edge.Cuts is not closed; and the netclass clearance per net,
         `default_clearance` for any other.
         """
+
+@typing.final
+class BurstNotice:
+    r"""
+    What one burst cost and moved (`kibends_core::optimize::BurstReport`).
+    """
+    @property
+    def problem(self) -> builtins.int:
+        r"""
+        The problem, by its place among those advanced.
+        """
+    @property
+    def iterations(self) -> builtins.int:
+        r"""
+        L-BFGS's iterations.
+        """
+    @property
+    def evaluations(self) -> builtins.int:
+        r"""
+        Its energy evaluations.
+        """
+    @property
+    def evaluating(self) -> builtins.float:
+        r"""
+        Seconds the evaluations took.
+        """
+    @property
+    def rest(self) -> builtins.float:
+        r"""
+        Seconds the rest of the step took.
+        """
+    @property
+    def message(self) -> builtins.str:
+        r"""
+        What L-BFGS says ended it; empty for a burst that did not run it.
+        """
+    @property
+    def members(self) -> builtins.list[builtins.int]:
+        r"""
+        The problem's free members, and each one's length and shape change.
+        """
+    @property
+    def lengths(self) -> builtins.list[builtins.float]: ...
+    @property
+    def changes(self) -> builtins.list[builtins.float]: ...
 
 @typing.final
 class BurstResult:
@@ -290,6 +366,14 @@ class EdgesClear:
         """
 
 @typing.final
+class FallbackNotice:
+    r"""
+    A burst's crossings named nothing more to move back, and the whole
+    burst moved back.
+    """
+    ...
+
+@typing.final
 class FreeDistances:
     r"""
     The free distance of each via to each obstacle
@@ -318,7 +402,7 @@ class Integrand:
 class Lookups:
     r"""
     What one objective's evaluations search through
-    (`kibends_core::problem::Lookups`).
+    (`kibends_core::optimize::problem::Lookups`).
     """
     ...
 
@@ -414,7 +498,7 @@ class NeighbourList:
 class Objective:
     r"""
     A burst's energy as a function of its variables
-    (`kibends_core::problem::Objective`), or a test's
+    (`kibends_core::optimize::problem::Objective`), or a test's
     (`kibends._core.testing.quadratic`): called with the variables, flat,
     it gives the energy and its gradient.
     """
@@ -513,7 +597,7 @@ class PairOffset:
 class Problem:
     r"""
     The members, moving vias and terms of one problem
-    (`kibends_core::problem::Problem`).
+    (`kibends_core::optimize::problem::Problem`).
     """
     def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams, short_edge: builtins.float) -> Problem:
         r"""
@@ -570,6 +654,187 @@ class Problem:
         others as `seen`, the energy `masks` and each vertex's contact by
         `contact_of`, searching through `lookups` if given.
         """
+
+@typing.final
+class ProblemState:
+    r"""
+    One problem of a run (`kibends_core::optimize::state::State`): its
+    current shapes, its best state, and whether it has settled.
+    """
+    @property
+    def points(self) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Each member's current shape.
+        """
+    @property
+    def masks(self) -> builtins.list[numpy.typing.NDArray[numpy.bool_]]:
+        r"""
+        Each member's pinned vertices.
+        """
+    @property
+    def contact_of(self) -> builtins.list[numpy.typing.NDArray[numpy.intp]]:
+        r"""
+        Each member's vertices' contacts, -1 for none.
+        """
+    @property
+    def positions(self) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        Each moving via's current centre.
+        """
+    @property
+    def seen(self) -> Seen:
+        r"""
+        What the members see of each other at their current shapes.
+        """
+    @property
+    def allowed(self) -> builtins.list[builtins.int]:
+        r"""
+        Per member, the violations its resampled start has, which the guard
+        holds it to.
+        """
+    @property
+    def free(self) -> builtins.list[builtins.int]:
+        r"""
+        The members that move.
+        """
+    @property
+    def moving(self) -> builtins.bool: ...
+    @property
+    def moved(self) -> builtins.bool:
+        r"""
+        Whether some burst changed a shape by more than NOTHING_MOVED.
+        """
+    @property
+    def settled(self) -> builtins.bool: ...
+    @property
+    def gave_up(self) -> builtins.bool:
+        r"""
+        Whether it settled on MAX_ABNORMAL_BURSTS abnormal bursts in a row.
+        """
+    @property
+    def energy(self) -> builtins.float:
+        r"""
+        Its energy at its current shapes.
+        """
+    @property
+    def best_energy(self) -> builtins.float: ...
+    @property
+    def input_energy(self) -> builtins.float:
+        r"""
+        Its energy at its inputs, resampled.
+        """
+    @property
+    def abnormal_bursts(self) -> builtins.int:
+        r"""
+        Its bursts that L-BFGS ended abnormally.
+        """
+    @property
+    def abnormal_streak(self) -> builtins.int:
+        r"""
+        Its abnormal bursts in a row, up to the last.
+        """
+    def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
+        r"""
+        The problem of `energy`'s members and moving vias: per member, its
+        centreline as given (`originals`), its pinned vertices (`anchors`),
+        the vertex that keeps each of its contacts (`contacts`), whether it
+        is `held` and a section's bend-radius limit (`limits`); per via, its
+        centre (`starts`), the chain ends it `carried`, each the member,
+        whether it is its last point and its offset from the centre, its
+        static `copper` and what only stops it in parts (`stop_parts`); the
+        loose ends that share a point (`groups`, each member and whether it
+        is its last point), what the vias' checks see (`sight`) and the
+        run's settings. Raises ValueError if its energy is not finite.
+        """
+    def length(self) -> builtins.float:
+        r"""
+        The summed length of the selected tracks at their current shapes,
+        a section's as its two tracks, mm.
+        """
+    def member(self, k: builtins.int, best: builtins.bool) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.intp], builtins.int]:
+        r"""
+        Member k's best state, with `best`, else its input: its polyline,
+        its pinned vertices, each vertex's contact, -1 for none, and its
+        rejected edges.
+        """
+    def via(self, k: builtins.int, best: builtins.bool) -> tuple[tuple[builtins.float, builtins.float], builtins.int]:
+        r"""
+        Via k's best centre, with `best`, else its input, and its rejected
+        edges.
+        """
+    def guard(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen) -> builtins.bool:
+        r"""
+        Whether nothing oversteps at `polylines` and `positions`: no member
+        has more violations than it started with, and no via is newly or
+        deeper inside its clearance or its stops. `seen` is what the
+        members see at `polylines`.
+        """
+    def violations(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen) -> builtins.list[builtins.int]:
+        r"""
+        Per member at `polylines`, its violations of its static copper, the
+        other members and the vias at `positions` together, as `seen` shows
+        them.
+        """
+    def pressed(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen) -> builtins.list[numpy.typing.NDArray[numpy.bool_]]:
+        r"""
+        Per member, its vertices at `polylines` deeper than PRESSED_DEPTH
+        inside the clearance of the other members and the vias at
+        `positions`, which resampling keeps where they are.
+        """
+    def via_distances(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:
+        r"""
+        Each moving via's free distance below `below` to each obstacle of
+        the copper of other nets at `polylines` and `positions`.
+        """
+    def layout(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> tuple[builtins.list[numpy.typing.NDArray[numpy.intp]], builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.intp], builtins.int]:
+        r"""
+        The variables of a burst from `starts`: per member each vertex's
+        variable, -1 where it stays, and its offset from it, each via's
+        variable, and how many there are.
+        """
+    def scale(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]], seen: Seen, lookups: typing.Optional[Lookups] = None) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        Each flat coordinate's scale for a burst from `starts`, the
+        stiffness taken as `seen` shows the members there, searching
+        through `lookups` if given.
+        """
+    def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
+        r"""
+        Take `earlier`'s best state, keeping the sections held only here as
+        drawn, and put back where they started the members and vias that
+        would come too close; returns how many members that move and how
+        many vias went back. Raises ValueError if the energy there is not
+        finite.
+        """
+
+@typing.final
+class ProgressNotice:
+    r"""
+    After an outer iteration: its number, its largest change, and each
+    problem's length and energy.
+    """
+    @property
+    def iteration(self) -> builtins.int: ...
+    @property
+    def change(self) -> builtins.float: ...
+    @property
+    def lengths(self) -> builtins.list[builtins.float]: ...
+    @property
+    def energies(self) -> builtins.list[builtins.float]: ...
+
+@typing.final
+class Revert:
+    r"""
+    What a burst's check moves back (`kibends_core::optimize::checks`):
+    called with a point, flat, it moves back in place what newly crosses an
+    obstacle and returns how many crossings the point had.
+    """
+    @property
+    def reverted(self) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        The coordinates its last call moved back.
+        """
+    def __call__(self, candidate: numpy.typing.NDArray[numpy.float64]) -> builtins.int: ...
 
 @typing.final
 class Seen:
@@ -806,6 +1071,18 @@ class Zone:
     ordinals of the layers on which it reaches the via's ring.
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
+
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[typing.Any], burst: typing.Any, report: typing.Any) -> tuple[builtins.str, builtins.int]:
+    r"""
+    Outer iterations of `problems` from `iteration` until `cap`, each giving
+    every problem that has not settled one burst, until every problem has
+    settled or `expired`, asked after each burst, answers true. Each burst
+    runs through `burst`, called with its objective, start, per-coordinate
+    scale and check; `report` hears each notice as it comes. `gave_up` says
+    some problem was given up on before. Returns how the run ended, as
+    `kibends.results.Termination`'s value names it, and the iteration it
+    reached.
+    """
 
 def arc_lengths(points: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
     r"""
@@ -1072,6 +1349,15 @@ def split_via_obstacles(layers: typing.Sequence[BoardLayer], via: Via, split: ty
     A moving via's field over the layers of `layers` it spans, and the vias
     whose ids are in `split` apart, None if none is one
     (`kibends_core::field::build::via_obstacles`).
+    """
+
+def stalled(lowest: typing.Sequence[builtins.float], lengths: typing.Sequence[builtins.float], window: builtins.int, tolerance: builtins.float, members: builtins.int, vias: builtins.int) -> builtins.bool:
+    r"""
+    Whether a problem of `members` moving members and `vias` moving vias
+    has stalled: over `window` bursts its `lowest` energy fell by no more
+    than `tolerance` for each member and via, and its tracks' summed
+    `lengths` by no more than one tolerance
+    (`kibends_core::optimize::stalled`).
     """
 
 def statistics() -> Statistics:
