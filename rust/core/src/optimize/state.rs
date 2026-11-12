@@ -71,10 +71,15 @@
 //! runs the coarse levels again.
 //!
 //! The first burst at a level a coarser one handed over to settles it if
-//! it moves nothing, even if L-BFGS ended it abnormally: it starts from
-//! the coarser level's settled state, and a vertex resting on a kink of the
-//! energy, such as a chain end at a pad's corner, fails the first line
-//! search of every burst from there.
+//! it moves nothing, even if L-BFGS ended it abnormally, provided the
+//! coarser level descended: one of its bursts ended normally, or its own
+//! first burst settled it so. It starts from where that descent left off,
+//! and a vertex resting on a kink of the energy, such as a chain end at a
+//! pad's corner, fails the first line search of every burst from there, so
+//! the coarser level may well have given up there. A level none of whose
+//! bursts ended normally hands over a state no descent reached, and the
+//! next level needs a streak of its own to give up: a run whose every
+//! burst ends abnormally gives up at the final level, as at one spacing.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -482,9 +487,12 @@ pub struct State {
     /// Whether its next burst is the one at the final spacing that runs
     /// before the coarse levels, and decides whether they run.
     pub probing: bool,
-    /// Whether its next burst is the first at a level a coarser one handed
-    /// over to.
+    /// Whether its next burst is the first at a level a coarser one that
+    /// descended handed over to.
     handed_over: bool,
+    /// Whether the current level descended: one of its bursts ended
+    /// normally, or its first burst settled it after a handover.
+    descended: bool,
     /// Per member, whether it is held at its best shape for the rest of
     /// the coarse level it runs at (`State::step`).
     held: Vec<bool>,
@@ -659,6 +667,7 @@ impl State {
             level,
             probing: moving && level > 0,
             handed_over: false,
+            descended: false,
             held: vec![false; count],
             allowed,
             inside,
@@ -841,7 +850,8 @@ impl State {
         };
         self.settled = false;
         // Level 0 comes after the probe, at the final spacing.
-        self.handed_over = level > 0;
+        self.handed_over = level > 0 && self.descended;
+        self.descended = false;
         self.held.fill(false);
         self.reseed(now, seen, from_input)
     }
@@ -1195,12 +1205,12 @@ impl State {
         // because of them, not because the shapes settled.
         let cut_short = burst.via_rejected.iter().any(|&c| c > 0)
             || burst.rejected_edges.iter().any(|&c| c > 0);
-        // The first burst at a level a coarser one handed over to starts
-        // from that level's best state, subdivided, so a burst that moves
-        // nothing there settles even if it ended abnormally: L-BFGS found
-        // no descent from it, as at a pad's corner, where the contact stop
-        // has a kink and every burst from the end resting there fails its
-        // first line search.
+        // The first burst at a level a coarser one that descended handed
+        // over to starts from that level's best state, subdivided, so a burst
+        // that moves nothing there settles even if it ended abnormally:
+        // L-BFGS found no descent from it, as at a pad's corner, where the
+        // contact stop has a kink and every burst from the end resting
+        // there fails its first line search.
         let settings = shared.settings();
         let handed_over = std::mem::take(&mut self.handed_over);
         let unchanged = !cut_short && change < settings.settled_change;
@@ -1215,6 +1225,7 @@ impl State {
                             self.free.len(),
                             shared.setup.vias.len(),
                         ))));
+        self.descended |= !ran.abnormal || (handed_over && self.settled);
         let rest = began.elapsed().as_secs_f64() - ran.evaluating;
         report(Notice::Burst(BurstReport {
             problem: n,
@@ -2173,16 +2184,47 @@ mod tests {
     }
 
     #[test]
-    fn an_abnormal_burst_that_moves_nothing_after_a_handover_settles_its_level() {
+    fn abnormal_bursts_that_move_nothing_give_up_at_the_final_level() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        p.probing = false;
-        p.enter(LEVELS.len() - 1).expect("finite");
-        p.enter(LEVELS.len()).expect("finite");
         let mut abnormal = Still {
             abnormal: true,
             ..still(0, 0)
         };
 
+        let (outcome, iterations) = advanced(&mut p, &mut abnormal);
+
+        assert_eq!(outcome, Outcome::GaveUp);
+        // The probe, then a streak at each level: a level that gave up
+        // hands over a state no burst settled.
+        let levels = LEVELS.len() as u64 + 1;
+        assert_eq!(iterations, 1 + levels * u64::from(MAX_ABNORMAL_BURSTS));
+        assert_eq!(p.level, LEVELS.len());
+    }
+
+    #[test]
+    fn an_abnormal_burst_that_moves_nothing_after_a_descent_settles_its_level() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        p.probing = false;
+        p.enter(0).expect("finite");
+        // A normal burst descends at the coarsest level, then a streak that
+        // moves nothing gives it up, as at a pad's corner.
+        p.step(0, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
+            .expect("finite");
+        assert!(!p.settled);
+        let mut abnormal = Still {
+            abnormal: true,
+            ..still(0, 0)
+        };
+        for _ in 0..MAX_ABNORMAL_BURSTS {
+            p.step(0, &mut abnormal, &mut |_| Ok(())).expect("finite");
+        }
+        assert_eq!(p.level, 1);
+
+        // Settled so, a level hands the descent over in turn.
+        for level in 2..=LEVELS.len() {
+            p.step(0, &mut abnormal, &mut |_| Ok(())).expect("finite");
+            assert_eq!(p.level, level);
+        }
         p.step(0, &mut abnormal, &mut |_| Ok(())).expect("finite");
 
         assert!(p.settled);
