@@ -29,12 +29,13 @@ Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
 the optimize stage's wall time) to its `on_optimized` callback; it returns
 a `RunReport`, which adds whether it committed, any refusal and the
-`Scope` it read. It tells an `on_stage` callback each `Stage` as it begins.
-A caller's `stop` ends the run before optimizing with nothing changed, or
-ends the optimizer with its best state, which goes on to the commit
-(`Termination.STOPPED`). Positions
-in reports stay in the board frame; the `coords.UserFrame` they carry is
-what messages print positions in.
+`Scope` it read. It tells an `on_stage` callback each `Stage` as it begins,
+and an `on_progress` callback the optimizer's `Progress` after each outer
+iteration. A caller's `stop` ends the run before optimizing with nothing
+changed, or ends the optimizer with its best state, which goes on to the
+commit (`Termination.STOPPED`). Positions in reports stay in the board
+frame; the `coords.UserFrame` they carry is what messages print positions
+in.
 """
 
 import importlib
@@ -82,7 +83,7 @@ from kibends.obstacles import (
     own_net_stops,
     split_via_obstacles,
 )
-from kibends.optimize import optimize_chains
+from kibends.optimize import Progress, optimize_chains
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
     ChainPair,
@@ -372,6 +373,7 @@ def run_smooth(
     *,
     stop: Callable[[], bool] | None = None,
     on_stage: Callable[[Stage], None] = lambda _stage: None,
+    on_progress: Callable[[Progress], None] | None = None,
 ) -> RunReport:
     """Smooth the chains selected in KiCad and, unless dry-running, commit them.
 
@@ -386,7 +388,9 @@ def run_smooth(
     (`optimize.optimize_chains`): answering true before optimizing ends the
     run there, `Termination.STOPPED` with nothing changed; while optimizing
     it ends the optimizer with its best state, which the run simplifies and
-    commits as any other.
+    commits as any other. `on_progress` hears where the optimizer stands
+    after each outer iteration, its seconds counted from the optimize
+    stage's start.
     """
     if options.plot is not None:
         _require_plot()
@@ -406,7 +410,7 @@ def run_smooth(
     if stop is not None and stop():
         return _stopped(read)
     on_stage(Stage.OPTIMIZING)
-    optimized = _optimize(read, built, options, stop)
+    optimized = _optimize(read, built, options, stop, on_progress)
     on_stage(Stage.SIMPLIFYING)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
@@ -647,6 +651,7 @@ def _optimize(
     built: _Built,
     options: SmoothOptions,
     stop: Callable[[], bool] | None,
+    on_progress: Callable[[Progress], None] | None,
 ) -> _Optimized:
     """Optimize the chains of `read` from what `_build` made of them."""
     layout = built.layout
@@ -666,6 +671,7 @@ def _optimize(
         static_vias=tuple(built.static.values()),
         to_hold=_bent_too_tightly,
         stop=stop,
+        on_progress=on_progress,
     )
     _log_gave_up(run.gave_up)
     elapsed = monotonic() - started

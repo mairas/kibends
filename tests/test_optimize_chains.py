@@ -50,6 +50,7 @@ from kibends.optimize import (
     INSIDE_TOLERANCE,
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
+    Progress,
     optimize_chains,
 )
 from kibends.polylines import resample
@@ -1310,6 +1311,31 @@ def test_progress_at_info_comes_at_most_once_per_interval(log: list[str]) -> Non
     levels = [level for level, _, _ in progress(log)]
     assert "INFO" in levels
     assert all(not (a == "INFO" and b == "INFO") for a, b in itertools.pairwise(levels))
+
+
+LOGGED_ENERGY = re.compile(r"energy (-?\d+\.\d{3})")
+
+
+def test_progress_is_handed_over_after_every_iteration(log: list[str]) -> None:
+    records: list[Progress] = []
+
+    result = optimize_chains(
+        bumps().chains,
+        scenarios.PARAMS,
+        COARSE,
+        clock=Ticking(),
+        on_progress=records.append,
+    )
+
+    assert [r.iteration for r in records] == list(range(1, result.iterations + 1))
+    # The clock ticks a second a reading. The run starts at setup's end, and
+    # with no time limit each iteration reads it once, to report.
+    assert [r.elapsed for r in records] == [float(r.iteration) for r in records]
+    logged = [line for line in log if " Iteration " in line]
+    for record, line in zip(records, logged, strict=True):
+        energy = LOGGED_ENERGY.search(line)
+        assert energy is not None
+        assert f"{record.energy:.3f}" == energy[1]
 
 
 @pytest.mark.parametrize(

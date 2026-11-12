@@ -76,6 +76,17 @@ lies when resampling keeps it where it is."""
 PROGRESS_INTERVAL = 5.0
 
 
+@dataclass(frozen=True)
+class Progress:
+    """Where a run stands after an outer iteration."""
+
+    elapsed: float
+    """Seconds by the run's clock since it started."""
+    iteration: int
+    energy: float
+    """Every problem's energy, summed."""
+
+
 def optimize(
     polyline: FloatArray,
     fixed: BoolArray,
@@ -146,6 +157,7 @@ def optimize_chains(
     static_vias: Sequence[StaticVia] = (),
     to_hold: Callable[[Sequence[PairResult]], Sequence[int]] | None = None,
     stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[Progress], None] | None = None,
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -210,8 +222,9 @@ def optimize_chains(
     level of a schedule with coarse levels its spacing (`_stage`), and at
     each hold what it put back. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
-    passed since `started` or the last INFO line. Each burst logs what it
-    cost at DEBUG only (`_burst_done`).
+    passed since `started` or the last INFO line, and goes to `on_progress`
+    as a `Progress`. Each burst logs what it cost at DEBUG only
+    (`_burst_done`).
     """
     logger.info("Setting up the optimizer")
     set_up = clock()
@@ -286,7 +299,7 @@ def optimize_chains(
         return False
 
     expired = None if deadline is None and stop is None else ended
-    report = _Report(moving, clock, origin, begun)
+    report = _Report(moving, clock, origin, begun, on_progress)
 
     def burst(
         objective: _core.Objective,
@@ -392,9 +405,9 @@ class _Report:
     `FALLBACK_WARNING`, an abnormal burst and each burst's cost at DEBUG
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
-    `shown`, the last INFO line. A problem entering a level is logged at
-    INFO (`_stage`). The
-    notices name `problems` by their place; the elapsed seconds count from
+    `shown`, the last INFO line, and handed to `on_progress`. A problem
+    entering a level is logged at INFO (`_stage`). The notices name
+    `problems` by their place; the elapsed seconds count from
     `origin`."""
 
     def __init__(
@@ -403,11 +416,13 @@ class _Report:
         clock: Callable[[], float],
         origin: float,
         shown: float,
+        on_progress: Callable[[Progress], None] | None = None,
     ) -> None:
         self.problems = problems
         self.clock = clock
         self.origin = origin
         self.shown = shown
+        self.on_progress = on_progress
 
     def __call__(self, notice: _Notice) -> None:
         if isinstance(notice, _core.FallbackNotice):
@@ -424,12 +439,17 @@ class _Report:
             logger.info(_stage(self.problems[notice.problem], notice.level))
         else:
             now = self.clock()
-            message = _progress(notice, now - self.origin)
+            elapsed = now - self.origin
+            message = _progress(notice, elapsed)
             if now - self.shown >= PROGRESS_INTERVAL:
                 logger.info(message)
                 self.shown = now
             else:
                 logger.debug(message)
+            if self.on_progress is not None:
+                self.on_progress(
+                    Progress(elapsed, notice.iteration, sum(notice.energies))
+                )
 
 
 def _level_spacing(settings: OptimizerSettings, level: int) -> float:

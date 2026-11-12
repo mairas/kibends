@@ -74,7 +74,7 @@ from kibends.energy import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacles
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
+from kibends.optimize import MAX_ABNORMAL_BURSTS, Progress, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.polylines import measure
@@ -1181,6 +1181,40 @@ class TestStages:
         assert report.scope == pipeline.Scope(
             pipeline.ScopeKind.SELECTION, tracks=3, vias=1
         )
+
+
+class TestProgress:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_comes_after_every_iteration_with_the_optimize_stages_clock(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(l_board())
+        monkeypatch.setattr(pipeline, "monotonic", Ticking())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
+        records: list[Progress] = []
+
+        report = pipeline.run_smooth(options, on_progress=records.append)
+
+        assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
+        elapsed = [r.elapsed for r in records]
+        assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
+
+    def test_a_run_with_nothing_to_do_reports_at_most_once(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        connect.to(straight_board())
+        records: list[Progress] = []
+        monkeypatch.setattr(
+            cli, "run_smooth", partial(cli.run_smooth, on_progress=records.append)
+        )
+
+        run()
+
+        assert len(records) <= 1
+        assert any(line.startswith("INFO Nothing to do") for line in log)
 
 
 class TestPlot:
