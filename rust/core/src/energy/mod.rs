@@ -28,16 +28,16 @@
 //! its curvature too, which the tests check against central differences.
 //!
 //! The terms reproduce the numpy code they replaced operation by operation
-//! (`numeric`), since the optimizer's iterates amplify last-bit
-//! differences. The exception is a dense dot product, whose order numpy
-//! leaves to its BLAS and which differs between BLAS builds and even
-//! between the alignments of one array's rows. An edge's mean sums its
-//! samples as `quadrature::weighted_mean` says, and a sum over a polyline's
-//! edges weighted by their lengths is correctly rounded (`numeric::
-//! exact_sum`). At a stationary point the line search's last steps change
-//! the energy by about its round-off, so whether they fail or take a step
-//! on noise turns on the last bits of the sum: rounded once, it is a
-//! function of the edges' terms alone, the same on every platform.
+//! (`numeric`), except where numpy left the order of a sum to its BLAS,
+//! which differs between BLAS builds and even between the alignments of
+//! one array's rows. There the order is fixed instead: an edge's mean sums
+//! its samples in order (`quadrature::weighted_mean`), and a sum over a
+//! polyline's edges weighted by their lengths is correctly rounded
+//! (`numeric::exact_sum`). At a stationary point the line search's last
+//! steps change the energy by about its round-off, so whether they fail or
+//! take a step on noise turns on the last bits of the sum; summed in a
+//! fixed order, it is a function of the edges' terms alone, the same on
+//! every platform.
 
 pub mod integrands;
 pub mod polyline;

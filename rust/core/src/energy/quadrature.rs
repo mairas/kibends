@@ -76,17 +76,10 @@ impl<'a> EdgeSamples<'a> {
     }
 }
 
-/// Σ w[k]·v[k] over an edge's samples. Of the default five samples, three
-/// interior points per edge, in the order macOS's Accelerate took numpy's
-/// `value_at @ weights`: two running sums over alternate samples, fused,
-/// the fifth added to the second. The optimizer's trajectories depend on
-/// the last bit of the edge mean, which enters the gradient, and the tests
-/// that pin a trajectory were measured on that order. Other counts are
-/// summed in order.
+/// Σ w[k]·v[k] over an edge's samples, summed in order: Rust neither
+/// reassociates nor fuses these operations, so the mean is the same on
+/// every platform.
 fn weighted_mean(values: &[f64], weights: &[f64]) -> f64 {
-    if let ([v0, v1, v2, v3, v4], [w0, w1, w2, w3, w4]) = (values, weights) {
-        return v2.mul_add(*w2, v0 * w0) + (v3.mul_add(*w3, v1 * w1) + v4 * w4);
-    }
     values
         .iter()
         .zip(weights)
