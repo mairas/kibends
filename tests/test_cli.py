@@ -1,6 +1,8 @@
+import ctypes
 import itertools
 import math
 import re
+import signal
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -26,7 +28,6 @@ from conftest import (
     FakeKiCad,
     Ticking,
     gap_range,
-    in_pool,
     kipy_arc,
     kipy_copper_zone,
     kipy_group,
@@ -1033,42 +1034,26 @@ class TestErrors:
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    @pytest.mark.parametrize("threads", [None, 8], ids=["main thread", "8 threads"])
-    def test_interrupt_in_a_burst_commits_nothing(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-        threads: int | None,
+    def test_sigint_in_a_burst_ends_it_and_commits_nothing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         board = connect.to(l_board())
-        real = optimize_module.run_burst
-        bursting = False
+        real = cast(Callable[..., Burst], optimize_module.run_burst)
+        libc_raise = getattr(ctypes.CDLL(None), "raise")
+        libc_raise.argtypes = [ctypes.c_int]
+        # Asked after the first iteration, the stop sends SIGINT from C, so
+        # no Python runs its handler: the signal is pending while the next
+        # evaluation runs detached. Asked again, it would end the burst.
+        answers = itertools.chain(map(libc_raise, [signal.SIGINT]), [True])
 
-        def tracked(*args: object, **kwargs: object) -> object:
-            nonlocal bursting
-            bursting = True
-            try:
-                return cast(Callable[..., object], real)(*args, **kwargs)
-            finally:
-                bursting = False
+        def sending(*args: object) -> Burst:
+            return real(*args[:4], answers.__next__)
 
-        def clock() -> float:
-            # A Ctrl-C arriving while a burst asks the time.
-            if bursting:
-                raise KeyboardInterrupt
-            return 0.0
+        monkeypatch.setattr(optimize_module, "run_burst", sending)
 
-        monkeypatch.setattr(optimize_module, "run_burst", tracked)
-        monkeypatch.setattr(pipeline, "monotonic", clock)
-
-        def interrupted() -> str:
-            return exit_message(log, "--time-limit=100")
-
-        message = interrupted() if threads is None else in_pool(threads, interrupted)
-
-        assert message == "ERROR Interrupted: nothing committed\n"
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
         assert "push_commit" not in board.calls
+        assert list(answers) == [True], "the burst ran on past the signal"
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_vanished_track_exits_before_any_change(
