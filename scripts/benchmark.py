@@ -156,6 +156,8 @@ def tables(lines: Sequence[str]) -> Iterator[Table]:
             header = cells(line)
         elif not line.startswith("|---"):
             rows.append(cells(line))
+    if header is not None:
+        yield header, rows
 
 
 def cells(line: str) -> Row:
