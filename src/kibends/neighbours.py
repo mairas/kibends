@@ -3,9 +3,9 @@
 Each chain has a static field of everything on the board but the selected
 chains. The other selected chains on its layer are added to it as obstacles
 in one field (`neighbour_field`), at whatever shape the caller holds them
-in; simplification gives it only those near what it asks about
-(`simplify`). The optimizer asks the same of all its members at once
-instead (`members.seen_parts`), with no field per member. A chain ignores
+in. The optimizer asks the same of all its members at once instead
+(`members.seen_parts`), with no field per member, and simplification
+builds each member's field in Rust (`kibends_core::simplify`). A chain ignores
 the chains of its net and of the other net of its diff pair
 (`pairs.diff_pair_nets`), and a coupled section those of its two nets:
 they may come close, overlap or cross. KiCad's DRC reports what that lets

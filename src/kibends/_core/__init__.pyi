@@ -105,6 +105,7 @@ __all__ = [
     "run_burst",
     "shape_change",
     "shape_energy",
+    "simplify_chains",
     "smooth_minimum",
     "split_via_obstacles",
     "stalled",
@@ -1433,6 +1434,14 @@ def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typin
     length and, with a positive `short_edge`, mm, the short-edge barrier
     (`kibends_core::energy::polyline::shape_energy`); and the gradient,
     zero at `fixed` vertices.
+    """
+
+def simplify_chains(members: typing.Sequence[Member], polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], fixed: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], directions: typing.Sequence[numpy.typing.NDArray[numpy.float64]], tolerance: builtins.float) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    Each of `members` where the optimizer left it, at `polylines` with its
+    `fixed` vertices and a section's `directions` pins, simplified within
+    `tolerance`, in order, each against its static field and the others on
+    its layer that it does not ignore, at their latest shapes.
     """
 
 def smooth_minimum(point: numpy.typing.NDArray[numpy.intp], distance: numpy.typing.NDArray[numpy.float64], count: builtins.int) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:

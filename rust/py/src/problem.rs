@@ -162,7 +162,7 @@ fn trace((net, width, clearance): TraceArg) -> Trace {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Member {
-    inner: members::Member,
+    pub(crate) inner: members::Member,
 }
 
 #[gen_stub_pymethods]

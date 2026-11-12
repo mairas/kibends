@@ -42,7 +42,7 @@ from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField, arc_lengths
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, CompositeField
+from kibends.obstacles import ChainCentreline
 from kibends.pairs import (
     VERTEX_SNAP,
     BendCheck,
@@ -53,7 +53,6 @@ from kibends.pairs import (
     offset_pair,
     with_nearest_vertices,
 )
-from kibends.simplify import kept_vertices
 
 STUB_SPACINGS = 2
 """An edge leaving a pin this many spacings long or longer gets a direction
@@ -65,7 +64,7 @@ well above the jogs and slivers KiCad's nanometre grid leaves, well below
 the micrometres a pair's end gap may differ from its gap by, which its end
 edges take up, and below the fold a short chamfer leaves in the inner track."""
 
-_NOWHERE = CompositeField(())
+_NOWHERE = _core.CompositeField([])
 """No obstacles, for merging a track's routing."""
 
 
@@ -330,7 +329,7 @@ def _routed(given: PairInput) -> PairInput:
         fixed = pinned | _fixed_ends(len(pinned))
         tolerances = np.full(len(pinned), ROUTING_TOLERANCE)
         tolerances[[1, -2]] = INSIDE_TOLERANCE
-        kept = kept_vertices(track.points, fixed, _NOWHERE, tolerances)
+        kept = _core.kept_vertices(track.points, fixed, _NOWHERE, tolerances)
         simplified.append((replace(track, points=track.points[kept]), pinned[kept]))
     (a, a_pinned), (b, b_pinned) = simplified
     return replace(given, a=a, b=b, a_pinned=a_pinned, b_pinned=b_pinned)
