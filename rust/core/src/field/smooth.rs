@@ -7,6 +7,7 @@
 //! leave them out and give the same.
 
 use crate::geometry::V2;
+use crate::numeric::minimum;
 
 /// τ of the smooth minimum, mm.
 pub const SMOOTH_WIDTH: f64 = 0.005;
@@ -82,9 +83,80 @@ pub fn weighted_sum(point: &[usize], share: &[f64], direction: &[V2], count: usi
     sum
 }
 
+/// The smooth minimum over fields, each of `distances` one field's smooth
+/// distances at the same points, and each field's share at each point. A
+/// smooth minimum of smooth minima is the one over all their obstacles, but
+/// for the obstacles SMOOTH_REACH leaves out.
+pub fn combine_fields(distances: &[&[f64]]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let count = distances.first().map_or(0, |d| d.len());
+    let answering: Vec<usize> = (0..distances.len())
+        .filter(|&k| !distances[k].iter().all(|d| d.is_infinite()))
+        .collect();
+    if let [alone] = answering[..] {
+        // As in `smooth_minimum`, one term at each point is its own minimum,
+        // and fields often have no other in reach.
+        let mut shares = vec![vec![0.0; count]; distances.len()];
+        shares[alone] = distances[alone]
+            .iter()
+            .map(|d| if d.is_finite() { 1.0 } else { 0.0 })
+            .collect();
+        return (distances[alone].to_vec(), shares);
+    }
+    let mut smooth = Vec::with_capacity(count);
+    let mut shares = vec![Vec::with_capacity(count); distances.len()];
+    for i in 0..count {
+        let lowest = distances
+            .iter()
+            .map(|d| d[i])
+            .reduce(minimum)
+            .unwrap_or(f64::INFINITY);
+        let base = if lowest.is_finite() { lowest } else { 0.0 };
+        let mut total = 0.0;
+        for (share, d) in shares.iter_mut().zip(distances) {
+            let above = d[i] - base;
+            let s = if above <= SMOOTH_REACH {
+                (-above / SMOOTH_WIDTH).exp()
+            } else {
+                0.0
+            };
+            total += s;
+            share.push(s);
+        }
+        let found = total > 0.0;
+        smooth.push(if found {
+            base - SMOOTH_WIDTH * total.ln()
+        } else {
+            f64::INFINITY
+        });
+        let scale = if found { total } else { 1.0 };
+        for share in &mut shares {
+            if let Some(s) = share.last_mut() {
+                *s /= scale;
+            }
+        }
+    }
+    (smooth, shares)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_fields_share_points_they_are_equally_near() {
+        let (smooth, shares) = combine_fields(&[&[0.2, 0.2], &[0.2, f64::INFINITY]]);
+        assert!((smooth[0] - (0.2 - SMOOTH_WIDTH * 2f64.ln())).abs() < 1e-15);
+        assert_eq!(smooth[1], 0.2);
+        assert_eq!(shares, vec![vec![0.5, 1.0], vec![0.5, 0.0]]);
+    }
+
+    #[test]
+    fn a_field_alone_in_reach_answers_with_a_share_of_one() {
+        let infinite = [f64::INFINITY; 2];
+        let (smooth, shares) = combine_fields(&[&infinite, &[0.3, f64::INFINITY]]);
+        assert_eq!(smooth, vec![0.3, f64::INFINITY]);
+        assert_eq!(shares, vec![vec![0.0, 0.0], vec![1.0, 0.0]]);
+    }
 
     #[test]
     fn two_equally_near_obstacles_read_tau_ln_2_nearer() {

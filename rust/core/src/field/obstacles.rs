@@ -11,7 +11,7 @@ use std::sync::Arc;
 use super::edges::{Copper, StaticEdges};
 use super::search::parts_smooth_distance;
 use super::union_find::UnionFind;
-use super::{DEGENERATE_DISTANCE, Kind};
+use super::{DEGENERATE_DISTANCE, Field, Kind};
 use crate::geometry::{LINE_STRING, Part, Shape, V2, outward_normal};
 
 /// An obstacle as the field takes it: raw geometry and the inflation at
@@ -256,6 +256,20 @@ fn geometry_key(shape: &Shape) -> Vec<u64> {
         }
     }
     key
+}
+
+impl Field for Obstacles {
+    fn signed_distance(&self, points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>) {
+        Obstacles::signed_distance(self, points, reach)
+    }
+
+    fn smooth_distance(&self, points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>) {
+        Obstacles::smooth_distance(self, points, reach)
+    }
+
+    fn segments_clear(&self, starts: &[V2], ends: &[V2], tolerance: f64) -> Vec<bool> {
+        Obstacles::segments_clear(self, starts, ends, tolerance)
+    }
 }
 
 /// Each item's obstacle, numbered from 0. Items of one geometry are one

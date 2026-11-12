@@ -35,12 +35,38 @@
 //! (`seen.StaticList` in Python), so that static copper costs no tree query
 //! per evaluation.
 
+pub mod chain;
+pub mod composite;
 pub mod edges;
 pub mod obstacles;
 pub mod pairs;
 pub mod search;
 pub mod smooth;
 mod union_find;
+
+use crate::geometry::V2;
+
+/// Signed distance to the nearest inflated obstacle boundary, and segment
+/// checks.
+pub trait Field: Send + Sync {
+    /// The distance at each point and its unit gradient. The distance is
+    /// positive in free space and negative inside an inflated obstacle; the
+    /// gradient points toward increasing distance. Distances beyond `reach`
+    /// may be +inf with a zero gradient.
+    fn signed_distance(&self, points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>);
+
+    /// `signed_distance` as the energy takes it: the smooth minimum over the
+    /// field's obstacles (`smooth::smooth_minimum`) of each one's exact
+    /// distance, and its gradient, the obstacles' unit gradients weighted
+    /// by their shares. Obstacles farther than `reach` plus SMOOTH_REACH may
+    /// be left out, and a point with none gets +inf.
+    fn smooth_distance(&self, points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>);
+
+    /// Whether each segment from starts[i] to ends[i] stays out of every
+    /// inflated obstacle: it does not enter the region where the signed
+    /// distance is below -`tolerance`; touching the boundary is clear.
+    fn segments_clear(&self, starts: &[V2], ends: &[V2], tolerance: f64) -> Vec<bool>;
+}
 
 /// Closer than this to the nearest feature, the direction to it is noise;
 /// the boundary's normal is used instead. Far below KiCad's 1 nm resolution.
