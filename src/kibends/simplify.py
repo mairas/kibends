@@ -26,10 +26,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from kibends import _core
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import track_inflation
+from kibends.obstacles import core_field, track_inflation
 
 if TYPE_CHECKING:
     # Both import pair_blocks, which simplifies a section's routing.
@@ -239,37 +240,11 @@ def kept_vertices(
     tolerances: FloatArray,
 ) -> list[int]:
     """The vertices that merging keeps, each merged vertex within its
-    `tolerances` of the chord."""
-    kept = [0]
-    last = len(polyline) - 1
-    start = 0
-    while start < last:
-        end = start + 1
-        while (
-            end < last
-            and not fixed[end]
-            and _mergeable(polyline, start, end + 1, field, tolerances)
-        ):
-            end += 1
-        kept.append(end)
-        start = end
-    return kept
-
-
-def _mergeable(
-    polyline: FloatArray,
-    start: int,
-    end: int,
-    field: ObstacleField,
-    tolerances: FloatArray,
-) -> bool:
-    a: FloatArray = polyline[start]
-    b: FloatArray = polyline[end]
-    chord = b - a
-    squared = max(float(chord @ chord), np.finfo(float).tiny)
-    inner = polyline[start + 1 : end]
-    t = np.clip((inner - a) @ chord / squared, 0.0, 1.0)
-    deviation = np.linalg.norm(inner - (a + t[:, None] * chord), axis=1)
-    if np.any(deviation > tolerances[start + 1 : end]):
-        return False
-    return bool(field.segments_clear(a[None], b[None])[0])
+    `tolerances` of the chord, which stays clear of `field`
+    (`kibends_core::simplify`)."""
+    core = core_field(field)
+    if core is None:
+        raise TypeError(f"{type(field).__name__} is not a field of kibends._core")
+    return _core.kept_vertices(
+        np.asarray(polyline, dtype=float), fixed, core, tolerances
+    )

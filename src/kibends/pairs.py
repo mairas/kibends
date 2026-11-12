@@ -24,17 +24,14 @@ import shapely
 from shapely import STRtree
 from shapely.geometry import LineString
 
+from kibends import _core
 from kibends.chain import Chain
 from kibends.energy import (
     MAX_SMOOTH_TURN,
     BoolArray,
     FloatArray,
     IntArray,
-    edge_bend_radii,
 )
-
-_SUFFIX_COMPLEMENTS = {"+": "-", "-": "+", "P": "N", "N": "P"}
-_IGNORED_TRAILING = "0123456789_"
 
 GAP_TOLERANCE = 0.1
 """Fraction of the gap by which the tracks' spacing may differ from the pair's
@@ -64,10 +61,6 @@ SQUARE_SLACK = 1e-9
 that a point on a vertex lies on both edges there and edges that end square
 across each other still face each other."""
 
-BEND_RADIUS_TOLERANCE = 1e-3
-"""Relative: a dense polyline drawn at the radius limit measures a hair below
-it, R·cos(Δ/2) for a turn Δ per vertex, and must still pass."""
-
 MITER_FLOOR = 1.0 + math.cos(MAX_SMOOTH_TURN)
 """The least 1 + cos(turn) a miter divides by: that of MAX_SMOOTH_TURN, past
 which `energy` continues the curvature linearly. Past it a miter shrinks
@@ -75,28 +68,15 @@ back to nothing at a fold instead of growing without bound: a trial step
 that folds a centreline offsets it to finite tracks, and the bend-radius
 hinge and the self check keep the optimizer away from it."""
 
-FOLD_SLACK = 1e-12
-"""1 + cos(turn) at or below which a vertex is a fold: off the axes,
-rounding leaves an exact fold's 1 + cos a hair above 0, where sin / (1 + cos)
-is noise. A turn this close to a fold has a bend radius of well under a
-nanometre either way."""
-
 
 class PairError(ValueError):
     """Two chains cannot be treated as one differential pair."""
 
 
-def complementary_net(name: str) -> str | None:
-    """The name the other net of a diff pair would have, matching KiCad's
-    router (`MatchDpSuffix`): trailing digits and underscores are skipped,
-    and the character before them must be `+`, `-`, `P` or `N` (upper case
-    only). A net is of a diff pair only when that net exists
-    (`in_diff_pair`)."""
-    stem = name.rstrip(_IGNORED_TRAILING)
-    complement = _SUFFIX_COMPLEMENTS.get(stem[-1:])
-    if complement is None:
-        return None
-    return stem[:-1] + complement + name[len(stem) :]
+complementary_net = _core.complementary_net
+"""The name the other net of a diff pair would have, matching KiCad's
+router (`MatchDpSuffix`), or None (`kibends_core::pairs`). A net is of a
+diff pair only when that net exists (`in_diff_pair`)."""
 
 
 def in_diff_pair(net: str, nets: Collection[str]) -> bool:
@@ -111,12 +91,10 @@ def nets_pair(a: str, b: str) -> bool:
     return complementary_net(a) == b
 
 
-def diff_pair_nets(net: str) -> frozenset[str]:
-    """`net` and the other net of its diff pair, if it has one. Callers
-    match it only against nets of selected chains, so a complement that is
-    not on the board matches nothing, as `in_diff_pair` would have it."""
-    other = complementary_net(net)
-    return frozenset({net} if other is None else {net, other})
+diff_pair_nets = _core.diff_pair_nets
+"""`net` and the other net of its diff pair, if it has one. Callers match
+it only against nets of selected chains, so a complement that is not on
+the board matches nothing, as `in_diff_pair` would have it."""
 
 
 @dataclass(frozen=True)
@@ -788,10 +766,9 @@ def _miters(polyline: FloatArray) -> FloatArray:
     return (before + after) / scale[:, None]
 
 
-def bend_radius_limit(gap: float, width: float) -> float:
-    """The smallest centreline bend radius at which the inner track's inner
-    edge still has a radius of at least zero."""
-    return (gap + width) / 2 + width / 2
+bend_radius_limit = _core.bend_radius_limit
+"""The smallest centreline bend radius at which the inner track's inner
+edge still has a radius of at least zero."""
 
 
 class BendCheck(NamedTuple):
@@ -807,36 +784,14 @@ def check_bend_radius(
 ) -> BendCheck:
     """The centreline's smallest bend radius and whether it is below the
     limit, counting the turns at the vertices `turning` (`bend_radii`)."""
-    radius = float(bend_radii(centreline, turning).min())
-    return BendCheck(radius, bool(too_tight(radius, bend_radius_limit(gap, width))))
+    return BendCheck(*_core.check_bend_radius(centreline, gap, width, turning))
 
 
-def bend_radii(centreline: FloatArray, turning: BoolArray | None = None) -> FloatArray:
-    """Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
-    beside a fold and for an edge of no length, where the centreline turns
-    on the spot. For a dense arc of radius R with turn Δ per vertex it is
-    R·cos(Δ/2). Only the turns and folds at the vertices `turning` count,
-    every vertex by default."""
-    delta = np.diff(centreline, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
-    empty = lengths == 0.0
-    direction = np.divide(
-        delta, lengths[:, None], out=np.zeros_like(delta), where=~empty[:, None]
-    )
-    sine = _cross(direction[:-1], direction[1:])
-    one_plus_cos = 1.0 + np.sum(direction[:-1] * direction[1:], axis=1)
-    folds = one_plus_cos <= FOLD_SLACK
-    half_turns = np.divide(sine, one_plus_cos, out=np.zeros_like(sine), where=~folds)
-    if turning is not None:
-        folds &= turning[1:-1]
-        half_turns = np.where(turning[1:-1], half_turns, 0.0)
-    radii, _ = edge_bend_radii(lengths, half_turns)
-    radii[:-1][folds] = 0.0
-    radii[1:][folds] = 0.0
-    radii[empty] = 0.0
-    return radii
+bend_radii = _core.bend_radii
+"""Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
+beside a fold and for an edge of no length, where the centreline turns on
+the spot (`kibends_core::pairs::bend_radii`). Only the turns and folds at
+the vertices `turning` count, every vertex by default."""
 
-
-def too_tight(radius: FloatArray | float, limit: float) -> BoolArray:
-    """Whether each bend radius is below `limit`, beyond round-off."""
-    return np.asarray(radius) < limit * (1.0 - BEND_RADIUS_TOLERANCE)
+too_tight = _core.too_tight
+"""Whether each bend radius is below `limit`, beyond round-off."""

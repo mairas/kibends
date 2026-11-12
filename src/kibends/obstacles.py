@@ -307,7 +307,7 @@ CORE_FIELDS = (
 """The kinds of `_core.Field`."""
 
 
-def core_field(field: ObstacleField) -> _core.Field | None:
+def core_field(field: DistanceField) -> _core.Field | None:
     """The Rust field that answers for `field`, None for a field of another
     kind, which a `CompositeField` asks itself."""
     if isinstance(field, Obstacles | ChainField | CompositeField):
