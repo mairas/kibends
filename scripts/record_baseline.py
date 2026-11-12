@@ -30,7 +30,7 @@ from scenarios import PairsScenario, Scenario, ViasScenario
 from shapely import LineString
 
 from kibends.energy import DistanceField, FloatArray
-from kibends.optimize import OptimizeResult
+from kibends.optimize import OptimizeResult, RunResult
 
 PAD_ROWS = "10 tracks between pad rows at 1 mm"
 
@@ -65,7 +65,10 @@ def smallest_gap(
     return min(gaps, default=None)
 
 
-def scenario_record(s: Scenario | benchmark.Several) -> Record:
+def scenario_run(
+    s: Scenario | benchmark.Several,
+) -> tuple[Record, OptimizeResult | RunResult]:
+    """The scenario's record and the result it was made from."""
     with benchmark.counted() as count:
         result = benchmark.run_scenario(s)
     record: Record = {
@@ -81,7 +84,7 @@ def scenario_record(s: Scenario | benchmark.Several) -> Record:
                 "clearance": clearance(result.polyline, s.field),
             }
         ]
-        return record
+        return record, result
     assert not isinstance(s, Scenario)
     polylines = [c.polyline for c in result.chains]
     record["chains"] = [
@@ -113,7 +116,7 @@ def scenario_record(s: Scenario | benchmark.Several) -> Record:
         ]
     if isinstance(s, ViasScenario):
         record["vias"] = [list(v.position) for v in result.vias]
-    return record
+    return record, result
 
 
 def pad_rows_record() -> Record:

@@ -7,7 +7,8 @@ it did under scipy, converged where it converged, its tracks no longer and
 no nearer to copper than scipy's by more than the tolerances below, and
 each moving via no nearer to what the baseline fixes: its static copper,
 the other moving vias and the chains that stand still. scipy's moving
-chains were not recorded, so a via's clearance to them is not compared.
+chains were not recorded, so a via's clearance to them is not compared;
+it is only checked to hold, within the tolerance.
 
 Lengths are summed over a case, since a via that settles along a flat
 valley trades length between the chains it joins: per chain, the lengths
@@ -26,13 +27,13 @@ import benchmark
 import numpy as np
 import pytest
 from distance_fields import FAR
-from record_baseline import PAD_ROWS, Record, pad_rows_record
-from record_baseline import scenario_record as record_of
+from record_baseline import PAD_ROWS, Record, pad_rows_record, scenario_run
 from scenarios import ViasScenario
 from shapely import LineString, Point
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.optimize import RunResult
 from kibends.via_moves import MovingVias
 
 BASELINE = Path(__file__).parent / "data" / "scipy_baseline_darwin-arm64.json"
@@ -48,12 +49,6 @@ nearer (crowded's gap)."""
 
 SLOW = frozenset({"via-grid-3x4", PAD_ROWS})
 """Cases that take a second or more."""
-
-
-def run_case(name: str) -> Record:
-    if name == PAD_ROWS:
-        return pad_rows_record()
-    return record_of(benchmark.scenario_makers()[name]())
 
 
 def entries(record: Record, key: str) -> Sequence[Record]:
@@ -116,6 +111,22 @@ def via_clearances(
     return found
 
 
+def moving_track_clearances(scenario: ViasScenario, result: RunResult) -> list[float]:
+    """Each moving via's smallest clearance in `result`, as the optimizer
+    measures it, to the chains of other nets that move; none for a via
+    near no such chain."""
+    moving = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
+    found: list[float] = []
+    for v, via in enumerate(result.vias):
+        near = [
+            LineString(result.chains[c].polyline).distance(Point(via.position)) - ring
+            for c, ring in moving.rings(v).items()
+            if not scenario.chains[c].fixed.all()
+        ]
+        found.extend([min(near)] if near else [])
+    return found
+
+
 def via_positions(record: Record) -> list[Position]:
     return [(x, y) for x, y in cast(list[list[float]], record["vias"])]
 
@@ -126,8 +137,16 @@ def via_positions(record: Record) -> list[Position]:
 )
 def test_a_case_ends_as_under_scipy(name: str) -> None:
     baseline = CASES[name]
+    scenario = None if name == PAD_ROWS else benchmark.scenario_makers()[name]()
 
-    record = run_case(name)
+    if scenario is None:
+        record = pad_rows_record()
+    else:
+        record, result = scenario_run(scenario)
+        if isinstance(scenario, ViasScenario):
+            assert isinstance(result, RunResult)
+            for clearance in moving_track_clearances(scenario, result):
+                assert clearance >= -CLEARANCE_TOLERANCE
 
     assert record["termination"] == baseline["termination"]
     assert total_length(record) <= total_length(baseline) + LENGTH_TOLERANCE
@@ -137,7 +156,6 @@ def test_a_case_ends_as_under_scipy(name: str) -> None:
         if then is not None and now is not None:
             assert now >= then - CLEARANCE_TOLERANCE
     if "vias" in baseline:
-        scenario = benchmark.scenario_makers()[name]()
         assert isinstance(scenario, ViasScenario)
         for then, now in zip(
             via_clearances(scenario, via_positions(baseline)),
