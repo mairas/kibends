@@ -198,11 +198,7 @@ def chain_cuts(vias: Sequence[Via]) -> Callable[[str, str], list[Disc]]:
     ends it carries pin no other chain."""
 
     def cuts(layer: str, net: str) -> list[Disc]:
-        return [
-            Disc(v.position, v.diameter / 2)
-            for v in vias
-            if v.net == net and v.reaches(layer)
-        ]
+        return [v.ring for v in vias if v.net == net and v.reaches(layer)]
 
     return cuts
 
@@ -216,7 +212,7 @@ def carried_ends(via: Via, chains: Sequence[Chain]) -> tuple[ChainEnd, ...]:
         for last, point in ((False, chain.points[0]), (True, chain.points[-1]))
         if chain.net == via.net
         and via.reaches(chain.layer)
-        and carries(Disc(via.position, via.diameter / 2), point, chain.width)
+        and carries(via.ring, point, chain.width)
     )
 
 
