@@ -202,9 +202,6 @@ pub struct BurstReport {
 /// What the run tells its caller as it goes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Notice {
-    /// A burst's crossings named nothing more to move back, and the whole
-    /// burst moved back.
-    Fallback,
     /// L-BFGS ended a burst of the problem abnormally, `streak` in a row.
     Abnormal {
         problem: usize,

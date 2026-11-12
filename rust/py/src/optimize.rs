@@ -731,7 +731,6 @@ pub struct ProgressNotice {
 
 fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
     Ok(match notice {
-        Notice::Fallback => Py::new(py, FallbackNotice)?.into_any(),
         Notice::Abnormal { problem, streak } => {
             Py::new(py, AbnormalNotice { problem, streak })?.into_any()
         }
