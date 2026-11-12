@@ -49,7 +49,7 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
-from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
+from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.results import Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
@@ -92,6 +92,13 @@ BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
 )
 
+CLEARANCE_FLAGS = {
+    "edge": "--edge-clearance",
+    "hole": "--hole-clearance",
+    "hole_to_hole": "--hole-to-hole",
+}
+"""The options that override the project's clearance rules, by
+`rules.Clearances` field."""
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
 # Until simplifying, a stop keeps the best result so far; from then on
 # nothing is left to stop.
@@ -370,7 +377,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"(default: {DEFAULT_ATTRACTION_RANGE:g})",
     )
     smooth_parser.add_argument(
-        "--edge-clearance",
+        CLEARANCE_FLAGS["edge"],
         type=_non_negative,
         metavar="MM",
         help="Clearance to the board edge (default: the minimum copper to edge "
@@ -378,12 +385,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"{EDGE_CLEARANCE:g})",
     )
     smooth_parser.add_argument(
-        "--hole-clearance",
+        CLEARANCE_FLAGS["hole"],
         type=_non_negative,
         metavar="MM",
         help="Clearance to drilled holes (default: the minimum hole clearance "
         "in the project's Board Setup, as last saved, else "
         f"{HOLE_CLEARANCE:g})",
+    )
+    smooth_parser.add_argument(
+        CLEARANCE_FLAGS["hole_to_hole"],
+        type=_non_negative,
+        metavar="MM",
+        help="Clearance between a moving via's hole and other holes (default: "
+        "the minimum hole to hole in the project's Board Setup, as last saved, "
+        f"else {HOLE_TO_HOLE:g})",
     )
     smooth_parser.add_argument(
         "--chord-tolerance",
@@ -534,6 +549,8 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         ),
         edge_clearance=args.edge_clearance,
         hole_clearance=args.hole_clearance,
+        hole_to_hole=args.hole_to_hole,
+        override_names=CLEARANCE_FLAGS,
         chord_tolerance=args.chord_tolerance,
         dry_run=args.dry_run,
         plot=args.plot,

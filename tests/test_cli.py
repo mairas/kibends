@@ -77,6 +77,7 @@ from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
     ChainCentreline,
     Obstacles,
 )
@@ -86,6 +87,7 @@ from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.polylines import measure
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
+from kibends.via_moves import MovingVias
 from kibends.vias import StaticVia, ViaInput
 
 WIDTH = 0.25
@@ -1034,14 +1036,15 @@ class TestSmooth:
 
 
 class TestProjectClearances:
-    """Edge and hole clearance from the project file (`rules`), or the flags."""
+    """Edge, hole and hole-to-hole clearance from the project file (`rules`),
+    or the flags."""
 
     @staticmethod
     def seen(
         connect: Connector, monkeypatch: pytest.MonkeyPatch, *args: str
     ) -> dict[str, object]:
         """The clearances the obstacle fields and the optimizer get in a run
-        of `straight_board` whose project file gives 0.5 and 0.2 mm."""
+        of `straight_board` whose project file gives 0.5, 0.2 and 0.4 mm."""
         seen: dict[str, object] = {}
         real_build: Callable[..., Obstacles] = pipeline.build_obstacles
 
@@ -1051,17 +1054,25 @@ class TestProjectClearances:
 
         def optimize_spy(*_a: object, **kwargs: object) -> NoReturn:
             seen["optimizer"] = kwargs["hole_clearance"]
+            seen["hole_to_hole"] = kwargs["hole_to_hole"]
             raise SystemExit(0)
 
         monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
         monkeypatch.setattr(pipeline, "optimize_chains", optimize_spy)
         with pytest.raises(SystemExit):
             run(*args)
-        return {k: seen[k] for k in ("edge_clearance", "hole_clearance", "optimizer")}
+        return {
+            k: seen[k]
+            for k in ("edge_clearance", "hole_clearance", "optimizer", "hole_to_hole")
+        }
 
     @pytest.fixture
     def project(self, connect: Connector, tmp_path: Path) -> CommitBoard:
-        rules = {"min_copper_edge_clearance": 0.5, "min_hole_clearance": 0.2}
+        rules = {
+            "min_copper_edge_clearance": 0.5,
+            "min_hole_clearance": 0.2,
+            "min_hole_to_hole": 0.4,
+        }
         settings = {"board": {"design_settings": {"rules": rules}}}
         (tmp_path / "boat.kicad_pro").write_text(json.dumps(settings))
         board = straight_board()
@@ -1076,6 +1087,7 @@ class TestProjectClearances:
             "edge_clearance": 0.5,
             "hole_clearance": 0.2,
             "optimizer": 0.2,
+            "hole_to_hole": 0.4,
         }
         assert sum("from boat.kicad_pro" in line for line in log) == 1
 
@@ -1084,8 +1096,17 @@ class TestProjectClearances:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         assert self.seen(
-            connect, monkeypatch, "--edge-clearance=0.1", "--hole-clearance=0.3"
-        ) == {"edge_clearance": 0.1, "hole_clearance": 0.3, "optimizer": 0.3}
+            connect,
+            monkeypatch,
+            "--edge-clearance=0.1",
+            "--hole-clearance=0.3",
+            "--hole-to-hole=0.6",
+        ) == {
+            "edge_clearance": 0.1,
+            "hole_clearance": 0.3,
+            "optimizer": 0.3,
+            "hole_to_hole": 0.6,
+        }
 
     def test_without_a_project_are_the_defaults(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -1096,12 +1117,36 @@ class TestProjectClearances:
             "edge_clearance": EDGE_CLEARANCE,
             "hole_clearance": HOLE_CLEARANCE,
             "optimizer": HOLE_CLEARANCE,
+            "hole_to_hole": HOLE_TO_HOLE,
         }
+
+    def test_a_rule_below_the_default_warns_naming_its_flag(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        log: list[str],
+    ) -> None:
+        settings = {"board": {"design_settings": {"rules": {"min_hole_to_hole": 0}}}}
+        (tmp_path / "boat.kicad_pro").write_text(json.dumps(settings))
+        board = straight_board()
+        board.project_path, board.project_name = str(tmp_path), "boat"
+        connect.to(board)
+
+        self.seen(connect, monkeypatch)
+
+        (warning,) = [m for m in log if "min_hole_to_hole" in m]
+        assert warning.startswith("WARNING")
+        assert warning.rstrip().endswith("give --hole-to-hole to override it")
 
     def test_flags_default_to_the_project(self) -> None:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 
-        assert (options.edge_clearance, options.hole_clearance) == (None, None)
+        assert (
+            options.edge_clearance,
+            options.hole_clearance,
+            options.hole_to_hole,
+        ) == (None, None, None)
 
 
 def stopping(monkeypatch: pytest.MonkeyPatch, given: Callable[[], bool]) -> None:
@@ -3039,6 +3084,44 @@ class TestMovingVias:
         assert moved[1] < nm(1)
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
+
+    def test_hole_to_hole_reaches_the_via_s_field_stops_and_neighbours(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Each takes the default when not given one, so a dropped argument
+        # would pass unnoticed.
+        apart = HOLE_TO_HOLE + 0.35
+        connect.to(moving_via_board())
+        seen: dict[str, list[object]] = {"field": [], "stops": [], "moving": []}
+        real_split = cast(Callable[..., object], pipeline.split_via_obstacles)
+        real_stops = cast(Callable[..., object], pipeline.own_net_stops)
+
+        def split_spy(*a: object, **kwargs: object) -> object:
+            seen["field"].append(kwargs["hole_to_hole"])
+            return real_split(*a, **kwargs)
+
+        def stops_spy(*a: object, **kwargs: object) -> object:
+            seen["stops"].append(kwargs["hole_to_hole"])
+            return real_stops(*a, **kwargs)
+
+        class MovingSpy(MovingVias):
+            def __init__(
+                self,
+                chains: Sequence[ChainInput],
+                vias: Sequence[ViaInput],
+                hole_clearance: float,
+                hole_to_hole: float,
+            ) -> None:
+                seen["moving"].append(hole_to_hole)
+                super().__init__(chains, vias, hole_clearance, hole_to_hole)
+
+        monkeypatch.setattr(pipeline, "split_via_obstacles", split_spy)
+        monkeypatch.setattr(pipeline, "own_net_stops", stops_spy)
+        monkeypatch.setattr(pipeline, "MovingVias", MovingSpy)
+
+        run(f"--hole-to-hole={apart}")
+
+        assert seen == {"field": [apart], "stops": [apart], "moving": [apart]}
 
     def test_a_via_a_group_track_ends_at_stays_and_the_run_commits(
         self, connect: Connector, log: list[str]

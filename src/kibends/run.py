@@ -3,27 +3,27 @@
 The command line and the GUI both call `run_smooth` and present the reports
 it hands over; it prints nothing.
 
-`run_smooth` reads the edge and hole clearance the options leave out from
-the project file (`rules.read_clearances`), reads the selection, or the
-whole board as `SmoothOptions.scope` asks (`ScopeOption`; what it read is
-called the selection below), and the board once, extracts
-the chains, cut at every
-selected via that may move, and, if any of them stays fixed, extracts them
-again with the chains through that via whole and its copper pinning. A diff
-pair's vias never move (`vias.may_move`), so no moving via carries a paired
-chain. Selected tracks that form no chain, stray zero-length tracks, stay on
-the board as unselected copper, and the chains are extracted again with them
-pinning. When a selected via may move and attraction is on, it finds the
-ground nets, logs them and classes every via by them; with attraction off
-nothing is classed, and the optimizer's energy is the one without ground
-vias. It then builds the fields, optimizes, simplifies and commits. A
-coupled section the run would leave bent too tightly is held as drawn, and
-the optimizer goes on in the same run (`optimize.optimize_chains`). A chain
-whose result equals its selected tracks, and that shares no split track with
-a changed chain, is left out of the commit; nothing is committed when every
-chain is unchanged and no via moved. A selected arc thus stays an arc only
-in a chain left exactly as drawn; simplification merges its pieces and the
-optimizer shortens it, so it is nearly always replaced.
+`run_smooth` reads the edge, hole and hole-to-hole clearance the options
+leave out from the project file (`rules.read_clearances`), reads the
+selection, or the whole board as `SmoothOptions.scope` asks (`ScopeOption`;
+what it read is called the selection below), and the board once, extracts
+the chains, cut at every selected via that may move, and, if any of them
+stays fixed, extracts them again with the chains through that via whole and
+its copper pinning. A diff pair's vias never move (`vias.may_move`), so no
+moving via carries a paired chain. Selected tracks that form no chain, stray
+zero-length tracks, stay on the board as unselected copper, and the chains
+are extracted again with them pinning. When a selected via may move and
+attraction is on, it finds the ground nets, logs them and classes every via
+by them; with attraction off nothing is classed, and the optimizer's energy
+is the one without ground vias. It then builds the fields, optimizes,
+simplifies and commits. A coupled section the run would leave bent too
+tightly is held as drawn, and the optimizer goes on in the same run
+(`optimize.optimize_chains`). A chain whose result equals its selected
+tracks, and that shares no split track with a changed chain, is left out of
+the commit; nothing is committed when every chain is unchanged and no via
+moved. A selected arc thus stays an arc only in a chain left exactly as
+drawn; simplification merges its pieces and the optimizer shortens it, so it
+is nearly always replaced.
 
 The run checks no clearance of its own after optimizing: what the
 optimizer and simplification leave is committed, and the user's KiCad DRC
@@ -44,7 +44,7 @@ in.
 
 import importlib
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from time import monotonic
@@ -78,7 +78,6 @@ from kibends.energy import (
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
-    HOLE_TO_HOLE,
     ChainCentreline,
     CompositeField,
     Obstacles,
@@ -175,6 +174,12 @@ class SmoothOptions:
     (`rules.read_clearances`)."""
     hole_clearance: float | None = None
     """As `edge_clearance`."""
+    hole_to_hole: float | None = None
+    """As `edge_clearance`."""
+    override_names: Mapping[str, str] = field(default_factory=dict[str, str])
+    """What the caller's user gives to override each clearance, by
+    `rules.Clearances` field, for the warning about a project rule below its
+    default (`rules.read_clearances`)."""
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
@@ -424,7 +429,11 @@ def run_smooth(
     board = _open_board(kicad)
     on_stage(Stage.READING)
     clearances = read_clearances(
-        board, edge=options.edge_clearance, hole=options.hole_clearance
+        board,
+        edge=options.edge_clearance,
+        hole=options.hole_clearance,
+        hole_to_hole=options.hole_to_hole,
+        override_names=options.override_names,
     )
     read = _read(
         board,
@@ -716,6 +725,7 @@ def _optimize(
         options.settings,
         vias=_laid_out_vias(layout, built.via_inputs),
         hole_clearance=read.clearances.hole,
+        hole_to_hole=read.clearances.hole_to_hole,
         pairs=layout.sections,
         clock=monotonic,
         started=started,
@@ -765,7 +775,7 @@ def _simplify_and_report(
     via_reports = _via_reports(read.movable, run)
     tracks = _section_tracks(layout.sections, run.pairs)
     chains, final_tracks = _simplify(
-        optimized, tracks, via_reports, options, read.clearances.hole
+        optimized, tracks, via_reports, options, read.clearances
     )
     unsimplified = layout.whole_polylines(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
@@ -975,6 +985,7 @@ def _via_inputs(
             moving=moving,
             edge_clearance=clearances.edge,
             hole_clearance=clearances.hole,
+            hole_to_hole=clearances.hole_to_hole,
             zones=m.zones,
         )
         inputs.append(
@@ -989,6 +1000,7 @@ def _via_inputs(
                     m.via,
                     moving=moving,
                     hole_clearance=clearances.hole,
+                    hole_to_hole=clearances.hole_to_hole,
                     allow_via_in_pad=options.allow_via_in_pad,
                 ),
                 ground=grounded,
@@ -1043,7 +1055,7 @@ def _simplify(
     tracks: Sequence[_Tracks],
     via_reports: Sequence[ViaReport],
     options: SmoothOptions,
-    hole_clearance: float,
+    clearances: Clearances,
 ) -> tuple[list[FloatArray], list[tuple[FloatArray, FloatArray]]]:
     """The optimizer's chains and each section's centreline simplified
     together, each against the others and the moved vias where they end
@@ -1070,7 +1082,7 @@ def _simplify(
             inputs,
             _laid_out_vias(layout, optimized.built.via_inputs),
             via_reports,
-            hole_clearance,
+            clearances,
         ),
         replace(run, chains=tuple(results)),
         tolerance=options.chord_tolerance,
@@ -1095,13 +1107,13 @@ def _with_vias(
     inputs: Sequence[ChainInput],
     via_inputs: Sequence[ViaInput],
     vias: Sequence[ViaReport],
-    hole_clearance: float,
+    clearances: Clearances,
 ) -> list[ChainInput]:
     """`inputs` with the movable vias where they end up added to the fields
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(inputs, via_inputs, hole_clearance, HOLE_TO_HOLE)
+    moving = MovingVias(inputs, via_inputs, clearances.hole, clearances.hole_to_hole)
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
@@ -1267,7 +1279,7 @@ def _draw(
                         optimized.built.whole,
                         optimized.built.via_inputs,
                         outcome.via_reports,
-                        read.clearances.hole,
+                        read.clearances,
                     ),
                     outcome.unsimplified,
                     outcome.simplified,

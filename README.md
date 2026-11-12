@@ -467,7 +467,8 @@ ground net leave each other alone, as vias of any other net do.
 | `--attraction-range MM` | 3.0 | Centre distance at which the pull between a ground via and a regular via fades to zero. |
 | `--ground-nets NET ...` | detected | The ground nets, instead of the nets with copper zones on at least two inner layers, or `GND`. |
 | `--edge-clearance MM` | project, else 0.3 | Clearance to the board edge. Without it, the minimum copper to edge clearance in the project's Board Setup (see [Clearances](#clearances)). |
-| `--hole-clearance MM` | project, else 0.25 | Clearance between drilled holes and other nets' copper. Without it, the minimum hole clearance in the project's Board Setup. A moving via's hole also keeps 0.25 mm from every other hole. |
+| `--hole-clearance MM` | project, else 0.25 | Clearance between drilled holes and other nets' copper. Without it, the minimum hole clearance in the project's Board Setup. |
+| `--hole-to-hole MM` | project, else 0.25 | Clearance between a moving via's hole and every other hole. Without it, the minimum hole to hole in the project's Board Setup. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so it runs over by about one L-BFGS iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
 | `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
@@ -496,9 +497,9 @@ such as the end of a differential pair's coupled section, at a corner.
 
 kibends keeps only the clearances its optimizer models: the board's
 netclass clearances, including pad and footprint clearance overrides; the
-minimum copper to edge clearance and minimum hole clearance of the
-project's Board Setup, unless `--edge-clearance` or `--hole-clearance`
-gives them; rule areas that keep
+minimum copper to edge clearance, minimum hole clearance and minimum hole
+to hole of the project's Board Setup, unless `--edge-clearance`,
+`--hole-clearance` or `--hole-to-hole` gives them; rule areas that keep
 out tracks or vias, which moving vias stay out of as well; and, for a
 moving via, the outlines and clearances of the zones it connects to. Rule
 areas' other keepouts, of pads, copper pours and footprints, are not seen.
@@ -510,13 +511,14 @@ stricter than the netclass clearances (a larger clearance for vias, say)
 can therefore be violated by the smoothed tracks. Those are left to
 KiCad's DRC: run it after smoothing.
 
-KiCad's API does not expose the design rules, so kibends reads the two
+KiCad's API does not expose the design rules, so kibends reads the three
 Board Setup constraints from the project file (`.kicad_pro`), as KiCad
 last saved it: save the board after changing them. Without a project
 file, or without a value in it, the defaults of the table above apply. Each
-run logs where its edge and hole clearances came from. A project value below
-its default is used, as KiCad's DRC uses it too, with a warning naming the
-option that overrides it: many project files hold 0 for a rule nobody set.
+run logs where its edge, hole and hole-to-hole clearances came from. A
+project value below its default is used, as KiCad's DRC uses it too, with a
+warning naming the option that overrides it: many project files hold 0 for
+a rule nobody set.
 
 ### Editing a smoothed track
 

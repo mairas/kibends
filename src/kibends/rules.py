@@ -1,11 +1,13 @@
-"""Edge and hole clearance from the project's Board Setup constraints.
+"""Edge, hole and hole-to-hole clearance from the project's Board Setup
+constraints.
 
-kicad-python cannot read a board's design rules, so a run reads the two
+kicad-python cannot read a board's design rules, so a run reads the three
 it models from the project file, the JSON `.kicad_pro` in the project's
-directory, at `board.design_settings.rules`: `min_copper_edge_clearance`
-and `min_hole_clearance`, in mm. A value the caller gives wins over the
-file. With no project, no project file or no such rule, the defaults of
-`obstacles.EDGE_CLEARANCE` and `HOLE_CLEARANCE` apply; a file that is no
+directory, at `board.design_settings.rules` (`RULES`): `min_copper_edge_clearance`,
+`min_hole_clearance` and `min_hole_to_hole`, in mm. A value the caller
+gives wins over the file. With no project, no project file or no such
+rule, the defaults of `obstacles.EDGE_CLEARANCE`, `HOLE_CLEARANCE` and
+`HOLE_TO_HOLE` apply; a file that is no
 project file, or a rule that is no clearance, also warns. A rule below its
 default is kept, since the DRC checks the same rule, but warns: project
 files often hold 0 for rules their author never set. The file is what
@@ -15,20 +17,34 @@ logs where each value came from.
 
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple, cast
 
 import kipy.board
 from loguru import logger
 
-from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
+from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE
 
 PROJECT_SUFFIX = ".kicad_pro"
-EDGE_RULE = "min_copper_edge_clearance"
-HOLE_RULE = "min_hole_clearance"
-# The command line options that override each rule.
-FLAGS = {EDGE_RULE: "--edge-clearance", HOLE_RULE: "--hole-clearance"}
 RULES_PATH = ("board", "design_settings", "rules")
+
+
+class Rule(NamedTuple):
+    key: str
+    """Its name among the project file's rules."""
+    default: float
+    """mm, where the project file gives none."""
+    label: str
+    """What the log calls it."""
+
+
+RULES = {
+    "edge": Rule("min_copper_edge_clearance", EDGE_CLEARANCE, "edge clearance"),
+    "hole": Rule("min_hole_clearance", HOLE_CLEARANCE, "hole clearance"),
+    "hole_to_hole": Rule("min_hole_to_hole", HOLE_TO_HOLE, "hole to hole"),
+}
+"""The rules a run reads, by the `Clearances` field each gives."""
 
 
 class Clearances(NamedTuple):
@@ -36,52 +52,69 @@ class Clearances(NamedTuple):
     """To the board edge, mm."""
     hole: float
     """Between drilled holes and other nets' copper, mm."""
+    hole_to_hole: float
+    """Between the edges of drilled holes, mm."""
 
 
 def read_clearances(
-    board: kipy.board.Board, *, edge: float | None, hole: float | None
+    board: kipy.board.Board,
+    *,
+    edge: float | None,
+    hole: float | None,
+    hole_to_hole: float | None,
+    override_names: Mapping[str, str],
 ) -> Clearances:
-    """`edge` and `hole` where given, else the project file's rules, else
-    the defaults, with one log line saying where each came from. The
-    project file is read only when a value is not given."""
+    """`edge`, `hole` and `hole_to_hole` where given, else the project
+    file's rules, else the defaults, with one log line saying where each
+    came from. The project file is read only when a value is not given.
+
+    `override_names` names, by `Clearances` field, what the caller's user
+    gives to override each rule, for the warning about a rule below its
+    default; a rule it does not name is warned about without it."""
+    given = {"edge": edge, "hole": hole, "hole_to_hole": hole_to_hole}
     rules: dict[str, float] = {}
     name = ""
-    if edge is None or hole is None:
+    if None in given.values():
         path = _project_file(board)
         if path is None:
             logger.debug("The board has no project: no project file to read")
         else:
             name = path.name
             rules = _read_rules(path)
-    (edge_value, edge_source), (hole_value, hole_source) = (
-        _resolved(given, rule, rules.get(rule), default, name)
-        for given, rule, default in (
-            (edge, EDGE_RULE, EDGE_CLEARANCE),
-            (hole, HOLE_RULE, HOLE_CLEARANCE),
+    resolved = {
+        field: _resolved(
+            given[field], rule, rules.get(rule.key), name, override_names.get(field)
         )
+        for field, rule in RULES.items()
+    }
+    line = ", ".join(
+        f"{RULES[field].label} {value:g} mm {source}"
+        for field, (value, source) in resolved.items()
     )
-    logger.info(
-        f"Edge clearance {edge_value:g} mm {edge_source}, "
-        f"hole clearance {hole_value:g} mm {hole_source}"
-    )
-    return Clearances(edge_value, hole_value)
+    logger.info(line[0].upper() + line[1:])
+    return Clearances(**{field: value for field, (value, _) in resolved.items()})
 
 
 def _resolved(
-    given: float | None, rule: str, ruled: float | None, default: float, name: str
+    given: float | None,
+    rule: Rule,
+    ruled: float | None,
+    name: str,
+    override: str | None,
 ) -> tuple[float, str]:
     """The value and where it came from, warning when the project file's
-    `rule` is below `default`."""
+    `rule` is below its default, naming `override` if given."""
     if given is not None:
         return given, "as given"
     if ruled is not None:
-        if ruled < default:
+        if ruled < rule.default:
+            hint = "" if override is None else f"; give {override} to override it"
             logger.warning(
-                f"{name} sets {rule} to {ruled:g} mm, below the default "
-                f"{default:g} mm; give {FLAGS[rule]} to override it"
+                f"{name} sets {rule.key} to {ruled:g} mm, below the default "
+                f"{rule.default:g} mm{hint}"
             )
         return ruled, f"from {name}"
-    return default, "by default"
+    return rule.default, "by default"
 
 
 def _project_file(board: kipy.board.Board) -> Path | None:
@@ -99,7 +132,7 @@ def _project_file(board: kipy.board.Board) -> Path | None:
 
 
 def _read_rules(path: Path) -> dict[str, float]:
-    """The edge and hole clearance rules `path` holds, by name; none when it
+    """The clearance rules of `RULES` that `path` holds, by key; none when it
     is missing, with a warning when it is no project file."""
     try:
         settings: object = json.loads(path.read_text(encoding="utf-8"))
@@ -107,21 +140,18 @@ def _read_rules(path: Path) -> dict[str, float]:
         logger.debug(f"No project file {path.name}")
         return {}
     except (OSError, ValueError) as e:
-        logger.warning(
-            f"Cannot read {path.name} ({e}); using the default edge and hole clearances"
-        )
+        logger.warning(f"Cannot read {path.name} ({e}); using the default clearances")
         return {}
     rules = settings
     for key in RULES_PATH:
         rules = _member(rules, key)
     if not isinstance(rules, dict):
         logger.warning(
-            f"{path.name} holds no Board Setup rules; using the default edge "
-            "and hole clearances"
+            f"{path.name} holds no Board Setup rules; using the default clearances"
         )
         return {}
     found: dict[str, float] = {}
-    for rule in (EDGE_RULE, HOLE_RULE):
+    for rule in (r.key for r in RULES.values()):
         value = cast(dict[str, object], rules).get(rule)
         if value is None and rule not in rules:
             continue
