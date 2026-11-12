@@ -338,7 +338,7 @@ class _Polyline(NamedTuple):
 
 def _polyline(points: FloatArray) -> _Polyline:
     delta = np.diff(points, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
+    lengths = np.linalg.norm(delta, axis=1)
     arc = np.concatenate([[0.0], np.cumsum(lengths)])
     return _Polyline(points[:-1], delta / lengths[:, None], lengths, arc)
 
@@ -688,9 +688,7 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
     t = np.clip(projection, 0.0, line.lengths[index])
     foot = line.starts[index] + t[:, None] * line.directions[index]
     offset = points - foot
-    return _Nearest(
-        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), index
-    )
+    return _Nearest(foot, line.arc[index] + t, np.linalg.norm(offset, axis=1), index)
 
 
 def offset_pair(
@@ -733,7 +731,7 @@ def _miters(polyline: FloatArray) -> FloatArray:
     the right of travel (y down): the bisector, scaled by 1/cos(turn/2), at
     most as much as at MAX_SMOOTH_TURN (`MITER_FLOOR`)."""
     delta = np.diff(polyline, axis=0)
-    direction = delta / np.hypot(delta[:, 0], delta[:, 1])[:, None]
+    direction = delta / np.linalg.norm(delta, axis=1)[:, None]
     normal = np.stack([-direction[:, 1], direction[:, 0]], axis=1)
     before = np.concatenate([normal[:1], normal])
     after = np.concatenate([normal, normal[-1:]])

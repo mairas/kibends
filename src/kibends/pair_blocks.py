@@ -108,7 +108,7 @@ def _separation(end: FloatArray, toward: FloatArray, point: FloatArray) -> float
     step = toward - end
     offset = point - end
     cross = step[0] * offset[1] - step[1] * offset[0]
-    return abs(float(cross)) / float(np.hypot(step[0], step[1]))
+    return abs(float(cross)) / math.hypot(step[0], step[1])
 
 
 class _Pins(NamedTuple):
@@ -430,7 +430,7 @@ def _pin_directions(
     for k in range(len(line) - 1):
         start, end = line[k], line[k + 1]
         ends = (bool(pins[k]), bool(pins[k + 1]))
-        length = float(np.hypot(*(end - start)))
+        length = math.hypot(*(end - start))
         if length >= (STUB_SPACINGS + ends.count(True) - 1) * spacing:
             reach = spacing
         else:
