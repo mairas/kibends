@@ -1561,11 +1561,41 @@ mod tests {
                 }
             })
             .collect();
+        let setups = given
+            .iter()
+            .map(|&(_, rise, length)| MemberSetup {
+                original: vec![
+                    V2::new(0.0, 0.0),
+                    V2::new(length / 2.0, rise),
+                    V2::new(length, 0.0),
+                ],
+                anchors: vec![true, false, true],
+                contacts: vec![],
+                held: false,
+                limit: None,
+            })
+            .collect();
+        let vias: Vec<(V2, Arc<dyn Field>)> =
+            via.into_iter().map(|copper| (VIA_AT, copper)).collect();
+        let rings = vias.iter().map(|_| vec![]).collect();
+        state(members, setups, vias, rings, settings)
+    }
+
+    /// The state of `members` set up as `setups`, with a via per (start,
+    /// static copper) in `vias` whose ring each member of `rings` reaches,
+    /// none seeing another or stopping at another.
+    fn state(
+        members: Vec<Member>,
+        setups: Vec<MemberSetup>,
+        vias: Vec<(V2, Arc<dyn Field>)>,
+        rings: Vec<Vec<(usize, f64)>>,
+        settings: Settings,
+    ) -> State {
         let count = members.len();
-        let vias: Vec<ViaSetup> = via
+        let vias: Vec<ViaSetup> = vias
             .into_iter()
-            .map(|copper| ViaSetup {
-                start: VIA_AT,
+            .map(|(start, copper)| ViaSetup {
+                start,
                 carried: vec![],
                 copper,
                 stop_parts: vec![None, None],
@@ -1574,7 +1604,7 @@ mod tests {
         let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
         let energy = Problem {
             members: Members::new(members),
-            rings: none.clone(),
+            rings,
             vias: vias
                 .iter()
                 .map(|v| super::super::problem::ProblemVia {
@@ -1591,20 +1621,7 @@ mod tests {
         };
         State::new(Setup {
             energy: Arc::new(energy),
-            members: given
-                .iter()
-                .map(|&(_, rise, length)| MemberSetup {
-                    original: vec![
-                        V2::new(0.0, 0.0),
-                        V2::new(length / 2.0, rise),
-                        V2::new(length, 0.0),
-                    ],
-                    anchors: vec![true, false, true],
-                    contacts: vec![],
-                    held: false,
-                    limit: None,
-                })
-                .collect(),
+            members: setups,
             vias,
             groups: vec![],
             sight: ViaSight::new(&none, &none, count),
@@ -2505,36 +2522,6 @@ mod tests {
                 limit: None,
             }),
         };
-        let members = vec![section, chain("N1"), chain("N2")];
-        let count = members.len();
-        let vias: Vec<ViaSetup> = via
-            .into_iter()
-            .map(|start| ViaSetup {
-                start,
-                carried: vec![],
-                copper: Arc::new(FreeSpace),
-                stop_parts: vec![None, None],
-            })
-            .collect();
-        let rings: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![(1, 0.5)]).collect();
-        let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
-        let energy = Problem {
-            members: Members::new(members),
-            rings,
-            vias: vias
-                .iter()
-                .map(|v| super::super::problem::ProblemVia {
-                    diameter: 0.6,
-                    field: v.copper.clone(),
-                    stops: None,
-                })
-                .collect(),
-            repel: ViaSight::new(&none, &none, count),
-            stop: ViaSight::new(&none, &none, count),
-            pairs: None,
-            params: params(),
-            short_edge: 0.05,
-        };
         let setup = |original: Vec<V2>, held: bool| MemberSetup {
             anchors: (0..original.len())
                 .map(|k| held || k == 0 || k == original.len() - 1)
@@ -2544,19 +2531,22 @@ mod tests {
             held,
             limit: None,
         };
-        State::new(Setup {
-            energy: Arc::new(energy),
-            members: vec![
+        let vias: Vec<(V2, Arc<dyn Field>)> = via
+            .into_iter()
+            .map(|start| (start, Arc::new(FreeSpace) as Arc<dyn Field>))
+            .collect();
+        let rings = vias.iter().map(|_| vec![(1, 0.5)]).collect();
+        state(
+            vec![section, chain("N1"), chain("N2")],
+            vec![
                 setup(line(10.0, HELD_A), true),
                 setup(line(0.0, 3), false),
                 setup(line(3.0, 3), false),
             ],
             vias,
-            groups: vec![],
-            sight: ViaSight::new(&none, &none, count),
-            settings: settings(),
-        })
-        .expect("finite")
+            rings,
+            settings(),
+        )
     }
 
     #[test]
