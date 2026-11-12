@@ -57,7 +57,7 @@ from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
-from kibends.obstacles import CompositeField, containment, plain_shapes
+from kibends.obstacles import CompositeField, containment, core_via, plain_shapes
 from kibends.pairs import in_diff_pair
 from kibends.snapshot import (
     Disc,
@@ -172,16 +172,10 @@ def pair_kind(
     via: Via, ground: bool, other: Via, other_ground: bool
 ) -> PairKind | None:
     """How `via` and `other`, each a ground via or not, interact in the
-    pairwise term; None if they do not."""
-    if not via.shares_layer(other):
-        return None
-    if via.net == other.net:
-        return PairKind.SPREAD if ground else None
-    if ground and other_ground:
-        return PairKind.GROUNDS
-    if ground or other_ground:
-        return PairKind.RETURN
-    return None
+    pairwise term; None if they do not
+    (`kibends_core::vias::pairs::pair_kind`)."""
+    kind = _core.pair_kind(core_via(via), ground, core_via(other), other_ground)
+    return None if kind is None else PairKind(kind)
 
 
 def pairs_with(via: Via, ground: bool, other: StaticVia) -> bool:
