@@ -351,8 +351,8 @@ def _point_at(points: FloatArray, distances: FloatArray) -> FloatArray:
     arc = _polyline(points).arc
     return np.stack(
         [
-            np.interp(distances, arc, points[:, 0]),
-            np.interp(distances, arc, points[:, 1]),
+            _core.interp(distances, arc, points[:, 0]),
+            _core.interp(distances, arc, points[:, 1]),
         ],
         axis=-1,
     )
@@ -620,7 +620,7 @@ def _with_vertices(
         arc = _polyline(points).arc
         if np.abs(arc - distance).min() > snap:
             index = int(np.searchsorted(arc, distance))
-            vertex = _point_at(points, np.array(distance))
+            vertex = _point_at(points, np.array([distance]))[0]
             points = np.insert(points, index, vertex, axis=0)
             pinned = np.insert(pinned, index, False)
     arc = _polyline(points).arc
