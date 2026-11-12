@@ -150,6 +150,11 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+L_COARSE_BURSTS = 8
+"""Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
+reaches the final spacing."""
 
 
 SPACING_MEASURED = 1e-3
@@ -809,6 +814,41 @@ class TestSmooth:
         assert [segment(t) for t in cast(list[kbt.Track], board.created)] == [
             segment(t) for t in cast(list[kbt.Track], capped.created)
         ]
+
+    @pytest.mark.parametrize(
+        ("limit", "warning"),
+        # Of the L's run: the probe, then bursts at 1.2 mm until the level
+        # settles at L_COARSE_BURSTS.
+        [
+            (1.5, "time limit before reaching the final spacing"),
+            (L_COARSE_BURSTS + 0.5, "time limit without converging"),
+        ],
+        ids=["at a coarse level", "at the final level"],
+    )
+    def test_a_time_limit_warns_whether_it_stopped_before_the_final_spacing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        limit: float,
+        warning: str,
+    ) -> None:
+        connect.to(l_board())
+        monkeypatch.setattr(
+            pipeline,
+            "optimize_chains",
+            at(replace(COARSE, coarse_spacings=COARSE_LEVELS)),
+        )
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
+
+        run("--dry-run", f"--time-limit={limit}")
+
+        (stopped,) = [
+            line
+            for line in log
+            if line.startswith("WARNING The optimizer stopped at its time limit")
+        ]
+        assert warning in stopped
 
     def test_reports_the_optimize_stages_wall_time(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -3485,7 +3525,7 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     chain = pipeline.ChainReport("SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, 2, True)
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), rejected_edges=3)
     report = pipeline.OptimizerReport(
-        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, (), BOARD_FRAME
+        (chain,), (via,), (), Termination.CONVERGED, 7, False, 3.42, (), BOARD_FRAME
     )
 
     outcome = cli.format_outcome(report)
@@ -3517,6 +3557,7 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
         (pair,),
         Termination.CONVERGED,
         7,
+        False,
         0.04,
         ((problem, 2),),
         UserFrame((0.5, 3.0)),

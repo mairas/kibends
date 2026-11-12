@@ -37,7 +37,7 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
@@ -518,7 +518,8 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 BURST_LINE = re.compile(
     r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS iterations, "
     r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
-    r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"$'
+    r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"'
+    r"(?:, at (\d+(?:\.\d+)?) mm spacing)?$"
 )
 LOGGED_BURSTS = 3
 
@@ -529,6 +530,9 @@ class BurstCost(NamedTuple):
     evaluating: float
     rest: float
     ending: str
+    coarse: float | None
+    """The spacing of the coarse level it ran at, mm; None at the final
+    spacing."""
 
 
 def burst_costs(log: list[str]) -> list[BurstCost]:
@@ -537,7 +541,14 @@ def burst_costs(log: list[str]) -> list[BurstCost]:
     matches = [BURST_LINE.match(line) for line in lines]
     assert all(matches), lines
     return [
-        BurstCost(int(m[1]), int(m[2]), float(m[3]), float(m[4]), m[5])
+        BurstCost(
+            int(m[1]),
+            int(m[2]),
+            float(m[3]),
+            float(m[4]),
+            m[5],
+            None if m[6] is None else float(m[6]),
+        )
         for m in matches
         if m
     ]
@@ -560,6 +571,87 @@ def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
     assert sum(cost.evaluating for cost in costs) > 0
     info = [line for line in log if line.startswith("INFO")]
     assert info and not any("Burst" in line for line in info)
+
+
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+BOWED = ((0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
+"""A chain the probe at the final spacing does not settle."""
+
+
+def stage_lines(log: list[str]) -> list[str]:
+    """The lines that say a problem enters a level."""
+    return [line.strip() for line in log if "coarsely" in line or "Refining" in line]
+
+
+def on_two_layers(*vertices: tuple[float, float]) -> list[ChainInput]:
+    """A chain on F.Cu and a copy on B.Cu: two problems."""
+    return [
+        scenarios.selected(layer, layer, FreeSpace(), *vertices, layer=layer)
+        for layer in ("F.Cu", "B.Cu")
+    ]
+
+
+def test_each_problem_logs_each_level_it_enters_once_at_info(log: list[str]) -> None:
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+
+    result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
+
+    assert result.termination is Termination.CONVERGED
+    for layer in ("F.Cu", "B.Cu"):
+        assert [line for line in stage_lines(log) if f" on {layer} " in line] == [
+            f"INFO Optimizing the chains on {layer} coarsely, at 1.2 mm spacing",
+            f"INFO Optimizing the chains on {layer} coarsely, at 0.6 mm spacing",
+            f"INFO Refining the chains on {layer} at 0.3 mm spacing",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("vertices", "coarse"),
+    [(BOWED, ()), (((0.0, 0.0), (10.0, 0.0)), COARSE_LEVELS)],
+    ids=["one spacing", "nothing to do"],
+)
+def test_a_run_without_levels_to_enter_logs_no_stage(
+    log: list[str],
+    vertices: tuple[tuple[float, float], ...],
+    coarse: tuple[float, ...],
+) -> None:
+    optimize_chains(
+        on_two_layers(*vertices), PARAMS, replace(COARSE, coarse_spacings=coarse)
+    )
+
+    assert stage_lines(log) == []
+
+
+def test_a_burst_at_a_coarse_level_logs_its_spacing(log: list[str]) -> None:
+    polyline, fixed = chain(*BOWED)
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+
+    optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
+
+    levels = [cost.coarse for cost in burst_costs(log)]
+    # The probe at the final spacing, then each level in turn.
+    assert levels[0] is None
+    assert levels[-1] is None
+    assert [c for c in dict.fromkeys(levels) if c is not None] == list(COARSE_LEVELS)
+
+
+@pytest.mark.parametrize(
+    ("cap", "before_final"),
+    # Of BOWED's run: the probe, two bursts at 1.2 mm, one at 0.6 mm, then
+    # the final spacing.
+    [(2, True), (4, False)],
+    ids=["at a coarse level", "at the final level"],
+)
+def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
+    cap: int, before_final: bool
+) -> None:
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, max_iterations=cap)
+
+    result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
+
+    assert result.termination is Termination.ITERATION_CAP
+    assert result.before_final_spacing is before_final
 
 
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:

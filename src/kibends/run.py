@@ -233,6 +233,9 @@ class OptimizerReport:
     iterations: int
     """Outer iterations, each giving every problem that has not settled
     one burst, holds included."""
+    before_final_spacing: bool
+    """Whether the run stopped at its iteration cap or time limit while
+    some problem ran at a coarse spacing."""
     elapsed: float
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
@@ -357,6 +360,7 @@ def run_smooth(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            run.before_final_spacing,
             optimized.elapsed,
             run.abnormal,
             read.frame,
@@ -651,6 +655,7 @@ def _commit(
             outcome.pair_reports,
             run.termination,
             run.iterations,
+            run.before_final_spacing,
             optimized.elapsed,
             run.abnormal,
             read.frame,

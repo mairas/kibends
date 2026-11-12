@@ -210,7 +210,9 @@ burst spreads over every logical CPU; set the environment variable
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
 nothing to do, or stopped at its iteration cap or the time limit, each
-keeping the best result found. It stopped on abnormal bursts when L-BFGS
+keeping the best result found; the warning of a run that stopped while some
+problem was still at a coarse spacing says it stopped before reaching the
+final spacing. It stopped on abnormal bursts when L-BFGS
 ended three bursts of some problem in a row abnormally after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
@@ -220,7 +222,11 @@ with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
 iteration how long setup took, how many problems it split the selection into
 (the layers or groups of layers the moving tracks and vias tie together), and
-their starting summed length and energy. When it holds a differential
+their starting summed length and energy. With coarse spacings, it says
+when each problem starts at each of them ("Optimizing the chains on F.Cu
+coarsely, at 1.6 mm spacing") and at the final spacing ("Refining the chains
+on F.Cu at 0.1 mm spacing"); a problem that settles in its first burst,
+which runs at the final spacing, skips the coarse spacings and logs neither. When it holds a differential
 pair's section, it says how many chains and vias it put back.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed

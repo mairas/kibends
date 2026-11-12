@@ -703,6 +703,30 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     )
 
 
+HELD_COARSELY = 8
+"""An iteration cap at which `pair_tent_under_roof` with coarse levels
+1.2 and 0.6 mm reaches it at 0.6 mm, so that its section is held there."""
+
+
+def test_a_hold_at_a_coarse_level_logs_no_stage_again(log: list[str]) -> None:
+    settings = replace(COARSE, coarse_spacings=(1.2, 0.6), max_iterations=HELD_COARSELY)
+
+    result = hold_once(scenarios.pair_tent_under_roof(), settings)
+
+    assert result.termination is Termination.CONVERGED
+    stages = [
+        line.strip()
+        for line in log
+        if any(word in line for word in ("coarsely", "Refining", "Holding"))
+    ]
+    assert [line.split(" and going on")[0] for line in stages] == [
+        "INFO Optimizing the chains on F.Cu coarsely, at 1.2 mm spacing",
+        "INFO Optimizing the chains on F.Cu coarsely, at 0.6 mm spacing",
+        "INFO Holding 1 coupled section of the chains on F.Cu as drawn",
+        "INFO Refining the chains on F.Cu at 0.3 mm spacing",
+    ]
+
+
 TENT_SHIFT = 12.0
 """mm along x between the two tents of `two_tents`, far enough that neither
 sees the other."""

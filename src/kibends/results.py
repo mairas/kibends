@@ -128,3 +128,7 @@ class RunResult:
     """The problems whose bursts L-BFGS ended abnormally, by description,
     and how many there were. A burst moves every chain, section and via of
     its problem, so it is counted once, for the problem."""
+    before_final_spacing: bool = False
+    """Whether the run stopped, at its iteration cap or time limit, while
+    some problem ran at a coarse level: its result is that level's best
+    state subdivided to the final spacing, or its input."""

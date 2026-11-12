@@ -172,7 +172,10 @@ def optimize_chains(
     time limit in `settings`, the run stops once `clock` reads the limit or
     more past `started`, by default when the run starts: the running burst
     ends at its next L-BFGS iteration, and its state goes through the
-    checks and the guard as any burst's.
+    checks and the guard as any burst's. A run stopped, by either, while
+    some problem runs at a coarse level ends each such problem at the final
+    spacing (`ProblemState.finish`) and says so
+    (`RunResult.before_final_spacing`).
 
     Whenever the run would end, `to_hold` is given each section's best
     state and names the sections to hold (`Hold.CROWDING`). Each problem
@@ -186,8 +189,9 @@ def optimize_chains(
     section that is not held.
 
     It logs at INFO when setup begins, once the problems are built, the
-    setup time and the starting length and energy, and at each hold what
-    it put back. Each outer iteration
+    setup time and the starting length and energy, as each problem enters a
+    level of a schedule with coarse levels its spacing (`_stage`), and at
+    each hold what it put back. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since `started` or the last INFO line. Each burst logs what it
     cost at DEBUG only (`_burst_done`).
@@ -323,9 +327,13 @@ def optimize_chains(
         report.problems = moving
         cap = iteration + settings.max_iterations
     # A run stopped at a coarse level still ends at the final spacing.
+    before_final = any(p.state.level < len(settings.coarse_spacings) for p in moving)
     for p in moving:
         p.state.finish()
-    final = result(termination, iteration, best=True)
+    final = replace(
+        result(termination, iteration, best=True),
+        before_final_spacing=before_final,
+    )
     if final.gave_up and sum(p.best_energy for p in moving) >= sum(
         p.input_energy for p in moving
     ):
@@ -337,6 +345,7 @@ _Notice = (
     _core.FallbackNotice
     | _core.AbnormalNotice
     | _core.BurstNotice
+    | _core.StageNotice
     | _core.ProgressNotice
 )
 
@@ -346,8 +355,10 @@ class _Report:
     `FALLBACK_WARNING`, an abnormal burst and each burst's cost at DEBUG
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
-    `shown`, the last INFO line. The notices name `problems` by their
-    place; the elapsed seconds count from `origin`."""
+    `shown`, the last INFO line. A problem entering a level is logged at
+    INFO (`_stage`). The
+    notices name `problems` by their place; the elapsed seconds count from
+    `origin`."""
 
     def __init__(
         self,
@@ -372,6 +383,8 @@ class _Report:
             )
         elif isinstance(notice, _core.BurstNotice):
             _burst_done(self.problems[notice.problem], notice)
+        elif isinstance(notice, _core.StageNotice):
+            logger.info(_stage(self.problems[notice.problem], notice.level))
         else:
             now = self.clock()
             message = _progress(notice, now - self.origin)
@@ -382,18 +395,40 @@ class _Report:
                 logger.debug(message)
 
 
+def _level_spacing(settings: OptimizerSettings, level: int) -> float:
+    """The spacing of `level` of the schedule: its coarse spacings, then the
+    final one."""
+    coarse = settings.coarse_spacings
+    return coarse[level] if level < len(coarse) else settings.spacing
+
+
+def _stage(problem: _Problem, level: int) -> str:
+    """The line that says `problem` enters `level`, a coarse one or the
+    final one, and its spacing."""
+    spacing = _level_spacing(problem.settings, level)
+    if level < len(problem.settings.coarse_spacings):
+        return f"Optimizing {problem.description} coarsely, at {spacing:g} mm spacing"
+    return f"Refining {problem.description} at {spacing:g} mm spacing"
+
+
 def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
     """Logs at DEBUG what a burst of `problem` cost: L-BFGS's iterations and
     energy evaluations, the seconds those evaluations took and the seconds
-    of the rest of the step, and what L-BFGS says ended it. The seconds are
-    wall time, not by the run's clock. The rest includes L-BFGS's own work
-    and the after-burst check, which the benchmark's "outside L-BFGS"
-    splits differently."""
+    of the rest of the step, and what L-BFGS says ended it, and the spacing
+    of a coarse level it ran at. The seconds are wall time, not by the run's
+    clock. The rest includes L-BFGS's own work and the after-burst check,
+    which the benchmark's "outside L-BFGS" splits differently."""
+    settings = problem.settings
+    coarse = (
+        f", at {_level_spacing(settings, notice.level):g} mm spacing"
+        if notice.level < len(settings.coarse_spacings)
+        else ""
+    )
     logger.debug(
         f"Burst of {problem.description}: {notice.iterations} L-BFGS iterations, "
         f"{notice.evaluations} evaluations, {notice.evaluating:.3f} s in "
         f"evaluations, {notice.rest:.3f} s in the rest of the step, "
-        f'ended with "{notice.message}"'
+        f'ended with "{notice.message}"{coarse}'
     )
 
 
