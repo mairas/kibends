@@ -4,7 +4,11 @@
 iteration cap or time limit) and, at debug, the abnormal bursts, all from
 `run_smooth`'s `on_optimized` callback, and raises the returned report's
 refusal. The per-chain, per-pair and per-via figures stay in the reports
-and are not printed. Every IPC failure ends the
+and are not printed. The first Ctrl-C while reading, building the
+obstacles or optimizing is the run's `stop`, so the run commits the best
+result so far; a second, or one from simplifying on, raises
+`KeyboardInterrupt`, which ends the run with nothing committed, or, during
+the push, as one that may have landed. Every IPC failure ends the
 run with one log line (`_exit_on_failure`), except a copper-text render
 KiCad refuses for another reason, which only warns, and the selection
 after the push (`commit._select`), logged at debug since the commit has
@@ -17,12 +21,14 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 import argparse
 import math
 import os
+import signal
 import sys
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
+from types import FrameType
 from typing import NoReturn, assert_never, cast
 
 from kipy.errors import ApiError
@@ -52,6 +58,7 @@ from kibends.run import (
     PlotUnavailableError,
     ScopeOption,
     SmoothOptions,
+    Stage,
     run_smooth,
 )
 from kibends.snapshot import SelectionError
@@ -84,6 +91,11 @@ DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
 )
+
+STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
+# Until simplifying, a stop keeps the best result so far; from then on
+# nothing is left to stop.
+STOPPABLE_STAGES = frozenset({Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING})
 
 DEFAULT_LOG_LEVEL = "INFO"
 VERBOSE_LOG_LEVEL = "DEBUG"
@@ -138,9 +150,49 @@ def _exit_on_failure() -> Generator[None]:
         )
 
 
+@contextmanager
+def _first_interrupt_stops() -> Generator[
+    tuple[Callable[[], bool], Callable[[Stage], None]]
+]:
+    """A run's `stop` and `on_stage`, with a SIGINT handler under which the
+    first Ctrl-C makes `stop` answer true and a second raises
+    `KeyboardInterrupt`. From the first stage outside `STOPPABLE_STAGES`
+    on, and always on leaving, the previous handler is back.
+
+    The handler sets a flag and writes its notice straight to stderr's file
+    descriptor, so the notice shows at once, while `stop` may not be asked
+    for seconds. It runs wherever the main thread is, the burst's signal
+    check included, and logging from there could re-enter the logger.
+    """
+    previous = signal.getsignal(signal.SIGINT)
+    interrupted = False
+
+    def handle(_signum: int, _frame: FrameType | None) -> None:
+        nonlocal interrupted
+        if interrupted:
+            raise KeyboardInterrupt
+        interrupted = True
+        os.write(sys.stderr.fileno(), f"{STOPPING_MESSAGE}\n".encode())
+
+    def stop() -> bool:
+        return interrupted
+
+    def on_stage(stage: Stage) -> None:
+        if stage not in STOPPABLE_STAGES:
+            signal.signal(signal.SIGINT, previous)
+
+    signal.signal(signal.SIGINT, handle)
+    try:
+        yield stop, on_stage
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def smooth(options: SmoothOptions) -> None:
     """Smooth the chains selected in KiCad, print the optimizer's outcome
-    and, unless dry-running, commit them."""
+    and, unless dry-running, commit them. The first Ctrl-C while reading,
+    building the obstacles or optimizing stops the run, which commits the
+    best result so far (`_first_interrupt_stops`)."""
 
     def show(optimized: OptimizerReport) -> None:
         print(format_outcome(optimized))
@@ -152,7 +204,8 @@ def smooth(options: SmoothOptions) -> None:
                 f"{description} abnormally; the run judged each like any other"
             )
 
-    report = run_smooth(options, show)
+    with _first_interrupt_stops() as (stop, on_stage):
+        report = run_smooth(options, show, stop=stop, on_stage=on_stage)
     if report.refusal is not None:
         raise RunRefusedError(report.refusal)
     if not report.changes:

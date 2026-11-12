@@ -236,6 +236,13 @@ after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS terminated abnormally" and commits nothing.
+Ctrl-C while the run reads the board, builds the obstacles or optimizes
+stops it as the time limit would: it prints "Stopping; press Ctrl-C again
+to abort" at once, the optimizer ends the running burst, and the run simplifies and
+commits the best result found. Stopped before optimizing, it commits
+nothing. A second Ctrl-C, or one after optimizing, ends the run with
+"nothing committed"; one while KiCad applies the commit may leave it
+landed, and the run says to check KiCad's undo history.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after.
 It reports when it starts setting up the optimizer, and before the first

@@ -43,7 +43,7 @@ The design reference is the module docs in both languages: the Python module doc
 - A vertex that keeps a pad or a staying via may move but stays inside it, shrunk by `CONTACT_MARGIN`; the chain keeps touching every pad and via it touched. A vertex on a pad's anchor or a staying via's centre stays there, since KiCad's drag carries only the track ends there.
 - The loose ends of a junction's branches move together and stay one point.
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
-- Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
+- Any failure before the push, in any chain, drops the whole commit. The CLI's first interrupt while reading, building obstacles or optimizing stops the run: a stop before optimizing commits nothing, one while optimizing commits the best result so far; a second interrupt, or one after optimizing, ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
 - Selected arcs are segmented before smoothing; output is always straight tracks.
 - Each energy evaluation spreads over rayon's default pool (`parallel`) and gives the same bits whatever the thread count; `./run test` and `test-all` run one rayon thread per xdist worker.
 
