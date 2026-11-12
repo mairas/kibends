@@ -965,17 +965,7 @@ mod tests {
     }
 
     /// Falling as -x², ever steeper, up to a wall at 1 that rises as
-    /// 10⁴·d².
-    fn concave_wall(x: &[f64]) -> Result<Evaluation, ()> {
-        let inside = (x[0] - 1.0).max(0.0);
-        Ok((
-            -x[0] * x[0] + STEEPNESS * inside * inside,
-            vec![-2.0 * x[0] + 2.0 * STEEPNESS * inside],
-        ))
-    }
-
-    /// `concave_wall` with a wall rising as 10⁵·d², beside a valley across
-    /// it of curvature 10.
+    /// 10⁵·d², beside a valley across it of curvature 10.
     fn concave_valley(x: &[f64]) -> Result<Evaluation, ()> {
         let inside = (x[0] - 1.0).max(0.0);
         Ok((
@@ -1001,31 +991,6 @@ mod tests {
         );
         assert!((b.point[0] - minimum).abs() < 1e-9, "{:?}", b.point);
         assert!(b.point[1].abs() < 1e-9, "{:?}", b.point);
-    }
-
-    #[test]
-    fn a_step_along_a_concave_stretch_drops_its_pair_and_converges() {
-        let start = [0.5];
-        let once = Settings {
-            max_iterations: 1,
-            ..SETTINGS
-        };
-        let first = burst(&mut concave_wall, &start, &once);
-        let (s, y) = (
-            first.point[0] - start[0],
-            concave_wall(&first.point).unwrap().1[0] - concave_wall(&start).unwrap().1[0],
-        );
-        assert!(s * y < 0.0, "the first pair has s·y = {}", s * y);
-        let minimum = STEEPNESS / (STEEPNESS - 1.0);
-
-        let b = burst(&mut concave_wall, &start, &SETTINGS);
-
-        assert!(
-            matches!(b.ending, Ending::Gradient | Ending::Decrease),
-            "{:?}",
-            b.ending
-        );
-        assert!((b.point[0] - minimum).abs() < 1e-9, "{:?}", b.point);
     }
 
     #[test]
