@@ -415,12 +415,13 @@ def _coupled_spans(
         for rows, columns in _components(links)
     ]
     # `_ends` places an end only to within a step, or to a vertex within a
-    # snap; a span no longer than that on either track has no extent.
+    # snap; a span no longer than that on either track has no extent. A span
+    # runs along a; b may run either way.
     resolution = max(step, vertex_snap(chord_tolerance))
     return [
         span
         for span in sorted(spans, key=lambda s: s.a[0])
-        if min(abs(span.a[1] - span.a[0]), abs(span.b[1] - span.b[0])) > resolution
+        if min(span.a[1] - span.a[0], abs(span.b[1] - span.b[0])) > resolution
     ]
 
 
@@ -581,22 +582,27 @@ def _ends(
     end up to a sample `step` short of where a track leaves the band, so each
     end moves to the outermost in-band vertex of either track from a step
     outward to a pitch inward, given as `candidates` (arc length along a,
-    along b), or else stays at the inner of the two run ends.
+    along b), or else stays at the inner of the two run ends. Neither end
+    moves inward past the other, so a run shorter than a pitch keeps its
+    ends in order.
     """
     along_a = _nearest(_point_at(b, np.array(hull_b)), a).along
     start = max(hull_a[0], float(along_a.min()))
     end = min(hull_a[1], float(along_a.max()))
 
-    def snap(target: float, inward: float) -> tuple[float, float]:
+    def snap(target: float, inward: float, limit: float) -> tuple[float, float]:
         reach = inward * (candidates[:, 0] - target)
-        close = candidates[(reach >= -step) & (reach <= pitch)]
+        close = candidates[
+            (reach >= -step) & (reach <= min(pitch, inward * (limit - target)))
+        ]
         if len(close):
             chosen = close[np.argmin(inward * close[:, 0])]
             return float(chosen[0]), float(chosen[1])
         foot = _nearest(_point_at(a, np.array([target])), b).along
         return target, float(foot[0])
 
-    first, last = snap(start, 1.0), snap(end, -1.0)
+    first = snap(start, 1.0, end)
+    last = snap(end, -1.0, first[0])
     return _SectionEnds((first[0], last[0]), (first[1], last[1]))
 
 

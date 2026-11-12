@@ -342,6 +342,71 @@ def test_section_end_snaps_to_a_vertex_at_most_a_sample_step_outward(
     assert ends.b == expected
 
 
+def test_section_ends_of_a_run_shorter_than_a_pitch_do_not_cross() -> None:
+    """The run reaches 5.0..5.05 mm; in-band vertices lie inward of each run
+    end, past the other, but within a pitch of it."""
+    step = 0.02
+    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
+    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
+    candidates = array((4.8, 4.8), (5.25, 5.25))
+
+    ends = _ends(a, b, (5.0, 5.05), (5.0, 5.05), candidates, 2 * HALF_PITCH, step)
+
+    assert ends.a == pytest.approx((5.0, 5.05))
+    assert ends.b == pytest.approx((5.0, 5.05))
+
+
+def test_pair_widening_briefly_at_its_pads_is_coupled_from_the_jog() -> None:
+    """A hand-routed pair (gap 0.25 mm) that widens by 17 µm for 0.25 mm
+    after its pads, then runs on at 45° to a fan-out. The pad stubs shadow
+    the widened stretch, so its sampled run is shorter than a sample step:
+    the section starts at the jog back to the pair's gap."""
+    width = 0.1326
+    pinned = (True, True, False, False, False, False, True)
+    a = Chain(
+        points=(
+            (130.891301, 82.713801),
+            (130.9, 82.7225),
+            (130.9, 82.4725),
+            (130.8913, 82.4638),
+            (130.8913, 82.28924),
+            (131.940375, 81.240165),
+            (132.200165, 81.240165),
+        ),
+        pinned=pinned,
+        width=width,
+        layer="F.Cu",
+        net="USB_D+",
+        segment_ids=(),
+    )
+    b = Chain(
+        points=(
+            (130.508699, 82.713801),
+            (130.5, 82.7225),
+            (130.5, 82.4725),
+            (130.5087, 82.4638),
+            (130.5087, 82.13076),
+            (131.669835, 80.969625),
+            (131.669835, 80.709835),
+        ),
+        pinned=pinned,
+        width=width,
+        layer="F.Cu",
+        net="USB_D-",
+        segment_ids=(),
+    )
+
+    pair = find_pair(a, b, CHORD)
+
+    assert pair is not None
+    (section,) = pair.sections
+    assert not section.b_reversed
+    coupled_a, coupled_b = pair.coupled(section)
+    np.testing.assert_allclose(coupled_a, a.points[2:6])
+    np.testing.assert_allclose(coupled_b, b.points[3:6])
+    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING_TOLERANCE)
+
+
 def test_u_turn_is_one_coupled_section() -> None:
     angles = np.linspace(-np.pi / 2, np.pi / 2, 91)
     turn = np.stack([4.0 + np.cos(angles), np.sin(angles)], axis=1)
