@@ -11,7 +11,7 @@ from conftest import (
     obstacle_energy,
     total_energy,
 )
-from distance_fields import Box, Disc, FloatArray, Walls
+from distance_fields import Box, Disc, FloatArray, NanField, Walls
 from numpy.typing import NDArray
 
 from kibends.energy import (
@@ -272,17 +272,6 @@ class TestTotal:
         np.testing.assert_allclose(gradient, sum(w * g for w, (_, g) in terms))
 
     def test_non_finite_energy_is_an_error(self) -> None:
-        class NanField:
-            def signed_distance(
-                self, points: FloatArray, reach: float = np.inf
-            ) -> tuple[FloatArray, FloatArray]:
-                return np.full(len(points), np.nan), np.zeros_like(points)
-
-            def smooth_distance(
-                self, points: FloatArray, reach: float = np.inf
-            ) -> tuple[FloatArray, FloatArray]:
-                return self.signed_distance(points, reach)
-
         with pytest.raises(ValueError, match="finite"):
             total_energy(NEAR_DISC[0], free(len(NEAR_DISC[0])), NanField(), PARAMS)
 
