@@ -4173,6 +4173,35 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
     assert cli.report_warnings(report) == []
 
 
+@pytest.mark.parametrize(
+    ("before_final_spacing", "warnings"),
+    [
+        (
+            True,
+            ["Stopped before reaching the final spacing; using the best result found"],
+        ),
+        (False, []),
+    ],
+    ids=["at a coarse level", "at the final level"],
+)
+def test_a_stop_says_only_when_it_came_before_the_final_spacing(
+    before_final_spacing: bool, warnings: list[str]
+) -> None:
+    report = pipeline.OptimizerReport(
+        (),
+        (),
+        (),
+        Termination.STOPPED,
+        3,
+        before_final_spacing,
+        0.5,
+        (),
+        UserFrame((0.0, 0.0)),
+    )
+
+    assert cli.report_warnings(report) == warnings
+
+
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:
     connect.to(straight_board())
 

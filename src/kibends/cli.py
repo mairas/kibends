@@ -234,7 +234,8 @@ def format_outcome(report: OptimizerReport) -> str:
 
 def report_warnings(report: OptimizerReport) -> list[str]:
     """An iteration cap or time limit, one line each, saying whether the
-    run stopped before its final spacing."""
+    run stopped before its final spacing; a stop, only when it came before
+    the final spacing, since the user asked for it."""
     unfinished = (
         "before reaching the final spacing"
         if report.before_final_spacing
@@ -250,6 +251,10 @@ def report_warnings(report: OptimizerReport) -> list[str]:
         warnings.append(
             f"The optimizer stopped at its time limit {unfinished}; "
             "using the best result found"
+        )
+    if report.termination is Termination.STOPPED and report.before_final_spacing:
+        warnings.append(
+            "Stopped before reaching the final spacing; using the best result found"
         )
     return warnings
 
