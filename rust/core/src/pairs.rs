@@ -70,7 +70,7 @@ pub fn too_tight(radius: f64, limit: f64) -> bool {
 /// every vertex when None.
 pub fn bend_radii(centreline: &[V2], turning: Option<&[bool]>) -> Vec<f64> {
     let delta: Vec<V2> = centreline.windows(2).map(|w| w[1] - w[0]).collect();
-    let lengths: Vec<f64> = delta.iter().map(|d| d.x.hypot(d.y)).collect();
+    let lengths: Vec<f64> = delta.iter().map(|d| libm::hypot(d.x, d.y)).collect();
     let direction: Vec<V2> = delta
         .iter()
         .zip(&lengths)
@@ -149,7 +149,7 @@ mod tests {
         (0..=steps)
             .map(|k| {
                 let a = std::f64::consts::FRAC_PI_2 * k as f64 / steps as f64;
-                V2::new(radius * a.cos(), radius * a.sin())
+                V2::new(radius * libm::cos(a), radius * libm::sin(a))
             })
             .collect()
     }
@@ -160,7 +160,7 @@ mod tests {
         let turn = std::f64::consts::FRAC_PI_2 / steps as f64;
         let radii = bend_radii(&arc(2.0, steps), None);
         for r in &radii[1..radii.len() - 1] {
-            assert!((r - 2.0 * (turn / 2.0).cos()).abs() < 1e-9, "{r}");
+            assert!((r - 2.0 * libm::cos(turn / 2.0)).abs() < 1e-9, "{r}");
         }
     }
 

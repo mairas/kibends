@@ -521,7 +521,7 @@ mod tests {
         let corners: Vec<(f64, f64)> = (0..segments)
             .map(|k| {
                 let a = std::f64::consts::TAU * f64::from(k) / f64::from(segments);
-                (c.x + radius * a.cos(), c.y + radius * a.sin())
+                (c.x + radius * libm::cos(a), c.y + radius * libm::sin(a))
             })
             .collect();
         ring(&corners)
@@ -643,7 +643,7 @@ mod tests {
                             V2::new(-1.0, 0.0)
                         } else {
                             let angle = random.uniform(0.0, std::f64::consts::TAU);
-                            V2::new(angle.cos(), angle.sin())
+                            V2::new(libm::cos(angle), libm::sin(angle))
                         };
                         let step = random.uniform(0.0, 0.999 * STATIC_SKIN);
                         p + V2::new(step * way.x, step * way.y)

@@ -700,8 +700,8 @@ mod tests {
             .map(|k| {
                 let angle = std::f64::consts::TAU * (k % edges) as f64 / edges as f64;
                 V2::new(
-                    centre.x + radius * angle.cos(),
-                    centre.y + radius * angle.sin(),
+                    centre.x + radius * libm::cos(angle),
+                    centre.y + radius * libm::sin(angle),
                 )
             })
             .collect();

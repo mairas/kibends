@@ -4,7 +4,7 @@ reuses to run its cases under the Rust optimizer.
 While scipy still ran the optimizer, its results on macOS arm64 were
 recorded into `tests/data/scipy_baseline_darwin-arm64.json`, the one
 reference every platform compares with: the Rust optimizer computes the
-same on every platform but for the last bits of libm. The cases are
+same bits on every platform. The cases are
 each scenario of `tests/scenarios.py` that `./run bench --only scenarios`
 runs, at default settings, and the bench case "10 tracks between pad rows
 at 1 mm" through a fake KiCad. For each, a record holds how the run

@@ -286,7 +286,9 @@ pub fn split_edges(vertices: &[V2]) -> (Vec<V2>, Vec<V2>) {
     let mut ends = Vec::new();
     for w in vertices.windows(2) {
         let (a, along) = (w[0], w[1] - w[0]);
-        let parts = (along.x.hypot(along.y) / MAX_EDGE_LENGTH).ceil().max(1.0) as usize;
+        let parts = (libm::hypot(along.x, along.y) / MAX_EDGE_LENGTH)
+            .ceil()
+            .max(1.0) as usize;
         for part in 0..parts {
             let first = part as f64 / parts as f64;
             let last = (part + 1) as f64 / parts as f64;

@@ -313,6 +313,7 @@ version = "0.0.1"
 dependencies = [
  "argmin",
  "argmin-math",
+ "libm",
  "robust",
  "rstar",
 ]

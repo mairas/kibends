@@ -2691,10 +2691,9 @@ def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
 
 CREEP_SETTINGS = replace(STITCHED_SETTINGS, stall_tolerance=5e-4, max_iterations=20)
 """A stall tolerance at which the grid stalls well inside the iteration cap:
-measured on macOS, at iteration 12 on a gain of 2.0 µm. Whether the gain
-lies above the members' own share depends on the last bits of the platform's
-libm (on Linux it stalls at iteration 13 on 0.72 µm), so the test does not
-assert it; `TestStalled` checks that each moving via adds a share."""
+measured, after 15 iterations on a gain of 1.01 µm over the stall window.
+That lies above the members' own share, 1.0 µm, by too little for the test
+to assert; `TestStalled` checks that each moving via adds a share."""
 
 
 def test_moving_vias_end_a_stitched_grid_s_creep(

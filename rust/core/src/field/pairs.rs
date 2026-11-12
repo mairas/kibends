@@ -418,7 +418,7 @@ mod tests {
             &[10.0, 10.0],
             &[0, 1],
         );
-        let expected = 1.0 - super::super::smooth::SMOOTH_WIDTH * 2f64.ln();
+        let expected = 1.0 - super::super::smooth::SMOOTH_WIDTH * libm::log(2.0);
         assert!((found.distance[0] - expected).abs() < 1e-15);
         assert_eq!(found.share, vec![0.5, 0.5]);
         assert!(found.gradient[0].hypot() < 1e-15);

@@ -2,7 +2,7 @@
 (`tests/data/scipy_baseline_darwin-arm64.json`, recorded on macOS arm64
 while scipy ran the optimizer, as `scripts/record_baseline.py` says),
 which every platform compares with, since the Rust optimizer computes the
-same on every platform but for the last bits of libm: every case ends as
+same bits on every platform: every case ends as
 it did under scipy, converged where it converged, its tracks no longer and
 no nearer to copper than scipy's by more than the tolerances below, and
 each moving via no nearer to what the baseline fixes: its static copper,
@@ -12,8 +12,8 @@ it is only checked to hold, within the tolerance.
 
 Lengths are summed over a case, since a via that settles along a flat
 valley trades length between the chains it joins: per chain, the lengths
-differ from scipy's by up to 0.1 mm on darwin-arm64, in sum by at most
-9.4 µm (pair-turning-back-150) and elsewhere by 1 µm. Shorter or farther
+differ from scipy's by up to 0.1 mm, in sum by at most 3.7 µm
+(pair-chamfered, shorter) and elsewhere by 1.3 µm. Shorter or farther
 from copper than scipy is no failure: on via-hemmed scipy itself ended
 0.51 mm shorter on linux-x86_64 than on darwin-arm64.
 """

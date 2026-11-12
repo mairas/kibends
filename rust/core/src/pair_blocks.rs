@@ -22,7 +22,7 @@ use crate::numeric::maximum;
 /// The miter's least scale, 1 + cos(MAX_SMOOTH_TURN): a vertex turning
 /// farther shifts as much as one turning by MAX_SMOOTH_TURN.
 fn miter_floor() -> f64 {
-    1.0 + MAX_SMOOTH_TURN.cos()
+    1.0 + libm::cos(MAX_SMOOTH_TURN)
 }
 
 /// The unit normals of each edge of `polyline`, a quarter turn of its
@@ -33,7 +33,7 @@ fn normals(polyline: &[V2]) -> (Vec<V2>, Vec<V2>, Vec<f64>) {
     let mut lengths = Vec::with_capacity(normal.capacity());
     for w in polyline.windows(2) {
         let delta = w[1] - w[0];
-        let length = delta.x.hypot(delta.y);
+        let length = libm::hypot(delta.x, delta.y);
         let direction = V2::new(delta.x / length, delta.y / length);
         normal.push(V2::new(-direction.y, direction.x));
         along.push(direction);

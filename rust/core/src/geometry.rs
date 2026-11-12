@@ -645,7 +645,7 @@ pub fn outward_normal(shape: &Shape, p: V2, area: bool) -> V2 {
     let before = measured.interpolate((along - NORMAL_PROBE).max(0.0));
     let after = measured.interpolate(along + NORMAL_PROBE);
     let t = after - before;
-    let norm = t.x.hypot(t.y);
+    let norm = libm::hypot(t.x, t.y);
     if norm == 0.0 {
         return FALLBACK_DIRECTION;
     }

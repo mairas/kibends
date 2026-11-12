@@ -43,7 +43,7 @@ pub fn smooth_minimum(point: &[usize], distance: &[f64], count: usize) -> (Vec<f
         .map(|(&p, &d)| {
             let above = d - base[p];
             if above <= SMOOTH_REACH {
-                (-above / SMOOTH_WIDTH).exp()
+                libm::exp(-above / SMOOTH_WIDTH)
             } else {
                 0.0
             }
@@ -58,7 +58,7 @@ pub fn smooth_minimum(point: &[usize], distance: &[f64], count: usize) -> (Vec<f
         .zip(&total)
         .map(|(&b, &t)| {
             if t > 0.0 {
-                b - SMOOTH_WIDTH * t.ln()
+                b - SMOOTH_WIDTH * libm::log(t)
             } else {
                 f64::INFINITY
             }
@@ -115,7 +115,7 @@ pub fn combine_fields(distances: &[&[f64]]) -> (Vec<f64>, Vec<Vec<f64>>) {
         for (share, d) in shares.iter_mut().zip(distances) {
             let above = d[i] - base;
             let s = if above <= SMOOTH_REACH {
-                (-above / SMOOTH_WIDTH).exp()
+                libm::exp(-above / SMOOTH_WIDTH)
             } else {
                 0.0
             };
@@ -124,7 +124,7 @@ pub fn combine_fields(distances: &[&[f64]]) -> (Vec<f64>, Vec<Vec<f64>>) {
         }
         let found = total > 0.0;
         smooth.push(if found {
-            base - SMOOTH_WIDTH * total.ln()
+            base - SMOOTH_WIDTH * libm::log(total)
         } else {
             f64::INFINITY
         });
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn combined_fields_share_points_they_are_equally_near() {
         let (smooth, shares) = combine_fields(&[&[0.2, 0.2], &[0.2, f64::INFINITY]]);
-        assert!((smooth[0] - (0.2 - SMOOTH_WIDTH * 2f64.ln())).abs() < 1e-15);
+        assert!((smooth[0] - (0.2 - SMOOTH_WIDTH * libm::log(2.0))).abs() < 1e-15);
         assert_eq!(smooth[1], 0.2);
         assert_eq!(shares, vec![vec![0.5, 1.0], vec![0.5, 0.0]]);
     }
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn two_equally_near_obstacles_read_tau_ln_2_nearer() {
         let (smooth, share) = smooth_minimum(&[0, 0], &[1.0, 1.0], 1);
-        assert!((smooth[0] - (1.0 - SMOOTH_WIDTH * 2f64.ln())).abs() < 1e-15);
+        assert!((smooth[0] - (1.0 - SMOOTH_WIDTH * libm::log(2.0))).abs() < 1e-15);
         assert_eq!(share, vec![0.5, 0.5]);
     }
 

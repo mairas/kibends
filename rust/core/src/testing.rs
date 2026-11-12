@@ -450,7 +450,7 @@ mod tests {
             misleading: false,
         };
         let (d, g) = walls.smooth_distance(&[V2::new(0.0, 0.0)], INF);
-        assert!((d[0] - (1.0 - 0.005 * 2f64.ln())).abs() < 1e-15);
+        assert!((d[0] - (1.0 - 0.005 * libm::log(2.0))).abs() < 1e-15);
         assert_eq!(g[0].y, 0.0);
         let misleading = Walls {
             half_gap: 1.0,

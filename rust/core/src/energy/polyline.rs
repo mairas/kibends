@@ -99,7 +99,7 @@ pub fn shape_energy(points: &[V2], fixed: &[bool], short_edge: f64) -> TermValue
 /// and differentiable.
 fn curvature(turn: f64) -> (f64, f64) {
     let clipped = clip(turn, -MAX_SMOOTH_TURN, MAX_SMOOTH_TURN);
-    let tangent = (clipped / 2.0).tan();
+    let tangent = libm::tan(clipped / 2.0);
     let slope = 1.0 + tangent * tangent;
     (2.0 * tangent + slope * (turn - clipped), slope)
 }
@@ -122,7 +122,7 @@ impl Bends {
                 let (incoming, outgoing) = (w[0], w[1]);
                 let cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
                 let dot = incoming.x * outgoing.x + incoming.y * outgoing.y;
-                curvature(cross.atan2(dot))
+                curvature(libm::atan2(cross, dot))
             })
             .unzip();
         Self {
@@ -296,7 +296,7 @@ mod tests {
         (0..n)
             .map(|k| {
                 let theta = angle * k as f64 / (n - 1) as f64;
-                V2::new(radius * theta.cos(), radius * theta.sin())
+                V2::new(radius * libm::cos(theta), radius * libm::sin(theta))
             })
             .collect()
     }

@@ -12,5 +12,6 @@ publish.workspace = true
 [dependencies]
 argmin = { version = "0.11", default-features = false }
 argmin-math = { version = "0.5", default-features = false, features = ["vec"] }
+libm = "0.2.16"
 robust = "1"
 rstar = "0.14"
