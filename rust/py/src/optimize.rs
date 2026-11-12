@@ -927,10 +927,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;
     m.add("MAX_ABNORMAL_BURSTS", core::MAX_ABNORMAL_BURSTS)?;
-    m.add("NOTHING_MOVED", core::NOTHING_MOVED)?;
     m.add("PRESSED_DEPTH", core::PRESSED_DEPTH)?;
     m.add("INSIDE_TOLERANCE", core::INSIDE_TOLERANCE)?;
-    m.add("DEEPER_ROUND_OFF", core::DEEPER_ROUND_OFF)?;
     Ok(())
 }
 
@@ -940,17 +938,10 @@ pyo3_stub_gen::module_variable!(
     u32,
     core::MAX_ABNORMAL_BURSTS
 );
-pyo3_stub_gen::module_variable!("kibends._core", "NOTHING_MOVED", f64, core::NOTHING_MOVED);
 pyo3_stub_gen::module_variable!("kibends._core", "PRESSED_DEPTH", f64, core::PRESSED_DEPTH);
 pyo3_stub_gen::module_variable!(
     "kibends._core",
     "INSIDE_TOLERANCE",
     f64,
     core::INSIDE_TOLERANCE
-);
-pyo3_stub_gen::module_variable!(
-    "kibends._core",
-    "DEEPER_ROUND_OFF",
-    f64,
-    core::DEEPER_ROUND_OFF
 );

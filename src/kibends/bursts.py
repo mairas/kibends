@@ -8,7 +8,9 @@ calling Python. Between iterations it checks for signals and asks the
 caller's `stop`, so that Ctrl-C and the time limit end it there.
 
 A burst does not bound its coordinates; a check after the run moves back
-whatever newly crosses an obstacle.
+whatever newly crosses an obstacle. The run loop (`kibends_core::optimize`)
+runs each of its bursts through `optimize.run_burst`, which is this
+module's, with its check a `kibends._core.Revert`.
 
 A burst whose objective is a `ScaledObjective` minimises over y, with
 x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS's one

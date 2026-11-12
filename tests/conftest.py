@@ -175,9 +175,9 @@ def _uses_a_fallback_fixture(node: pytest.Item | pytest.Collector) -> bool:
 
 @pytest.fixture(autouse=True)
 def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Fails any test in which a burst's check reaches the fallback of
-    `bursts.revert_until_clear`, or that uses a fixture whose setup did,
-    unless marked `fallback`."""
+    """Fails any test in which a burst's check reaches the fallback that
+    moves it back whole (`FALLBACK_WARNING`), or that uses a fixture whose
+    setup did, unless marked `fallback`."""
     warned: list[str] = []
     sink = _fallback_sink(warned)
     yield

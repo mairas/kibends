@@ -18,7 +18,6 @@ __all__ = [
     "ChainField",
     "CompositeField",
     "Curvature",
-    "DEEPER_ROUND_OFF",
     "DEFAULT_ATTRACTION_RANGE",
     "EdgesClear",
     "FallbackNotice",
@@ -35,7 +34,6 @@ __all__ = [
     "Member",
     "Members",
     "MovingVias",
-    "NOTHING_MOVED",
     "NeighbourList",
     "OUTSIDE",
     "Objective",
@@ -127,7 +125,6 @@ A field implemented here, which a `CompositeField` can join.
 """
 
 AREA: builtins.int = 1
-DEEPER_ROUND_OFF: builtins.float = 1e-09
 DEFAULT_ATTRACTION_RANGE: builtins.float = 3.0
 INDEXED_EDGES: builtins.int = 128
 INSIDE_TOLERANCE: builtins.float = 1e-07
@@ -135,7 +132,6 @@ LINE: builtins.int = 0
 MAX_ABNORMAL_BURSTS: builtins.int = 3
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
 MIN_EDGE_LENGTH: builtins.float = 1e-06
-NOTHING_MOVED: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
 PRESSED_DEPTH: builtins.float = 0.02
 SKIN_LEAST: builtins.float = 0.05

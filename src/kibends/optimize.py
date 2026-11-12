@@ -66,10 +66,6 @@ MAX_ABNORMAL_BURSTS = _core.MAX_ABNORMAL_BURSTS
 """After this many abnormal L-BFGS ends in a row a problem counts as
 settled and keeps what its bursts reached."""
 
-NOTHING_MOVED = _core.NOTHING_MOVED
-"""A run whose steps change no shape by more than this, KiCad's 1 nm grid,
-mm, has nothing to do, however its stop rules are set."""
-
 PRESSED_DEPTH = _core.PRESSED_DEPTH
 """How deep inside the other members' and vias' clearance, mm, a vertex
 lies when resampling keeps it where it is."""
