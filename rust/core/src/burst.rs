@@ -964,6 +964,39 @@ mod tests {
         assert!(!b.abnormal(), "{:?}", b.ending);
     }
 
+    #[test]
+    fn a_search_after_a_dropped_first_pair_starts_at_a_step_of_1() {
+        // Falling at slope 4 up to `wall`'s wall: the first search ends on
+        // the straight stretch, where its pair is dropped. The next search,
+        // along the gradient, starts at a step of 1, 4 beyond, not at one
+        // of unit length as the first did.
+        const SLOPE: f64 = 4.0;
+        let mut steep = |x: &[f64]| -> Result<Evaluation, ()> {
+            let inside = (x[0] - 1.0).max(0.0);
+            Ok((
+                -SLOPE * x[0] + STEEPNESS * inside * inside,
+                vec![-SLOPE + 2.0 * STEEPNESS * inside],
+            ))
+        };
+        let start = [0.5];
+        let once = Settings {
+            max_iterations: 1,
+            ..SETTINGS
+        };
+        let first = burst(&mut steep, &start, &once);
+        assert!(first.point[0] < 1.0, "{:?}", first.point);
+        let mut trials = Vec::new();
+        let mut recorded = |x: &[f64]| {
+            trials.push(x[0]);
+            steep(x)
+        };
+
+        burst(&mut recorded, &start, &SETTINGS);
+
+        let next = trials[usize::try_from(first.evaluations).unwrap()];
+        assert!((next - first.point[0] - SLOPE).abs() < 1e-12, "{next}");
+    }
+
     /// Falling as -x², ever steeper, up to a wall at 1 that rises as
     /// 10⁵·d², beside a valley across it of curvature 10.
     fn concave_valley(x: &[f64]) -> Result<Evaluation, ()> {
