@@ -22,6 +22,11 @@ them overriding TIME_LIMIT, so a run can be measured at other settings:
 scenarios and return vias take none and run at the library defaults,
 coarse levels included. Each table row is one run.
 
+`--tree` gives TREE the same arguments, so `--spacing` there needs a
+`kibends smooth` that takes it. To compare one spacing here with a checkout
+from before coarse levels, run `./run bench -- --spacing 0.1` here and
+`./run bench` in that checkout, and compare their tables.
+
 `--tree` compares this checkout with TREE, another checkout such as an
 older commit from `git worktree add`, on one machine. It brings TREE's
 virtualenv up to date with `uv sync --frozen --all-extras`, creating it if
