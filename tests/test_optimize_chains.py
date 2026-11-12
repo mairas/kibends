@@ -592,6 +592,132 @@ def test_time_limit_counts_from_when_the_stage_started() -> None:
     assert result.iterations == 1
 
 
+class Countdown:
+    """A stop that answers true from its `calls`-th question on."""
+
+    def __init__(self, calls: int) -> None:
+        self.calls = calls
+        self.asked = 0
+
+    def __call__(self) -> bool:
+        self.asked += 1
+        return self.asked >= self.calls
+
+
+def test_a_stop_keeps_the_best_state_and_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        clock=clock,
+        stop=lambda: clock.bursts >= 2,
+    )
+
+    assert result.termination is Termination.STOPPED
+    assert result.iterations == clock.bursts == 2
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_stop_ends_the_burst_at_the_iteration_it_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+    # Any burst would settle by its change, so only the stop keeps the run
+    # from converging.
+    settings = replace(COARSE, settled_change=EVERY_CHANGE)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, settings, stop=Countdown(2)
+    )
+
+    (burst,) = bursts
+    assert burst.cut
+    assert burst.iterations == 2
+    assert result.termination is Termination.STOPPED
+
+
+@pytest.mark.parametrize(
+    ("stop_at", "first"),
+    [
+        # The clock passes the limit at the second question, after the stop
+        # has said no twice; it says yes at the next.
+        (3, Termination.TIME_LIMIT),
+        # The stop says yes at the second question, before the clock has
+        # passed the limit; the clock passes it when the run reports.
+        (2, Termination.STOPPED),
+    ],
+)
+def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
+    stop_at: int, first: Termination
+) -> None:
+    scenario = bumps()
+    limited = replace(
+        COARSE, time_limit=TIMED_ITERATIONS + 0.5, settled_change=EVERY_CHANGE
+    )
+    clock = Ticking()
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        limited,
+        clock=clock,
+        started=0.0,
+        stop=Countdown(stop_at),
+    )
+
+    assert result.termination is first
+    assert clock.now > TIMED_ITERATIONS + 0.5
+
+
+def test_a_stop_after_a_problem_gave_up_without_improving_is_abnormal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every burst leaves its problem where it started: the front's end
+    # abnormally, so that it gives up, the back's normally, so that only a
+    # stall could settle it.
+    calls: list[bool] = []
+
+    def still(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        failing = len(calls) % 2 == 0 and calls.count(True) < MAX_ABNORMAL_BURSTS
+        calls.append(failing)
+        return Burst(start.copy(), abnormal=failing)
+
+    monkeypatch.setattr(optimize_module, "run_burst", still)
+    # Straight, they stay as they are between bursts too.
+    front = selected("front", "A", FreeSpace(), (0.0, 0.0), (5.0, 0.0), (10.0, 0.0))
+    back = on_layer(
+        replace(front, centreline=replace(front.centreline, net="B")), "B.Cu"
+    )
+    # One spacing: a coarse level hands an abnormal streak over.
+    settings = replace(
+        ONE_SPACING, settled_change=0.0, stall_window=4 * MAX_ABNORMAL_BURSTS
+    )
+
+    result = optimize_chains(
+        (front, back),
+        scenarios.PARAMS,
+        settings,
+        # Asked after each problem's burst: yes after the front's last.
+        stop=lambda: calls.count(True) >= MAX_ABNORMAL_BURSTS,
+    )
+
+    assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.termination is Termination.ABNORMAL
+
+
 FAR_APART = 64.0
 """How far a copy of a scenario lies from it, mm: beyond what either sees."""
 

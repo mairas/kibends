@@ -11,7 +11,13 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
-from conftest import all_abnormal_bursts, clearances, total_energy, violations
+from conftest import (
+    BurstClock,
+    all_abnormal_bursts,
+    clearances,
+    total_energy,
+    violations,
+)
 from distance_fields import (
     Box,
     Disc,
@@ -654,6 +660,29 @@ def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
     result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
 
     assert result.termination is Termination.ITERATION_CAP
+    assert result.before_final_spacing is before_final
+
+
+@pytest.mark.parametrize(
+    ("iterations", "before_final"),
+    # As the capped run above.
+    [(2, True), (4, False)],
+    ids=["at a coarse level", "at the final level"],
+)
+def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
+    monkeypatch: pytest.MonkeyPatch, iterations: int, before_final: bool
+) -> None:
+    chains = on_two_layers(*BOWED)
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        chains, PARAMS, settings, stop=lambda: clock.bursts >= iterations * len(chains)
+    )
+
+    assert result.termination is Termination.STOPPED
+    assert result.iterations == iterations
+    assert clock.bursts == iterations * len(chains)
     assert result.before_final_spacing is before_final
 
 

@@ -28,7 +28,11 @@ reports any violation. It refuses only an abnormal optimizer stop.
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
 the optimize stage's wall time) to its `on_optimized` callback; it returns
-a `RunReport`, which adds whether it committed and any refusal. Positions
+a `RunReport`, which adds whether it committed, any refusal and the
+`Scope` it read. It tells an `on_stage` callback each `Stage` as it begins.
+A caller's `stop` ends the run before optimizing with nothing changed, or
+ends the optimizer with its best state, which goes on to the commit
+(`Termination.STOPPED`). Positions
 in reports stay in the board frame; the `coords.UserFrame` they carry is
 what messages print positions in.
 """
@@ -36,6 +40,7 @@ what messages print positions in.
 import importlib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from time import monotonic
 from typing import NamedTuple
@@ -162,6 +167,32 @@ class SmoothOptions:
     (`BoardSnapshot.ground_nets`)."""
 
 
+class Stage(Enum):
+    """A stage of a run, in the order `run_smooth` reports them."""
+
+    READING = "reading"
+    OBSTACLES = "obstacles"
+    OPTIMIZING = "optimizing"
+    SIMPLIFYING = "simplifying"
+    COMMITTING = "committing"
+
+
+class ScopeKind(Enum):
+    """What a run reads from the board."""
+
+    SELECTION = "selection"
+
+
+@dataclass(frozen=True)
+class Scope:
+    """What a run read: its kind and how many tracks and vias."""
+
+    kind: ScopeKind
+    tracks: int
+    """Tracks and arcs, those of selected groups included."""
+    vias: int
+
+
 @dataclass(frozen=True)
 class ChainReport:
     net: str
@@ -234,8 +265,8 @@ class OptimizerReport:
     """Outer iterations, each giving every problem that has not settled
     one burst, holds included."""
     before_final_spacing: bool
-    """Whether the run stopped at its iteration cap or time limit while
-    some problem ran at a coarse spacing."""
+    """Whether the run stopped at its iteration cap, its time limit or the
+    caller's stop while some problem ran at a coarse spacing."""
     elapsed: float
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
@@ -255,6 +286,7 @@ class RunReport(OptimizerReport):
     """Why nothing was committed, when the optimizer stopped abnormally
     (`ABNORMAL_MESSAGE`). The run checks no clearance after optimizing;
     the user's KiCad DRC does."""
+    scope: Scope
 
     @property
     def changes(self) -> bool:
@@ -278,10 +310,13 @@ class _Read:
     are then not looked for."""
     arcs: tuple[Arc, ...]
     """The selected arcs, whose segments are among `selected`, as read."""
+    scope: Scope
 
 
 @dataclass(frozen=True)
-class _Optimized:
+class _Built:
+    """The optimizer's inputs, their obstacle fields built."""
+
     whole: list[ChainInput]
     """One per selected chain."""
     parts: list[ChainPart]
@@ -290,6 +325,13 @@ class _Optimized:
     layout: Layout
     via_inputs: list[ViaInput]
     """With the selected chains' ends."""
+    static: dict[str, StaticVia]
+    """The vias standing still, classed (`_static_vias`)."""
+
+
+@dataclass(frozen=True)
+class _Optimized:
+    built: _Built
     run: RunResult
     elapsed: float
     """Wall time of the optimize stage, s."""
@@ -327,6 +369,9 @@ class _Outcome:
 def run_smooth(
     options: SmoothOptions,
     on_optimized: Callable[[OptimizerReport], None] = lambda _report: None,
+    *,
+    stop: Callable[[], bool] | None = None,
+    on_stage: Callable[[Stage], None] = lambda _stage: None,
 ) -> RunReport:
     """Smooth the chains selected in KiCad and, unless dry-running, commit them.
 
@@ -334,18 +379,35 @@ def run_smooth(
     raise. Raises on failures that leave nothing to report (no board, a bad
     selection, a refused commit); an abnormal optimizer stop comes back as
     the report's `refusal`, with nothing committed.
+
+    `on_stage` hears each `Stage` as it begins, committing only when there
+    is something to commit. `stop` is asked after reading and after
+    building the obstacles, and through the optimizer
+    (`optimize.optimize_chains`): answering true before optimizing ends the
+    run there, `Termination.STOPPED` with nothing changed; while optimizing
+    it ends the optimizer with its best state, which the run simplifies and
+    commits as any other.
     """
     if options.plot is not None:
         _require_plot()
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
+    on_stage(Stage.READING)
     read = _read(
         board,
         read_user_frame(board),
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
-    optimized = _optimize(read, options)
+    if stop is not None and stop():
+        return _stopped(read)
+    on_stage(Stage.OBSTACLES)
+    built = _build(read, options)
+    if stop is not None and stop():
+        return _stopped(read)
+    on_stage(Stage.OPTIMIZING)
+    optimized = _optimize(read, built, options, stop)
+    on_stage(Stage.SIMPLIFYING)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
     if options.plot is not None:
@@ -366,7 +428,25 @@ def run_smooth(
             read.frame,
         )
     )
-    return _commit(board, read, optimized, outcome, options)
+    return _commit(board, read, optimized, outcome, options, on_stage)
+
+
+def _stopped(read: _Read) -> RunReport:
+    """The report of a run stopped before optimizing."""
+    return RunReport(
+        (),
+        (),
+        (),
+        Termination.STOPPED,
+        0,
+        False,
+        0.0,
+        (),
+        read.frame,
+        committed=False,
+        refusal=None,
+        scope=read.scope,
+    )
 
 
 def _read(
@@ -446,7 +526,12 @@ def _read(
     )
     # Extracting again may order the chains differently.
     movable = [replace(m, ends=carried_ends(m.via, chains)) for m in movable]
-    return _Read(selected, chains, snapshots, movable, frame, ground, selection.arcs)
+    scope = Scope(
+        ScopeKind.SELECTION, len({s.id for s in selected}), len(selection.vias)
+    )
+    return _Read(
+        selected, chains, snapshots, movable, frame, ground, selection.arcs, scope
+    )
 
 
 def _slices(
@@ -523,8 +608,8 @@ def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]
     return found.nets
 
 
-def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
-    """Optimize the chains of `read`."""
+def _build(read: _Read, options: SmoothOptions) -> _Built:
+    """The optimizer's inputs for the chains and vias of `read`."""
     moving = {m.via.id for m in read.movable}
     whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
     # A diff pair's tracks keep their contacts where they are.
@@ -548,31 +633,43 @@ def _optimize(read: _Read, options: SmoothOptions) -> _Optimized:
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
-    logger.info(
-        _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
-    )
     # One classing of the vias standing still both splits the moving vias'
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
     via_inputs = _via_inputs(
         read.movable, read.snapshots, options, read.ground_nets, static
     )
+    return _Built(whole, parts, pairs, layout, via_inputs, static)
+
+
+def _optimize(
+    read: _Read,
+    built: _Built,
+    options: SmoothOptions,
+    stop: Callable[[], bool] | None,
+) -> _Optimized:
+    """Optimize the chains of `read` from what `_build` made of them."""
+    layout = built.layout
+    logger.info(
+        _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
+    )
     started = monotonic()
     run = optimize_chains(
         layout.inputs,
         options.params,
         options.settings,
-        vias=_laid_out_vias(layout, via_inputs),
+        vias=_laid_out_vias(layout, built.via_inputs),
         hole_clearance=options.hole_clearance,
         pairs=layout.sections,
         clock=monotonic,
         started=started,
-        static_vias=tuple(static.values()),
+        static_vias=tuple(built.static.values()),
         to_hold=_bent_too_tightly,
+        stop=stop,
     )
     _log_gave_up(run.gave_up)
     elapsed = monotonic() - started
-    return _Optimized(whole, parts, pairs, layout, via_inputs, run, elapsed)
+    return _Optimized(built, run, elapsed)
 
 
 def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
@@ -607,7 +704,7 @@ def _simplify_and_report(
 ) -> _Outcome:
     """Simplify the optimizer's chains and the coupled sections' tracks
     together, join them into the selected chains and report on those."""
-    run, layout = optimized.run, optimized.layout
+    run, layout = optimized.run, optimized.built.layout
     via_reports = _via_reports(read.movable, run)
     tracks = _section_tracks(layout.sections, run.pairs)
     chains, final_tracks = _simplify(optimized, tracks, via_reports, options)
@@ -618,7 +715,7 @@ def _simplify_and_report(
     spacing = options.settings.spacing
     reports = _chain_reports(
         read.chains,
-        optimized.whole,
+        optimized.built.whole,
         _whole_results(optimized, unsimplified, spacing),
         simplified,
         spacing,
@@ -639,9 +736,10 @@ def _commit(
     optimized: _Optimized,
     outcome: _Outcome,
     options: SmoothOptions,
+    on_stage: Callable[[Stage], None],
 ) -> RunReport:
     """Commit the changed chains and moved vias unless dry-running or
-    refused."""
+    refused, telling `on_stage` before committing."""
     run = optimized.run
 
     def report(
@@ -661,6 +759,7 @@ def _commit(
             read.frame,
             committed,
             refusal,
+            read.scope,
         )
 
     if run.termination is Termination.ABNORMAL:
@@ -679,6 +778,7 @@ def _commit(
         for m, r in zip(read.movable, outcome.via_reports, strict=True)
         if r.moved
     ]
+    on_stage(Stage.COMMITTING)
     commit_chains(board, changed, read.selected, read.arcs, moves)
     return report(committed=True)
 
@@ -881,7 +981,7 @@ def _simplify(
     together, each against the others and the moved vias where they end
     up, and each section's two tracks offset from its simplified centreline
     as the run offset them; `tracks` where the run did nothing."""
-    run, layout = optimized.run, optimized.layout
+    run, layout = optimized.run, optimized.built.layout
     count = len(run.chains)
     if run.termination is Termination.NOTHING_TO_DO:
         return [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
@@ -900,7 +1000,7 @@ def _simplify(
     simplified = simplify_chains(
         _with_vias(
             inputs,
-            _laid_out_vias(layout, optimized.via_inputs),
+            _laid_out_vias(layout, optimized.built.via_inputs),
             via_reports,
             options,
         ),
@@ -952,7 +1052,7 @@ def _whole_results(
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
     measured before the run at the final `spacing`."""
-    run, layout = optimized.run, optimized.layout
+    run, layout = optimized.run, optimized.built.layout
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
         if slot is not None:
@@ -964,7 +1064,7 @@ def _whole_results(
         results.append(
             _WholeResult(
                 unsimplified[k],
-                measure(optimized.whole[k].centreline.points, spacing),
+                measure(optimized.built.whole[k].centreline.points, spacing),
                 sum(p.rejected_edges for p in pieces),
             )
         )
@@ -977,10 +1077,10 @@ def _pair_reports(
     tracks: Sequence[tuple[FloatArray, FloatArray]],
 ) -> tuple[PairReport, ...]:
     """A report per pair of parts, from `chains` and `tracks` as simplified."""
-    layout, results = optimized.layout, optimized.run.pairs
+    layout, results = optimized.built.layout, optimized.run.pairs
     pair_reports: list[PairReport] = []
-    for pair, sections in zip(optimized.pairs, layout.pair_sections, strict=True):
-        a, b = (optimized.parts[k].chain for k in (pair.a, pair.b))
+    for pair, sections in zip(optimized.built.pairs, layout.pair_sections, strict=True):
+        a, b = (optimized.built.parts[k].chain for k in (pair.a, pair.b))
         ours = [results[k] for k in sections]
         before = (_length(np.array(a.points)), _length(np.array(b.points)))
         after = (
@@ -1070,10 +1170,10 @@ def _draw(
     from kibends.plot import Panel, render
 
     run = optimized.run
-    parts = optimized.parts
+    parts = optimized.built.parts
     partner = {
         parts[k].selected: parts[other].chain.net
-        for p in optimized.pairs
+        for p in optimized.built.pairs
         for k, other in ((p.a, p.b), (p.b, p.a))
     }
     render(
@@ -1097,8 +1197,8 @@ def _draw(
             for i, (given, unsimplified, polyline, r) in enumerate(
                 zip(
                     _with_vias(
-                        optimized.whole,
-                        optimized.via_inputs,
+                        optimized.built.whole,
+                        optimized.built.via_inputs,
                         outcome.via_reports,
                         options,
                     ),

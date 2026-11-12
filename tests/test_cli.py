@@ -258,8 +258,9 @@ def reports(monkeypatch: pytest.MonkeyPatch) -> list[pipeline.RunReport]:
     def spy(
         options: pipeline.SmoothOptions,
         on_optimized: Callable[[pipeline.OptimizerReport], None],
+        stop: Callable[[], bool] | None = None,
     ) -> pipeline.RunReport:
-        report = real(options, on_optimized)
+        report = real(options, on_optimized, stop=stop)
         captured.append(report)
         return report
 
@@ -1022,6 +1023,164 @@ class TestSmooth:
         options = cli.smooth_options(cli.parse_args(args))
 
         assert options.settings.settled_change == 0.003
+
+
+def stopping(monkeypatch: pytest.MonkeyPatch, stop: Callable[[], bool]) -> None:
+    """Make the command's run ask `stop`, as the panel's runs do."""
+    monkeypatch.setattr(cli, "run_smooth", partial(cli.run_smooth, stop=stop))
+
+
+class TestStop:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_stop_while_optimizing_commits_the_best_state(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        clock = BurstClock(monkeypatch)
+        stopping(monkeypatch, lambda: clock.bursts >= 1)
+
+        run()
+
+        (report,) = reports
+        assert report.termination is Termination.STOPPED
+        assert report.iterations == 1
+        assert report.committed
+        assert "push_commit" in board.calls
+        assert capsys.readouterr().out.startswith("Optimizer: stopped after 1 ")
+
+    @pytest.mark.parametrize(
+        "stage", [pipeline.Stage.READING, pipeline.Stage.OBSTACLES]
+    )
+    def test_a_stop_before_optimizing_ends_the_run_with_nothing_changed(
+        self,
+        stage: pipeline.Stage,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        board = connect.to(l_board())
+
+        def optimizing(*args: object, **kwargs: object) -> NoReturn:
+            raise AssertionError("optimized after a stop")
+
+        monkeypatch.setattr(pipeline, "optimize_chains", optimizing)
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+        stages: list[pipeline.Stage] = []
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(
+            options,
+            optimized.append,
+            stop=lambda: stage in stages,
+            on_stage=stages.append,
+        )
+
+        assert stages[-1] is stage
+        assert report.termination is Termination.STOPPED
+        assert not report.changes and not report.committed
+        assert report.refusal is None
+        assert report.scope.tracks == 2
+        assert optimized == []
+        assert "begin_commit" not in board.calls
+
+    def test_a_stop_before_anything_changed_says_so(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        stopping(monkeypatch, lambda: True)
+
+        run()
+
+        assert capsys.readouterr().out == ""
+        assert any(line.startswith("INFO Stopped") for line in log)
+        assert not any("Nothing to do" in line for line in log)
+        assert "begin_commit" not in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_stop_on_a_run_that_gave_up_without_improving_commits_nothing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        board = connect.to(l_board())
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        stops: list[object] = []
+
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
+            stops.append(kwargs["stop"])
+            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+        clock = BurstClock(monkeypatch)
+        stopping(monkeypatch, lambda: clock.bursts >= 1)
+
+        assert "abnormally" in exit_message(log)
+        assert clock.bursts == 1
+        assert len(stops) == 1 and stops[0] is not None
+        assert board.calls == []
+
+
+class TestStages:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize(
+        ("board", "args", "committing"),
+        [
+            (l_board, [], True),
+            (l_board, ["-n"], False),
+            (straight_board, [], False),
+        ],
+        ids=["commit", "dry-run", "unchanged"],
+    )
+    def test_are_reported_in_order_committing_only_with_a_commit(
+        self,
+        board: Callable[[], CommitBoard],
+        args: list[str],
+        committing: bool,
+        connect: Connector,
+    ) -> None:
+        connect.to(board())
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+        stages: list[pipeline.Stage] = []
+
+        report = pipeline.run_smooth(options, on_stage=stages.append)
+
+        Stage = pipeline.Stage
+        expected = [Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING]
+        expected += [Stage.SIMPLIFYING, *([Stage.COMMITTING] if committing else [])]
+        assert stages == expected
+        assert report.committed is committing
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_the_report_counts_the_tracks_arcs_and_vias_read(
+        self, connect: Connector
+    ) -> None:
+        tracks = l_chain()
+        arc = quarter_arc("ARC", down=-10.0)
+        via = kipy_via("v", "GND", 20, 20, locked=True)
+        group = kipy_group("Tuning Pattern", tracks[:1])
+        connect.to(
+            CommitBoard(
+                selection=[group, tracks[1], arc, via],
+                tracks=[*tracks, arc],
+                vias=[via],
+                pads=[kipy_pad("pad", "GND", *PAD)],
+            )
+        )
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert report.scope == pipeline.Scope(
+            pipeline.ScopeKind.SELECTION, tracks=3, vias=1
+        )
 
 
 class TestPlot:
