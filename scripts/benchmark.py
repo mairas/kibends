@@ -74,7 +74,7 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -120,8 +120,8 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
 import kibends  # noqa: E402
-from kibends import _core, cli  # noqa: E402
 from kibends import bursts as bursts_module  # noqa: E402
+from kibends import cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
 from kibends.bursts import (  # noqa: E402
@@ -143,6 +143,10 @@ from kibends.polylines import shape_change  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
+
+# Only for annotations: an older tree has no `_core`.
+if TYPE_CHECKING:
+    from kibends import _core
 
 Problem = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
 
