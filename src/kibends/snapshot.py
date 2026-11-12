@@ -144,19 +144,27 @@ class Via:
 
     def reaches(self, layer: str) -> bool:
         """Whether `layer` lies within the via's span."""
-        low, high = self._range
-        return low <= layer_from_canonical_name(layer) <= high
+        low, high = self.layer_range
+        return low <= layer_ordinal(layer) <= high
 
     def shares_layer(self, other: Via) -> bool:
         """Whether the spans of the two vias overlap."""
-        low, high = self._range
-        other_low, other_high = other._range
+        low, high = self.layer_range
+        other_low, other_high = other.layer_range
         return low <= other_high and other_low <= high
 
     @cached_property
-    def _range(self) -> tuple[int, int]:
-        start, end = (layer_from_canonical_name(s) for s in self.span)
+    def layer_range(self) -> tuple[int, int]:
+        """The ordinals of the copper layers its span starts and ends on,
+        low to high (`layer_ordinal`)."""
+        start, end = (layer_ordinal(s) for s in self.span)
         return min(start, end), max(start, end)
+
+
+def layer_ordinal(layer: str) -> int:
+    """The ordinal of a copper layer by its canonical name, in stack-up
+    order from the front."""
+    return layer_from_canonical_name(layer)
 
 
 class Disc(NamedTuple):
