@@ -242,9 +242,6 @@ def kept_vertices(
     """The vertices that merging keeps, each merged vertex within its
     `tolerances` of the chord, which stays clear of `field`
     (`kibends_core::simplify`)."""
-    core = core_field(field)
-    if core is None:
-        raise TypeError(f"{type(field).__name__} is not a field of kibends._core")
     return _core.kept_vertices(
-        np.asarray(polyline, dtype=float), fixed, core, tolerances
+        np.asarray(polyline, dtype=float), fixed, core_field(field), tolerances
     )

@@ -371,4 +371,293 @@ mod tests {
         let (last, _) = list.askers[0].found.clone().expect("searched");
         assert_eq!(last, at(0.5));
     }
+
+    use crate::field::composite::CompositeField;
+    use crate::field::obstacles::{Item, Obstacles};
+    use crate::field::search::parts_smooth_distance;
+    use crate::geometry::Shape;
+    use crate::testing::FreeSpace;
+
+    fn ring(corners: &[(f64, f64)]) -> Vec<V2> {
+        let mut ring: Vec<V2> = corners.iter().map(|&(x, y)| V2::new(x, y)).collect();
+        ring.push(ring[0]);
+        ring
+    }
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<V2> {
+        ring(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+    }
+
+    fn item(shape: Shape, inflation: f64) -> Item {
+        Item {
+            shape,
+            inflation,
+            net: None,
+            extent: 0.0,
+            layer: None,
+        }
+    }
+
+    const PAD_ROW_REACH: f64 = 0.3;
+    const PAD_INFLATION: f64 = 0.3;
+
+    /// Four pads in a row and a track, and a board edge.
+    fn pad_row() -> Arc<Obstacles> {
+        let mut items: Vec<Item> = (0..4)
+            .map(|k| {
+                let x = 1.2 * f64::from(k);
+                item(
+                    Shape::polygon(vec![rect(x, 0.0, x + 1.0, 0.6)]),
+                    PAD_INFLATION,
+                )
+            })
+            .collect();
+        items.push(item(
+            Shape::line(vec![V2::new(0.0, 1.6), V2::new(5.0, 1.9)]),
+            0.35,
+        ));
+        let outline = Shape::polygon(vec![rect(-1.0, -1.0, 6.0, 2.5)]);
+        Arc::new(Obstacles::new(items, Some(outline), 0.4))
+    }
+
+    /// Points beside and between the pad row's pads, the last 0.015 mm right
+    /// of a pad's side, which a move left by more than that takes inside it.
+    fn pad_row_points() -> Vec<V2> {
+        let mut points = Vec::new();
+        for j in 0..15 {
+            for i in 0..40 {
+                points.push(V2::new(
+                    -0.6 + 6.2 * f64::from(i) / 39.0,
+                    -0.6 + 2.8 * f64::from(j) / 14.0,
+                ));
+            }
+        }
+        points.push(V2::new(1.015, 0.3));
+        points
+    }
+
+    fn parts(field: &dyn Field) -> Vec<Arc<StaticEdges>> {
+        field.static_parts().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_static_list_on_a_pad_row_searches_again_only_past_its_skin() {
+        let field = pad_row();
+        let edges = parts(field.as_ref());
+        let asker: Arc<dyn Field> = field;
+        let mut list = StaticList::new(vec![Some(asker)], PAD_ROW_REACH, true);
+        let points = pad_row_points();
+        let mut last: Option<Vec<V2>> = None;
+        for (shift, searches) in [
+            (0.0, true),
+            (0.8 * STATIC_SKIN, false),
+            (2.0 * STATIC_SKIN, true),
+        ] {
+            let at: Vec<V2> = points.iter().map(|&p| p - V2::new(shift, 0.0)).collect();
+            let got = list.smooth(&[&at]);
+            let searched = list.askers[0].found.as_ref().map(|(p, _)| p.clone());
+            assert_eq!(searched != last, searches);
+            last = searched;
+            assert_eq!(got[0], parts_smooth_distance(&edges, &at, PAD_ROW_REACH));
+            let inside = got[0].0[at.len() - 1] < -PAD_INFLATION;
+            assert_eq!(inside, shift > 0.0);
+        }
+    }
+
+    #[test]
+    fn a_static_list_answers_each_asker_as_its_own_field() {
+        let row = pad_row();
+        let centres = Arc::new(ChainField::new(
+            &[V2::new(2.2, 1.0), V2::new(4.0, 1.0)],
+            &[V2::new(2.2, 1.0), V2::new(4.0, 1.0)],
+            vec![0.5, 0.5],
+            vec![0, 1],
+        ));
+        let joined: Arc<dyn Field> = Arc::new(CompositeField::new(vec![row.clone(), centres]));
+        let analytic: Arc<dyn Field> = Arc::new(FreeSpace);
+        let points = pad_row_points();
+        let mut list = StaticList::new(
+            vec![
+                Some(row.clone()),
+                Some(joined.clone()),
+                Some(analytic.clone()),
+                None,
+            ],
+            PAD_ROW_REACH,
+            true,
+        );
+        let got = list.smooth(&[&points, &points, &points, &points]);
+        assert_eq!(got[0], row.smooth_distance(&points, PAD_ROW_REACH));
+        assert_eq!(
+            got[1],
+            parts_smooth_distance(&parts(joined.as_ref()), &points, PAD_ROW_REACH)
+        );
+        assert_eq!(got[2], analytic.smooth_distance(&points, PAD_ROW_REACH));
+        assert!(got[3].0.iter().all(|&d| d == f64::INFINITY));
+        assert!(got[3].1.iter().all(|&g| g == V2::default()));
+    }
+
+    /// A xorshift generator, so that random copper is the same every run.
+    struct Random(u64);
+
+    impl Random {
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        fn uniform(&mut self, low: f64, high: f64) -> f64 {
+            low + (high - low) * self.next()
+        }
+
+        fn below(&mut self, count: usize) -> usize {
+            ((self.next() * count as f64) as usize).min(count - 1)
+        }
+    }
+
+    fn disc(c: V2, radius: f64, segments: u32) -> Vec<V2> {
+        let corners: Vec<(f64, f64)> = (0..segments)
+            .map(|k| {
+                let a = std::f64::consts::TAU * f64::from(k) / f64::from(segments);
+                (c.x + radius * a.cos(), c.y + radius * a.sin())
+            })
+            .collect();
+        ring(&corners)
+    }
+
+    /// Items of every kind at random in a 6 mm square, one geometry twice.
+    fn random_copper(random: &mut Random) -> Vec<Item> {
+        let count = 3 + random.below(12);
+        let mut items: Vec<Item> = Vec::new();
+        for _ in 0..count {
+            let c = V2::new(random.uniform(0.0, 6.0), random.uniform(0.0, 6.0));
+            let inflation = [0.0, 0.1, 0.25, 0.4, 0.6][random.below(5)];
+            let shape = match random.below(5) {
+                0 => {
+                    let (w, h) = (random.uniform(0.05, 1.0), random.uniform(0.05, 1.0));
+                    Shape::polygon(vec![rect(c.x, c.y, c.x + w, c.y + h)])
+                }
+                1 => Shape::polygon(vec![disc(c, random.uniform(0.05, 0.6), 32)]),
+                2 => {
+                    let mut turns = vec![c];
+                    for _ in 0..2 {
+                        let step = V2::new(random.uniform(-2.0, 2.0), random.uniform(-2.0, 2.0));
+                        turns.push(c + step);
+                    }
+                    Shape::line(turns)
+                }
+                3 => Shape::line(vec![c]),
+                _ => Shape::polygon(vec![
+                    rect(c.x, c.y, c.x + 1.5, c.y + 1.5),
+                    rect(c.x + 0.4, c.y + 0.4, c.x + 1.1, c.y + 1.1),
+                ]),
+            };
+            items.push(item(shape, inflation));
+        }
+        let again = item(items[0].shape.clone(), items[0].inflation);
+        items.push(again);
+        items
+    }
+
+    const EDGE_INFLATION: f64 = 0.3;
+
+    /// A static field of random copper, with or without a board edge, with a
+    /// cutout in the board, or joined with centres and a zone's region.
+    fn random_field(random: &mut Random, trial: usize) -> Arc<dyn Field> {
+        let board = rect(-0.5, -0.5, 6.5, 6.5);
+        let outline = if !trial.is_multiple_of(2) {
+            Shape::polygon(vec![board, rect(2.8, 2.8, 3.2, 3.2)])
+        } else {
+            Shape::polygon(vec![board])
+        };
+        let field = Arc::new(Obstacles::new(
+            random_copper(random),
+            (!trial.is_multiple_of(3)).then_some(outline),
+            EDGE_INFLATION,
+        ));
+        if !trial.is_multiple_of(4) {
+            return field;
+        }
+        let starts: Vec<V2> = (0..4)
+            .map(|_| V2::new(random.uniform(0.0, 6.0), random.uniform(0.0, 6.0)))
+            .collect();
+        let ends: Vec<V2> = starts
+            .iter()
+            .map(|&s| {
+                if random.next() > 0.5 {
+                    s + V2::new(random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5))
+                } else {
+                    s
+                }
+            })
+            .collect();
+        let inflations = (0..4).map(|_| random.uniform(0.1, 0.5)).collect();
+        let centres = Arc::new(ChainField::new(
+            &starts,
+            &ends,
+            inflations,
+            vec![0, 0, 1, 2],
+        ));
+        let zone = Arc::new(Obstacles::new(
+            Vec::new(),
+            Some(Shape::polygon(vec![disc(V2::new(3.0, 3.0), 2.5, 64)])),
+            0.0,
+        ));
+        Arc::new(CompositeField::new(vec![field, centres, zone]))
+    }
+
+    /// How much deeper than the board edge's reach the points beside it
+    /// start, mm: just past where a search finds the edge.
+    const BESIDE_DEEP: f64 = 0.01;
+
+    #[test]
+    fn a_static_list_answers_as_a_search_on_random_copper() {
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        for trial in 0..30 {
+            let field = random_field(&mut random, trial);
+            let edges = parts(field.as_ref());
+            let reach = [0.2, 0.5, f64::INFINITY][trial / 2 % 3];
+            // Just outside where the board edge is skipped as deep inside,
+            // moving toward the left edge; with no finite reach, none is.
+            let skipped = EDGE_INFLATION + smooth_reach(reach) + BESIDE_DEEP;
+            let beside = if reach.is_finite() { 40 } else { 0 };
+            let mut points: Vec<V2> = (0..200)
+                .map(|_| V2::new(random.uniform(-1.0, 7.0), random.uniform(-1.0, 7.0)))
+                .collect();
+            for _ in 0..beside {
+                let depth = skipped + random.uniform(0.0, 0.03);
+                points.push(V2::new(-0.5 + depth, random.uniform(0.5, 5.5)));
+            }
+            let mut list = StaticList::new(vec![Some(field.clone())], reach, true);
+            list.smooth(&[&points]);
+            for _ in 0..4 {
+                // Within the skin of where the list searched, so that it
+                // does not search again.
+                let at: Vec<V2> = points
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &p)| {
+                        let way = if k >= points.len() - beside {
+                            V2::new(-1.0, 0.0)
+                        } else {
+                            let angle = random.uniform(0.0, std::f64::consts::TAU);
+                            V2::new(angle.cos(), angle.sin())
+                        };
+                        let step = random.uniform(0.0, 0.999 * STATIC_SKIN);
+                        p + V2::new(step * way.x, step * way.y)
+                    })
+                    .collect();
+                let got = list.smooth(&[&at]);
+                let searched = list.askers[0].found.as_ref().map(|(p, _)| p);
+                assert_eq!(searched, Some(&points));
+                assert_eq!(
+                    got[0],
+                    parts_smooth_distance(&edges, &at, reach),
+                    "trial {trial}"
+                );
+            }
+        }
+    }
 }

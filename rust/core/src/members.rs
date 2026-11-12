@@ -52,11 +52,11 @@ pub struct Trace {
 }
 
 /// A coupled section's offset and the smallest bend radius its centreline
-/// keeps, mm.
+/// keeps, mm, through the bend-radius hinge; None leaves the hinge out.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub offset: PairOffset,
-    pub limit: f64,
+    pub limit: Option<f64>,
 }
 
 /// A chain, or a coupled section as its centreline.
@@ -83,6 +83,18 @@ pub struct Member {
 }
 
 impl Member {
+    /// How many vertices each track it shows at `points` has: a held
+    /// section's tracks are its own, whatever its centreline.
+    pub fn shown_lengths(&self, points: &[V2]) -> Vec<usize> {
+        match &self.section {
+            Some(section) if section.offset.held => {
+                vec![section.offset.a.len(), section.offset.b.len()]
+            }
+            Some(_) => vec![points.len(); 2],
+            None => vec![points.len()],
+        }
+    }
+
     /// What the others see of it at `points`: a chain itself, a section its
     /// two tracks.
     pub fn shown<'a>(&self, points: &'a [V2]) -> Vec<Cow<'a, [V2]>> {
@@ -201,15 +213,15 @@ impl Members {
         let mut tracks = Vec::new();
         let mut first = 0;
         for (member, &points) in self.members.iter().zip(polylines) {
-            for trace in &member.shown {
+            for (trace, vertices) in member.shown.iter().zip(member.shown_lengths(points)) {
                 tracks.push(Track {
                     first,
-                    vertices: points.len(),
+                    vertices,
                     layer: member.layer.clone(),
                     net: number(&mut nets, &trace.net),
                     kind: number(&mut kinds, &(trace.width, trace.clearance)),
                 });
-                first += points.len();
+                first += vertices;
             }
         }
         let mut viewers = Vec::with_capacity(self.members.len());
@@ -362,9 +374,8 @@ impl Members {
                 .zip(&obstacle_gradient)
                 .map(|(&s, &o)| s + o)
                 .collect();
-            if let Some(section) = &member.section {
-                let (bend, bend_gradient) =
-                    bend_radius_energy(points, masks[i], section.limit, params);
+            if let Some(limit) = member.section.as_ref().and_then(|s| s.limit) {
+                let (bend, bend_gradient) = bend_radius_energy(points, masks[i], limit, params);
                 value += bend;
                 add_to(&mut gradient, &bend_gradient);
             }
@@ -397,20 +408,19 @@ impl Members {
         let mut first = 0;
         for ((member, &points), gradient) in self.members.iter().zip(polylines).zip(&mut gradients)
         {
-            let parts = member.shown.len();
-            let n = points.len();
-            match &member.section {
-                Some(section) => {
+            let lengths = member.shown_lengths(points);
+            match (&member.section, lengths.as_slice()) {
+                (Some(section), &[a, b]) => {
                     let pulled = section.offset.offset_pullback(
                         points,
-                        &at_shown[first..first + n],
-                        &at_shown[first + n..first + 2 * n],
+                        &at_shown[first..first + a],
+                        &at_shown[first + a..first + a + b],
                     );
                     add_to(gradient, &pulled);
                 }
-                None => add_to(gradient, &at_shown[first..first + n]),
+                _ => add_to(gradient, &at_shown[first..first + points.len()]),
             }
-            first += parts * n;
+            first += lengths.iter().sum::<usize>();
         }
         let via_gradients = (0..positions.len())
             .map(|k| at_shown[first + 2 * k] + at_shown[first + 2 * k + 1])

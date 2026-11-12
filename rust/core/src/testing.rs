@@ -1,5 +1,6 @@
 //! Analytic fields for tests: free space, a disc, a box, two walls, walls
-//! whose gradient misleads, the union of several, and a field of NaN.
+//! whose gradient misleads, the union of several, another field ignoring
+//! the reach, and a field of NaN.
 //!
 //! Each shape is one obstacle, but `Walls`, two, so their smooth distance
 //! is their exact one, and that of `Walls` and `Union` the smooth minimum
@@ -319,6 +320,26 @@ impl Field for Union {
             }
         }
         clear
+    }
+}
+
+/// Another field answering every query exactly, whatever the reach, and
+/// giving no static edges, so that the energy asks it for each point.
+pub struct ReachIgnored {
+    pub field: Arc<dyn Field>,
+}
+
+impl Field for ReachIgnored {
+    fn signed_distance(&self, points: &[V2], _reach: f64) -> (Vec<f64>, Vec<V2>) {
+        self.field.signed_distance(points, f64::INFINITY)
+    }
+
+    fn smooth_distance(&self, points: &[V2], _reach: f64) -> (Vec<f64>, Vec<V2>) {
+        self.field.smooth_distance(points, f64::INFINITY)
+    }
+
+    fn segments_clear(&self, starts: &[V2], ends: &[V2], tolerance: f64) -> Vec<bool> {
+        self.field.segments_clear(starts, ends, tolerance)
     }
 }
 

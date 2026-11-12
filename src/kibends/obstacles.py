@@ -30,9 +30,9 @@ pairwise term (`via_pairs`) gives their energy.
 
 The other selected chains are obstacles of their own kind (`ChainField`),
 rebuilt at their current shapes, and a `CompositeField` joins fields; both
-are Rust's too. The energy's searches go through the Rust pair helpers
-(`nearest_of_pairs`, `smooth_of_pairs` and the others here), which take
-numpy arrays.
+are Rust's too, as are the energy's searches over them
+(`kibends_core::seen`, `kibends_core::neighbours`). Every field the
+optimizer takes is a Rust field (`core_field`).
 """
 
 import enum
@@ -40,7 +40,6 @@ import math
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import NamedTuple
 from weakref import WeakKeyDictionary
 
 import numpy as np
@@ -59,7 +58,6 @@ from kibends.energy import (
     FloatArray,
     IntArray,
     ObstacleField,
-    combine_fields,
 )
 from kibends.snapshot import (
     LayerSnapshot,
@@ -73,7 +71,6 @@ from kibends.snapshot import (
 )
 
 ObjectArray = NDArray[np.object_]
-ComplexArray = NDArray[np.complex128]
 
 # The API cannot report the board's copper-to-edge and copper-to-hole rules.
 # 0.3 mm to the edge meets common fabs' minimum for routed outlines, and
@@ -232,36 +229,22 @@ def _points(points: FloatArray) -> FloatArray:
 
 class CompositeField:
     """The union of several fields: the nearest of them answers each point,
-    and the smooth distance is over all their obstacles.
+    and the smooth distance is over all their obstacles, as a Rust field
+    (`_core.CompositeField`).
 
     A point beyond `reach` of every field is +inf with a zero gradient. A
-    segment is clear only if it is clear in every field. Rust answers when
-    every field is Rust's (`_core.CompositeField`); a field of another kind
-    makes it combine their answers here.
+    segment is clear only if it is clear in every field.
     """
 
     def __init__(self, fields: Sequence[ObstacleField]) -> None:
         self.fields = tuple(fields)
-        cores = [core_field(f) for f in self.fields]
-        joined = [c for c in cores if c is not None]
-        self.core = _core.CompositeField(joined) if len(joined) == len(cores) else None
-        """The Rust field that answers, None if some field is of another
-        kind."""
+        self.core = _core.CompositeField([core_field(f) for f in self.fields])
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         """Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm."""
-        if self.core is not None:
-            return self.core.signed_distance(_points(points), reach)
-        distance, gradient = self.fields[0].signed_distance(points, reach)
-        for field in self.fields[1:]:
-            d, g = field.signed_distance(points, reach)
-            nearer = d < distance
-            if nearer.any():
-                distance = np.where(nearer, d, distance)
-                gradient = np.where(nearer[:, None], g, gradient)
-        return distance, gradient
+        return self.core.signed_distance(_points(points), reach)
 
     def smooth_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -269,27 +252,16 @@ class CompositeField:
         """The smooth minimum of the fields' smooth distances
         (`energy.combine_fields`). It is the one over all their obstacles
         but for those SMOOTH_REACH leaves out within each field: up to
-        τ·e⁻¹⁰ per obstacle apart from the one `static_parts` gives."""
-        if self.core is not None:
-            return self.core.smooth_distance(_points(points), reach)
-        answers = [field.smooth_distance(points, reach) for field in self.fields]
-        smooth, shares = combine_fields(*(d for d, _ in answers))
-        gradient = np.zeros((len(smooth), 2))
-        for share, (_, g) in zip(shares, answers, strict=True):
-            gradient += share[:, None] * g
-        return smooth, gradient
+        τ·e⁻¹⁰ per obstacle apart from a single search over every field's
+        edges."""
+        return self.core.smooth_distance(_points(points), reach)
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
     ) -> BoolArray:
         """Whether each segment from starts[i] to ends[i] is clear in every
         field, each allowing `tolerance` inside its clearance."""
-        if self.core is not None:
-            return self.core.segments_clear(_points(starts), _points(ends), tolerance)
-        clear = np.ones(len(np.asarray(starts).reshape(-1, 2)), dtype=np.bool_)
-        for field in self.fields:
-            clear &= field.segments_clear(starts, ends, tolerance)
-        return clear
+        return self.core.segments_clear(_points(starts), _points(ends), tolerance)
 
 
 CORE_FIELDS = (
@@ -302,19 +274,20 @@ CORE_FIELDS = (
     testing.Walls,
     testing.MisleadingWalls,
     testing.Union,
+    testing.ReachIgnored,
     testing.NanField,
 )
 """The kinds of `_core.Field`."""
 
 
-def core_field(field: DistanceField) -> _core.Field | None:
-    """The Rust field that answers for `field`, None for a field of another
-    kind, which a `CompositeField` asks itself."""
+def core_field(field: DistanceField) -> _core.Field:
+    """The Rust field that answers for `field`; raises TypeError for a
+    field of another kind."""
     if isinstance(field, Obstacles | ChainField | CompositeField):
         return field.core
     if isinstance(field, CORE_FIELDS):
         return field
-    return None
+    raise TypeError(f"{type(field).__name__} is not a field of kibends._core")
 
 
 LINE = _core.LINE
@@ -333,129 +306,6 @@ logo or a board outline, finds its edges near a point with a tree over
 them rather than measuring every one."""
 
 StaticEdges = _core.StaticEdges
-StaticItems = _core.StaticItems
-
-
-class Found(NamedTuple):
-    """(point, edge) pairs of static fields that can answer points, as
-    `static_smooth` takes them: by point, then obstacle, then edge, so
-    that the pairs of one item and those of one obstacle at a point lie
-    together. Each pair's edge, where it starts and the way to its end, its
-    inflation, how far from the point it counts unless the point is inside
-    its item, its obstacle and item; whether the point was inside the item
-    when found, and whether it may have crossed the item's boundary since,
-    so that it is tested again."""
-
-    point: IntArray
-    starts: ComplexArray
-    ends: ComplexArray
-    inflation: FloatArray
-    limit: FloatArray
-    obstacle: IntArray
-    item: IntArray
-    inside: BoolArray
-    unsure: BoolArray
-
-
-NO_FOUND = Found(
-    np.empty(0, dtype=np.intp),
-    np.empty(0, dtype=complex),
-    np.empty(0, dtype=complex),
-    np.empty(0),
-    np.empty(0),
-    np.empty(0, dtype=np.intp),
-    np.empty(0, dtype=np.intp),
-    np.empty(0, dtype=bool),
-    np.empty(0, dtype=bool),
-)
-
-
-class StaticDistances(NamedTuple):
-    """(point, obstacle) pairs of a static field, by point then obstacle,
-    and each point's exact signed distance to its obstacle."""
-
-    point: IntArray
-    obstacle: IntArray
-    distance: FloatArray
-
-
-NO_DISTANCES = StaticDistances(
-    np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp), np.empty(0)
-)
-
-
-def join_found(founds: Sequence[Found]) -> Found:
-    """`founds` one after another."""
-    if len(founds) == 1:
-        return founds[0]
-    every = [NO_FOUND, *founds]
-    return Found(
-        np.concatenate([f.point for f in every]),
-        np.concatenate([f.starts for f in every]),
-        np.concatenate([f.ends for f in every]),
-        np.concatenate([f.inflation for f in every]),
-        np.concatenate([f.limit for f in every]),
-        np.concatenate([f.obstacle for f in every]),
-        np.concatenate([f.item for f in every]),
-        np.concatenate([f.inside for f in every]),
-        np.concatenate([f.unsure for f in every]),
-    )
-
-
-def static_parts(field: DistanceField) -> list[StaticEdges] | None:
-    """`field` as `StaticEdges`, one per field it joins, or None if it is
-    of a kind that gives none."""
-    if isinstance(field, Obstacles | ChainField):
-        return [field.static_edges]
-    if not isinstance(field, CompositeField):
-        return None
-    parts: list[StaticEdges] = []
-    for f in field.fields:
-        found = static_parts(f)
-        if found is None:
-            return None
-        parts += found
-    return parts
-
-
-def search_parts(
-    parts: Sequence[tuple[StaticEdges, int]],
-    coords: FloatArray,
-    reach: float,
-    slack: float,
-) -> Found:
-    """`StaticEdges.search` over several parts, each with the number its
-    items start at, their obstacles numbered one part after another, so
-    that the smooth minimum is over all of them."""
-    return Found(*_core.search_parts(list(parts), _points(coords), reach, slack))
-
-
-def static_distances(
-    parts: Sequence[StaticEdges], coords: FloatArray, below: float
-) -> StaticDistances:
-    """`StaticEdges.distances` over several parts, their obstacles numbered
-    one part after another, as `search_parts` numbers them."""
-    return StaticDistances(*_core.static_distances(list(parts), _points(coords), below))
-
-
-def parts_smooth_distance(
-    parts: Sequence[StaticEdges], points: FloatArray, reach: float = math.inf
-) -> tuple[FloatArray, FloatArray]:
-    """`smooth_distance` over the obstacles of `parts`, from one search."""
-    return _core.parts_smooth_distance(list(parts), _points(points), reach)
-
-
-def static_smooth(
-    query: ComplexArray, found: Found, items: StaticItems
-) -> tuple[FloatArray, FloatArray]:
-    """The smooth distance at each point of `query` and its gradient over
-    the pairs `found` gives, its items numbered as `items` numbers them:
-    of each item the nearest edge to a point, the exact signed distance,
-    then of each obstacle the nearest item, then the smooth minimum over
-    the obstacles. A point inside an area is at the negative of its
-    distance to the area's boundary, and a point on an item's edge takes
-    its normal."""
-    return _core.static_smooth(query, *found, items)
 
 
 @dataclass(frozen=True, eq=False)
@@ -475,13 +325,6 @@ class ChainCentreline:
     """Its polyline, (n, 2) in mm."""
 
 
-class NearestEdge(NamedTuple):
-    distance: FloatArray
-    gradient: FloatArray
-    edge: IntArray
-    """The edge nearest each point once inflated, -1 where none is in reach."""
-
-
 class ChainField:
     """Signed distance to other chains' inflated centrelines, and edge checks,
     as a Rust field (`_core.ChainField`; its design is in
@@ -491,7 +334,7 @@ class ChainField:
     except that zero-length edges and zero-length query segments count like
     any other. Its smooth distance takes the edges of one obstacle, a chain
     or a via, as one: the nearest of them, then the smooth minimum over the
-    obstacles (`smooth_of_pairs`).
+    obstacles.
     """
 
     def __init__(
@@ -521,8 +364,8 @@ class ChainField:
     def static_edges(self) -> StaticEdges:
         """The field as `StaticEdges`, each edge an item of its own, for a
         field that stands still. Its distances differ from
-        `smooth_distance`'s by round-off, since `static_smooth` measures
-        by GEOS's point-to-segment formula."""
+        `smooth_distance`'s by round-off, since a static search measures by
+        GEOS's point-to-segment formula."""
         return self.core.static_edges
 
     def signed_distance(
@@ -536,24 +379,12 @@ class ChainField:
         """
         return self.core.signed_distance(_points(points), reach)
 
-    def nearest(self, points: FloatArray, reach: float = math.inf) -> NearestEdge:
-        """`signed_distance`, and the index of the edge that answers each
-        point, -1 where none does."""
-        return NearestEdge(*self.core.nearest(_points(points), reach))
-
     def smooth_distance(
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         """`signed_distance` as the energy takes it: the smooth minimum over
-        the obstacles of each one's nearest edge (`smooth_of_pairs`)."""
+        the obstacles of each one's nearest edge."""
         return self.core.smooth_distance(_points(points), reach)
-
-    def smooth_answers(
-        self, points: FloatArray, reach: float = math.inf
-    ) -> SmoothAnswer:
-        """`smooth_distance`, and the edges that answer each point, by
-        their index, with their shares."""
-        return SmoothAnswer(*self.core.smooth_answers(_points(points), reach))
 
     def segments_clear(
         self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
@@ -565,134 +396,6 @@ class ChainField:
         and so is entering it by at most `tolerance` mm.
         """
         return self.core.segments_clear(_points(starts), _points(ends), tolerance)
-
-
-def pairs_inside(
-    a: ComplexArray,
-    ab: ComplexArray,
-    starts: ComplexArray,
-    along: ComplexArray,
-    inflations: FloatArray,
-    tolerance: float,
-) -> BoolArray:
-    """`ChainField.segments_clear` over (segment, edge) pairs: whether the
-    segment from a[k] along ab[k] enters the edge from starts[k] along
-    along[k], inflated by inflations[k], by more than `tolerance`."""
-    return _core.pairs_inside(a, ab, starts, along, inflations, tolerance)
-
-
-def pair_depths(
-    a: ComplexArray,
-    ab: ComplexArray,
-    starts: ComplexArray,
-    along: ComplexArray,
-    inflations: FloatArray,
-) -> FloatArray:
-    """The signed distance between each pair of `pairs_inside`: the gap
-    between the segment and the edge, less the edge's inflation; negative
-    inside, and least, -inflation, where the two cross."""
-    return _core.pair_depths(a, ab, starts, along, inflations)
-
-
-def nearest_of_pairs(
-    query: ComplexArray,
-    point: IntArray,
-    starts: ComplexArray,
-    along: ComplexArray,
-    inflations: FloatArray,
-    limit: FloatArray | float,
-) -> NearestEdge:
-    """`ChainField.nearest` at the points `query` over (point, segment)
-    pairs: pair k is the segment from starts[k] along along[k], inflated by
-    inflations[k], looked at within `limit`, one or per pair, of
-    query[point[k]]. The edge that answers a point is its pair's index."""
-    return NearestEdge(
-        *_core.nearest_of_pairs(
-            query, point, starts, along, inflations, _per_pair(limit, point)
-        )
-    )
-
-
-class SmoothAnswer(NamedTuple):
-    """The smooth distance at each point and its gradient, and what answers
-    it: per obstacle that has a share at a point, the point, the edge
-    nearest it of that obstacle, its share and its unit gradient."""
-
-    distance: FloatArray
-    gradient: FloatArray
-    point: IntArray
-    edge: IntArray
-    share: FloatArray
-    direction: FloatArray
-
-
-def smooth_of_pairs(
-    query: ComplexArray,
-    point: IntArray,
-    starts: ComplexArray,
-    along: ComplexArray,
-    inflations: FloatArray,
-    limit: FloatArray | float,
-    obstacle: IntArray,
-) -> SmoothAnswer:
-    """`ChainField.smooth_answers` at the points `query` over (point, segment)
-    pairs, taken as `nearest_of_pairs` takes them, pair k's segment part of
-    obstacle[k]: of each obstacle the nearest segment to a point, of equal
-    ones the first in that order, then the smooth minimum over the obstacles
-    (`energy.smooth_minimum`). The pairs come in the order `obstacle_order`
-    gives, so that the pairs of a point and an obstacle lie together. The
-    edge that answers is its pair's index; the answers come in the order
-    of their points."""
-    return SmoothAnswer(
-        *_core.smooth_of_pairs(
-            query, point, starts, along, inflations, _per_pair(limit, point), obstacle
-        )
-    )
-
-
-def obstacle_order(point: IntArray, obstacle: IntArray, tiebreak: IntArray) -> IntArray:
-    """The order of (point, segment) pairs, pair k's segment part of
-    obstacle[k], that `smooth_of_pairs` takes them in: by point, then by
-    obstacle, then by tiebreak[k], unique among a point's pairs, such as
-    the segment's index, so that of equally near segments of an obstacle
-    the lowest tiebreak answers."""
-    return _core.obstacle_order(point, obstacle, tiebreak)
-
-
-def candidate_pairs(
-    query: ComplexArray,
-    point: IntArray,
-    starts: ComplexArray,
-    along: ComplexArray,
-    inflations: FloatArray,
-    within: FloatArray | float,
-    slack: float,
-) -> BoolArray:
-    """Which (point, segment) pairs, as `smooth_of_pairs` takes them, can
-    answer their point within `within`, one or per pair, once the distance
-    from each point to each segment has changed by at most `slack`, mm."""
-    return _core.candidate_pairs(
-        query, point, starts, along, inflations, _per_pair(within, point), slack
-    )
-
-
-def near_segments(
-    starts: FloatArray, ends: FloatArray, points: FloatArray, radius: float
-) -> tuple[IntArray, IntArray]:
-    """(point, segment) index pairs, by point then segment, among them every
-    pair whose segment from starts[k] to ends[k] comes within `radius` of
-    points[i], found with one tree over the segments' middles."""
-    return _core.near_segments(_points(starts), _points(ends), _points(points), radius)
-
-
-def _per_pair(value: FloatArray | float, point: IntArray) -> FloatArray:
-    """`value`, one or per pair, as one per pair of `point`."""
-    return np.broadcast_to(np.asarray(value, dtype=float), point.shape).copy()
-
-
-def complex_points(points: FloatArray) -> ComplexArray:
-    """(n, 2) points as n complex numbers."""
-    return points[:, 0] + 1j * points[:, 1]
 
 
 def chain_inflation(

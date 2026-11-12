@@ -1,6 +1,8 @@
 """Measure the optimizer: wall and CPU time, the seconds of setup and those
 after it outside L-BFGS-B, outer iterations, bursts, energy evaluations, the
-times a layer's neighbour list found its pairs (`seen.NeighbourList`) and
+times a layer's neighbour list found its pairs (`seen.NeighbourList`), both
+from the Rust statistics (`kibends._core.statistics`) or, for a tree without
+them, by patching its Python search, and
 the farthest move in one burst on stitched ground planes, on the synthetic
 scenarios and on buses of parallel tracks, how a lone track settles in one
 problem with a cluster of others, and where return vias settle.
@@ -63,6 +65,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
 """
 
 import argparse
+import importlib
 import itertools
 import math
 import sys
@@ -125,7 +128,7 @@ from kibends.bursts import (  # noqa: E402
     Revert,
 )
 from kibends.chain import NM_PER_MM  # noqa: E402
-from kibends.energy import EnergyParams, FloatArray, IntArray  # noqa: E402
+from kibends.energy import EnergyParams, FloatArray  # noqa: E402
 from kibends.neighbours import ChainInput  # noqa: E402
 from kibends.optimize import (  # noqa: E402
     OptimizeResult,
@@ -134,7 +137,6 @@ from kibends.optimize import (  # noqa: E402
     optimize_chains,
 )
 from kibends.polylines import shape_change  # noqa: E402
-from kibends.seen import Pairs, Seen  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
@@ -161,25 +163,55 @@ class Count:
     """Seconds L-BFGS-B ran, its energy evaluations included."""
 
 
+Statistics = Callable[[], tuple[int, int]]
+"""The energy evaluations and neighbour-list searches so far."""
+
+
+def python_search() -> bool:
+    """Whether the measured tree's neighbour lists search in Python
+    (`seen.Seen.candidates`), as before its energy moved to Rust."""
+    seen = getattr(importlib.import_module("kibends.seen"), "Seen")  # noqa: B009
+    return hasattr(seen, "candidates")
+
+
+def rust_statistics() -> Statistics | None:
+    """The measured tree's Rust statistics, None for a tree that searches
+    in Python."""
+    if python_search():
+        return None
+    from kibends._core import statistics
+
+    def read() -> tuple[int, int]:
+        counts = statistics()
+        return counts.evaluations, counts.list_searches
+
+    return read
+
+
+def count_python_searches(count: Count) -> Callable[[], None]:
+    """Count a tree's Python neighbour-list searches (`seen.Seen.candidates`)
+    in `count`; returns what undoes it."""
+    # Looked up by name: this tree's own `seen` has no Python search.
+    module = importlib.import_module("kibends.seen")
+    seen: type = getattr(module, "Seen")  # noqa: B009
+    candidates: Callable[..., object] = getattr(seen, "candidates")  # noqa: B009
+
+    def searched(*args: object) -> object:
+        count.searches += 1
+        return candidates(*args)
+
+    setattr(seen, "candidates", searched)  # noqa: B010
+    return lambda: setattr(seen, "candidates", candidates)
+
+
 @contextmanager
 def counted() -> Generator[Count]:
     """Count the bursts the optimizer runs and the energy evaluations in
     them, and time its setup and L-BFGS-B."""
     count = Count()
     real = optimize_module.run_burst
-    candidates = Seen.candidates
-
-    def searched(
-        seen: Seen,
-        n: int,
-        points: FloatArray,
-        owner: IntArray,
-        flat: FloatArray,
-        reach: float,
-        slack: float,
-    ) -> Pairs:
-        count.searches += 1
-        return candidates(seen, n, points, owner, flat, reach, slack)
+    statistics = rust_statistics()
+    started = None if statistics is None else statistics()
 
     def heard(message: str) -> None:
         if count.ready is None and message.startswith(SET_UP):
@@ -196,7 +228,8 @@ def counted() -> Generator[Count]:
         checking = 0.0
 
         def counting(x: FloatArray) -> tuple[float, FloatArray]:
-            count.evaluations += 1
+            if statistics is None:
+                count.evaluations += 1
             return objective(x)
 
         # A scaled objective keeps its scale; an older tree has none.
@@ -227,13 +260,18 @@ def counted() -> Generator[Count]:
         return result
 
     setattr(optimize_module, "run_burst", burst)  # noqa: B010
-    setattr(Seen, "candidates", searched)  # noqa: B010
+    undo = None if statistics is not None else count_python_searches(count)
     sink = logger.add(heard, level="INFO", format="{message}")
     try:
         yield count
     finally:
         logger.remove(sink)
-        setattr(Seen, "candidates", candidates)  # noqa: B010
+        if undo is not None:
+            undo()
+        if statistics is not None and started is not None:
+            evaluations, searches = statistics()
+            count.evaluations = evaluations - started[0]
+            count.searches = searches - started[1]
         setattr(optimize_module, "run_burst", real)  # noqa: B010
 
 

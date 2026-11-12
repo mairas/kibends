@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use pyo3_stub_gen::{PyStubType, TypeInfo};
 
-use crate::arrays::{BoolArray, IntpArg, IntpArray};
+use crate::arrays::{BoolArray, IntpArg};
 use crate::field::{
     Flags, Floats, Indices, Obstacles, Points, StaticEdges, floats, floats_of, indices, indices_of,
     points_of, same_lengths, vectors,
@@ -149,29 +149,6 @@ impl ChainField {
         reach: f64,
     ) -> PyResult<(Floats<'py>, Points<'py>)> {
         signed_distance(py, self.inner.as_ref(), &points, reach)
-    }
-
-    /// `signed_distance`, and the index of the edge that answers each
-    /// point, -1 where none does.
-    #[pyo3(signature = (points, reach = f64::INFINITY))]
-    fn nearest<'py>(
-        &self,
-        py: Python<'py>,
-        points: PyReadonlyArray2<'_, f64>,
-        reach: f64,
-    ) -> PyResult<(Floats<'py>, Points<'py>, Indices<'py>)> {
-        let found = self.inner.nearest(&points_of(&points)?, reach);
-        // An index into a Rust slice fits an isize.
-        let edge: Vec<isize> = found
-            .edge
-            .iter()
-            .map(|e| e.map_or(-1, |k| k as isize))
-            .collect();
-        Ok((
-            floats(py, found.distance),
-            vectors(py, &found.gradient)?,
-            IntpArray(edge.into_pyarray(py)),
-        ))
     }
 
     /// `signed_distance` as the energy takes it: the smooth minimum over

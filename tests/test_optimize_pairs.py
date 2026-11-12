@@ -27,6 +27,7 @@ from shapely.geometry import LineString, Point
 
 import kibends.members as members_module
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import (
     DEFAULT_CHORD_TOLERANCE,
     INSIDE_TOLERANCE,
@@ -39,10 +40,10 @@ from kibends.bursts import (
 )
 from kibends.chain import Chain
 from kibends.contacts import no_contacts
-from kibends.energy import EnergyParams, ObstacleField, TermValue, arc_lengths
+from kibends.energy import EnergyParams, ObstacleField, arc_lengths
 from kibends.members import Member, seen_parts
 from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import ChainCentreline
+from kibends.obstacles import ChainCentreline, core_field
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import cut_parts, find_pairs, lay_out
@@ -422,15 +423,12 @@ class TestTightCorner:
     def test_bursts_reject_bends_below_the_limit_without_its_hinge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def unhinged(
-            points: FloatArray,
-            fixed: BoolArray,
-            limit: float,
-            params: EnergyParams,
-        ) -> TermValue:
-            return 0.0, np.zeros_like(points)
+        real = members_module.core_member
 
-        monkeypatch.setattr(members_module, "bend_radius_energy", unhinged)
+        def unhinged(member: Member) -> _core.Member:
+            return real(member, hinged=False)
+
+        monkeypatch.setattr(members_module, "core_member", unhinged)
         # Routed wider than the limit: length alone would pull it into the
         # corner, below the limit, and only the self check holds it back.
         (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs
@@ -1041,41 +1039,17 @@ PAIR_COST = 1.5
 chain along its centreline."""
 
 
-@dataclass
-class Counting:
-    """A field that counts the points it is asked about."""
-
-    field: ObstacleField
-    points: int = 0
-
-    def signed_distance(
-        self, points: FloatArray, reach: float = math.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        self.points += len(points)
-        return self.field.signed_distance(points, reach)
-
-    def smooth_distance(
-        self, points: FloatArray, reach: float = math.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        self.points += len(points)
-        return self.field.smooth_distance(points, reach)
-
-    def segments_clear(
-        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
-    ) -> BoolArray:
-        self.points += 2 * len(starts)
-        return self.field.segments_clear(starts, ends, tolerance)
-
-
 def test_a_pair_costs_about_one_chain() -> None:
     pair, chain = scenarios.pair_over_pad(), scenarios.centreline_over_pad()
     (section,), (centreline,) = pair.pairs, chain.chains
-    pair_field, chain_field = Counting(section.field), Counting(centreline.field)
+    _core.reset_statistics()
 
-    run(replace(pair, pairs=(replace(section, field=pair_field),)))
-    optimize_chains([replace(centreline, field=chain_field)], chain.params, COARSE)
+    run(pair)
+    optimize_chains([centreline], chain.params, COARSE)
 
-    assert pair_field.points < PAIR_COST * chain_field.points
+    pair_points = _core.field_queries(core_field(section.field))
+    chain_points = _core.field_queries(core_field(centreline.field))
+    assert 0 < pair_points < PAIR_COST * chain_points
 
 
 REJECTED = 5

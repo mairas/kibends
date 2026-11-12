@@ -13,6 +13,7 @@ __all__ = [
     "FreeSpace",
     "MisleadingWalls",
     "NanField",
+    "ReachIgnored",
     "Union",
     "Walls",
 ]
@@ -128,6 +129,33 @@ class NanField:
     A field that answers NaN everywhere.
     """
     def __new__(cls) -> NanField: ...
+    def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Distance (n,) and its unit gradient (n, 2) at (n, 2) points
+        in mm; every distance is exact, whatever the reach.
+        """
+    def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        `signed_distance` as the energy takes it.
+        """
+    def segments_clear(self, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each segment from starts[i] to ends[i] stays out of
+        the field's obstacles, by at most `tolerance`.
+        """
+
+@typing.final
+class ReachIgnored:
+    r"""
+    `field` answering every query exactly, whatever the reach, and
+    giving no static edges.
+    """
+    @property
+    def field(self) -> _core.Field:
+        r"""
+        The field it answers for.
+        """
+    def __new__(cls, field: _core.Field) -> ReachIgnored: ...
     def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
         r"""
         Distance (n,) and its unit gradient (n, 2) at (n, 2) points

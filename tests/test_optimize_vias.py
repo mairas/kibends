@@ -2078,9 +2078,10 @@ def reference_via_energy(
     gradients = [np.zeros_like(points) for points in polylines]
     via_gradients = np.zeros((len(problem.vias), 2))
     value = 0.0
+    at_vias = np.array(positions, dtype=float).reshape(-1, 2)
     sights = (
-        problem.via_repel.smooth_answers(polylines, positions, problem.reach),
-        problem.via_stop.smooth_answers(polylines, positions, problem.reach),
+        problem.via_repel.smooth_answers(list(polylines), at_vias, problem.reach),
+        problem.via_stop.smooth_answers(list(polylines), at_vias, problem.reach),
     )
     for k, via in enumerate(problem.vias):
         given = via.given

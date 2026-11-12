@@ -45,7 +45,6 @@ __all__ = [
     "SmoothAnswer",
     "StaticEdges",
     "StaticFree",
-    "StaticItems",
     "Statistics",
     "Via",
     "ViaPairs",
@@ -59,7 +58,6 @@ __all__ = [
     "bend_radius_limit",
     "build_obstacles",
     "build_pair_obstacles",
-    "candidate_pairs",
     "chains_field",
     "check_bend_radius",
     "combine_fields",
@@ -76,32 +74,22 @@ __all__ = [
     "hinge_integrand",
     "kept_vertices",
     "moving_via_obstacles",
-    "near_segments",
-    "nearest_of_pairs",
     "newly_inside",
     "obstacle_curvature",
     "obstacle_integrand",
-    "obstacle_order",
     "obstacle_reach",
     "offset_pair",
     "offset_pair_pullback",
     "own_net_stops",
-    "pair_depths",
     "pair_kind",
-    "pairs_inside",
-    "parts_smooth_distance",
     "point_stiffness",
     "quadrature_points",
     "repulsion_integrand",
     "reset_statistics",
-    "search_parts",
     "shape_energy",
     "smooth_minimum",
-    "smooth_of_pairs",
     "smooth_reach",
     "split_via_obstacles",
-    "static_distances",
-    "static_smooth",
     "statistics",
     "testing",
     "too_tight",
@@ -113,7 +101,7 @@ __all__ = [
     "zone_depth",
 ]
 
-Field: TypeAlias = Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField
+Field: TypeAlias = Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField
 r"""
 A field implemented here, which a `CompositeField` can join.
 """
@@ -173,11 +161,6 @@ class ChainField:
         r"""
         Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
         """
-    def nearest(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp]]:
-        r"""
-        `signed_distance`, and the index of the edge that answers each
-        point, -1 where none does.
-        """
     def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
         r"""
         `signed_distance` as the energy takes it: the smooth minimum over
@@ -202,7 +185,7 @@ class CompositeField:
     and the smooth distance is over all their obstacles
     (`kibends_core::field::composite`).
     """
-    def __new__(cls, fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]) -> CompositeField: ...
+    def __new__(cls, fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]) -> CompositeField: ...
     def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
         r"""
         Distance (n,) and its unit gradient (n, 2) at (n, 2) points in mm.
@@ -297,13 +280,14 @@ class Member:
     A chain, or a coupled section as its centreline
     (`kibends_core::members::Member`).
     """
-    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: builtins.float = 0.0) -> Member:
+    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None) -> Member:
         r"""
         On `layer`, keeping clear of the others as the track `viewer`,
         ignoring the tracks of the nets `ignored`, showing the others the
         tracks `shown`, in its static `field`, its contact stops weighed by
         `width` and its contacts' regions `contacts`; a coupled section with
-        its `section` offset and its bend-radius `limit`.
+        its `section` offset and the bend-radius `limit` its hinge keeps,
+        none without the hinge.
         """
 
 @typing.final
@@ -482,7 +466,7 @@ class Problem:
     The members, moving vias and terms of one problem
     (`kibends_core::problem::Problem`).
     """
-    def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams, short_edge: builtins.float) -> Problem:
+    def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams, short_edge: builtins.float) -> Problem:
         r"""
         The problem of `members`, the vias seen by the members `rings`
         names at those distances, each moving via with its `diameter`, its
@@ -609,8 +593,7 @@ class SmoothAnswer:
 @typing.final
 class StaticEdges:
     r"""
-    A static field's obstacles as edges, with the search that finds the
-    edges near points (`kibends_core::field::edges`).
+    A static field's obstacles as edges (`kibends_core::field::edges`).
     """
     @property
     def obstacles(self) -> numpy.typing.NDArray[numpy.intp]:
@@ -618,51 +601,18 @@ class StaticEdges:
         Each item's obstacle.
         """
     @property
-    def kinds(self) -> numpy.typing.NDArray[numpy.intp]:
-        r"""
-        Each item's kind: `LINE`, `AREA` or `OUTSIDE`.
-        """
-    @property
-    def inflations(self) -> numpy.typing.NDArray[numpy.float64]: ...
-    @property
-    def obstacle_count(self) -> builtins.int:
-        r"""
-        How many obstacles the items make.
-        """
-    @property
     def clearance_obstacles(self) -> numpy.typing.NDArray[numpy.intp]:
         r"""
-        Each item's obstacle as a clearance check judges it, numbered below
-        `obstacle_count`: its obstacle, or for an `Obstacles` field its
-        connected copper of one net on one layer.
-        """
-    @staticmethod
-    def from_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> StaticEdges:
-        r"""
-        Edges from starts[i] to ends[i], (m, 2) in mm, each an item of its
-        own, a `LINE`, inflated by inflations[i] and part of obstacle
-        obstacles[i].
+        Each item's obstacle as a clearance check judges it: its obstacle,
+        or for an `Obstacles` field its connected copper of one net on one
+        layer.
         """
     def __len__(self) -> builtins.int: ...
-    def search(self, coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
-        r"""
-        The pairs that can answer the points `coords` within `reach` once
-        each has moved at most `slack` mm, as `obstacles.Found`'s fields.
-        """
     def distances(self, coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
         r"""
         Each point's exact signed distance to each obstacle nearer than
         `below`, as a clearance check judges obstacles: point, obstacle and
         distance, by point then obstacle.
-        """
-    def inside(self, items: numpy.typing.NDArray[numpy.intp], coords: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.bool_]:
-        r"""
-        Whether each point lies inside its item, items[i] of coords[i]: in
-        an `AREA`'s area or outside an `OUTSIDE`'s, never for a `LINE`.
-        """
-    def normal(self, item: builtins.int, x: builtins.float, y: builtins.float) -> tuple[builtins.float, builtins.float]:
-        r"""
-        The unit gradient at a point lying on the item's edges.
         """
 
 @typing.final
@@ -677,27 +627,6 @@ class StaticFree:
     def via(self) -> numpy.typing.NDArray[numpy.intp]: ...
     @property
     def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
-
-@typing.final
-class StaticItems:
-    r"""
-    The items of several `StaticEdges`, numbered one part after another.
-    """
-    @property
-    def starts(self) -> numpy.typing.NDArray[numpy.intp]:
-        r"""
-        Where each part's items start, and then their count.
-        """
-    def __new__(cls, parts: typing.Sequence[StaticEdges]) -> StaticItems: ...
-    def inside(self, items: numpy.typing.NDArray[numpy.intp], coords: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.bool_]:
-        r"""
-        Whether each point lies inside its item, numbered across the parts.
-        """
-    def normal(self, item: builtins.int, x: builtins.float, y: builtins.float) -> tuple[builtins.float, builtins.float]:
-        r"""
-        The unit gradient at a point lying on an item's edges, numbered
-        across the parts.
-        """
 
 @typing.final
 class Statistics:
@@ -873,13 +802,6 @@ def build_pair_obstacles(layer: BoardLayer, a_net: builtins.str, a_points: numpy
     (`kibends_core::field::build::pair_obstacles`).
     """
 
-def candidate_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], within: numpy.typing.NDArray[numpy.float64], slack: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
-    r"""
-    Which (point, segment) pairs can answer their point within within[k]
-    once the distance from each point to each segment has changed by at most
-    `slack`, mm.
-    """
-
 def chains_field(polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> ChainField:
     r"""
     The polylines, (n, 2) each, as a field: each split into edges of at
@@ -906,14 +828,14 @@ def complementary_net(name: builtins.str) -> typing.Optional[builtins.str]:
     rule, or None (`kibends_core::pairs::complementary_net`).
     """
 
-def contact_stops(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], width: builtins.float, limit: Integrand) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+def contact_stops(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], width: builtins.float, limit: Integrand) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
     The stops that keep each vertex of `points` that keeps a contact inside
     its region among `within`, and their gradient at every vertex
     (`kibends_core::contacts::contact_stops`).
     """
 
-def contacts_left(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
+def contacts_left(points: numpy.typing.NDArray[numpy.float64], contact_of: numpy.typing.NDArray[numpy.intp], within: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
     r"""
     The vertices of `points` that keep a contact and lie outside its region
     among `within` by more than `tolerance`
@@ -948,13 +870,13 @@ def edge_integral(points: numpy.typing.NDArray[numpy.float64], distance: numpy.t
     quadrature point.
     """
 
-def field_queries(field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField) -> builtins.int:
+def field_queries(field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField) -> builtins.int:
     r"""
     The points the energy asked `field` about since the last
     `reset_statistics`.
     """
 
-def free_distances(statics: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]]], sight: ViaSight, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:
+def free_distances(statics: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], sight: ViaSight, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:
     r"""
     The free distance of each via to each obstacle nearer than `below`: to
     each part of its `statics`, and to each of the members at `polylines`
@@ -974,7 +896,7 @@ def hinge_integrand(params: energy.EnergyParams) -> Integrand:
     only limits where a thing may go and does not repel it.
     """
 
-def kept_vertices(polyline: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField, tolerances: numpy.typing.NDArray[numpy.float64]) -> builtins.list[builtins.int]:
+def kept_vertices(polyline: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, tolerances: numpy.typing.NDArray[numpy.float64]) -> builtins.list[builtins.int]:
     r"""
     The vertices of `polyline` that merging keeps: no vertex of `fixed` is
     merged, and each merged vertex lies within its `tolerances` of a chord
@@ -988,20 +910,6 @@ def moving_via_obstacles(ordinal: builtins.int, net: builtins.str, width: builti
     one; `clearances` and `zones` give each via's netclass clearance and
     the zones it stays inside
     (`kibends_core::field::build::moving_via_obstacles`).
-    """
-
-def near_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], points: numpy.typing.NDArray[numpy.float64], radius: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp]]:
-    r"""
-    (point, segment) index pairs, by point then segment, among them every
-    pair whose segment from starts[k] to ends[k] comes within `radius` of
-    points[i].
-    """
-
-def nearest_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp]]:
-    r"""
-    The nearest inflated segment at each point of `query` over (point,
-    segment) pairs: distance, gradient, and the pair that answers, -1 where
-    none does.
     """
 
 def newly_inside(now: FreeDistances, start: FreeDistances, tolerance: builtins.float, slack: builtins.float = 0.0) -> tuple[numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
@@ -1020,12 +928,6 @@ def obstacle_curvature(params: energy.EnergyParams) -> Curvature:
 def obstacle_integrand(params: energy.EnergyParams) -> Integrand:
     r"""
     Repulsion plus clearance, weighted, and its slope, at given distances.
-    """
-
-def obstacle_order(point: numpy.typing.NDArray[numpy.intp], obstacle: numpy.typing.NDArray[numpy.intp], tiebreak: numpy.typing.NDArray[numpy.intp]) -> numpy.typing.NDArray[numpy.intp]:
-    r"""
-    The order of (point, segment) pairs by point, then obstacle, then
-    tiebreak.
     """
 
 def obstacle_reach(params: energy.EnergyParams) -> builtins.float:
@@ -1054,29 +956,11 @@ def own_net_stops(layers: typing.Sequence[BoardLayer], via: Via, moving: typing.
     (`kibends_core::field::build::own_net_stops`).
     """
 
-def pair_depths(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
-    r"""
-    The gap between each segment and edge of `pairs_inside` less the
-    edge's inflation.
-    """
-
 def pair_kind(via: Via, ground: builtins.bool, other: Via, other_ground: builtins.bool) -> typing.Optional[builtins.int]:
     r"""
     How `via` and `other`, each a ground via or not, interact in the
     pairwise term, as `vias.PairKind`'s value; None if they do not
     (`kibends_core::vias::pairs::pair_kind`).
-    """
-
-def pairs_inside(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
-    r"""
-    Whether the segment from a[k] along ab[k] enters the edge from
-    starts[k] along along[k], inflated by inflations[k], by more than
-    `tolerance`.
-    """
-
-def parts_smooth_distance(parts: typing.Sequence[StaticEdges], points: numpy.typing.NDArray[numpy.float64], reach: builtins.float) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
-    r"""
-    The smooth distance over the obstacles of `parts`, from one search.
     """
 
 def point_stiffness(distance: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], integrand: Integrand, curvature: Curvature) -> numpy.typing.NDArray[numpy.float64]:
@@ -1103,12 +987,6 @@ def reset_statistics() -> None:
     Every statistic back to zero.
     """
 
-def search_parts(parts: typing.Sequence[tuple[StaticEdges, builtins.int]], coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
-    r"""
-    `StaticEdges.search` over several parts, each with the number its items
-    start at, their obstacles numbered one part after another.
-    """
-
 def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], short_edge: builtins.float) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
     The terms of a member's energy that depend on the polyline alone: its
@@ -1124,13 +1002,6 @@ def smooth_minimum(point: numpy.typing.NDArray[numpy.intp], distance: numpy.typi
     point with none; and each obstacle's share of the gradient there.
     """
 
-def smooth_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64], obstacle: numpy.typing.NDArray[numpy.intp]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
-    r"""
-    The smooth distance at each point of `query` over (point, segment)
-    pairs, each of an obstacle: distance, gradient, and per answering
-    obstacle the point, the pair, its share and its unit gradient.
-    """
-
 def smooth_reach(reach: builtins.float) -> builtins.float:
     r"""
     How far from a point the smooth distance looks for obstacles, for an
@@ -1142,19 +1013,6 @@ def split_via_obstacles(layers: typing.Sequence[BoardLayer], via: Via, split: ty
     A moving via's field over the layers of `layers` it spans, and the vias
     whose ids are in `split` apart, None if none is one
     (`kibends_core::field::build::via_obstacles`).
-    """
-
-def static_distances(parts: typing.Sequence[StaticEdges], coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
-    r"""
-    `StaticEdges.distances` over several parts, their obstacles numbered one
-    part after another.
-    """
-
-def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], ends: numpy.typing.NDArray[numpy.complex128], inflation: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64], obstacle: numpy.typing.NDArray[numpy.intp], item: numpy.typing.NDArray[numpy.intp], inside: numpy.typing.NDArray[numpy.bool_], unsure: numpy.typing.NDArray[numpy.bool_], items: StaticItems) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
-    r"""
-    The smooth distance at each point of `query` and its gradient over the
-    pairs of `obstacles.Found`'s fields, their items numbered as `items`
-    numbers them.
     """
 
 def statistics() -> Statistics:

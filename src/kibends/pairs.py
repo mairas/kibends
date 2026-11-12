@@ -696,7 +696,8 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
 def offset_pair(
     centreline: FloatArray, gap: float, width: float
 ) -> tuple[FloatArray, FloatArray]:
-    """The two tracks of a pair at ±(gap + width)/2 from `centreline`.
+    """The two tracks of a pair at ±(gap + width)/2 from `centreline`
+    (`kibends_core::pair_blocks::offset_pair`).
 
     The first track lies to the right of the direction of travel as seen with
     y down, the second to the left. Vertices are mitred, so every offset
@@ -704,8 +705,7 @@ def offset_pair(
     The centreline must have no repeated points, and neither track folds
     while `check_bend_radius` passes.
     """
-    shift = (gap + width) / 2 * _miters(centreline)
-    return centreline + shift, centreline - shift
+    return _core.offset_pair(_floats(centreline), gap, width)
 
 
 def offset_pair_pullback(
@@ -717,40 +717,15 @@ def offset_pair_pullback(
 ) -> FloatArray:
     """The gradient of a function of `offset_pair`'s two tracks, `right` and
     `left` at each of their vertices, taken back to the centreline's
-    vertices."""
-    half_pitch = (gap + width) / 2
-    delta = np.diff(centreline, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
-    along = delta / lengths[:, None]
-    normal = np.stack([-along[:, 1], along[:, 0]], axis=1)
-    before = np.concatenate([normal[:1], normal])
-    after = np.concatenate([normal, normal[-1:]])
-    total = before + after
-    one_plus_cos = 1.0 + np.sum(before * after, axis=1)
-    scale = np.maximum(one_plus_cos, MITER_FLOOR)
-    at_miter = half_pitch * (right - left)
-    # The miter (b + a) / max(1 + b·a, MITER_FLOOR) of the normals b before
-    # and a after a vertex, differentiated in each.
-    weight = np.where(
-        one_plus_cos > MITER_FLOOR,
-        np.sum(total * at_miter, axis=1) / scale**2,
-        0.0,
+    vertices (`kibends_core::pair_blocks::offset_pair_pullback`)."""
+    return _core.offset_pair_pullback(
+        _floats(centreline), gap, width, _floats(right), _floats(left)
     )
-    at_before = at_miter / scale[:, None] - after * weight[:, None]
-    at_after = at_miter / scale[:, None] - before * weight[:, None]
-    at_normal = np.zeros_like(normal)
-    at_normal[0] += at_before[0]
-    at_normal += at_before[1:]
-    at_normal += at_after[:-1]
-    at_normal[-1] += at_after[-1]
-    # normal = R·along with R a quarter turn; along = delta / |delta|.
-    turned = np.stack([at_normal[:, 1], -at_normal[:, 0]], axis=1)
-    across = np.sum(normal * at_normal, axis=1)[:, None]
-    at_delta = (turned - along * across) / lengths[:, None]
-    gradient = right + left
-    gradient[1:] += at_delta
-    gradient[:-1] -= at_delta
-    return gradient
+
+
+def _floats(points: FloatArray) -> FloatArray:
+    """`points` as an (n, 2) array of floats."""
+    return np.asarray(points, dtype=float).reshape(-1, 2)
 
 
 def _miters(polyline: FloatArray) -> FloatArray:

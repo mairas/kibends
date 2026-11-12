@@ -31,6 +31,7 @@ pyo3_stub_gen::type_alias!(
         | testing::Walls
         | testing::MisleadingWalls
         | testing::Union
+        | testing::ReachIgnored
         | testing::NanField,
     "A field implemented here, which a `CompositeField` can join."
 );

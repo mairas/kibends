@@ -16,6 +16,7 @@ may go to either: the states here have no such point."""
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from typing import NamedTuple
 
 import numpy as np
 import pytest
@@ -29,16 +30,14 @@ from scenarios import (
     ViasScenario,
     selected,
 )
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import box
 
 import kibends.optimize as optimize_module
-import kibends.seen as seen_module
 from kibends.bursts import DEFAULT_SETTINGS, point_distance
 from kibends.energy import (
     BoolArray,
     EnergyParams,
     IntArray,
-    ObstacleField,
     bend_radius_energy,
     combine_fields,
     edge_integral,
@@ -46,7 +45,6 @@ from kibends.energy import (
     obstacle_reach,
     quadrature_points,
     shape_energy,
-    smooth_reach,
 )
 from kibends.members import (
     Member,
@@ -54,7 +52,6 @@ from kibends.members import (
     seen_parts,
     shown,
     shown_flat,
-    static_list,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -62,28 +59,16 @@ from kibends.obstacles import (
     HOLE_TO_HOLE,
     ChainField,
     CompositeField,
-    Found,
     Obstacle,
     Obstacles,
-    StaticEdges,
-    complex_points,
     own_net_stops,
-    pairs_inside,
-    parts_smooth_distance,
-    static_parts,
     via_via_inflation,
     zones_on,
 )
 from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
 from kibends.pairs import complementary_net
-from kibends.seen import (
-    SKIN_LEAST,
-    STATIC_SKIN,
-    NeighbourList,
-    Pieces,
-    StaticList,
-)
+from kibends.seen import SKIN_LEAST
 from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import FreeDistances, MovingVias
 from kibends.vias import ViaInput
@@ -279,6 +264,32 @@ def _problems(
     return [p.problem for p in placed if p.problem.moving]
 
 
+class Pieces(NamedTuple):
+    """Edges, each by its first vertex in what the members show, each
+    inflated by its own amount."""
+
+    vertex: IntArray
+    inflation: FloatArray
+
+
+class Answer(NamedTuple):
+    """A chain field's smooth distance at each point and its gradient, and
+    what answers it: per obstacle that has a share at a point, the point,
+    the edge nearest it of that obstacle, its share and its unit
+    gradient."""
+
+    distance: FloatArray
+    gradient: FloatArray
+    point: IntArray
+    edge: IntArray
+    share: FloatArray
+    direction: FloatArray
+
+
+def _answers(field: ChainField, points: FloatArray, reach: float) -> Answer:
+    return Answer(*field.core.smooth_answers(points, reach))
+
+
 def _parameters(points: FloatArray, starts: FloatArray, ends: FloatArray) -> FloatArray:
     along = ends - starts
     squared = np.einsum("ij,ij->i", along, along)
@@ -375,8 +386,8 @@ def _reference_members(
         part, obstacles = seen[i]
         a, b = flat[part.vertex], flat[part.vertex + 1]
         starts, ends = a, a + (b - a)
-        near = ChainField(starts, ends, part.inflation, obstacles).smooth_answers(
-            queries, reach
+        near = _answers(
+            ChainField(starts, ends, part.inflation, obstacles), queries, reach
         )
         distance, (static_share, seen_share) = combine_fields(static, near.distance)
         direction = (
@@ -534,7 +545,7 @@ def _reference_vias(
         field, a, b, owner = _reference_view(
             problem, k, polylines, positions, unpaired=True
         )
-        near = field.smooth_answers(at, problem.reach)
+        near = _answers(field, at, problem.reach)
         distance, (static_share, seen_share) = combine_fields(static, near.distance)
         direction = (
             static_share[0] * static_direction[0] + seen_share[0] * (near.gradient[0])
@@ -588,9 +599,6 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
         layout = problem.layout(problem.points)
         seen = seen_parts(problem.members, layout.starts, problem.rings)
         masks = problem.energy_masks(problem.masks)
-        listed = NeighbourList(seen, problem.reach)
-        statics = static_list(problem.members, problem.reach)
-        via_statics = problem.via_static_list()
         for jitter in (0.0, WITHIN_SKIN, JITTER):
             x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
             polylines, positions = layout.unflatten(x)
@@ -609,13 +617,8 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 positions,
             )
             _assert_same(members_energy(*arguments), expected)
-            _assert_same(members_energy(*arguments, listed), expected)
-            _assert_same(members_energy(*arguments, listed, statics), expected)
             expected_vias = _reference_vias(problem, polylines, positions)
             _assert_same(problem.via_energy(polylines, positions), expected_vias)
-            _assert_same(
-                problem.via_energy(polylines, positions, via_statics), expected_vias
-            )
             static, by_obstacle = _free_by_obstacle(
                 problem.via_distances(polylines, positions, math.inf),
                 len(problem.vias),
@@ -675,9 +678,9 @@ def _zoned_beside_a_via_of_its_net() -> ViasScenario:
 
 def test_a_via_with_stops_gets_the_same_energy_through_a_static_list() -> None:
     """A via with stops, its zone's region and a via of its net standing
-    still, gets the energy through a static list that a search at its
-    position gives, bit for bit, at the start, within the skin and past
-    it."""
+    still, gets the energy through the problem's static lists that a search
+    at its position gives, bit for bit, at the start, within the skin and
+    past it."""
     scenario = _zoned_beside_a_via_of_its_net()
     problems = _problems(scenario, scenario.params)
     assert problems
@@ -685,18 +688,17 @@ def test_a_via_with_stops_gets_the_same_energy_through_a_static_list() -> None:
     for problem in problems:
         assert problem.vias[0].given.stops is not None
         layout = problem.layout(problem.points)
-        listed = problem.via_static_list()
+        seen = problem.seeing(layout.starts)
+        listed = problem.objective(layout, seen, problem.lookups(seen))
+        searched = problem.objective(layout, seen, None)
         for jitter in (0.0, WITHIN_SKIN, JITTER):
             x = layout.x0 + jitter * rng.uniform(-1.0, 1.0, len(layout.x0))
-            polylines, positions = layout.unflatten(x)
 
-            got = problem.via_energy(polylines, positions, listed)
+            got = listed(x)
 
-            expected = problem.via_energy(polylines, positions)
+            expected = searched(x)
             assert got[0] == expected[0]
-            for g, e in zip(got[1], expected[1], strict=True):
-                np.testing.assert_array_equal(g, e)
-            np.testing.assert_array_equal(got[2], expected[2])
+            np.testing.assert_array_equal(got[1], expected[1])
 
 
 def _exact_field(
@@ -724,6 +726,40 @@ def _reference_fields(
     return fields
 
 
+ROUND_OFF = 1e-9
+"""How far inside a piece a segment that touches it may measure, mm."""
+
+
+def _point_gaps(p: FloatArray, a: FloatArray, b: FloatArray) -> FloatArray:
+    """The distance from each of `p` to the segment from a to b."""
+    t = _parameters(p, a, b)
+    return np.hypot(*(p - (a + t[:, None] * (b - a))).T)
+
+
+def _segment_gaps(
+    a: FloatArray, b: FloatArray, c: FloatArray, d: FloatArray
+) -> FloatArray:
+    """The distance between each segment from a to b and the one from c to
+    d: zero where they cross, else the nearest of their ends to the other."""
+
+    def side(p: FloatArray, q: FloatArray, r: FloatArray) -> FloatArray:
+        return np.sign(
+            (q[:, 0] - p[:, 0]) * (r[:, 1] - p[:, 1])
+            - (q[:, 1] - p[:, 1]) * (r[:, 0] - p[:, 0])
+        )
+
+    crossing = (side(a, b, c) * side(a, b, d) < 0) & (side(c, d, a) * side(c, d, b) < 0)
+    nearest = np.minimum.reduce(
+        [
+            _point_gaps(a, c, d),
+            _point_gaps(b, c, d),
+            _point_gaps(c, a, b),
+            _point_gaps(d, a, b),
+        ]
+    )
+    return np.where(crossing, 0.0, nearest)
+
+
 def _reference_entered(
     problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
     polylines: Sequence[FloatArray],
@@ -737,19 +773,13 @@ def _reference_entered(
         _reference_parts(problem, polylines), polylines, strict=True
     ):
         a, b = flat[part.vertex], flat[part.vertex + 1]
-        starts = complex_points(a)
-        along = complex_points(a + (b - a)) - starts
-        ca, cb = complex_points(points[:-1]), complex_points(points[1:])
-        edge = np.repeat(np.arange(len(ca)), len(starts))
-        piece = np.tile(np.arange(len(starts)), len(ca))
-        inside = pairs_inside(
-            ca[edge],
-            (cb - ca)[edge],
-            starts[piece],
-            along[piece],
-            part.inflation[piece],
-            0.0,
+        starts, ends = a, a + (b - a)
+        edge = np.repeat(np.arange(len(points) - 1), len(starts))
+        piece = np.tile(np.arange(len(starts)), len(points) - 1)
+        gap = _segment_gaps(
+            points[:-1][edge], points[1:][edge], starts[piece], ends[piece]
         )
+        inside = gap < part.inflation[piece] - ROUND_OFF
         entered.append(
             set(
                 zip(
@@ -965,176 +995,3 @@ def test_the_free_distance_of_zoned_vias_is_their_own_fields(
                 rtol=1e-12,
                 atol=1e-12,
             )
-
-
-PAD_ROW = Obstacles(
-    [Obstacle(f"pad {k}", box(1.2 * k, 0.0, 1.2 * k + 1.0, 0.6), 0.3) for k in range(4)]
-    + [Obstacle("track", LineString([(0.0, 1.6), (5.0, 1.9)]), 0.35)],
-    box(-1.0, -1.0, 6.0, 2.5),
-    0.4,
-)
-"""Other-net copper and a board edge for a static list's points."""
-PAD_ROW_REACH = 0.3
-
-
-def _pad_row_points() -> FloatArray:
-    """Points beside and between `PAD_ROW`'s pads, one 0.015 mm right of a
-    pad's side, which a move left by more than that takes inside it."""
-    x, y = np.meshgrid(np.linspace(-0.6, 5.6, 40), np.linspace(-0.6, 2.2, 15))
-    return np.vstack([np.column_stack([x.ravel(), y.ravel()]), [[1.015, 0.3]]])
-
-
-def test_a_static_list_searches_again_only_past_its_skin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Points moved less than the skin reuse the pairs, one point among
-    them crossing into a pad; moved farther, they are searched again;
-    either way the answers are those of a search at the points."""
-    searches: list[int] = []
-    search = seen_module.search_parts
-
-    def counted(
-        parts: Sequence[tuple[StaticEdges, int]],
-        coords: FloatArray,
-        reach: float,
-        slack: float,
-    ) -> Found:
-        searches.append(1)
-        return search(parts, coords, reach, slack)
-
-    monkeypatch.setattr(seen_module, "search_parts", counted)
-    points = _pad_row_points()
-    statics = StaticList([PAD_ROW], PAD_ROW_REACH)
-    moves = ((0.0, True), (0.8 * STATIC_SKIN, False), (2 * STATIC_SKIN, True))
-    for move, searched in moves:
-        at = points - [move, 0.0]
-        before = len(searches)
-
-        (got,) = statics.smooth([at])
-
-        assert len(searches) - before == searched
-        expected = parts_smooth_distance([PAD_ROW.static_edges], at, PAD_ROW_REACH)
-        np.testing.assert_array_equal(got[0], expected[0])
-        np.testing.assert_array_equal(got[1], expected[1])
-        assert (got[0][-1] < -PAD_ROW.items[1].inflation) == (move > 0.0)
-
-
-def test_a_static_list_answers_each_asker_as_its_own_field() -> None:
-    """Askers of one list: a static field, one joined with a field of
-    centres, a field that gives no edges and none at all."""
-    centres = ChainField(
-        np.array([[2.2, 1.0], [4.0, 1.0]]),
-        np.array([[2.2, 1.0], [4.0, 1.0]]),
-        np.array([0.5, 0.5]),
-        np.arange(2, dtype=np.intp),
-    )
-    joined = CompositeField([PAD_ROW, centres])
-    analytic = FreeSpace()
-    points = _pad_row_points()
-    statics = StaticList([PAD_ROW, joined, analytic, None], PAD_ROW_REACH)
-
-    got = statics.smooth([points, points, points, points])
-
-    parts = static_parts(joined)
-    assert parts is not None
-    expected = [
-        PAD_ROW.smooth_distance(points, PAD_ROW_REACH),
-        parts_smooth_distance(parts, points, PAD_ROW_REACH),
-        analytic.smooth_distance(points, PAD_ROW_REACH),
-    ]
-    for (distance, gradient), (d, g) in zip(got, expected, strict=False):
-        np.testing.assert_array_equal(distance, d)
-        np.testing.assert_array_equal(gradient, g)
-    assert (got[3][0] == np.inf).all()
-    assert (got[3][1] == 0.0).all()
-
-
-def _random_copper(rng: np.random.Generator) -> list[Obstacle]:
-    """Items of every kind at random in a 6 mm square, one geometry twice."""
-    items: list[Obstacle] = []
-    for k in range(int(rng.integers(3, 15))):
-        c = rng.uniform(0.0, 6.0, 2)
-        kind = int(rng.integers(0, 5))
-        inflation = float(rng.choice([0.0, 0.1, 0.25, 0.4, 0.6]))
-        if kind == 0:
-            w, h = rng.uniform(0.05, 1.0, 2)
-            geometry = box(c[0], c[1], c[0] + w, c[1] + h)
-        elif kind == 1:
-            geometry = Point(*c).buffer(float(rng.uniform(0.05, 0.6)), 8)
-        elif kind == 2:
-            turns = c + rng.uniform(-2.0, 2.0, (2, 2))
-            geometry = LineString([c, *turns])
-        elif kind == 3:
-            geometry = Point(*c)
-        else:
-            geometry = Polygon(
-                box(c[0], c[1], c[0] + 1.5, c[1] + 1.5).exterior.coords,
-                [box(c[0] + 0.4, c[1] + 0.4, c[0] + 1.1, c[1] + 1.1).exterior.coords],
-            )
-        items.append(Obstacle(f"item {k}", geometry, inflation))
-    items.append(Obstacle("again", items[0].geometry, items[0].inflation))
-    return items
-
-
-RANDOM_BOARD = box(-0.5, -0.5, 6.5, 6.5)
-RANDOM_EDGE_INFLATION = 0.3
-BESIDE_DEEP = 0.01
-"""How much deeper than the board edge's reach the points beside it
-start, mm: just past where a search finds the edge."""
-
-
-def _random_field(rng: np.random.Generator, trial: int) -> ObstacleField:
-    """A static field of random copper, with or without a board edge, with
-    a cutout in the board, or joined with centres and a zone's region."""
-    outline = RANDOM_BOARD
-    if trial % 2:
-        outline = Polygon(
-            RANDOM_BOARD.exterior.coords, [box(2.8, 2.8, 3.2, 3.2).exterior.coords]
-        )
-    field = Obstacles(
-        _random_copper(rng), outline if trial % 3 else None, RANDOM_EDGE_INFLATION
-    )
-    if trial % 4:
-        return field
-    centres = rng.uniform(0.0, 6.0, (4, 2))
-    ends = centres + rng.uniform(-0.5, 0.5, (4, 2)) * (rng.uniform(size=(4, 1)) > 0.5)
-    return CompositeField(
-        [
-            field,
-            ChainField(centres, ends, rng.uniform(0.1, 0.5, 4), np.array([0, 0, 1, 2])),
-            Obstacles((), Point(3.0, 3.0).buffer(2.5, 16), 0.0),
-        ]
-    )
-
-
-def test_a_static_list_answers_as_a_search_on_random_copper() -> None:
-    """Points each moving its own way within the skin, some from just
-    beside the board's deep inside toward its edge, get the answers of a
-    search at the points, whatever the reach."""
-    rng = np.random.default_rng(11)
-    for trial in range(30):
-        field = _random_field(rng, trial)
-        parts = static_parts(field)
-        assert parts is not None
-        reach = [0.2, 0.5, math.inf][trial // 2 % 3]
-        # Just outside where the board edge is skipped as deep inside,
-        # moving toward the left edge; with no finite reach, none is.
-        skipped = RANDOM_EDGE_INFLATION + smooth_reach(reach) + BESIDE_DEEP
-        depth = skipped + rng.uniform(0.0, 0.03, 40 if math.isfinite(reach) else 0)
-        beside = np.column_stack([-0.5 + depth, rng.uniform(0.5, 5.5, len(depth))])
-        points = np.vstack([rng.uniform(-1.0, 7.0, (200, 2)), beside])
-        statics = StaticList([field], reach)
-        statics.smooth([points])
-        for _ in range(4):
-            # Within the skin of where the list searched, so that it does
-            # not search again.
-            way = rng.normal(size=points.shape)
-            way[len(points) - len(beside) :] = [-1.0, 0.0]
-            way /= np.linalg.norm(way, axis=1)[:, None]
-            at = points + way * rng.uniform(0.0, 0.999 * STATIC_SKIN, (len(points), 1))
-
-            (got,) = statics.smooth([at])
-
-            expected = parts_smooth_distance(parts, at, reach)
-            np.testing.assert_array_equal(got[0], expected[0])
-            np.testing.assert_array_equal(got[1], expected[1])

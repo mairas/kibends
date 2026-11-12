@@ -19,11 +19,7 @@ from kibends.obstacles import core_field
 
 
 def _regions(within: Sequence[DistanceField]) -> list[_core.Field]:
-    regions = [core_field(field) for field in within]
-    found = [r for r in regions if r is not None]
-    if len(found) != len(regions):
-        raise TypeError("a contact's region is not a field of kibends._core")
-    return found
+    return [core_field(field) for field in within]
 
 
 def contact_stops(

@@ -103,6 +103,23 @@ fn rings_of(rings: &[BTreeMap<usize, f64>], members: usize) -> PyResult<Vec<Vec<
         .collect()
 }
 
+/// A moving section's centreline needs an edge to offset.
+fn check_centreline(offset: &pair_blocks::PairOffset, points: &[V2]) -> PyResult<()> {
+    if !offset.held && points.len() < 2 {
+        return Err(invalid("a section's centreline needs two vertices".into()));
+    }
+    Ok(())
+}
+
+fn check_sections(members: &members::Members, polylines: &[Vec<V2>]) -> PyResult<()> {
+    for (member, points) in members.members.iter().zip(polylines) {
+        if let Some(section) = &member.section {
+            check_centreline(&section.offset, points)?;
+        }
+    }
+    Ok(())
+}
+
 /// A coupled section's tracks as the offset of its centreline
 /// (`kibends_core::pair_blocks::PairOffset`).
 #[gen_stub_pyclass]
@@ -161,9 +178,7 @@ impl PairOffset {
         points: Polyline<'_>,
     ) -> PyResult<(Points<'py>, Points<'py>)> {
         let points = points_of(&points)?;
-        if self.inner.held {
-            check_count("vertices", points.len(), self.inner.a.len())?;
-        }
+        check_centreline(&self.inner, &points)?;
         let (a, b) = self.inner.offset(&points);
         Ok((vectors(py, &a)?, vectors(py, &b)?))
     }
@@ -212,9 +227,10 @@ impl Member {
     /// ignoring the tracks of the nets `ignored`, showing the others the
     /// tracks `shown`, in its static `field`, its contact stops weighed by
     /// `width` and its contacts' regions `contacts`; a coupled section with
-    /// its `section` offset and its bend-radius `limit`.
+    /// its `section` offset and the bend-radius `limit` its hinge keeps,
+    /// none without the hinge.
     #[new]
-    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = 0.0))]
+    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         layer: String,
@@ -225,7 +241,7 @@ impl Member {
         width: f64,
         contacts: Vec<FieldArg>,
         section: Option<PyRef<'_, PairOffset>>,
-        limit: f64,
+        limit: Option<f64>,
     ) -> PyResult<Self> {
         let parts = if section.is_some() { 2 } else { 1 };
         check_count("shown tracks", shown.len(), parts)?;
@@ -257,17 +273,7 @@ pub struct Members {
 impl Members {
     fn check_polylines(&self, polylines: &[Vec<V2>]) -> PyResult<()> {
         check_count("polylines", polylines.len(), self.inner.len())?;
-        for (member, points) in self.inner.members.iter().zip(polylines) {
-            if member.section.is_some() && points.len() < 2 {
-                return Err(invalid("a section's centreline needs two vertices".into()));
-            }
-            if let Some(section) = &member.section
-                && section.offset.held
-            {
-                check_count("vertices", points.len(), section.offset.a.len())?;
-            }
-        }
-        Ok(())
+        check_sections(&self.inner, polylines)
     }
 }
 
@@ -934,16 +940,7 @@ impl Problem {
         let positions = points_of(positions)?;
         check_count("polylines", polylines.len(), self.inner.members.len())?;
         check_count("positions", positions.len(), self.inner.vias.len())?;
-        for (member, points) in self.inner.members.members.iter().zip(&polylines) {
-            if let Some(section) = &member.section {
-                if points.len() < 2 {
-                    return Err(invalid("a section's centreline needs two vertices".into()));
-                }
-                if section.offset.held {
-                    check_count("vertices", points.len(), section.offset.a.len())?;
-                }
-            }
-        }
+        check_sections(&self.inner.members, &polylines)?;
         Ok(State {
             polylines,
             positions,

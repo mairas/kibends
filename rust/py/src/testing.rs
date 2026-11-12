@@ -196,6 +196,32 @@ test_field! {
 }
 
 test_field! {
+    /// `field` answering every query exactly, whatever the reach, and
+    /// giving no static edges.
+    ReachIgnored { ; field: Py<PyAny> }
+
+    #[new]
+    #[gen_stub(override_return_type(type_repr = "ReachIgnored"))]
+    fn new(
+        #[gen_stub(override_type(type_repr = "_core.Field", imports = ("kibends._core",)))]
+        field: Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let inner = field.extract::<FieldArg>()?.0;
+        Ok(Self {
+            field: field.unbind(),
+            inner: Arc::new(testing::ReachIgnored { field: inner }),
+        })
+    }
+
+    /// The field it answers for.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "_core.Field", imports = ("kibends._core",)))]
+    fn field(&self, py: Python<'_>) -> Py<PyAny> {
+        self.field.clone_ref(py)
+    }
+}
+
+test_field! {
     /// A field that answers NaN everywhere.
     NanField {}
 
@@ -223,6 +249,7 @@ pub fn field_of(obj: &Bound<'_, PyAny>) -> Option<Arc<dyn Field>> {
         Walls,
         MisleadingWalls,
         Union,
+        ReachIgnored,
         NanField
     );
     None
@@ -241,6 +268,7 @@ pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Walls>()?;
     m.add_class::<MisleadingWalls>()?;
     m.add_class::<Union>()?;
+    m.add_class::<ReachIgnored>()?;
     m.add_class::<NanField>()?;
     m.add("FAR", testing::FAR)?;
     parent.add_submodule(&m)?;

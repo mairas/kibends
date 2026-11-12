@@ -12,7 +12,15 @@ import pytest
 import scenarios
 import shapely
 from conftest import clearances, total_energy, violations
-from distance_fields import Box, Disc, FloatArray, FreeSpace, MisleadingWalls, Union
+from distance_fields import (
+    Box,
+    Disc,
+    FloatArray,
+    FreeSpace,
+    MisleadingWalls,
+    ReachIgnored,
+    Union,
+)
 from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
@@ -25,7 +33,7 @@ from kibends.bursts import (
     Revert,
     Stop,
 )
-from kibends.energy import BoolArray, ObstacleField
+from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
@@ -722,28 +730,6 @@ class TestStalled:
         assert not self.stalled([2 * e for e in lowest], twice, 2, 2)
 
 
-class ReachIgnored:
-    """The stall fixture's obstacles, always answering exactly."""
-
-    def __init__(self, field: Obstacles) -> None:
-        self.field = field
-
-    def signed_distance(
-        self, points: FloatArray, reach: float = np.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        return self.field.signed_distance(points)
-
-    def smooth_distance(
-        self, points: FloatArray, reach: float = np.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        return self.field.smooth_distance(points)
-
-    def segments_clear(
-        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
-    ) -> BoolArray:
-        return self.field.segments_clear(starts, ends, tolerance)
-
-
 def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
     data = json.loads(STALL_FIXTURE.read_text())
     field = Obstacles(
@@ -758,7 +744,7 @@ def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
 
     value, gradient = total_energy(points, fixed, field, params)
     exact_value, exact_gradient = total_energy(
-        points, fixed, ReachIgnored(field), params
+        points, fixed, ReachIgnored(field.core), params
     )
 
     assert value == pytest.approx(exact_value, rel=1e-12)

@@ -73,16 +73,18 @@ from kibends.energy import (
     obstacle_integrand,
     obstacle_reach,
     quadrature_points,
-    shape_energy,
 )
 from kibends.members import Member, members_energy, seen_parts
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
+    ChainCentreline,
     CompositeField,
     Obstacles,
     containment,
+    core_field,
     split_via_obstacles,
 )
 from kibends.polylines import count_violations
@@ -290,21 +292,30 @@ def total_energy(
     bend_limit: float | None = None,
 ) -> TermValue:
     """One polyline's energy in `field` alone, as the optimizer sums its
-    terms, with the bend-radius hinge at `bend_limit` if given; raises
-    ValueError if it is not finite."""
-    value, gradient = shape_energy(points, fixed, short_edge)
-    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
-    value += obstacle_value
-    gradient = gradient + obstacle_gradient
+    terms (`members.members_energy`), with the bend-radius hinge at
+    `bend_limit` if given; raises ValueError if it is not finite."""
+    points = np.asarray(points, dtype=float)
+    alone = ChainInput(
+        ChainCentreline("alone", "", 0.0, 0.0, points), "", fixed, core_field(field)
+    )
+    value, (gradient,), _ = members_energy(
+        [alone],
+        [points],
+        [fixed],
+        params,
+        short_edge,
+        seen_parts([alone], [points]),
+        (),
+    )
     if bend_limit is not None:
         bend_value, bend_gradient = bend_radius_energy(
             points, fixed, bend_limit, params
         )
         value += bend_value
         gradient = gradient + bend_gradient
-    if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
-        raise ValueError(f"energy is not finite: {value}")
-    gradient[fixed] = 0.0
+        if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
+            raise ValueError(f"energy is not finite: {value}")
+        gradient[fixed] = 0.0
     return value, gradient
 
 
