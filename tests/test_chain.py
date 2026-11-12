@@ -1041,6 +1041,42 @@ class TestCuts:
         assert_points(track, [(10, 0), (10, 2.5), (15, 2.5)])
         assert track.pinned == (True, False, True)
 
+    def test_an_end_the_via_does_not_carry_still_pins_another_chain(self) -> None:
+        # The via is cut, but the stub's dead end lies on the track well
+        # outside its ring, so it pins the track there as an uncut stub would.
+        segments = [
+            seg("stub", (10, 0), (9, 1), width=200_000),
+            seg("stub2", (9, 1), (9.88, 1.5), width=200_000),
+            *via_stub_segments()[1:],
+        ]
+
+        _, track = extract_chains(segments, frame=BOARD_FRAME, cuts=cut_at((10, 0)))
+
+        assert_points(track, [(10, 0), (10, 1.5), (10, 2.5), (15, 2.5)])
+        assert track.pinned == (True, True, False, True)
+
+    @pytest.mark.parametrize(
+        ("y", "width", "pins"),
+        [(0.387, 200_000, True), (0.376, 200_000, False), (0.34, 100_000, True)],
+        ids=["outside", "inside", "narrow-stub-outside"],
+    )
+    def test_an_end_pins_another_chain_only_outside_the_via_s_reach(
+        self, y: float, width: int, pins: bool
+    ) -> None:
+        # The via's ring and the stub's half width reach 0.4 mm for a 0.2 mm
+        # stub, 0.35 mm for a 0.1 mm one; the stub's end lies 0.405, 0.395 or
+        # 0.361 mm from the via's centre, on the 0.2 mm track. The stub's own
+        # width sets the reach, not the track's.
+        segments = [
+            seg("stub", (10, 0), (9.88, y), width=width),
+            *via_stub_segments()[1:],
+        ]
+
+        _, track = extract_chains(segments, frame=BOARD_FRAME, cuts=cut_at((10, 0)))
+
+        assert ((10, y) in pinned_points(track)) == pins
+        assert track.pinned[1:-1].count(True) == (1 if pins else 0)
+
     def test_a_stub_at_a_via_that_stays_is_part_of_one_chain(self) -> None:
         (chain,) = extract_chains(via_stub_segments(), frame=BOARD_FRAME)
 
