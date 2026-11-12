@@ -464,6 +464,9 @@ pub struct State {
     /// Whether its next burst is the one at the final spacing that runs
     /// before the coarse levels, and decides whether they run.
     pub probing: bool,
+    /// Whether its next burst is the first at a level a coarser one handed
+    /// over to.
+    handed_over: bool,
     /// Per member, the violations the resampled start has, which the guard
     /// holds it to.
     pub allowed: Vec<usize>,
@@ -634,6 +637,7 @@ impl State {
             input_energy: energy,
             level,
             probing: moving && level > 0,
+            handed_over: false,
             allowed,
             inside,
             stopped,
@@ -814,6 +818,8 @@ impl State {
             }
         };
         self.settled = false;
+        // Level 0 comes after the probe, at the final spacing.
+        self.handed_over = level > 0;
         self.reseed(now, seen, from_input)
     }
 
@@ -1149,18 +1155,26 @@ impl State {
         // because of them, not because the shapes settled.
         let cut_short = burst.via_rejected.iter().any(|&c| c > 0)
             || burst.rejected_edges.iter().any(|&c| c > 0);
+        // The first burst at a level a coarser one handed over to starts
+        // from that level's best state, subdivided, so a burst that moves
+        // nothing there settles even if it ended abnormally: L-BFGS found
+        // no descent from it, as at a pad's corner, where the contact stop
+        // has a kink and every burst from the end resting there fails its
+        // first line search.
         let settings = shared.settings();
+        let handed_over = std::mem::take(&mut self.handed_over);
+        let unchanged = !cut_short && change < settings.settled_change;
         self.settled = self.gave_up()
-            || (!ran.abnormal
-                && !ran.cut
-                && ((!cut_short && change < settings.settled_change)
-                    || stalled(
-                        &self.lowest,
-                        &self.lengths,
-                        settings,
-                        self.free.len(),
-                        shared.setup.vias.len(),
-                    )));
+            || (!ran.cut
+                && (((!ran.abnormal || handed_over) && unchanged)
+                    || (!ran.abnormal
+                        && stalled(
+                            &self.lowest,
+                            &self.lengths,
+                            settings,
+                            self.free.len(),
+                            shared.setup.vias.len(),
+                        ))));
         let rest = began.elapsed().as_secs_f64() - ran.evaluating;
         report(Notice::Burst(BurstReport {
             problem: n,
@@ -1817,15 +1831,18 @@ mod tests {
     }
 
     /// Bursts that leave every free vertex at `factor` times its height
-    /// above y = 0, recording each burst's vertex count per member.
+    /// above y = 0, abnormal if `abnormal`, recording each burst's vertex
+    /// count per member.
     struct Toward {
         factor: f64,
+        abnormal: bool,
         counts: Vec<Vec<usize>>,
     }
 
     fn toward(factor: f64) -> Toward {
         Toward {
             factor,
+            abnormal: false,
             counts: Vec::new(),
         }
     }
@@ -1849,7 +1866,7 @@ mod tests {
             Ok((
                 Ran {
                     point,
-                    abnormal: false,
+                    abnormal: self.abnormal,
                     iterations: 1,
                     evaluations: 1,
                     message: String::new(),
@@ -2019,12 +2036,16 @@ mod tests {
         assert_eq!(p.level, LEVELS.len());
     }
 
+    /// How much of its height each abnormal burst leaves a vertex: enough
+    /// that no burst of the run moves less than the settle threshold.
+    const ABNORMAL_FACTOR: f64 = 0.8;
+
     #[test]
     fn abnormal_bursts_hand_a_coarse_level_over_and_give_up_only_at_the_final_level() {
-        let mut p = coarse_problem(Arc::new(FreeSpace), 1.0, &LEVELS);
-        let mut abnormal = Still {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        let mut abnormal = Toward {
             abnormal: true,
-            ..still(0, 0)
+            ..toward(ABNORMAL_FACTOR)
         };
 
         let (outcome, iterations) = advanced(&mut p, &mut abnormal);
@@ -2034,6 +2055,27 @@ mod tests {
         let levels = LEVELS.len() as u64 + 1;
         assert_eq!(iterations, 1 + levels * u64::from(MAX_ABNORMAL_BURSTS));
         assert_eq!(p.level, LEVELS.len());
+    }
+
+    #[test]
+    fn an_abnormal_burst_that_moves_nothing_after_a_handover_settles_its_level() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        p.probing = false;
+        p.enter(LEVELS.len() - 1).expect("finite");
+        p.enter(LEVELS.len()).expect("finite");
+        let mut abnormal = Still {
+            abnormal: true,
+            ..still(0, 0)
+        };
+
+        p.step(0, &mut abnormal, &mut |_| Ok(())).expect("finite");
+
+        assert!(p.settled);
+        assert!(!p.gave_up());
+        // Only the first burst after a handover.
+        p.settled = false;
+        p.step(0, &mut abnormal, &mut |_| Ok(())).expect("finite");
+        assert!(!p.settled);
     }
 
     #[test]
