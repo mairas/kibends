@@ -69,7 +69,7 @@ fn optional_indices(array: &IntpArg<'_>, below: usize) -> PyResult<Vec<Option<us
         .collect()
 }
 
-fn check_count(what: &str, got: usize, want: usize) -> PyResult<()> {
+pub(crate) fn check_count(what: &str, got: usize, want: usize) -> PyResult<()> {
     if got == want {
         Ok(())
     } else {
@@ -1249,32 +1249,69 @@ impl Problem {
             ));
         }
         Ok(Objective {
-            inner: problem::Objective {
-                problem: self.inner.clone(),
-                seen: seen.inner.clone(),
-                layout: Layout {
-                    starts,
-                    index,
-                    offsets,
-                    via_index,
-                    count,
+            kind: ObjectiveKind::Problem {
+                inner: problem::Objective {
+                    problem: self.inner.clone(),
+                    seen: seen.inner.clone(),
+                    layout: Layout {
+                        starts,
+                        index,
+                        offsets,
+                        via_index,
+                        count,
+                    },
+                    masks,
+                    contact_of,
                 },
-                masks,
-                contact_of,
+                lookups,
             },
-            lookups,
         })
     }
 }
 
 /// A burst's energy as a function of its variables
-/// (`kibends_core::problem::Objective`): called with the variables, flat,
+/// (`kibends_core::problem::Objective`), or a test's
+/// (`kibends._core.testing.quadratic`): called with the variables, flat,
 /// it gives the energy and its gradient.
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Objective {
-    inner: problem::Objective,
-    lookups: Option<Py<Lookups>>,
+    kind: ObjectiveKind,
+}
+
+enum ObjectiveKind {
+    Problem {
+        inner: problem::Objective,
+        lookups: Option<Py<Lookups>>,
+    },
+    /// `kibends_core::testing::quadratic` with these curvatures.
+    Quadratic { curvatures: Vec<f64>, uphill: bool },
+}
+
+impl Objective {
+    pub(crate) fn quadratic(curvatures: Vec<f64>, uphill: bool) -> Self {
+        Objective {
+            kind: ObjectiveKind::Quadratic { curvatures, uphill },
+        }
+    }
+
+    /// The energy at `x` and its gradient; ValueError for an `x` of the
+    /// wrong length or an energy that is not finite.
+    pub(crate) fn evaluate(&self, py: Python<'_>, x: &[f64]) -> PyResult<(f64, Vec<f64>)> {
+        match &self.kind {
+            ObjectiveKind::Problem { inner, lookups } => {
+                check_count("coordinates", x.len(), 2 * inner.layout.count)?;
+                let mut lookups = lookups.as_ref().map(|l| l.borrow_mut(py));
+                inner
+                    .evaluate(x, lookups.as_deref_mut().map(|l| &mut l.inner))
+                    .map_err(|v| not_finite(py, v))
+            }
+            ObjectiveKind::Quadratic { curvatures, uphill } => {
+                check_count("coordinates", x.len(), curvatures.len())?;
+                Ok(kibends_core::testing::quadratic(curvatures, *uphill, x))
+            }
+        }
+    }
 }
 
 #[gen_stub_pymethods]
@@ -1285,13 +1322,7 @@ impl Objective {
         py: Python<'py>,
         x: PyReadonlyArray1<'_, f64>,
     ) -> PyResult<(f64, Floats<'py>)> {
-        let x = x.as_array().to_vec();
-        check_count("coordinates", x.len(), 2 * self.inner.layout.count)?;
-        let mut lookups = self.lookups.as_ref().map(|l| l.borrow_mut(py));
-        let (value, gradient) = self
-            .inner
-            .evaluate(&x, lookups.as_deref_mut().map(|l| &mut l.inner))
-            .map_err(|v| not_finite(py, v))?;
+        let (value, gradient) = self.evaluate(py, &x.as_array().to_vec())?;
         Ok((value, floats(py, gradient)))
     }
 }

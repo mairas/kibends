@@ -74,6 +74,7 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -228,16 +229,21 @@ def counted() -> Generator[Count]:
         checking = 0.0
 
         def counting(x: FloatArray) -> tuple[float, FloatArray]:
-            if statistics is None:
-                count.evaluations += 1
+            count.evaluations += 1
             return objective(x)
 
-        # A scaled objective keeps its scale; an older tree has none.
-        evaluated: Objective = counting
-        if hasattr(bursts_module, "ScaledObjective") and isinstance(
-            objective, bursts_module.ScaledObjective
-        ):
-            evaluated = bursts_module.ScaledObjective(counting, objective.scale)
+        # A tree with Rust statistics counts its evaluations there, and
+        # this tree's bursts evaluate only its Rust objective. An older
+        # tree's is a Python function, counted here; a scaled one keeps its
+        # scale, and a still older tree has none.
+        evaluated = objective
+        if statistics is None:
+            evaluated = cast(Objective, counting)
+            if hasattr(bursts_module, "ScaledObjective") and isinstance(
+                objective, bursts_module.ScaledObjective
+            ):
+                scaled = cast(Callable[..., Objective], bursts_module.ScaledObjective)
+                evaluated = scaled(counting, objective.scale)
 
         def checked(x: FloatArray) -> int:
             nonlocal checking

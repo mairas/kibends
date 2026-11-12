@@ -1,14 +1,15 @@
-//! The submodule `kibends._core.testing`: the analytic fields of
-//! `kibends_core::testing`, for tests.
+//! The submodule `kibends._core.testing`: the analytic fields and the
+//! quadratic objective of `kibends_core::testing`, for tests.
 
 use std::sync::Arc;
 
 use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
-use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use crate::field::{Flags, Floats, Points};
 use crate::fields::{FieldArg, segments_clear, signed_distance, smooth_distance};
+use crate::problem::Objective;
 use kibends_core::field::Field;
 use kibends_core::testing;
 
@@ -255,6 +256,16 @@ pub fn field_of(obj: &Bound<'_, PyAny>) -> Option<Arc<dyn Field>> {
     None
 }
 
+/// Σ c·x² over the coordinates x, with `curvatures` c, as a burst's
+/// objective; `uphill`, its gradient the opposite, so that no line search
+/// along it succeeds (`kibends_core::testing::quadratic`).
+#[gen_stub_pyfunction(module = "kibends._core.testing")]
+#[pyfunction]
+#[pyo3(signature = (curvatures, uphill = false))]
+fn quadratic(curvatures: Vec<f64>, uphill: bool) -> Objective {
+    Objective::quadratic(curvatures, uphill)
+}
+
 pyo3_stub_gen::module_variable!("kibends._core.testing", "FAR", f64, testing::FAR);
 
 /// The submodule `kibends._core.testing`, registered in `sys.modules` so
@@ -270,6 +281,7 @@ pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Union>()?;
     m.add_class::<ReachIgnored>()?;
     m.add_class::<NanField>()?;
+    m.add_function(wrap_pyfunction!(quadratic, &m)?)?;
     m.add("FAR", testing::FAR)?;
     parent.add_submodule(&m)?;
     py.import("sys")?

@@ -1,19 +1,21 @@
-"""One L-BFGS-B burst, which the optimizer runs over every free coordinate
+"""One L-BFGS burst, which the optimizer runs over every free coordinate
 of a problem at once, and the optimizer's settings, which every module
 importing them takes from here.
+
+The burst runs in Rust (`kibends_core::burst`): argmin's L-BFGS ended by
+scipy's L-BFGS-B rules, evaluating a `kibends._core.Objective` without
+calling Python. Between iterations it checks for signals and asks the
+caller's `stop`, so that Ctrl-C and the time limit end it there.
 
 A burst does not bound its coordinates; a check after the run moves back
 whatever newly crosses an obstacle.
 
 A burst whose objective is a `ScaledObjective` minimises over y, with
-x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS-B's
-one curvature model fits stiff and soft coordinates alike. The scale
-travels with the objective rather than as an argument of its own, so that
-whatever wraps `run_burst` and passes the objective on keeps it; the check
-and the burst's result stay in x. Wrapping the objective itself in a plain
-function drops the scale without an error, and the burst runs unscaled: a
-wrapper of the objective must build a `ScaledObjective` again with the
-scale, as the bench's counting does.
+x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS's one
+curvature model fits stiff and soft coordinates alike. The scale travels
+with the objective rather than as an argument of its own, so that whatever
+wraps `run_burst` and passes the objective on keeps it; the check and the
+burst's result stay in x.
 """
 
 from collections.abc import Callable
@@ -21,8 +23,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from loguru import logger
-from scipy.optimize import minimize
 
+from kibends import _core
 from kibends.energy import BoolArray, DistanceField, FloatArray
 
 FALLBACK_WARNING = (
@@ -40,14 +42,12 @@ INSIDE_TOLERANCE = 1e-7
 # about 1e-16 mm. A thousandth of KiCad's 1 nm coordinate step.
 DEEPER_ROUND_OFF = 1e-9
 
-LBFGSB_ABNORMAL = 2
-
 # Edges shorter than this fraction of the spacing meet the short-edge barrier.
 # Resampling leaves every edge at a free vertex at least half the spacing.
 SHORT_EDGE_FRACTION = 0.1
 
 # The chain's length term is ill-conditioned (tension spreads one vertex per
-# iteration), so L-BFGS-B's default gtol (1e-5) ends a burst long before the
+# iteration), so scipy's default gtol (1e-5) ends a burst long before the
 # shape settles; with this gtol, burst_maxiter or ftol ends it instead. ftol is
 # near scipy's default (2.2e-9): it ends a few bursts early and lets problems
 # settle in fewer bursts, while 1e-12 and below save nothing measurable, as
@@ -86,7 +86,7 @@ class OptimizerSettings:
     energy creeps down by far less."""
     stall_window: int = 3
     burst_maxiter: int = 50
-    """L-BFGS-B iterations per burst of a problem. Shorter bursts resample
+    """L-BFGS iterations per burst of a problem. Shorter bursts resample
     and check the shapes more often, which on a large problem reaches a
     given length in fewer energy evaluations.
 
@@ -98,12 +98,13 @@ class OptimizerSettings:
     bursts, so its window shrinks with this. Measured in
     https://github.com/mairas/kibends/issues/70."""
     lbfgs_ftol: float = LBFGSB_FTOL
-    """L-BFGS-B's relative energy reduction below which a burst ends."""
+    """The relative energy reduction of an L-BFGS iteration at or below
+    which a burst ends."""
     lbfgs_gtol: float = LBFGSB_GTOL
-    """L-BFGS-B's projected gradient below which a burst ends."""
+    """The gradient's largest component at or below which a burst ends."""
     time_limit: float | None = None
     """Seconds after which the run ends the running burst at its next
-    L-BFGS-B iteration and keeps its best state, as at the iteration cap;
+    L-BFGS iteration and keeps its best state, as at the iteration cap;
     None for no limit."""
 
     def __post_init__(self) -> None:
@@ -123,7 +124,6 @@ def point_distance(field: DistanceField, point: FloatArray) -> float:
     return float(field.signed_distance(point[None])[0][0])
 
 
-Objective = Callable[[FloatArray], tuple[float, FloatArray]]
 Revert = Callable[[FloatArray], int]
 Stop = Callable[[], bool]
 Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
@@ -131,21 +131,17 @@ Crossings = Callable[[FloatArray], tuple[int, BoolArray]]
 
 class ScaledObjective:
     """An objective, answering as itself, and the scale of each coordinate
-    that a burst of it minimises over (`run_burst`). A function wrapping it
-    is a plain objective, without the scale; to keep it, wrap `objective`
-    and build a `ScaledObjective` of the wrapper with `scale`."""
+    that a burst of it minimises over (`run_burst`)."""
 
-    def __init__(self, objective: Objective, scale: FloatArray) -> None:
+    def __init__(self, objective: _core.Objective, scale: FloatArray) -> None:
         self.objective = objective
         self.scale = scale
 
     def __call__(self, x: FloatArray) -> tuple[float, FloatArray]:
         return self.objective(x)
 
-    def over_scaled(self, y: FloatArray) -> tuple[float, FloatArray]:
-        """The objective and its gradient by y at x = scale ⊙ y."""
-        value, gradient = self.objective(self.scale * y)
-        return value, self.scale * gradient
+
+Objective = _core.Objective | ScaledObjective
 
 
 @dataclass(frozen=True)
@@ -154,13 +150,16 @@ class Burst:
     """Where the burst left its flat coordinates."""
     abnormal: bool
     iterations: int = 0
-    """The L-BFGS-B iterations it ran."""
+    """The L-BFGS iterations it ran."""
     evaluations: int = 0
-    """The times L-BFGS-B evaluated the objective."""
+    """The times L-BFGS evaluated the objective."""
     message: str = ""
-    """What L-BFGS-B says ended it; empty for a burst that did not run."""
+    """What ended it, as scipy's L-BFGS-B words it; empty for a burst that
+    did not run."""
     cut: bool = False
     """Whether `stop` ended it before its iteration cap."""
+    evaluating: float = 0.0
+    """Seconds the evaluations took."""
 
 
 def revert_until_clear(
@@ -203,57 +202,42 @@ def run_burst(
     settings: OptimizerSettings,
     stop: Stop | None = None,
 ) -> Burst:
-    """Minimise `objective` from `start` with L-BFGS-B, then move back what
+    """Minimise `objective` from `start` with L-BFGS, then move back what
     `revert` finds.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns how many edges crossed. `stop`, asked after
-    each L-BFGS-B iteration, ends the run there when it answers True, such
+    each L-BFGS iteration, ends the run there when it answers True, such
     as when the time limit has passed. With no coordinate to move, the
-    burst ends where it is without running L-BFGS-B. A `ScaledObjective`
-    runs L-BFGS-B over the coordinates divided by its scale. The burst
-    carries what L-BFGS-B reports of its run.
+    burst ends where it is without running L-BFGS. A `ScaledObjective`
+    runs L-BFGS over the coordinates divided by its scale. The burst
+    carries what L-BFGS reports of its run; one whose iteration failed
+    ends abnormally at the last point an iteration reached
+    (`kibends_core::burst`).
     """
     if len(start) == 0:
-        # L-BFGS-B would return a result without a status.
         return Burst(start.copy(), False)
-    halted = False
-
-    # scipy's callback types and dispatch key on this parameter name.
-    def asked(intermediate_result: object) -> None:
-        nonlocal halted
-        if stop is not None and stop():
-            halted = True
-            raise StopIteration
-
     if isinstance(objective, ScaledObjective):
-        scale = objective.scale
-        posed, y0 = objective.over_scaled, start / scale
+        core, scale = objective.objective, objective.scale
     else:
-        scale = None
-        posed, y0 = objective, start.copy()
-    result = minimize(
-        posed,
-        y0,
-        jac=True,
-        method="L-BFGS-B",
-        options={
-            "maxiter": settings.burst_maxiter,
-            "ftol": settings.lbfgs_ftol,
-            "gtol": settings.lbfgs_gtol,
-        },
-        callback=asked,
+        core, scale = objective, None
+    result = _core.run_burst(
+        core,
+        start,
+        scale,
+        settings.burst_maxiter,
+        settings.lbfgs_ftol,
+        settings.lbfgs_gtol,
+        stop,
     )
-    current = np.array(result.x, dtype=float)
-    if scale is not None:
-        current *= scale
+    current = result.points
     revert(current)
-    cut = halted and result.nit < settings.burst_maxiter
     return Burst(
         current,
-        result.status == LBFGSB_ABNORMAL,
-        result.nit,
-        result.nfev,
+        result.abnormal,
+        result.iterations,
+        result.evaluations,
         result.message,
-        cut,
+        result.cut,
+        result.evaluating,
     )

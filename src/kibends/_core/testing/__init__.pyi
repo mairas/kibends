@@ -16,6 +16,7 @@ __all__ = [
     "ReachIgnored",
     "Union",
     "Walls",
+    "quadratic",
 ]
 
 FAR: builtins.float = 1000.0
@@ -221,4 +222,11 @@ class Walls:
         Whether each segment from starts[i] to ends[i] stays out of
         the field's obstacles, by at most `tolerance`.
         """
+
+def quadratic(curvatures: typing.Sequence[builtins.float], uphill: builtins.bool = False) -> _core.Objective:
+    r"""
+    Σ c·x² over the coordinates x, with `curvatures` c, as a burst's
+    objective; `uphill`, its gradient the opposite, so that no line search
+    along it succeeds (`kibends_core::testing::quadratic`).
+    """
 

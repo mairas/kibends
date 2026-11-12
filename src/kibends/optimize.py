@@ -1,5 +1,5 @@
 """The optimizer: every chain, coupled section and moving via of a problem
-as one L-BFGS-B problem.
+as one L-BFGS problem.
 
 This module holds the run loop (`optimize_chains`), which splits the
 members into problems and gives them bursts until they settle, and
@@ -23,14 +23,14 @@ exact distances. Without moving vias the layers do not interact,
 so each layer is a problem of its own, and an outer iteration gives every
 problem that has not settled one burst: resample each chain to the spacing
 between its fixed vertices and those pressed into the others' clearance,
-which resampling keeps where they are (`_Problem.pressed`), run L-BFGS-B
+which resampling keeps where they are (`_Problem.pressed`), run L-BFGS
 (`bursts.run_burst`) over every free vertex without bounds, and move back
 what the checks reject.
 
 A burst scales each variable by 1/sqrt of its stiffness at the burst's
 start, relative to that of a vertex between two edges of the spacing in
 free space, and never above 1 (`_scale`, `bursts.ScaledObjective`).
-L-BFGS-B builds one curvature model for the whole problem: unscaled, it
+L-BFGS builds one curvature model for the whole problem: unscaled, it
 fits the stiffest members, such as tracks pressed together at clearance,
 and a far chain that could settle in a few bursts moves 3 to 10 times
 less per burst (https://github.com/mairas/kibends/issues/170). The
@@ -108,7 +108,7 @@ problem's energy is the one without ground vias, term for term.
 
 What a burst checks
 -------------------
-A burst runs L-BFGS-B over every free vertex and moving via of the problem
+A burst runs L-BFGS over every free vertex and moving via of the problem
 without bounds (`bursts.run_burst`), and the checks after it compare where
 the burst ends with where it started. An edge that starts clear of static
 copper and ends crossing it moves its free ends back to the burst's start,
@@ -195,7 +195,7 @@ length grows may stop sooner beside them. The run
 converges when every problem has settled, none of them on abnormal
 bursts, and otherwise stops at the iteration cap or at the time limit,
 counted from the start of the whole stage, which ends the running burst
-at its next L-BFGS-B iteration; that burst's state goes through the
+at its next L-BFGS iteration; that burst's state goes through the
 checks and the guard as any, and it settles nothing. Each problem keeps
 its best state either way (`optimize_chains`). A run in which some
 problem settled on abnormal bursts gave up: it keeps the best state if
@@ -275,7 +275,7 @@ from kibends.via_moves import (
 from kibends.via_pairs import ViaPairs
 from kibends.vias import StaticVia, ViaInput
 
-# After this many abnormal L-BFGS-B ends in a row a problem counts as
+# After this many abnormal L-BFGS ends in a row a problem counts as
 # settled and keeps what its bursts reached.
 MAX_ABNORMAL_BURSTS = 3
 
@@ -399,7 +399,7 @@ def optimize_chains(
     `Termination.ABNORMAL`, whatever stopped it. With a
     time limit in `settings`, the run stops once `clock` reads the limit or
     more past `started`, by default when the run starts: the running burst
-    ends at its next L-BFGS-B iteration, and its state goes through the
+    ends at its next L-BFGS iteration, and its state goes through the
     checks and the guard as any burst's.
 
     Whenever the run would end, `to_hold` is given each section's best
@@ -854,7 +854,7 @@ def _length_stiffness(layout: _Layout) -> FloatArray:
 def _scale(stiffness: FloatArray, spacing: float) -> FloatArray:
     """Each flat coordinate's scale for a burst (`bursts.ScaledObjective`):
     1/sqrt of its variable's `stiffness` relative to a free chain vertex's
-    between edges of the `spacing`, so that L-BFGS-B sees the variables
+    between edges of the `spacing`, so that L-BFGS sees the variables
     about equally stiff. No variable scales above 1: a via carrying no
     ends has no length stiffness, and its curvature in free space, near 0,
     would scale it by tens and throw it across obstacles."""
@@ -885,11 +885,11 @@ class _ProblemBurst:
     the times it ended newly inside its clearance."""
     abnormal: bool
     iterations: int = 0
-    """The L-BFGS-B iterations it ran."""
+    """The L-BFGS iterations it ran."""
     evaluations: int = 0
-    """The times L-BFGS-B evaluated the energy."""
+    """The times L-BFGS evaluated the energy."""
     message: str = ""
-    """What L-BFGS-B says ended it; empty for a burst that did not run it."""
+    """What L-BFGS says ended it; empty for a burst that did not run it."""
     evaluating: float = 0.0
     """Seconds those evaluations took."""
     cut: bool = False
@@ -1457,14 +1457,14 @@ class _Problem:
     def step(self, stop: Stop | None = None) -> float:
         """One burst of every member and via together; returns its largest
         change of a shape or a via's centre. `stop`, asked after each
-        L-BFGS-B iteration, ends the burst there (`bursts.run_burst`); a
+        L-BFGS iteration, ends the burst there (`bursts.run_burst`); a
         burst it cut short does not settle the problem.
 
-        Logs at DEBUG what the burst cost: L-BFGS-B's iterations and energy
+        Logs at DEBUG what the burst cost: L-BFGS's iterations and energy
         evaluations, the seconds those evaluations took and the seconds of
-        the rest of the step, and what L-BFGS-B says ended it. The seconds
+        the rest of the step, and what L-BFGS says ended it. The seconds
         are wall time by `time.perf_counter`, not by the run's clock. The
-        rest includes L-BFGS-B's own work and the after-burst check, which
+        rest includes L-BFGS's own work and the after-burst check, which
         the benchmark's "outside L-BFGS-B" splits differently."""
         began = time.perf_counter()
         settings = self.settings
@@ -1633,7 +1633,7 @@ class _Problem:
     def burst(
         self, starts: list[FloatArray], stop: Stop | None = None
     ) -> _ProblemBurst:
-        """One L-BFGS-B run over every free vertex and moving via of the
+        """One L-BFGS run over every free vertex and moving via of the
         problem, with what moved back where edges newly crossed static
         copper, or newly or more deeply another member's new shape, a
         section newly bent below its limit (`polylines.SelfCheck`) or a via
@@ -1748,17 +1748,8 @@ class _Problem:
         def revert(x: FloatArray) -> int:
             return revert_until_clear(x, x0, check)[1]
 
-        evaluating = 0.0
-
-        def timed(x: FloatArray) -> tuple[float, FloatArray]:
-            nonlocal evaluating
-            began = time.perf_counter()
-            answer = objective(x)
-            evaluating += time.perf_counter() - began
-            return answer
-
         result = run_burst(
-            ScaledObjective(timed, scale), x0, revert, self.settings, stop
+            ScaledObjective(objective, scale), x0, revert, self.settings, stop
         )
         polylines, centres = layout.unflatten(result.points)
         # An abnormally ended burst stops at its check without counting it.
@@ -1775,7 +1766,7 @@ class _Problem:
             result.iterations,
             result.evaluations,
             result.message,
-            evaluating,
+            result.evaluating,
             result.cut,
         )
 

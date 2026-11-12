@@ -11,6 +11,7 @@ from . import testing
 __all__ = [
     "AREA",
     "BoardLayer",
+    "BurstResult",
     "ChainField",
     "CompositeField",
     "Curvature",
@@ -86,6 +87,7 @@ __all__ = [
     "quadrature_points",
     "repulsion_integrand",
     "reset_statistics",
+    "run_burst",
     "shape_energy",
     "smooth_minimum",
     "smooth_reach",
@@ -138,6 +140,52 @@ class BoardLayer:
         and shapes; its keepouts of tracks and of vias; the board outline,
         None if Edge.Cuts is not closed; and the netclass clearance per net,
         `default_clearance` for any other.
+        """
+
+@typing.final
+class BurstResult:
+    r"""
+    What a burst reached (`kibends_core::burst::Burst`).
+    """
+    @property
+    def energy(self) -> builtins.float:
+        r"""
+        The energy there.
+        """
+    @property
+    def iterations(self) -> builtins.int:
+        r"""
+        The accepted L-BFGS iterations.
+        """
+    @property
+    def evaluations(self) -> builtins.int:
+        r"""
+        The objective's evaluations.
+        """
+    @property
+    def evaluating(self) -> builtins.float:
+        r"""
+        Seconds the evaluations took.
+        """
+    @property
+    def message(self) -> builtins.str:
+        r"""
+        What ended it, as scipy's L-BFGS-B words it.
+        """
+    @property
+    def abnormal(self) -> builtins.bool:
+        r"""
+        Whether an iteration was not accepted.
+        """
+    @property
+    def cut(self) -> builtins.bool:
+        r"""
+        Whether `stop` ended it before its iteration cap.
+        """
+    @property
+    def points(self) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        The last accepted point, x.
         """
 
 @typing.final
@@ -366,7 +414,8 @@ class NeighbourList:
 class Objective:
     r"""
     A burst's energy as a function of its variables
-    (`kibends_core::problem::Objective`): called with the variables, flat,
+    (`kibends_core::problem::Objective`), or a test's
+    (`kibends._core.testing.quadratic`): called with the variables, flat,
     it gives the energy and its gradient.
     """
     def __call__(self, x: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]: ...
@@ -985,6 +1034,16 @@ def repulsion_integrand(params: energy.EnergyParams) -> Integrand:
 def reset_statistics() -> None:
     r"""
     Every statistic back to zero.
+    """
+
+def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[typing.Any] = None) -> BurstResult:
+    r"""
+    Minimises `objective` from `start` with L-BFGS, over y with x =
+    `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
+    `gtol` ends it (`kibends_core::burst`). After each iteration that did
+    not converge it checks for signals and asks `stop`, if given, which
+    ends the burst by answering true. An exception raised there or by the
+    objective ends the burst and propagates.
     """
 
 def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], short_edge: builtins.float) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
