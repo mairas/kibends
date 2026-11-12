@@ -222,8 +222,12 @@ impl Shared {
     }
 
     /// For each vertex the members at `polylines` show the others, its
-    /// member and its vertex there: a section's tracks have a vertex for
-    /// each of its centreline's.
+    /// member and its vertex there, in the order of `flat`: a section's
+    /// tracks have a vertex for each of its centreline's, a held section's
+    /// tracks their own (`Member::shown_lengths`). A held section's
+    /// centreline is fixed but for an end a via carries, so a vertex of
+    /// its tracks moves back at most that via, and past the centreline's
+    /// end nothing.
     pub fn shown_vertices(&self, polylines: &[Vec<V2>]) -> (Vec<usize>, Vec<usize>) {
         let mut member = Vec::new();
         let mut vertex = Vec::new();
@@ -236,10 +240,9 @@ impl Shared {
             .zip(polylines)
             .enumerate()
         {
-            let times = if m.section.is_some() { 2 } else { 1 };
-            for _ in 0..times {
-                member.extend(std::iter::repeat_n(i, points.len()));
-                vertex.extend(0..points.len());
+            for length in m.shown_lengths(points) {
+                member.extend(std::iter::repeat_n(i, length));
+                vertex.extend(0..length);
             }
         }
         (member, vertex)
@@ -1475,8 +1478,9 @@ mod tests {
     use super::*;
     use crate::burst;
     use crate::energy::EnergyParams;
-    use crate::members::{Member, Members, Trace};
+    use crate::members::{Member, Members, Section, Trace};
     use crate::optimize::{CoarseSpacings, Outcome, advance};
+    use crate::pair_blocks::{PairOffset, Pins};
     use crate::testing::{Disc, FreeSpace};
 
     fn params() -> EnergyParams {
@@ -2444,5 +2448,187 @@ mod tests {
 
         assert!(again.descended);
         assert_eq!(again.handed_over, earlier.handed_over);
+    }
+
+    /// The vertices of the held section's tracks in `beside_held`: track a
+    /// has as many as its centreline, track b more.
+    const HELD_A: usize = 3;
+    const HELD_B: usize = 6;
+
+    /// A held section above two chains on its layer, all in free space:
+    /// chain 1 from (0, 0) to (10, 0), chain 2 from (0, 3) to (10, 3), both
+    /// straight. A via at `via`, if given, is seen by chain 1.
+    fn beside_held(via: Option<V2>) -> State {
+        let trace = |net: &str| Trace {
+            net: net.to_string(),
+            width: 0.2,
+            clearance: 0.2,
+        };
+        let line = |y: f64, n: usize| -> Vec<V2> {
+            (0..n)
+                .map(|k| V2::new(10.0 * k as f64 / (n - 1) as f64, y))
+                .collect()
+        };
+        let chain = |net: &str| Member {
+            layer: "L".to_string(),
+            viewer: trace(net),
+            ignored: vec![net.to_string()],
+            shown: vec![trace(net)],
+            field: Arc::new(FreeSpace),
+            width: 0.2,
+            contacts: vec![],
+            section: None,
+        };
+        let section = Member {
+            layer: "L".to_string(),
+            viewer: trace("A"),
+            ignored: vec!["A".to_string(), "B".to_string()],
+            shown: vec![trace("A"), trace("B")],
+            field: Arc::new(FreeSpace),
+            width: 0.6,
+            contacts: vec![],
+            section: Some(Section {
+                offset: PairOffset {
+                    gap: 0.2,
+                    width: 0.2,
+                    a_on_right: true,
+                    held: true,
+                    pins: Pins {
+                        a_at: vec![],
+                        a: vec![],
+                        b_at: vec![],
+                        b: vec![],
+                    },
+                    a: line(9.8, HELD_A),
+                    b: line(10.2, HELD_B),
+                },
+                limit: None,
+            }),
+        };
+        let members = vec![section, chain("N1"), chain("N2")];
+        let count = members.len();
+        let vias: Vec<ViaSetup> = via
+            .into_iter()
+            .map(|start| ViaSetup {
+                start,
+                carried: vec![],
+                copper: Arc::new(FreeSpace),
+                stop_parts: vec![None, None],
+            })
+            .collect();
+        let rings: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![(1, 0.5)]).collect();
+        let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
+        let energy = Problem {
+            members: Members::new(members),
+            rings,
+            vias: vias
+                .iter()
+                .map(|v| super::super::problem::ProblemVia {
+                    diameter: 0.6,
+                    field: v.copper.clone(),
+                    stops: None,
+                })
+                .collect(),
+            repel: ViaSight::new(&none, &none, count),
+            stop: ViaSight::new(&none, &none, count),
+            pairs: None,
+            params: params(),
+            short_edge: 0.05,
+        };
+        let setup = |original: Vec<V2>, held: bool| MemberSetup {
+            anchors: (0..original.len())
+                .map(|k| held || k == 0 || k == original.len() - 1)
+                .collect(),
+            original,
+            contacts: vec![],
+            held,
+            limit: None,
+        };
+        State::new(Setup {
+            energy: Arc::new(energy),
+            members: vec![
+                setup(line(10.0, HELD_A), true),
+                setup(line(0.0, 3), false),
+                setup(line(3.0, 3), false),
+            ],
+            vias,
+            groups: vec![],
+            sight: ViaSight::new(&none, &none, count),
+            settings: settings(),
+        })
+        .expect("finite")
+    }
+
+    #[test]
+    fn a_held_section_shows_each_of_its_tracks_own_vertices() {
+        let p = beside_held(None);
+        let points = &p.now.points;
+        let (member, vertex) = p.shared().shown_vertices(points);
+        let flat = p.shared().flat(points, &[]);
+        let mut expected: Vec<(usize, usize)> = Vec::new();
+        expected.extend((0..HELD_A).map(|k| (0, k)));
+        expected.extend((0..HELD_B).map(|k| (0, k)));
+        for (i, line) in points.iter().enumerate().skip(1) {
+            expected.extend((0..line.len()).map(|k| (i, k)));
+        }
+        assert_eq!(expected.len(), flat.len());
+        let got: Vec<(usize, usize)> = member.into_iter().zip(vertex).collect();
+        assert_eq!(got, expected);
+    }
+
+    /// Bursts that move chain 1's free vertices of `beside_held` onto
+    /// chain 2, then let the check move back what that crossed, keeping
+    /// chain 1 as it was moved back.
+    struct OntoChain2 {
+        reverted: Option<Vec<V2>>,
+    }
+
+    impl Bursts<NotFinite> for OntoChain2 {
+        fn run(
+            &mut self,
+            objective: Objective,
+            _lookups: Lookups,
+            start: Vec<f64>,
+            _scale: Vec<f64>,
+            mut check: Check,
+        ) -> Result<(Ran, Option<Round>), NotFinite> {
+            let layout = &objective.layout;
+            let mut point = start;
+            for &k in layout.index[1].iter().flatten() {
+                point[2 * k + 1] = 3.0;
+            }
+            check.revert(&mut point);
+            self.reverted = Some(layout.unflatten(&point).0[1].clone());
+            Ok((
+                Ran {
+                    point,
+                    abnormal: false,
+                    iterations: 1,
+                    evaluations: 1,
+                    message: String::new(),
+                    cut: false,
+                    evaluating: 0.0,
+                },
+                check.found.take(),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_chain_entering_the_member_after_a_held_section_moves_back() {
+        let mut p = beside_held(None);
+        let start = p.now.points[1].clone();
+        let mut bursts = OntoChain2 { reverted: None };
+        run(&mut p, &mut bursts, 1);
+        assert_eq!(bursts.reverted, Some(start));
+    }
+
+    #[test]
+    fn a_via_after_a_held_section_is_numbered_after_the_members() {
+        let p = beside_held(Some(V2::new(5.0, 0.0)));
+        let points = &p.now.points;
+        let seen = p.shared().seeing(points);
+        let entered = p.shared().entered(points, &p.now.positions, &seen);
+        assert!(entered.contains(&(1, 3)), "{entered:?}");
     }
 }
