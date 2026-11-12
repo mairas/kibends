@@ -154,7 +154,7 @@ fn distances_arrays<'py>(
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct Shapes {
-    shapes: Vec<Shape>,
+    pub(crate) shapes: Vec<Shape>,
 }
 
 #[gen_stub_pymethods]
@@ -384,6 +384,20 @@ impl StaticItems {
 pub struct Obstacles {
     pub(crate) inner: Arc<obstacles::Obstacles>,
     edges: Py<StaticEdges>,
+}
+
+impl Obstacles {
+    /// The Python field of `inner`.
+    pub(crate) fn of(py: Python<'_>, inner: obstacles::Obstacles) -> PyResult<Self> {
+        let inner = Arc::new(inner);
+        let edges = Py::new(
+            py,
+            StaticEdges {
+                inner: inner.edges().clone(),
+            },
+        )?;
+        Ok(Self { inner, edges })
+    }
 }
 
 #[gen_stub_pymethods]

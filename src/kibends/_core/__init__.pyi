@@ -10,6 +10,7 @@ from typing import TypeAlias
 from . import testing
 __all__ = [
     "AREA",
+    "BoardLayer",
     "ChainField",
     "CompositeField",
     "Curvature",
@@ -28,9 +29,13 @@ __all__ = [
     "Shapes",
     "StaticEdges",
     "StaticItems",
+    "Via",
+    "Zone",
     "arc_lengths",
     "attraction_integrand",
     "bend_radius_energy",
+    "build_obstacles",
+    "build_pair_obstacles",
     "candidate_pairs",
     "chains_field",
     "combine_fields",
@@ -39,12 +44,14 @@ __all__ = [
     "edge_integral",
     "hinge_curvature",
     "hinge_integrand",
+    "moving_via_obstacles",
     "near_segments",
     "nearest_of_pairs",
     "obstacle_curvature",
     "obstacle_integrand",
     "obstacle_order",
     "obstacle_reach",
+    "own_net_stops",
     "pair_depths",
     "pairs_inside",
     "parts_smooth_distance",
@@ -56,10 +63,14 @@ __all__ = [
     "smooth_minimum",
     "smooth_of_pairs",
     "smooth_reach",
+    "split_via_obstacles",
     "static_distances",
     "static_smooth",
     "testing",
+    "track_inflation",
     "version",
+    "via_chain_inflation",
+    "via_via_inflation",
     "weighted_sum",
     "zone_depth",
 ]
@@ -78,6 +89,28 @@ MIN_EDGE_LENGTH: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
 SMOOTH_REACH: builtins.float = 0.05
 SMOOTH_WIDTH: builtins.float = 0.005
+@typing.final
+class BoardLayer:
+    r"""
+    The copper of one layer as the builders take it
+    (`kibends_core::field::build::Layer`).
+    """
+    @property
+    def has_outline(self) -> builtins.bool:
+        r"""
+        Whether the layer has the board outline: Edge.Cuts is closed.
+        """
+    def __new__(cls, name: builtins.str, ordinal: builtins.int, pad_nets: typing.Sequence[builtins.str], pad_positions: numpy.typing.NDArray[numpy.float64], pad_drills: numpy.typing.NDArray[numpy.float64], pad_plated: numpy.typing.NDArray[numpy.bool_], pad_overrides: numpy.typing.NDArray[numpy.float64], pad_shape_of: numpy.typing.NDArray[numpy.intp], pad_shapes: Shapes, track_nets: typing.Sequence[builtins.str], track_widths: numpy.typing.NDArray[numpy.float64], track_shapes: Shapes, vias: typing.Sequence[Via], graphic_nets: typing.Sequence[builtins.str], graphic_shapes: Shapes, track_keepouts: Shapes, via_keepouts: Shapes, outline: typing.Optional[Shapes], clearances: typing.Mapping[builtins.str, builtins.float], default_clearance: builtins.float) -> BoardLayer:
+        r"""
+        The layer `name` of `ordinal`: its pads, each with its net,
+        position, drill, whether plated, clearance override (NaN for none)
+        and the index of its copper among `pad_shapes`, -1 for none; its
+        tracks' nets, widths and centrelines; its vias; its graphics' nets
+        and shapes; its keepouts of tracks and of vias; the board outline,
+        None if Edge.Cuts is not closed; and the netclass clearance per net,
+        `default_clearance` for any other.
+        """
+
 @typing.final
 class ChainField:
     r"""
@@ -293,6 +326,23 @@ class StaticItems:
         across the parts.
         """
 
+@typing.final
+class Via:
+    r"""
+    A via, as the rules take it: its id, net, centre, ring diameter and
+    drill, and the span of its drill as copper layer ordinals.
+    """
+    def __new__(cls, id: builtins.str, net: builtins.str, x: builtins.float, y: builtins.float, diameter: builtins.float, drill: builtins.float, low: builtins.int, high: builtins.int) -> Via: ...
+
+@typing.final
+class Zone:
+    r"""
+    A zone a via stays inside, as the rules take it: its clearance to other
+    nets' copper, the margin the via's centre keeps inside it, and the
+    ordinals of the layers on which it reaches the via's ring.
+    """
+    def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
+
 def arc_lengths(points: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
     r"""
     Cumulative arc length at each vertex, starting at 0.
@@ -308,6 +358,20 @@ def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy
     r"""
     The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
     bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+    """
+
+def build_obstacles(layer: BoardLayer, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+    r"""
+    Obstacles for a track of `net` and `width` mm on `layer`
+    (`kibends_core::field::build::chain_obstacles`).
+    """
+
+def build_pair_obstacles(layer: BoardLayer, a_net: builtins.str, a_points: numpy.typing.NDArray[numpy.float64], b_net: builtins.str, b_points: numpy.typing.NDArray[numpy.float64], width: builtins.float, gap: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+    r"""
+    Obstacles for the centreline of a coupled section of a differential
+    pair on `layer`, its tracks of `width`, `gap` mm apart, of nets `a_net`
+    and `b_net` at `a_points` and `b_points`
+    (`kibends_core::field::build::pair_obstacles`).
     """
 
 def candidate_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy.typing.NDArray[numpy.intp], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64], within: numpy.typing.NDArray[numpy.float64], slack: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:
@@ -365,6 +429,15 @@ def hinge_integrand(params: energy.EnergyParams) -> Integrand:
     only limits where a thing may go and does not repel it.
     """
 
+def moving_via_obstacles(ordinal: builtins.int, net: builtins.str, width: builtins.float, clearance: builtins.float, vias: typing.Sequence[Via], clearances: typing.Sequence[builtins.float], hole_clearance: builtins.float, zones: typing.Sequence[typing.Sequence[Zone]]) -> typing.Optional[ChainField]:
+    r"""
+    `vias`, at their positions, as obstacles to a track of `net`, `width`
+    and netclass `clearance` on the layer of `ordinal`, or None if none is
+    one; `clearances` and `zones` give each via's netclass clearance and
+    the zones it stays inside
+    (`kibends_core::field::build::moving_via_obstacles`).
+    """
+
 def near_segments(starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], points: numpy.typing.NDArray[numpy.float64], radius: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp]]:
     r"""
     (point, segment) index pairs, by point then segment, among them every
@@ -400,6 +473,13 @@ def obstacle_reach(params: energy.EnergyParams) -> builtins.float:
     r"""
     Distance from an obstacle beyond which both obstacle terms of the
     energy are zero, mm, so farther copper need not be looked up.
+    """
+
+def own_net_stops(layers: typing.Sequence[BoardLayer], via: Via, moving: typing.Sequence[builtins.str], hole_clearance: builtins.float, hole_to_hole: builtins.float, allow_via_in_pad: builtins.bool) -> tuple[typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]], typing.Optional[ChainField]]:
+    r"""
+    What of `via`'s net on the layers of `layers` it spans stops it: its
+    pads and holes, and its vias, each None if none is one
+    (`kibends_core::field::build::own_net_stops`).
     """
 
 def pair_depths(a: numpy.typing.NDArray[numpy.complex128], ab: numpy.typing.NDArray[numpy.complex128], starts: numpy.typing.NDArray[numpy.complex128], along: numpy.typing.NDArray[numpy.complex128], inflations: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
@@ -473,6 +553,13 @@ def smooth_reach(reach: builtins.float) -> builtins.float:
     energy whose terms end at `reach`, mm (SMOOTH_REACH).
     """
 
+def split_via_obstacles(layers: typing.Sequence[BoardLayer], via: Via, split: typing.Sequence[builtins.str], moving: typing.Sequence[builtins.str], edge_clearance: builtins.float, hole_clearance: builtins.float, hole_to_hole: builtins.float, zones: typing.Sequence[Zone]) -> tuple[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]], typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]]]:
+    r"""
+    A moving via's field over the layers of `layers` it spans, and the vias
+    whose ids are in `split` apart, None if none is one
+    (`kibends_core::field::build::via_obstacles`).
+    """
+
 def static_distances(parts: typing.Sequence[StaticEdges], coords: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
     r"""
     `StaticEdges.distances` over several parts, their obstacles numbered one
@@ -486,9 +573,28 @@ def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.ty
     numbers them.
     """
 
+def track_inflation(width: builtins.float, clearance: builtins.float, other_width: builtins.float, other_clearance: builtins.float) -> builtins.float:
+    r"""
+    The distance a track of `width` and `clearance` keeps its centreline
+    from that of a track of another net (`kibends_core::rules::track_inflation`).
+    """
+
 def version() -> builtins.str:
     r"""
     The version of the extension module, which is kibends' version.
+    """
+
+def via_chain_inflation(via: Via, clearance: builtins.float, net: builtins.str, width: builtins.float, chain_clearance: builtins.float, hole_clearance: builtins.float, zones: typing.Sequence[Zone]) -> typing.Optional[builtins.float]:
+    r"""
+    The distance `via`'s centre keeps from the centreline of a chain of
+    `net`, `width` and netclass `chain_clearance`, None for a chain of its
+    net (`kibends_core::rules::via_chain_inflation`).
+    """
+
+def via_via_inflation(via: Via, clearance: builtins.float, other: Via, other_clearance: builtins.float, hole_clearance: builtins.float, hole_to_hole: builtins.float, zones: typing.Sequence[Zone], other_zones: typing.Sequence[Zone]) -> typing.Optional[builtins.float]:
+    r"""
+    The distance `via`'s centre keeps from `other`'s, None if no rule
+    applies (`kibends_core::rules::via_via_inflation`).
     """
 
 def weighted_sum(point: numpy.typing.NDArray[numpy.intp], share: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], count: builtins.int) -> numpy.typing.NDArray[numpy.float64]:

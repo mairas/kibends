@@ -35,6 +35,7 @@
 //! (`seen.StaticList` in Python), so that static copper costs no tree query
 //! per evaluation.
 
+pub mod build;
 pub mod chain;
 pub mod composite;
 pub mod edges;

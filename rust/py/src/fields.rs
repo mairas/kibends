@@ -101,7 +101,7 @@ impl PyStubType for FieldArg {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct ChainField {
-    inner: Arc<chain::ChainField>,
+    pub(crate) inner: Arc<chain::ChainField>,
 }
 
 #[gen_stub_pymethods]
@@ -264,7 +264,7 @@ fn chains_field(
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct CompositeField {
-    inner: Arc<composite::CompositeField>,
+    pub(crate) inner: Arc<composite::CompositeField>,
 }
 
 #[gen_stub_pymethods]

@@ -5,6 +5,7 @@ pub mod energy;
 pub mod field;
 pub mod geometry;
 pub mod numeric;
+pub mod rules;
 pub mod testing;
 
 /// The crate's version, which is kibends' version.

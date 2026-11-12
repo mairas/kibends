@@ -4,6 +4,7 @@
 //! from the stub information `stub_info` gathers.
 
 mod arrays;
+mod build;
 mod energy;
 mod field;
 mod fields;
@@ -42,6 +43,7 @@ fn version() -> &'static str {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     field::register(m)?;
+    build::register(m)?;
     fields::register(m)?;
     energy::register(m)?;
     testing::register(m)?;
