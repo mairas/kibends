@@ -11,11 +11,12 @@
 //!
 //! `simplify_chains` simplifies a run's members in turn, each against its
 //! static field plus the other members on its layer at their latest
-//! shapes, those of the nets it ignores left out, as the optimizer leaves
-//! them out (`members`). Its field holds only the members whose copper can
-//! reach the vertices it merges across (`Neighbours::field`): those whose
-//! box, around what they show, comes within the widest inflation it keeps
-//! from a track on its layer of the box around the points asked about. Any
+//! shapes, those of the nets it ignores left out, by the rule the optimizer
+//! applies (`Member::keeps_from`). Its field holds only the members whose
+//! copper can reach the vertices it merges across (`Neighbours::field`):
+//! those whose box, around what they show, comes within the widest
+//! inflation it keeps from a track it sees of the box around the points
+//! asked about. Any
 //! other is farther from each of those points, and from each segment
 //! between them, than the distance it is kept, so it neither blocks a
 //! segment nor makes a distance negative, and the answers are those of a
@@ -42,7 +43,6 @@ use crate::geometry::V2;
 use crate::members::Member;
 use crate::numeric::{clip, maximum, minimum};
 use crate::optimize::INSIDE_TOLERANCE;
-use crate::rules::track_inflation;
 
 /// A member where the optimizer left it: its polyline, its fixed vertices,
 /// and a section's direction pins, which stay where they started.
@@ -124,7 +124,8 @@ struct Neighbours<'a> {
     high: Vec<V2>,
     /// Per member, the members on its layer, its own among them, in order.
     mates: Vec<Arc<[usize]>>,
-    /// Per member, the widest inflation it keeps from a track on its layer.
+    /// Per member, the widest inflation it keeps from a track on its layer
+    /// that it sees (`Member::keeps_from`).
     reach: Vec<f64>,
 }
 
@@ -155,12 +156,9 @@ impl<'a> Neighbours<'a> {
             .iter()
             .zip(&mates)
             .map(|(member, on)| {
-                let me = &member.viewer;
                 on.iter()
-                    .flat_map(|&j| &members[j].shown)
-                    .map(|other| {
-                        track_inflation(me.width, me.clearance, other.width, other.clearance)
-                    })
+                    .flat_map(|&j| members[j].shown.iter().map(move |t| (j, t)))
+                    .filter_map(|(j, track)| member.keeps_from(&members[j], track))
                     .fold(f64::NEG_INFINITY, f64::max)
             })
             .collect();
@@ -207,7 +205,6 @@ impl<'a> Neighbours<'a> {
         let (low, high) = bounds(points);
         let reach = self.reach[i];
         let member = &self.members[i];
-        let me = &member.viewer;
         let mut parts: Vec<(&[V2], f64, usize)> = Vec::new();
         for &j in self.mates[i].iter() {
             let near = j != i
@@ -218,10 +215,9 @@ impl<'a> Neighbours<'a> {
             if !near {
                 continue;
             }
-            for (other, part) in self.members[j].shown.iter().zip(&self.shown[j]) {
-                if !member.ignored.contains(&other.net) {
-                    let inflation =
-                        track_inflation(me.width, me.clearance, other.width, other.clearance);
+            let other = &self.members[j];
+            for (track, part) in other.shown.iter().zip(&self.shown[j]) {
+                if let Some(inflation) = member.keeps_from(other, track) {
                     parts.push((part, inflation, parts.len()));
                 }
             }

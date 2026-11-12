@@ -85,6 +85,29 @@ pub struct Member {
 }
 
 impl Member {
+    /// Whether it sees nothing of the tracks of `net`: its own and those
+    /// of `ignored`.
+    pub fn ignores(&self, net: &str) -> bool {
+        net == self.viewer.net || self.ignored.iter().any(|n| n == net)
+    }
+
+    /// How far its centreline keeps from `track`, one that `other` shows,
+    /// mm (`track_inflation`): None where it sees nothing of it, on another
+    /// layer or of a net it ignores. `Members::seen` applies the same rule
+    /// by net and kind.
+    pub fn keeps_from(&self, other: &Member, track: &Trace) -> Option<f64> {
+        if other.layer != self.layer || self.ignores(&track.net) {
+            return None;
+        }
+        let me = &self.viewer;
+        Some(track_inflation(
+            me.width,
+            me.clearance,
+            track.width,
+            track.clearance,
+        ))
+    }
+
     /// How many vertices each track it shows at `points` has: a held
     /// section's tracks are its own, whatever its centreline.
     pub fn shown_lengths(&self, points: &[V2]) -> Vec<usize> {
@@ -240,14 +263,12 @@ impl Members {
         for member in &self.members {
             let me = &member.viewer;
             // A net no member shows has no tracks to ignore.
-            let mut exempt: Vec<usize> = member
-                .ignored
+            let exempt: Vec<usize> = nets
                 .iter()
-                .filter(|n| **n != me.net)
-                .filter_map(|n| nets.iter().position(|m| m == n))
+                .enumerate()
+                .filter(|(_, n)| **n != me.net && member.ignores(n))
+                .map(|(k, _)| k)
                 .collect();
-            exempt.sort_unstable();
-            exempt.dedup();
             viewers.push(Viewer {
                 layer: member.layer.clone(),
                 net: number(&mut nets, &me.net),
@@ -611,6 +632,17 @@ mod tests {
 
     fn line(y: f64) -> Vec<V2> {
         (0..5).map(|x| V2::new(f64::from(x) * 0.5, y)).collect()
+    }
+
+    #[test]
+    fn a_member_keeps_from_tracks_of_other_nets_on_its_layer() {
+        let mut a = chain("A", "F");
+        a.ignored.push("A_N".into());
+        let keeps = |other: &Member| a.keeps_from(other, &other.shown[0]);
+        assert_eq!(keeps(&chain("B", "F")), Some(0.4));
+        assert_eq!(keeps(&chain("A", "F")), None);
+        assert_eq!(keeps(&chain("A_N", "F")), None);
+        assert_eq!(keeps(&chain("B", "B")), None);
     }
 
     #[test]
