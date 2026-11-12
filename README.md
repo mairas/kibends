@@ -203,7 +203,9 @@ them, into one problem. The optimizer works in bursts: each burst moves
 every vertex and via of a problem at once, and undoes any move that would
 bring an edge or a via newly into another item's clearance. An outer iteration gives every
 problem that has not settled one burst. A problem settles when a burst
-barely changes it or its energy stops improving.
+barely changes it or its energy stops improving. Each evaluation of a
+burst spreads over every logical CPU; set the environment variable
+`RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
