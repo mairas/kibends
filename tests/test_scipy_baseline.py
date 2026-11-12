@@ -1,9 +1,10 @@
-"""The optimizer against the scipy baseline of the platform it runs on
-(`tests/data/scipy_baseline_<platform>.json`, recorded while scipy ran the
-optimizer, as `scripts/record_baseline.py` says): every case ends as it
-did under scipy, converged where it converged, its tracks no longer and
-no nearer to copper than scipy's by more than the tolerances below. A
-platform without a baseline has no cases.
+"""The optimizer against the scipy baseline
+(`tests/data/scipy_baseline_darwin-arm64.json`, recorded on macOS arm64
+while scipy ran the optimizer, as `scripts/record_baseline.py` says),
+which every platform compares with, since the Rust optimizer computes the
+same on every platform but for the last bits of libm: every case ends as
+it did under scipy, converged where it converged, its tracks no longer and
+no nearer to copper than scipy's by more than the tolerances below.
 
 Lengths are summed over a case, since a via that settles along a flat
 valley trades length between the chains it joins: per chain, the lengths
@@ -20,16 +21,13 @@ from typing import cast
 
 import benchmark
 import pytest
-from record_baseline import PAD_ROWS, Record, pad_rows_record, platform_tag
+from record_baseline import PAD_ROWS, Record, pad_rows_record
 from record_baseline import scenario_record as record_of
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
 
-BASELINE = Path(__file__).parent / "data" / f"scipy_baseline_{platform_tag()}.json"
-CASES = cast(
-    dict[str, Record],
-    json.loads(BASELINE.read_text())["cases"] if BASELINE.exists() else {},
-)
+BASELINE = Path(__file__).parent / "data" / "scipy_baseline_darwin-arm64.json"
+CASES = cast(dict[str, Record], json.loads(BASELINE.read_text())["cases"])
 
 LENGTH_TOLERANCE = DEFAULT_CHORD_TOLERANCE
 """How much longer than scipy's a case's tracks may end, mm: below the

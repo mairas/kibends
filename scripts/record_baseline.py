@@ -1,16 +1,16 @@
 """How the scipy baseline was recorded, which `tests/test_scipy_baseline.py`
 reuses to run its cases under the Rust optimizer.
 
-While scipy still ran the optimizer, its results were recorded into
-`tests/data/scipy_baseline_<platform>.json`, the platform being
-`sys.platform` and the machine, such as `darwin-arm64` or `linux-x86_64`,
-since the optimizer's floating-point results differ between platforms.
-The cases are each scenario of `tests/scenarios.py` that `./run bench
---only scenarios` runs, at default settings, and the bench case "10 tracks
-between pad rows at 1 mm" through a fake KiCad. For each, a record holds
-how the run ended, its outer iterations and energy evaluations, each
-chain's length, each coupled section's track lengths, each moving via's
-position, and the clearances the scenario defines: each chain's and
+While scipy still ran the optimizer, its results on macOS arm64 were
+recorded into `tests/data/scipy_baseline_darwin-arm64.json`, the one
+reference every platform compares with: the Rust optimizer computes the
+same on every platform but for the last bits of libm. The cases are
+each scenario of `tests/scenarios.py` that `./run bench --only scenarios`
+runs, at default settings, and the bench case "10 tracks between pad rows
+at 1 mm" through a fake KiCad. For each, a record holds how the run
+ended, its outer iterations and energy evaluations, each chain's length,
+each coupled section's track lengths, each moving via's position, and
+the clearances the scenario defines: each chain's and
 section's smallest signed distance from its static field along its
 centreline, None in free space, and the smallest copper gap between tracks,
 chains' and sections', of different nets on one layer, other than the two
@@ -19,8 +19,6 @@ simplified tracks and no clearances.
 """
 
 import itertools
-import platform
-import sys
 from dataclasses import replace
 from typing import NamedTuple
 
@@ -37,10 +35,6 @@ from kibends.optimize import OptimizeResult
 PAD_ROWS = "10 tracks between pad rows at 1 mm"
 
 type Record = dict[str, object]
-
-
-def platform_tag() -> str:
-    return f"{sys.platform}-{platform.machine()}"
 
 
 def clearance(polyline: FloatArray, field: DistanceField) -> float | None:
