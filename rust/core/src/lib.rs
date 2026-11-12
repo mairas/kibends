@@ -1,6 +1,7 @@
 //! kibends' optimizer core in plain Rust, with no Python types: the
 //! `kibends-py` crate wraps it as the extension module `kibends._core`.
 
+pub mod burst;
 pub mod contacts;
 pub mod energy;
 pub mod field;

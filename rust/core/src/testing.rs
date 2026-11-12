@@ -1,6 +1,7 @@
 //! Analytic fields for tests: free space, a disc, a box, two walls, walls
 //! whose gradient misleads, the union of several, another field ignoring
-//! the reach, and a field of NaN.
+//! the reach, and a field of NaN; and a quadratic objective for bursts,
+//! whose gradient may mislead.
 //!
 //! Each shape is one obstacle, but `Walls`, two, so their smooth distance
 //! is their exact one, and that of `Walls` and `Union` the smooth minimum
@@ -363,6 +364,20 @@ impl Field for NanField {
     fn segments_clear(&self, starts: &[V2], _ends: &[V2], _tolerance: f64) -> Vec<bool> {
         vec![true; starts.len()]
     }
+}
+
+/// Σ c·x² over the coordinates x, with `curvatures` c, and its gradient;
+/// `uphill`, the gradient's opposite, so that every step a minimiser takes
+/// along it raises the value.
+pub fn quadratic(curvatures: &[f64], uphill: bool, x: &[f64]) -> (f64, Vec<f64>) {
+    let sign = if uphill { -1.0 } else { 1.0 };
+    let value = x.iter().zip(curvatures).map(|(x, c)| c * x * x).sum();
+    let gradient = x
+        .iter()
+        .zip(curvatures)
+        .map(|(x, c)| sign * 2.0 * c * x)
+        .collect();
+    (value, gradient)
 }
 
 #[cfg(test)]
