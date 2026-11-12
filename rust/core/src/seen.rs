@@ -30,12 +30,12 @@
 
 use std::collections::HashMap;
 
+use crate::field::DEGENERATE_DISTANCE;
 use crate::field::pairs::{
-    SmoothAnswer, candidate_pairs, near_segments, nearest_of_pairs, pair_depths, pairs_inside,
-    smooth_of_pairs,
+    SegmentTree, SmoothAnswer, nearest_of_pairs, pair_depths, pairs_inside, smooth_of_pairs,
 };
-use crate::field::smooth::smooth_reach;
-use crate::geometry::V2;
+use crate::field::smooth::{SMOOTH_REACH, smooth_reach};
+use crate::geometry::{V2, offset};
 use crate::neighbours::NeighbourList;
 use crate::numeric::maximum;
 
@@ -391,36 +391,51 @@ impl Seen {
         if layer.edges.is_empty() || points.is_empty() {
             return pairs;
         }
+        let tree = self.tree(layer, flat);
+        each_near(&tree, points, owner, radius + ROUND_OFF, |p, edges| {
+            for &e in edges {
+                self.expand(layer, owner[p], e, |piece, inflation| {
+                    pairs.push(p, piece, inflation);
+                });
+            }
+        });
+        pairs
+    }
+
+    /// A tree over the edges `layer`'s members see, at `flat`.
+    fn tree(&self, layer: &SeenLayer, flat: &[V2]) -> SegmentTree {
         let starts: Vec<V2> = layer.edges.iter().map(|&v| flat[v]).collect();
         let ends: Vec<V2> = layer.edges.iter().map(|&v| flat[v + 1]).collect();
-        let (point, edge) = near_segments(&starts, &ends, points, radius + ROUND_OFF);
-        let count = layer.edges.len();
-        for (p, e) in point.into_iter().zip(edge) {
-            let member = owner[p];
-            let ruled = match (layer.kind[e], layer.net[e]) {
-                (Some(kind), Some(net))
-                    if net != layer.viewer_net[member] && !layer.exempt[member].contains(&net) =>
-                {
-                    Some(kind)
-                }
-                _ => None,
-            };
-            if let Some(kind) = ruled {
-                pairs.push(
-                    p,
-                    layer.whole[e],
-                    self.table[layer.viewer_kind[member]][kind],
-                );
-                continue;
+        SegmentTree::new(&starts, &ends)
+    }
+
+    /// Each piece of `layer`'s edge `e` that its member `member` sees, by
+    /// the rule or its exceptions, with its inflation.
+    fn expand(
+        &self,
+        layer: &SeenLayer,
+        member: usize,
+        e: usize,
+        mut found: impl FnMut(usize, f64),
+    ) {
+        let ruled = match (layer.kind[e], layer.net[e]) {
+            (Some(kind), Some(net))
+                if net != layer.viewer_net[member] && !layer.exempt[member].contains(&net) =>
+            {
+                Some(kind)
             }
-            let slot = member * count + e;
-            let low = layer.slot.partition_point(|&s| s < slot);
-            let high = layer.slot.partition_point(|&s| s <= slot);
-            for j in low..high {
-                pairs.push(p, layer.piece[j], layer.inflation[j]);
-            }
+            _ => None,
+        };
+        if let Some(kind) = ruled {
+            found(layer.whole[e], self.table[layer.viewer_kind[member]][kind]);
+            return;
         }
-        pairs
+        let slot = member * layer.edges.len() + e;
+        let low = layer.slot.partition_point(|&s| s < slot);
+        let high = layer.slot.partition_point(|&s| s <= slot);
+        for j in low..high {
+            found(layer.piece[j], layer.inflation[j]);
+        }
     }
 
     /// Per member, the smooth distance from each of its `queries` to the
@@ -618,19 +633,81 @@ impl Seen {
         let layer = &self.layers[n];
         let within = self.smooth_limit(layer, reach);
         let radius = largest(within.iter().copied(), f64::NEG_INFINITY) + slack;
-        let pairs = self.pairs(layer, points, owner, flat, radius);
-        let (starts, along) = self.shapes(flat, &pairs.piece);
-        let per_pair: Vec<f64> = pairs.point.iter().map(|&p| within[owner[p]]).collect();
-        let keep = candidate_pairs(
-            points,
-            &pairs.point,
-            &starts,
-            &along,
-            &pairs.inflation,
-            &per_pair,
-            slack,
-        );
-        self.in_obstacle_order(&pairs.taken((0..pairs.len()).filter(|&k| keep[k])))
+        let mut pairs = Pairs::default();
+        if layer.edges.is_empty() || points.is_empty() {
+            return pairs;
+        }
+        let tree = self.tree(layer, flat);
+        // Each point's pieces in reach: piece, inflation, distance.
+        let mut near: Vec<(usize, f64, f64)> = Vec::new();
+        each_near(&tree, points, owner, radius + ROUND_OFF, |p, edges| {
+            near.clear();
+            let q = points[p];
+            let member = owner[p];
+            for &e in edges {
+                self.expand(layer, member, e, |piece, inflation| {
+                    let (start, along) = self.shape(flat, piece);
+                    near.push((piece, inflation, offset(q, start, along).hypot()));
+                });
+            }
+            let limit = within[member];
+            // Only obstacles within SMOOTH_REACH of the nearest answer a
+            // point. A piece that stays within reach however its distance
+            // changes bounds how far away the nearest is, and one that
+            // cannot come within SMOOTH_REACH of the bound never answers
+            // (`field::pairs::candidate_pairs`).
+            let mut bound = f64::INFINITY;
+            for &(_, inflation, raw) in &near {
+                if raw + slack <= limit {
+                    bound = bound.min(raw - inflation + slack);
+                }
+            }
+            near.retain(|&(_, inflation, raw)| {
+                raw <= limit + slack + 2.0 * DEGENERATE_DISTANCE
+                    && raw - inflation - slack <= bound + SMOOTH_REACH + 2.0 * DEGENERATE_DISTANCE
+            });
+            near.sort_unstable_by_key(|&(piece, _, _)| (self.obstacle[piece], piece));
+            for &(piece, inflation, _) in &near {
+                pairs.push(p, piece, inflation);
+            }
+        });
+        pairs
+    }
+}
+
+/// How many consecutive points of a member one tree query answers.
+const RUN: usize = 8;
+
+/// For each of `points` in order, the edges of `tree`, ascending, among
+/// them every one within `radius` of it, and maybe others farther: one
+/// query answers a run of consecutive points of one member, as `owner`
+/// gives them, widened by how far they lie from its first. Callers measure
+/// every edge they get, so the farther ones change no answer; along a
+/// polyline the points of a run lie close together, and the queries are
+/// what a search costs most.
+fn each_near(
+    tree: &SegmentTree,
+    points: &[V2],
+    owner: &[usize],
+    radius: f64,
+    mut visit: impl FnMut(usize, &[usize]),
+) {
+    let mut first = 0;
+    while first < points.len() {
+        let mut last = first + 1;
+        while last < points.len() && last - first < RUN && owner[last] == owner[first] {
+            last += 1;
+        }
+        let centre = points[first];
+        let spread = points[first..last]
+            .iter()
+            .map(|&p| (p - centre).hypot())
+            .fold(0.0, f64::max);
+        let edges = tree.near(centre, radius + spread + ROUND_OFF);
+        for p in first..last {
+            visit(p, &edges);
+        }
+        first = last;
     }
 }
 

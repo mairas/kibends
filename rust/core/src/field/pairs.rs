@@ -315,6 +315,41 @@ impl PointTree {
     }
 }
 
+/// A tree over segments' middles, which finds every segment that may come
+/// within a distance of a point.
+pub struct SegmentTree {
+    tree: PointTree,
+    half_length: f64,
+}
+
+impl SegmentTree {
+    /// The segments from starts[k] to ends[k].
+    pub fn new(starts: &[V2], ends: &[V2]) -> Self {
+        let half_length = starts
+            .iter()
+            .zip(ends)
+            .map(|(&a, &b)| (b - a).norm())
+            .fold(0.0, f64::max)
+            / 2.0;
+        let middles: Vec<V2> = starts
+            .iter()
+            .zip(ends)
+            .map(|(&a, &b)| 0.5 * (a + b))
+            .collect();
+        Self {
+            tree: PointTree::new(&middles),
+            half_length,
+        }
+    }
+
+    /// The segments, by index ascending, among them every one that comes
+    /// within `radius` of `p`.
+    pub fn near(&self, p: V2, radius: f64) -> Vec<usize> {
+        self.tree
+            .within(p, radius + self.half_length + DEGENERATE_DISTANCE)
+    }
+}
+
 /// (point, segment) index pairs, by point then segment, among them every
 /// pair whose segment from starts[k] to ends[k] comes within `radius` of
 /// points[i], found with one tree over the segments' middles.
@@ -329,21 +364,9 @@ pub fn near_segments(
     if starts.is_empty() || points.is_empty() {
         return (point, segment);
     }
-    let half_length = starts
-        .iter()
-        .zip(ends)
-        .map(|(&a, &b)| (b - a).norm())
-        .fold(0.0, f64::max)
-        / 2.0;
-    let middles: Vec<V2> = starts
-        .iter()
-        .zip(ends)
-        .map(|(&a, &b)| 0.5 * (a + b))
-        .collect();
-    let tree = PointTree::new(&middles);
-    let search = radius + half_length + DEGENERATE_DISTANCE;
+    let tree = SegmentTree::new(starts, ends);
     for (i, &p) in points.iter().enumerate() {
-        for k in tree.within(p, search) {
+        for k in tree.near(p, radius) {
             point.push(i);
             segment.push(k);
         }
