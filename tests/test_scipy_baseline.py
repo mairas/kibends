@@ -4,7 +4,10 @@ while scipy ran the optimizer, as `scripts/record_baseline.py` says),
 which every platform compares with, since the Rust optimizer computes the
 same on every platform but for the last bits of libm: every case ends as
 it did under scipy, converged where it converged, its tracks no longer and
-no nearer to copper than scipy's by more than the tolerances below.
+no nearer to copper than scipy's by more than the tolerances below, and
+each moving via no nearer to what the baseline fixes: its static copper,
+the other moving vias and the chains that stand still. scipy's moving
+chains were not recorded, so a via's clearance to them is not compared.
 
 Lengths are summed over a case, since a via that settles along a flat
 valley trades length between the chains it joins: per chain, the lengths
@@ -20,11 +23,17 @@ from pathlib import Path
 from typing import cast
 
 import benchmark
+import numpy as np
 import pytest
+from distance_fields import FAR
 from record_baseline import PAD_ROWS, Record, pad_rows_record
 from record_baseline import scenario_record as record_of
+from scenarios import ViasScenario
+from shapely import LineString, Point
 
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.via_moves import MovingVias
 
 BASELINE = Path(__file__).parent / "data" / "scipy_baseline_darwin-arm64.json"
 CASES = cast(dict[str, Record], json.loads(BASELINE.read_text())["cases"])
@@ -78,6 +87,39 @@ def smallest_gap(record: Record) -> float | None:
     return cast(float | None, record.get("gap"))
 
 
+type Position = tuple[float, float]
+
+
+def via_clearances(
+    scenario: ViasScenario, positions: Sequence[Position]
+) -> list[float | None]:
+    """Each moving via's smallest clearance at `positions`, as the
+    optimizer measures it, to what a baseline record fixes: its static
+    copper, the other moving vias and the chains that stand still; None
+    where none of them is near."""
+    moving = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
+    found: list[float | None] = []
+    for v, (given, at) in enumerate(zip(scenario.vias, positions, strict=True)):
+        static = float(given.copper.signed_distance(np.array([at]))[0][0])
+        vias = [
+            Point(at).distance(Point(positions[u])) - apart
+            for u in range(len(positions))
+            if u != v and (apart := moving.apart(v, u)) is not None
+        ]
+        still = [
+            LineString(scenario.chains[c].centreline.points).distance(Point(at)) - ring
+            for c, ring in moving.rings(v).items()
+            if scenario.chains[c].fixed.all()
+        ]
+        near = [*([static] if static < FAR else []), *vias, *still]
+        found.append(min(near, default=None))
+    return found
+
+
+def via_positions(record: Record) -> list[Position]:
+    return [(x, y) for x, y in cast(list[list[float]], record["vias"])]
+
+
 @pytest.mark.parametrize(
     "name",
     [pytest.param(n, marks=pytest.mark.slow) if n in SLOW else n for n in CASES],
@@ -94,3 +136,14 @@ def test_a_case_ends_as_under_scipy(name: str) -> None:
         assert (then is None) == (now is None)
         if then is not None and now is not None:
             assert now >= then - CLEARANCE_TOLERANCE
+    if "vias" in baseline:
+        scenario = benchmark.scenario_makers()[name]()
+        assert isinstance(scenario, ViasScenario)
+        for then, now in zip(
+            via_clearances(scenario, via_positions(baseline)),
+            via_clearances(scenario, via_positions(record)),
+            strict=True,
+        ):
+            assert (then is None) == (now is None)
+            if then is not None and now is not None:
+                assert now >= then - CLEARANCE_TOLERANCE
