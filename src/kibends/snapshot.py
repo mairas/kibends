@@ -153,6 +153,11 @@ class Via:
         other_low, other_high = other.layer_range
         return low <= other_high and other_low <= high
 
+    @property
+    def ring(self) -> Disc:
+        """Its copper on each layer it reaches, mm."""
+        return Disc(self.position, self.diameter / 2)
+
     @cached_property
     def layer_range(self) -> tuple[int, int]:
         """The ordinals of the copper layers its span starts and ends on,
@@ -530,7 +535,7 @@ class BoardSnapshot:
                 board,
                 {
                     v: (
-                        Disc(v.position, v.diameter / 2),
+                        v.ring,
                         *(carried or {}).get(v.id, ()),
                     )
                     for v in selected_vias

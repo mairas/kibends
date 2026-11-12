@@ -53,7 +53,6 @@ from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE
 from kibends.chain import (
     NM_PER_MM,
     Chain,
-    Point2,
     SameNetCopper,
     Segment,
     split_chains,
@@ -89,7 +88,7 @@ from kibends.obstacles import (
 )
 from kibends.polylines import count_violations
 from kibends.seen import Seen
-from kibends.snapshot import BoardSnapshot, LayerSnapshot, Via, ViaZone
+from kibends.snapshot import BoardSnapshot, Disc, LayerSnapshot, Via, ViaZone
 
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
@@ -418,7 +417,7 @@ def extract_chains(
     ),
     *,
     frame: UserFrame,
-    cuts: Callable[[str, str], Collection[Point2]] = lambda _layer, _net: (),
+    cuts: Callable[[str, str], Collection[Disc]] = lambda _layer, _net: (),
 ) -> list[Chain]:
     """The chains of a selection, its locked segments split off as the run
     splits them (`chain.split_chains`)."""

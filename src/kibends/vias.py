@@ -40,7 +40,6 @@ has them repel each other.
 """
 
 import enum
-import math
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -54,7 +53,7 @@ from shapely.geometry.base import BaseGeometry
 
 from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
-from kibends.chain import Chain, Point2
+from kibends.chain import Chain, carries
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment, core_via, plain_shapes
@@ -192,13 +191,14 @@ def may_move(via: Via, nets: Collection[str]) -> bool:
     return not via.locked and not in_diff_pair(via.net, nets)
 
 
-def chain_cuts(vias: Sequence[Via]) -> Callable[[str, str], list[Point2]]:
-    """Where `vias` cut the chains of a layer and net (`split_chains`): at
-    the centre of each of them of that net that reaches that layer, so that a
-    chain with a vertex there ends at it, for it to carry."""
+def chain_cuts(vias: Sequence[Via]) -> Callable[[str, str], list[Disc]]:
+    """Where `vias` cut the chains of a layer and net (`split_chains`): the
+    copper of each of them of that net that reaches that layer, so that a
+    chain with a vertex on its centre ends there, for it to carry, and the
+    ends it carries pin no other chain."""
 
-    def cuts(layer: str, net: str) -> list[Point2]:
-        return [v.position for v in vias if v.net == net and v.reaches(layer)]
+    def cuts(layer: str, net: str) -> list[Disc]:
+        return [v.ring for v in vias if v.net == net and v.reaches(layer)]
 
     return cuts
 
@@ -212,7 +212,7 @@ def carried_ends(via: Via, chains: Sequence[Chain]) -> tuple[ChainEnd, ...]:
         for last, point in ((False, chain.points[0]), (True, chain.points[-1]))
         if chain.net == via.net
         and via.reaches(chain.layer)
-        and math.dist(point, via.position) <= (via.diameter + chain.width) / 2
+        and carries(via.ring, point, chain.width)
     )
 
 
