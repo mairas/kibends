@@ -1454,7 +1454,8 @@ def test_two_layers_joined_by_a_via_are_one_problem(
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
 
-    result = run(scenarios.via_detour())
+    # A streak at one spacing: a coarse level hands a streak over.
+    result = run(scenarios.via_detour(), replace(COARSE, coarse_spacings=()))
 
     problem = "the chains and vias on F.Cu and B.Cu"
     assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
@@ -1735,7 +1736,10 @@ def moving_vias(scenario: ViasScenario) -> MovingVias:
 def test_chains_straightened_in_one_burst_are_kept() -> None:
     # Two free vertices a chain: one burst straightens the route, and the
     # via's move in it is less than the tolerance.
-    few = OptimizerSettings(spacing=2.5, settled_change=0.025, burst_maxiter=30)
+    # At that spacing alone: it is coarser than the default coarse levels.
+    few = OptimizerSettings(
+        spacing=2.5, coarse_spacings=(), settled_change=0.025, burst_maxiter=30
+    )
 
     result = run(scenarios.via_slack(FreeSpace(), (5.0, 0.01)), few)
 

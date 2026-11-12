@@ -223,8 +223,8 @@ def test_settings_take_coarse_spacings_above_the_final_one_coarsest_first() -> N
     assert settings.spacing == 0.1
 
 
-def test_settings_have_no_coarse_spacings_by_default() -> None:
-    assert DEFAULT_SETTINGS.coarse_spacings == ()
+def test_settings_run_coarse_levels_by_default() -> None:
+    assert DEFAULT_SETTINGS.coarse_spacings == (1.6, 0.4)
 
 
 @pytest.mark.parametrize(

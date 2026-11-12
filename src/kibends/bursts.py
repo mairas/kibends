@@ -65,7 +65,7 @@ strayed visibly from the optimised curve."""
 class OptimizerSettings:
     spacing: float = 0.1
     """Target distance between resampled vertices at the final level, mm."""
-    coarse_spacings: tuple[float, ...] = ()
+    coarse_spacings: tuple[float, ...] = (1.6, 0.4)
     """The spacings a problem runs at before `spacing`, mm, coarsest first:
     each above the next and the last above `spacing`, at most
     `MAX_COARSE_LEVELS` of them. Empty runs at `spacing` alone."""

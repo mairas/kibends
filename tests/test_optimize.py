@@ -43,6 +43,10 @@ from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
 
 SETTINGS = OptimizerSettings()
+ONE_SPACING = replace(SETTINGS, coarse_spacings=())
+"""The defaults at the final spacing alone, for a premise that counts
+bursts at one spacing: a coarse level hands an abnormal streak over, and the
+first burst after a handover settles if it moves nothing, abnormal or not."""
 # For long runs: about 20x faster than the defaults and, on the detour and
 # stall scenarios, still converging within 1 µm of the default result's length.
 COARSE = replace(SETTINGS, spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -661,7 +665,7 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     polyline, fixed = chain((0.0, 0.3), (5.0, 0.3), (10.0, 0.3))
     params = replace(PARAMS, repulsion=5.0)
 
-    result = optimize(polyline, fixed, MisleadingWalls(1.0), params)
+    result = optimize(polyline, fixed, MisleadingWalls(1.0), params, ONE_SPACING)
 
     assert result.termination is Termination.ABNORMAL
     assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
@@ -685,7 +689,9 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
     monkeypatch.setattr(optimize_module, "run_burst", failing)
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
 
-    result = optimize(polyline, fixed, FreeSpace(), PARAMS, COARSE)
+    result = optimize(
+        polyline, fixed, FreeSpace(), PARAMS, replace(COARSE, coarse_spacings=())
+    )
 
     assert result.termination is Termination.GAVE_UP
     assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
@@ -703,7 +709,7 @@ def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
 
-    optimize(polyline, fixed, MisleadingWalls(1.0), params)
+    optimize(polyline, fixed, MisleadingWalls(1.0), params, ONE_SPACING)
 
     costs = burst_costs(log)
     assert len(costs) == MAX_ABNORMAL_BURSTS

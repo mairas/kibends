@@ -57,6 +57,10 @@ from kibends.simplify import simplify_chains
 from kibends.via_moves import MovingVias
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+ONE_SPACING = replace(COARSE, coarse_spacings=())
+"""COARSE at its final spacing alone, for a premise that counts bursts at one
+spacing: a coarse level hands an abnormal streak over, and the first burst
+after a handover settles if it moves nothing, abnormal or not."""
 
 
 EQUAL_PITCH = 0.6
@@ -722,7 +726,7 @@ def excess(result: RunResult) -> float:
 
 def test_a_long_track_among_many_goes_taut_only_with_coarse_levels() -> None:
     scenario = scenarios.bowed_among_many()
-    budget = OptimizerSettings(max_iterations=BURST_BUDGET)
+    budget = OptimizerSettings(max_iterations=BURST_BUDGET, coarse_spacings=())
 
     one = run(scenario, budget)
     levels = run(scenario, replace(budget, coarse_spacings=LEVELS))
@@ -991,7 +995,7 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     monkeypatch.setattr(optimize_module, "run_burst", failing)
     scenario = bumps()
 
-    result = run(scenario)
+    result = run(scenario, ONE_SPACING)
 
     assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
@@ -1026,7 +1030,7 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
         "back", "B", free, (0.0, 0.0), (reach, 1.5), (2 * reach, 0.0), layer="B.Cu"
     )
 
-    result = optimize_chains([front, back], scenarios.PARAMS, COARSE)
+    result = optimize_chains([front, back], scenarios.PARAMS, ONE_SPACING)
 
     assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
@@ -1052,7 +1056,7 @@ def test_a_normal_burst_ends_an_abnormal_streak(
     monkeypatch.setattr(optimize_module, "run_burst", second_normal)
 
     # The normal burst does not settle the problem at this settled change.
-    result = run(bumps(), replace(COARSE, settled_change=3e-4))
+    result = run(bumps(), replace(ONE_SPACING, settled_change=3e-4))
 
     # One abnormal burst, a normal one, then a full streak.
     assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS + 2
@@ -1491,8 +1495,11 @@ BUS_SHORTENED = 316.0
 """A summed length the bus falls below once it moves, mm: from 324.853 mm,
 where the nearest neighbour alone left it, about a third of the way to
 straight."""
-BUS_SETTINGS = OptimizerSettings(spacing=1.6, burst_maxiter=30, max_iterations=4)
-"""Coarse settings: vertices as far apart as issue 106's faster experiment."""
+BUS_SETTINGS = OptimizerSettings(
+    spacing=1.6, coarse_spacings=(), burst_maxiter=30, max_iterations=4
+)
+"""Coarse settings: vertices as far apart as issue 106's faster experiment,
+at that spacing alone, which is no finer than the default coarse levels."""
 
 
 def test_an_equally_spaced_bus_moves() -> None:

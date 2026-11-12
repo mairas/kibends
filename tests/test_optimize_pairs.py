@@ -61,6 +61,9 @@ from kibends.simplify import simplify_chains
 from kibends.vias import ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+ONE_SPACING = replace(COARSE, coarse_spacings=())
+"""COARSE at its final spacing alone, for a premise that counts bursts at one
+spacing or compares with the inputs resampled at it."""
 CORNER = OptimizerSettings(burst_maxiter=30)
 """The default spacing, at which a centreline pulled taut against its
 direction pins bends tighter than the limit, with short bursts."""
@@ -659,15 +662,17 @@ starts with the section held: two settled runs reach the same shape from
 different starts, each within `COARSE.settled_change`."""
 
 HOLD_BUDGET = 4
-"""Bursts of `pair_tent_under_roof` that the time limit allows: the pair has
-come down onto the bar, and the roof has followed it."""
+"""Bursts of `pair_tent_under_roof` at one spacing that the time limit
+allows: the pair has come down onto the bar, and the roof has followed it."""
 
 
 def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = scenarios.pair_tent_under_roof()
-    limited = replace(COARSE, time_limit=HOLD_BUDGET)
+    # Stopped at a coarse level, the roof would go back to its coarse
+    # resampling, not to the inputs at the final spacing.
+    limited = replace(ONE_SPACING, time_limit=HOLD_BUDGET)
     plain = optimize_chains(
         scenario.chains,
         scenario.params,
@@ -868,7 +873,7 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     result = optimize_chains(
         scenario.chains,
         scenario.params,
-        COARSE,
+        ONE_SPACING,
         pairs=scenario.pairs,
         to_hold=counted,
     )
@@ -1514,7 +1519,8 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
 
 SHARP_SPACING = 1.0
 """A spacing at which the section's corner may turn by 100 degrees within
-the bend-radius limit."""
+the bend-radius limit, run alone: it is coarser than the default coarse
+levels."""
 TURN = math.radians(60.0)
 SHARPENING = math.radians(40.0)
 LEG = 5.0
@@ -1572,7 +1578,7 @@ def test_a_crossing_that_names_nothing_moved_moves_the_burst_back_whole(
     # neither of which moved; the post is pinned. The section judges its
     # own edges by its centreline's extent, which the post starts inside
     # and gets no deeper into.
-    settings = replace(COARSE, spacing=SHARP_SPACING, max_iterations=1)
+    settings = replace(ONE_SPACING, spacing=SHARP_SPACING, max_iterations=1)
     revert, start = first_check(
         monkeypatch, lambda: run(post_past_the_corner(), settings)
     )

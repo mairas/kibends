@@ -1761,7 +1761,10 @@ def test_an_equally_spaced_bus_converges(
     """The energy is differentiable at the tie, so no problem gives up and
     every track of the bus shortens."""
     monkeypatch.setattr(
-        pipeline, "optimize_chains", at(replace(COARSE, spacing=Z_BUS_SPACING))
+        pipeline,
+        "optimize_chains",
+        # At that spacing alone: it is coarser than the default coarse levels.
+        at(replace(COARSE, spacing=Z_BUS_SPACING, coarse_spacings=())),
     )
     connect.to(z_bus_board())
 
