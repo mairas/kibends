@@ -34,8 +34,8 @@ function sync {
 # and the workers' threads oversubscribe the cores: the suite ran about 10x slower on 4 cores.
 # kibends._core's rayon pool would do the same, so each worker keeps one thread.
 
-# The tests run after a quiet sync, which rebuilds kibends._core if its
-# sources changed, so they always test the current Rust code.
+# The tests and the benchmark run after a quiet sync, which rebuilds
+# kibends._core if its sources changed, so they always run the current Rust code.
 
 function test {
   #@ Run the Rust core's tests and the fast Python tests (extra arguments go to pytest)
@@ -56,6 +56,7 @@ function test-all {
 function bench {
   #@ Measure the optimizer on stitched planes, the scenarios, buses, a lone track beside a cluster and return vias (see scripts/benchmark.py)
   #@ Category: Development
+  sync --quiet
   OPENBLAS_NUM_THREADS=1 .venv/bin/python scripts/benchmark.py "$@"
 }
 
