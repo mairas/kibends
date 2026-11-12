@@ -1063,9 +1063,12 @@ mod tests {
         }
     }
 
+    const VIA_AT: V2 = V2 { x: 5.0, y: -5.0 };
+
     /// A chain from (0, 0) to (10, 0) bowed up to `rise` at its middle, in
-    /// `field`, with a stitching via at (5, -5) if `via`.
-    fn problem(field: Arc<dyn Field>, rise: f64, via: bool) -> State {
+    /// `field`, with a stitching via at `VIA_AT` in its static copper `via`,
+    /// if given.
+    fn problem(field: Arc<dyn Field>, rise: f64, via: Option<Arc<dyn Field>>) -> State {
         let trace = Trace {
             net: "A".into(),
             width: 0.2,
@@ -1081,16 +1084,15 @@ mod tests {
             contacts: vec![],
             section: None,
         };
-        let vias: Vec<ViaSetup> = if via {
-            vec![ViaSetup {
-                start: V2::new(5.0, -5.0),
+        let vias: Vec<ViaSetup> = via
+            .into_iter()
+            .map(|copper| ViaSetup {
+                start: VIA_AT,
                 carried: vec![],
-                copper: Arc::new(FreeSpace),
+                copper,
                 stop_parts: vec![None, None],
-            }]
-        } else {
-            vec![]
-        };
+            })
+            .collect();
         let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
         let energy = Problem {
             members: Members::new(vec![member]),
@@ -1192,12 +1194,12 @@ mod tests {
 
     #[test]
     fn a_problem_whose_bursts_move_back_does_not_settle() {
-        let mut moving = problem(Arc::new(FreeSpace), 1.0, false);
+        let mut moving = problem(Arc::new(FreeSpace), 1.0, None);
         assert_eq!(
             run(&mut moving, &mut still(5, 0), STILL_ITERATIONS),
             Outcome::IterationCap
         );
-        let mut settling = problem(Arc::new(FreeSpace), 1.0, false);
+        let mut settling = problem(Arc::new(FreeSpace), 1.0, None);
         assert_ne!(
             run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
             Outcome::IterationCap
@@ -1206,12 +1208,12 @@ mod tests {
 
     #[test]
     fn a_via_moved_back_keeps_its_problem_from_settling() {
-        let mut moving = problem(Arc::new(FreeSpace), 1.0, true);
+        let mut moving = problem(Arc::new(FreeSpace), 1.0, Some(Arc::new(FreeSpace)));
         assert_eq!(
             run(&mut moving, &mut still(0, 1), STILL_ITERATIONS),
             Outcome::IterationCap
         );
-        let mut settling = problem(Arc::new(FreeSpace), 1.0, true);
+        let mut settling = problem(Arc::new(FreeSpace), 1.0, Some(Arc::new(FreeSpace)));
         assert_ne!(
             run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
             Outcome::IterationCap
@@ -1248,7 +1250,7 @@ mod tests {
             (post(), false),
             (Arc::new(FreeSpace) as Arc<dyn Field>, true),
         ] {
-            let mut p = problem(field, BOW, false);
+            let mut p = problem(field, BOW, None);
             let start = p.now.points.clone();
             let mut cut = Still {
                 rejected: 0,
@@ -1265,12 +1267,12 @@ mod tests {
 
     #[test]
     fn what_putting_back_misses_puts_the_whole_problem_back() {
-        let mut earlier = problem(post(), BOW, false);
+        let mut earlier = problem(post(), BOW, None);
         let crossing = straight(&earlier);
         let layout = earlier.layout(earlier.now.points.clone());
         let (points, _) = layout.unflatten(&crossing);
         earlier.best.points = points.clone();
-        let mut again = problem(post(), BOW, false);
+        let mut again = problem(post(), BOW, None);
         let start = again.now.points.clone();
         let nothing = |p: &State,
                        _: &[Vec<V2>],
@@ -1283,10 +1285,182 @@ mod tests {
         again.put_back(&earlier, nothing).expect("finite");
         // The guard after putting back finds the crossing.
         assert_eq!(again.now.points, start);
-        let mut ahead = problem(Arc::new(FreeSpace), BOW, false);
-        let mut clear = problem(Arc::new(FreeSpace), BOW, false);
+        let mut ahead = problem(Arc::new(FreeSpace), BOW, None);
+        let mut clear = problem(Arc::new(FreeSpace), BOW, None);
         clear.best.points = points.clone();
         ahead.put_back(&clear, nothing).expect("finite");
         assert_eq!(ahead.now.points, points);
+    }
+
+    /// The point of `f`'s one sign change on [`low`, `high`].
+    fn bisect(mut low: f64, mut high: f64, f: impl Fn(f64) -> f64) -> f64 {
+        let below = f(low) < 0.0;
+        while high - low > f64::EPSILON * high.abs().max(1.0) {
+            let middle = (low + high) / 2.0;
+            if (f(middle) < 0.0) == below {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        (low + high) / 2.0
+    }
+
+    /// How far a burst may move the via along y, mm.
+    const VIA_REACH: f64 = 0.5;
+
+    /// Bursts that leave the problem, after its `k`th, `k` times `shorten`
+    /// shorter and `k` times `lower` lower in energy than the first burst
+    /// started: the members' free vertices drawn towards y = 0, then the
+    /// via moved along y. Each reports a rejected edge, so that only the
+    /// stall rule settles the problem.
+    struct Aimed {
+        shorten: f64,
+        lower: f64,
+        first: Option<(f64, f64)>,
+        bursts: u32,
+    }
+
+    fn aimed(shorten: f64, lower: f64) -> Aimed {
+        Aimed {
+            shorten,
+            lower,
+            first: None,
+            bursts: 0,
+        }
+    }
+
+    impl Bursts<NotFinite> for Aimed {
+        fn run(
+            &mut self,
+            objective: Objective,
+            _lookups: Lookups,
+            start: Vec<f64>,
+            _scale: Vec<f64>,
+            _check: Check,
+        ) -> Result<(Ran, Option<Round>), NotFinite> {
+            let layout = &objective.layout;
+            let energy = |x: &[f64]| objective.evaluate(x, None).expect("finite").0;
+            let length = |x: &[f64]| {
+                let (polylines, _) = layout.unflatten(x);
+                polylines.iter().map(|p| polylines::length(p)).sum::<f64>()
+            };
+            let (energy0, length0) = *self
+                .first
+                .get_or_insert_with(|| (energy(&start), length(&start)));
+            self.bursts += 1;
+            let k = f64::from(self.bursts);
+            let ys: Vec<usize> = layout
+                .index
+                .iter()
+                .flatten()
+                .flatten()
+                .map(|&i| 2 * i + 1)
+                .collect();
+            let drawn = |f: f64| {
+                let mut x = start.clone();
+                for &y in &ys {
+                    x[y] *= f;
+                }
+                x
+            };
+            let shape = if self.shorten > 0.0 {
+                bisect(0.0, 1.0, |f| {
+                    length(&drawn(f)) - (length0 - k * self.shorten)
+                })
+            } else {
+                1.0
+            };
+            let via = 2 * layout.via_index[0] + 1;
+            let moved = |t: f64| {
+                let mut x = drawn(shape);
+                x[via] = start[via] + t;
+                x
+            };
+            let t = bisect(-VIA_REACH, VIA_REACH, |t| {
+                energy(&moved(t)) - (energy0 - k * self.lower)
+            });
+            Ok((
+                Ran {
+                    point: moved(t),
+                    abnormal: false,
+                    iterations: 1,
+                    evaluations: 1,
+                    message: String::new(),
+                    cut: false,
+                    evaluating: 0.0,
+                },
+                Some(Round {
+                    members: vec![1; layout.starts.len()],
+                    vias: vec![0; layout.via_index.len()],
+                }),
+            ))
+        }
+    }
+
+    /// Copper of the via's own static field just below it, within the
+    /// repulsion's reach of its ring: the via's energy falls as it moves
+    /// up, and rises as it moves down.
+    fn under_the_via() -> Arc<dyn Field> {
+        Arc::new(Disc {
+            cx: VIA_AT.x,
+            cy: VIA_AT.y - 0.8,
+            radius: 0.1,
+        })
+    }
+
+    /// How far the problem's lowest energy and length fell over the last
+    /// stall window.
+    fn over_the_window(p: &State) -> (f64, f64) {
+        let window = settings().stall_window;
+        let fell = |v: &[f64]| v[v.len() - 1 - window] - v[v.len() - 1];
+        (fell(&p.lowest), fell(&p.lengths))
+    }
+
+    /// A window's energy gain, in stall tolerances: past the one member's
+    /// share, within the share of the member and the via.
+    const VIA_SHARE_GAIN: f64 = 1.5;
+    /// A window's shortening, in stall tolerances: past the length side's.
+    const SHORTENING: f64 = 1.8;
+    /// Bursts enough for several stall windows.
+    const CAP: u64 = 8;
+
+    #[test]
+    fn a_problem_stalls_on_the_share_its_vias_add() {
+        let tolerance = settings().stall_tolerance;
+        let window = settings().stall_window as f64;
+        let mut p = problem(Arc::new(FreeSpace), 0.0, Some(under_the_via()));
+
+        let outcome = run(
+            &mut p,
+            &mut aimed(0.0, VIA_SHARE_GAIN * tolerance / window),
+            CAP,
+        );
+
+        assert_ne!(outcome, Outcome::IterationCap);
+        assert_eq!(p.lowest.len(), settings().stall_window + 1);
+        let members = p.free.len() as f64;
+        let vias = p.shared.setup.vias.len() as f64;
+        let (gain, shortened) = over_the_window(&p);
+        assert!(members * tolerance < gain && gain <= (members + vias) * tolerance);
+        assert!(shortened <= tolerance);
+    }
+
+    #[test]
+    fn a_problem_still_shortening_on_a_flat_energy_does_not_stall() {
+        let tolerance = settings().stall_tolerance;
+        let window = settings().stall_window as f64;
+        let mut p = problem(Arc::new(FreeSpace), 1.0, Some(under_the_via()));
+
+        let outcome = run(
+            &mut p,
+            &mut aimed(SHORTENING * tolerance / window, 0.0),
+            CAP,
+        );
+
+        assert_eq!(outcome, Outcome::IterationCap);
+        let (gain, shortened) = over_the_window(&p);
+        assert!(gain <= tolerance);
+        assert!(shortened > tolerance);
     }
 }
