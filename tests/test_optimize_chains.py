@@ -538,7 +538,7 @@ def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
 
 
 TIMED_ITERATIONS = 2
-"""The L-BFGS-B iterations a burst runs before a clock that ticks a second
+"""The L-BFGS iterations a burst runs before a clock that ticks a second
 a reading, from 0, passes a limit half a second beyond: the run reads it
 when setup begins and ends, then after each iteration."""
 

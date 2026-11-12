@@ -505,7 +505,7 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 
 
 BURST_LINE = re.compile(
-    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS-B iterations, "
+    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS iterations, "
     r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
     r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"$'
 )
@@ -616,7 +616,7 @@ def shortest_edge(points: FloatArray) -> float:
 
 # Starts at which two neighbouring vertices once collapsed onto each other in a
 # burst, the gradient across the vanishing edge between them failed
-# L-BFGS-B's line search, and the run ended abnormally. Starts 1 µm away from
+# L-BFGS's line search, and the run ended abnormally. Starts 1 µm away from
 # these converged, so the shifts matter.
 @pytest.mark.parametrize("y", [0.8 + 1e-6, 0.5 + 2e-6, 0.7])
 def test_channel_starts_that_collapsed_two_vertices_converge(y: float) -> None:

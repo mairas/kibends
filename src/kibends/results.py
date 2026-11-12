@@ -27,7 +27,7 @@ class Termination(Enum):
     after a hold built the problem again (`optimize.optimize_chains`), and
     the run's best state is lower in energy than its inputs. The best state
     is used, though it may be short of the minimum."""
-    ABNORMAL = "L-BFGS-B terminated abnormally"
+    ABNORMAL = "L-BFGS terminated abnormally"
     """Some problem stopped after `optimize.MAX_ABNORMAL_BURSTS` abnormal
     bursts in a row and the run's best state is no lower in energy than its
     inputs: nothing usable was found."""
@@ -52,7 +52,7 @@ class OptimizeResult:
     rejected_edges: int
     """Edges whose burst moves were undone because they crossed an obstacle."""
     abnormal_bursts: int
-    """Bursts L-BFGS-B ended abnormally; each was judged like any other."""
+    """Bursts L-BFGS ended abnormally; each was judged like any other."""
     before: PolylineStats
     after: PolylineStats
 
@@ -125,6 +125,6 @@ class RunResult:
     """The problems given up on after abnormal bursts in a row, by
     description, and how many there were."""
     abnormal: tuple[tuple[str, int], ...] = ()
-    """The problems whose bursts L-BFGS-B ended abnormally, by description,
+    """The problems whose bursts L-BFGS ended abnormally, by description,
     and how many there were. A burst moves every chain, section and via of
     its problem, so it is counted once, for the problem."""

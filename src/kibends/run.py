@@ -239,7 +239,7 @@ class OptimizerReport:
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
     """The problems, each the chains of a layer or of the layers moving
-    vias tie together, whose bursts L-BFGS-B ended abnormally, by
+    vias tie together, whose bursts L-BFGS ended abnormally, by
     description, and how many there were, before and after any hold."""
     frame: UserFrame
     """The frame to print positions in. The report's positions stay in the

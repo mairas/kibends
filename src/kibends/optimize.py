@@ -363,7 +363,7 @@ class _Report:
             logger.warning(FALLBACK_WARNING)
         elif isinstance(notice, _core.AbnormalNotice):
             logger.debug(
-                "L-BFGS-B ended a burst of "
+                "L-BFGS ended a burst of "
                 f"{self.problems[notice.problem].description} abnormally, "
                 f"{notice.streak} in a row"
             )
@@ -384,10 +384,10 @@ def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
     energy evaluations, the seconds those evaluations took and the seconds
     of the rest of the step, and what L-BFGS says ended it. The seconds are
     wall time, not by the run's clock. The rest includes L-BFGS's own work
-    and the after-burst check, which the benchmark's "outside L-BFGS-B"
+    and the after-burst check, which the benchmark's "outside L-BFGS"
     splits differently."""
     logger.debug(
-        f"Burst of {problem.description}: {notice.iterations} L-BFGS-B iterations, "
+        f"Burst of {problem.description}: {notice.iterations} L-BFGS iterations, "
         f"{notice.evaluations} evaluations, {notice.evaluating:.3f} s in "
         f"evaluations, {notice.rest:.3f} s in the rest of the step, "
         f'ended with "{notice.message}"'

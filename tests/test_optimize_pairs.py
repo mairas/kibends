@@ -459,7 +459,7 @@ class TestTightCorner:
     def test_a_trial_step_that_folds_the_centreline_ends_no_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # L-BFGS-B's first trial of the first burst folds the centreline
+        # L-BFGS's first trial of the first burst folds the centreline
         # at its second free vertex.
         trials: list[FloatArray] = []
 
@@ -1082,7 +1082,7 @@ least."""
 LIKE_UNPINNED = 2e-3
 """mm: how far a pair pinned only in its end pads may end up from the same
 pair unpinned, whose direction pin is the pads' pin. The two runs resample
-differently and stop where L-BFGS-B's ftol ends them, about 1 µm apart."""
+differently and stop where L-BFGS's ftol ends them, about 1 µm apart."""
 
 
 def pinned_chain(net: str, track: FloatArray, *xs: float) -> Chain:
