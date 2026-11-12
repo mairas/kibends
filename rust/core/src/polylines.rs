@@ -78,7 +78,10 @@ pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bo
             } else {
                 k as f64 * step
             };
-            out.push(V2::new(interp(target, &arc, &xs), interp(target, &arc, &ys)));
+            out.push(V2::new(
+                interp(target, &arc, &xs),
+                interp(target, &arc, &ys),
+            ));
             mask.push(false);
         }
         out.push(points[end]);

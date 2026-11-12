@@ -6,7 +6,6 @@ clearance.
 The problem's energy and gradient with moving vias are checked against a
 reference built via by via (`reference_via_energy`)."""
 
-import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import replace
@@ -27,13 +26,12 @@ from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
 import kibends.optimize as optimize_module
-from kibends import cli
+from kibends import _core, cli
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
-    Crossings,
     Objective,
     OptimizerSettings,
     Revert,
@@ -417,11 +415,11 @@ def test_a_move_cutting_an_edge_across_a_corner_is_undone() -> None:
 
 def first_revert(
     monkeypatch: pytest.MonkeyPatch, scenario: ViasScenario
-) -> tuple[Revert, FloatArray]:
+) -> tuple[_core.Revert, FloatArray]:
     """The check of the first burst of `scenario`'s run, and where the burst
     starts; its one via's centre is the last variable."""
     real = optimize_module.run_burst
-    captured: list[tuple[Revert, FloatArray]] = []
+    captured: list[tuple[_core.Revert, FloatArray]] = []
 
     def capturing(
         objective: Objective,
@@ -430,6 +428,7 @@ def first_revert(
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
+        assert isinstance(revert, _core.Revert)
         captured.append((revert, start.copy()))
         return real(objective, start, revert, settings, stop)
 
@@ -454,21 +453,10 @@ def test_a_burst_moves_the_via_and_its_ends_back(
     revert, start = first_revert(monkeypatch, scenario)
     candidate = start.copy()
     candidate[-2:] = to
-    masks: list[BoolArray] = []
-    real = optimize_module.revert_until_clear
-
-    def spying(
-        candidate: FloatArray, start: FloatArray, crossings: Crossings
-    ) -> tuple[BoolArray, int]:
-        reverted, count = real(candidate, start, crossings)
-        masks.append(reverted)
-        return reverted, count
-
-    monkeypatch.setattr(optimize_module, "revert_until_clear", spying)
 
     crossings = revert(candidate)
 
-    (reverted,) = masks
+    reverted = revert.reverted
     assert crossings > 0
     assert reverted[-2:].all()
     # Not by the fallback that moves everything back.
@@ -989,23 +977,11 @@ INSIDE_LEVEL = scenarios.DETOUR_VIA[1] + VIA_TO_CHAIN - INSIDE_PINNED
 
 
 def reverted_by(
-    monkeypatch: pytest.MonkeyPatch, revert: Revert, candidate: FloatArray
+    monkeypatch: pytest.MonkeyPatch, revert: _core.Revert, candidate: FloatArray
 ) -> BoolArray:
     """What `revert` moves back of `candidate`."""
-    masks: list[BoolArray] = []
-    real = optimize_module.revert_until_clear
-
-    def spying(
-        candidate: FloatArray, start: FloatArray, crossings: Crossings
-    ) -> tuple[BoolArray, int]:
-        reverted, count = real(candidate, start, crossings)
-        masks.append(reverted)
-        return reverted, count
-
-    monkeypatch.setattr(optimize_module, "revert_until_clear", spying)
     revert(candidate)
-    (reverted,) = masks
-    return reverted
+    return revert.reverted
 
 
 def test_a_via_whose_ring_a_pinned_edge_newly_enters_moves_back(
@@ -1484,33 +1460,6 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
 
 
-@pytest.mark.parametrize(("moved_back", "settles"), [(0, True), (1, False)])
-def test_a_via_moved_back_keeps_its_problem_from_settling(
-    monkeypatch: pytest.MonkeyPatch, moved_back: int, settles: bool
-) -> None:
-    def still(
-        self: optimize_module._Problem,
-        starts: list[FloatArray],
-        stop: Stop | None = None,
-    ) -> optimize_module._ProblemBurst:
-        count = len(starts)
-        return optimize_module._ProblemBurst(
-            list(starts),
-            list(self.positions),
-            [0] * count,
-            [moved_back] * len(self.vias),
-            False,
-        )
-
-    monkeypatch.setattr(optimize_module._Problem, "burst", still)
-    # Too few bursts for the best energy to stall.
-    settings = replace(COARSE, max_iterations=COARSE.stall_window - 1)
-
-    result = run(scenarios.via_detour(), settings)
-
-    assert (result.termination is not Termination.ITERATION_CAP) == settles
-
-
 def bump_under(height: float) -> PairInput:
     """A coupled section on In1.Cu along y = 0, bumped up to `height` under
     the detour route's via."""
@@ -1925,8 +1874,7 @@ def via_scale(scenario: ViasScenario) -> float:
     problem = alone_problem(scenario)
     layout = problem.layout(problem.points)
     seen = problem.seeing(layout.starts)
-    stiffness = problem.stiffness(layout, seen, problem.lookups(seen))
-    scale = optimize_module._scale(stiffness, DEFAULT_SETTINGS.spacing)
+    scale = problem.scale(layout.starts, seen, problem.lookups(seen))
     (variable,) = layout.via_index
     return float(scale[2 * variable])
 
@@ -2732,22 +2680,25 @@ Stalls = list[tuple[list[float], list[float], int, int, bool]]
 
 
 def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
-    """Record what each call of `optimize.stalled` was given and answered."""
+    """Record what the stall rule (`optimize.stalled`) was given and
+    answered after each burst, from what the bursts report: the problem's
+    lowest energy and length after each, and its moving members and vias.
+    The inputs' energy and length, which the rule takes first, are left
+    out: the calls past the first window answer the same without them."""
     calls: Stalls = []
-    real = optimize_module.stalled
+    lowest: list[float] = []
+    lengths: list[float] = []
+    real = optimize_module._burst_done
 
-    def spy(
-        lowest: Sequence[float],
-        lengths: Sequence[float],
-        settings: OptimizerSettings,
-        members: int,
-        vias: int = 0,
-    ) -> bool:
-        answer = real(lowest, lengths, settings, members, vias)
+    def spy(problem: optimize_module._Problem, notice: _core.BurstNotice) -> None:
+        lowest.append(notice.lowest)
+        lengths.append(notice.length)
+        members, vias = len(notice.members), len(problem.vias)
+        answer = stalled(lowest, lengths, problem.settings, members, vias)
         calls.append((list(lowest), list(lengths), members, vias, answer))
-        return answer
+        real(problem, notice)
 
-    monkeypatch.setattr(optimize_module, "stalled", spy)
+    monkeypatch.setattr(optimize_module, "_burst_done", spy)
     return calls
 
 
@@ -2772,27 +2723,3 @@ def test_moving_vias_end_a_stitched_grid_s_creep(
     assert (members, counted) == (len(chains), len(vias))
     # Without the vias' share the problem would have gone on.
     assert not stalled(lowest, lengths, CREEP_SETTINGS, members)
-
-
-def test_shortening_tracks_keep_a_stitched_grid_going(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    chains, vias = crossed_stitching()
-    calls = spy_on_stalls(monkeypatch)
-    shrinking = itertools.count()
-    # More than a tolerance over the window.
-    shortening = DEFAULT_SETTINGS.stall_tolerance
-
-    def length(_: object) -> float:
-        return 10.0 - shortening * next(shrinking)
-
-    monkeypatch.setattr(optimize_module._Problem, "length", length)
-
-    optimize_chains(chains, DEFAULT_PARAMS, STITCHED_SETTINGS, vias)
-
-    assert not any(answer for *_, answer in calls)
-    # The energy alone would have stalled it.
-    assert any(
-        stalled(lowest, [0.0] * len(lengths), STITCHED_SETTINGS, members, counted)
-        for lowest, lengths, members, counted, _ in calls
-    )

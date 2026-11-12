@@ -12,6 +12,7 @@ __all__ = [
     "AREA",
     "AbnormalNotice",
     "BoardLayer",
+    "BurstLayout",
     "BurstNotice",
     "BurstResult",
     "ChainField",
@@ -174,6 +175,52 @@ class BoardLayer:
         """
 
 @typing.final
+class BurstLayout:
+    r"""
+    How a burst's variables make the members' polylines and the vias'
+    centres (`kibends_core::optimize::problem::Layout`).
+    """
+    @property
+    def starts(self) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Each member's start.
+        """
+    @property
+    def positions(self) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        The vias' centres at the start.
+        """
+    @property
+    def index(self) -> builtins.list[numpy.typing.NDArray[numpy.intp]]:
+        r"""
+        Per member, each vertex's variable, -1 where it stays.
+        """
+    @property
+    def offsets(self) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Per member, each vertex's offset from its variable.
+        """
+    @property
+    def via_index(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Each via's variable.
+        """
+    @property
+    def count(self) -> builtins.int:
+        r"""
+        How many variables there are.
+        """
+    @property
+    def x0(self) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        The variables at the start, flat.
+        """
+    def unflatten(self, x: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.list[numpy.typing.NDArray[numpy.float64]], builtins.list[numpy.typing.NDArray[numpy.float64]]]:
+        r"""
+        The members' polylines and the vias' centres at `x`, flat.
+        """
+
+@typing.final
 class BurstNotice:
     r"""
     What one burst cost and moved (`kibends_core::optimize::BurstReport`).
@@ -207,6 +254,17 @@ class BurstNotice:
     def message(self) -> builtins.str:
         r"""
         What L-BFGS says ended it; empty for a burst that did not run it.
+        """
+    @property
+    def lowest(self) -> builtins.float:
+        r"""
+        The lowest energy the problem's bursts have reached, as the stall
+        rule takes it.
+        """
+    @property
+    def length(self) -> builtins.float:
+        r"""
+        The problem's tracks' summed length after the burst, mm.
         """
     @property
     def members(self) -> builtins.list[builtins.int]:
@@ -786,11 +844,21 @@ class ProblemState:
         Each moving via's free distance below `below` to each obstacle of
         the copper of other nets at `polylines` and `positions`.
         """
-    def layout(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> tuple[builtins.list[numpy.typing.NDArray[numpy.intp]], builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.intp], builtins.int]:
+    def layout(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> BurstLayout:
         r"""
-        The variables of a burst from `starts`: per member each vertex's
-        variable, -1 where it stays, and its offset from it, each via's
-        variable, and how many there are.
+        The variables of a burst from `starts` and the current centres.
+        """
+    def entered(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen) -> builtins.list[tuple[builtins.int, builtins.int]]:
+        r"""
+        Each (member, member or via) whose clearance the member's edges at
+        `polylines` enter, the vias at `positions` numbered after the
+        members, as `seen` shows them.
+        """
+    def failing(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen, at_start: typing.Sequence[tuple[builtins.int, builtins.int]]) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        For each member, then each via, whether at `polylines` and
+        `positions` it oversteps, enters a member or via it did not enter
+        at the start, `at_start` (`entered`), or is entered so.
         """
     def scale(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]], seen: Seen, lookups: typing.Optional[Lookups] = None) -> numpy.typing.NDArray[numpy.float64]:
         r"""

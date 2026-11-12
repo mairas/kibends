@@ -190,6 +190,10 @@ pub struct BurstReport {
     pub rest: f64,
     /// What L-BFGS says ended it; empty for a burst that did not run it.
     pub message: String,
+    /// The lowest energy the problem's bursts have reached, and its
+    /// tracks' summed length after this one, as the stall rule takes them.
+    pub lowest: f64,
+    pub length: f64,
     /// The problem's free members, and each one's length and shape change
     /// in the burst.
     pub members: Vec<usize>,
@@ -204,7 +208,10 @@ pub enum Notice {
     /// burst moved back.
     Fallback,
     /// L-BFGS ended a burst of the problem abnormally, `streak` in a row.
-    Abnormal { problem: usize, streak: u32 },
+    Abnormal {
+        problem: usize,
+        streak: u32,
+    },
     Burst(BurstReport),
     /// After an outer iteration: its number, its largest change, and each
     /// problem's length and energy.

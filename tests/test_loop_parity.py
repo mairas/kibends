@@ -1,9 +1,10 @@
+# ruff: noqa: B023
 """Temporary: the Rust run loop against the Python one it replaces
 (`kibends._optimize_py`), bitwise, on the benchmark's scenarios, with a
 time limit and with holds. Deleted with the Python loop."""
 
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from types import ModuleType
@@ -20,14 +21,13 @@ from kibends import optimize as rust_module
 from kibends.bursts import DEFAULT_SETTINGS, OptimizerSettings
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline
-
 from kibends.results import PairResult, RunResult
 
 TIMING = re.compile(r"[0-9.]+ s in evaluations, [0-9.]+ s in the rest")
 
 
 @contextmanager
-def heard() -> Iterator[list[str]]:
+def heard() -> Generator[list[str]]:
     lines: list[str] = []
 
     def sink(message: object) -> None:
@@ -104,7 +104,10 @@ def hold_first(count: list[int]) -> Callable[[Sequence[PairResult]], Sequence[in
 
 
 CASES = {
-    **{name: (name, DEFAULT_SETTINGS, False, 0.0) for name in benchmark.scenario_makers()},
+    **{
+        name: (name, DEFAULT_SETTINGS, False, 0.0)
+        for name in benchmark.scenario_makers()
+    },
     **{
         f"{name}-timed": (name, replace(DEFAULT_SETTINGS, time_limit=3.5), False, 1.0)
         for name in ("tent", "via-detour", "pair-corner")
@@ -125,7 +128,11 @@ def test_the_rust_loop_is_the_python_loop(case: str) -> None:
     python_holds: list[int] = [0]
     rust_holds: list[int] = [0]
     expected, expected_evaluations, expected_log = run(
-        _optimize_py, make(), settings, hold_first(python_holds) if holding else None, step
+        _optimize_py,
+        make(),
+        settings,
+        hold_first(python_holds) if holding else None,
+        step,
     )
     got, evaluations, log = run(
         rust_module, make(), settings, hold_first(rust_holds) if holding else None, step

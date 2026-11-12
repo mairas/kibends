@@ -120,8 +120,8 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
 import kibends  # noqa: E402
+from kibends import _core, cli  # noqa: E402
 from kibends import bursts as bursts_module  # noqa: E402
-from kibends import cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
 from kibends.bursts import (  # noqa: E402
@@ -143,6 +143,8 @@ from kibends.polylines import shape_change  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
+
+Problem = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
 
 assert Path(kibends.__file__).is_relative_to(TREE), kibends.__file__
 
@@ -894,25 +896,47 @@ class ChainTrace:
 
 @contextmanager
 def traced() -> Generator[dict[str, ChainTrace]]:
-    """Record every free member's length and shape change after each burst."""
-    problem_class = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
-    real = problem_class.step
+    """Record every free member's length and shape change after each burst:
+    from what each burst reports (`optimize._burst_done`), whose shape
+    change counts the first burst from the shapes as given, as the settle
+    rule does, or, for an older tree, around its Python `_Problem.step`."""
     traces: dict[str, ChainTrace] = {}
     began = time.perf_counter()
 
-    def step(
-        problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        stop: Callable[[], bool] | None = None,
-    ) -> float:
+    def add(name: str, chain_length: float, move: float) -> None:
+        trace = traces.setdefault(name, ChainTrace([], [], []))
+        trace.lengths.append(chain_length)
+        trace.moves.append(move)
+        trace.seconds.append(time.perf_counter() - began)
+
+    # Looked up by name: an older tree has no `_burst_done`, this one no
+    # `_Problem.step`.
+    if hasattr(optimize_module, "_burst_done"):
+        done = cast(Callable[..., None], getattr(optimize_module, "_burst_done"))  # noqa: B009
+
+        def reported(problem: Problem, notice: _core.BurstNotice) -> None:
+            done(problem, notice)
+            for i, chain_length, move in zip(
+                notice.members, notice.lengths, notice.changes, strict=True
+            ):
+                add(problem.bodies[i].centreline.description, chain_length, move)
+
+        setattr(optimize_module, "_burst_done", reported)  # noqa: B010
+        try:
+            yield traces
+        finally:
+            setattr(optimize_module, "_burst_done", done)  # noqa: B010
+        return
+    problem_class: type = getattr(optimize_module, "_Problem")  # noqa: B009
+    real = cast(Callable[..., float], getattr(problem_class, "step"))  # noqa: B009
+
+    def step(problem: Problem, stop: Callable[[], bool] | None = None) -> float:
         before = list(problem.points)
         change = real(problem, stop)
-        now = time.perf_counter() - began
         for i in problem.free:
             name = problem.bodies[i].centreline.description
-            trace = traces.setdefault(name, ChainTrace([], [], []))
-            trace.lengths.append(length(problem.points[i]))
-            trace.moves.append(shape_change(before[i], problem.points[i]))
-            trace.seconds.append(now)
+            after = problem.points[i]
+            add(name, length(after), shape_change(before[i], after))
         return change
 
     setattr(problem_class, "step", step)  # noqa: B010

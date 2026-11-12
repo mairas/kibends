@@ -40,14 +40,10 @@ def failing(
 ) -> BoolArray:
     """`failing` of `at` with the members at `points` and the vias at
     `positions`, by default where the problem starts."""
-    state = optimize_module._State(
-        list(at.points if points is None else points),
-        at.masks,
-        at.contact_of,
-        list(at.positions if positions is None else positions),
-    )
+    polylines = list(at.points if points is None else points)
+    centres = list(at.positions if positions is None else positions)
     start = at.entered(at.points, at.positions, at.seen)
-    return at.failing(state, at.seeing(state.points), start)
+    return at.failing(polylines, at.masks, centres, at.seeing(polylines), start)
 
 
 def lifted(points: FloatArray) -> FloatArray:

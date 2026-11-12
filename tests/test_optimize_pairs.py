@@ -855,38 +855,6 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
 
 
-def test_what_putting_back_misses_puts_the_whole_problem_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def nothing_fails(
-        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        state: object,
-        seen: object,
-        at_start: object,
-    ) -> BoolArray:
-        return np.zeros(len(self.members) + len(self.vias), dtype=bool)
-
-    monkeypatch.setattr(
-        optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        "failing",
-        nothing_fails,
-    )
-    scenario = scenarios.pair_tent_under_roof()
-
-    # The roof has come down across where the pair was drawn, which only
-    # the guard after putting back now finds.
-    result = hold_once(
-        scenario, replace(COARSE, time_limit=HOLD_BUDGET), BurstClock(monkeypatch)
-    )
-
-    assert_held_as_drawn(result, scenario)
-    for chain, given in zip(result.chains, scenario.chains, strict=True):
-        np.testing.assert_array_equal(
-            chain.polyline,
-            resample(given.centreline.points, given.fixed, COARSE.spacing)[0],
-        )
-
-
 JOINED_AT = (9.5, 5.0)
 """Where `roof_parts` joins its two parts, right of the pair's arch, mm."""
 ROOF_FAR_END = (10.5, 5.0)
@@ -1050,36 +1018,6 @@ def test_a_pair_costs_about_one_chain() -> None:
     pair_points = _core.field_queries(core_field(section.field))
     chain_points = _core.field_queries(core_field(centreline.field))
     assert 0 < pair_points < PAIR_COST * chain_points
-
-
-REJECTED = 5
-STILL_ITERATIONS = COARSE.stall_window - 1
-"""Too few bursts for the best energy to stall."""
-
-
-def test_a_problem_whose_bursts_move_back_does_not_settle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def still(
-        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        starts: list[FloatArray],
-        stop: Stop | None = None,
-    ) -> optimize_module._ProblemBurst:  # pyright: ignore[reportPrivateUsage]
-        count = len(starts)
-        return optimize_module._ProblemBurst(  # pyright: ignore[reportPrivateUsage]
-            list(starts),
-            list(self.positions),
-            [REJECTED] * count,
-            [0] * len(self.vias),
-            False,
-        )
-
-    monkeypatch.setattr(optimize_module._Problem, "burst", still)  # pyright: ignore[reportPrivateUsage]
-    settings = replace(COARSE, max_iterations=STILL_ITERATIONS)
-
-    result = run(scenarios.pair_corner(), settings)
-
-    assert result.termination is Termination.ITERATION_CAP
 
 
 def test_a_junction_where_a_pair_starts_stays_whole() -> None:

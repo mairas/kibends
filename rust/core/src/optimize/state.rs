@@ -37,7 +37,7 @@ use super::checks::{Check, Round};
 use super::layout::{self, units};
 use super::problem::{Layout, Lookups, Objective, Problem};
 use super::{
-    Bursts, BurstReport, End, INSIDE_TOLERANCE, DEEPER_ROUND_OFF, MAX_ABNORMAL_BURSTS,
+    BurstReport, Bursts, DEEPER_ROUND_OFF, End, INSIDE_TOLERANCE, MAX_ABNORMAL_BURSTS,
     NOTHING_MOVED, NotFinite, Notice, PRESSED_DEPTH, Settings, stalled,
 };
 use crate::contacts::contacts_left;
@@ -170,23 +170,49 @@ impl Shared {
     /// other nets: its static copper, and those below `below` of the
     /// members near it at `polylines` and the vias of other nets at
     /// `positions`.
-    pub fn via_distances(&self, polylines: &[Vec<V2>], positions: &[V2], below: f64) -> FreeDistances {
+    pub fn via_distances(
+        &self,
+        polylines: &[Vec<V2>],
+        positions: &[V2],
+        below: f64,
+    ) -> FreeDistances {
         let statics: Vec<Vec<Option<Arc<dyn Field>>>> = self
             .setup
             .vias
             .iter()
             .map(|v| vec![Some(v.copper.clone())])
             .collect();
-        free_distances(&statics, &self.setup.sight, &refs(polylines), positions, below)
+        free_distances(
+            &statics,
+            &self.setup.sight,
+            &refs(polylines),
+            positions,
+            below,
+        )
     }
 
     /// Each moving via's distance to each of what only stops it: each part
     /// of its stops, and each of the other vias of its net at `positions`
     /// nearer than `below`.
-    pub fn stop_distances(&self, polylines: &[Vec<V2>], positions: &[V2], below: f64) -> FreeDistances {
-        let statics: Vec<Vec<Option<Arc<dyn Field>>>> =
-            self.setup.vias.iter().map(|v| v.stop_parts.clone()).collect();
-        free_distances(&statics, &self.setup.energy.stop, &refs(polylines), positions, below)
+    pub fn stop_distances(
+        &self,
+        polylines: &[Vec<V2>],
+        positions: &[V2],
+        below: f64,
+    ) -> FreeDistances {
+        let statics: Vec<Vec<Option<Arc<dyn Field>>>> = self
+            .setup
+            .vias
+            .iter()
+            .map(|v| v.stop_parts.clone())
+            .collect();
+        free_distances(
+            &statics,
+            &self.setup.energy.stop,
+            &refs(polylines),
+            positions,
+            below,
+        )
     }
 
     /// Member i's vertices at `points` that lie outside the contact they
@@ -222,7 +248,11 @@ impl Shared {
                 &refs(&shape.points),
                 &shape.positions,
                 &masks.iter().map(Vec::as_slice).collect::<Vec<_>>(),
-                &shape.contact_of.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                &shape
+                    .contact_of
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect::<Vec<_>>(),
                 seen,
                 None,
             )
@@ -300,7 +330,12 @@ impl Shared {
     /// Each (member, member or via) whose clearance the member's edges at
     /// `polylines` enter, the vias at `positions`, numbered after the
     /// members. `seen` is what the members see at `polylines`.
-    pub fn entered(&self, polylines: &[Vec<V2>], positions: &[V2], seen: &Seen) -> BTreeSet<(usize, usize)> {
+    pub fn entered(
+        &self,
+        polylines: &[Vec<V2>],
+        positions: &[V2],
+        seen: &Seen,
+    ) -> BTreeSet<(usize, usize)> {
         let count = self.count();
         let flat = self.flat(polylines, positions);
         let (mut of, _) = self.shown_vertices(polylines);
@@ -586,6 +621,31 @@ impl State {
         over
     }
 
+    /// For each member, then each via, whether at `polylines` and
+    /// `positions` it oversteps (`overstepping`), enters a member or via
+    /// that it did not enter at the start, `at_start`
+    /// (`Shared::entered`), or is entered so. `seen` is what the members
+    /// see at `polylines`.
+    pub fn failing(
+        &self,
+        polylines: &[Vec<V2>],
+        masks: &[Vec<bool>],
+        positions: &[V2],
+        seen: &Seen,
+        at_start: &BTreeSet<(usize, usize)>,
+    ) -> Vec<bool> {
+        let mut failing = self.overstepping(polylines, masks, positions, seen);
+        for (i, j) in self
+            .shared
+            .entered(polylines, positions, seen)
+            .difference(at_start)
+        {
+            failing[*i] = true;
+            failing[*j] = true;
+        }
+        failing
+    }
+
     /// Whether nothing oversteps at `polylines` and `positions`
     /// (`overstepping`).
     pub fn guard(
@@ -635,7 +695,12 @@ impl State {
     /// length term, of the members' obstacle terms and of the moving vias'
     /// own (`problem::Problem::stiffness`), summed over the vertices it
     /// moves. `seen` and `lookups` are as for the objective.
-    pub fn stiffness(&self, layout: &Layout, seen: &Seen, lookups: Option<&mut Lookups>) -> Vec<f64> {
+    pub fn stiffness(
+        &self,
+        layout: &Layout,
+        seen: &Seen,
+        lookups: Option<&mut Lookups>,
+    ) -> Vec<f64> {
         let (per_member, per_via) = self.shared.setup.energy.stiffness(
             &refs(&layout.starts),
             &self.now.positions,
@@ -685,9 +750,20 @@ impl State {
         let mut masks = Vec::with_capacity(shared.count());
         let mut contact_of = Vec::with_capacity(shared.count());
         for i in 0..shared.count() {
-            let (points, mask, kept) = (&self.now.points[i], &self.now.masks[i], &self.now.contact_of[i]);
+            let (points, mask, kept) = (
+                &self.now.points[i],
+                &self.now.masks[i],
+                &self.now.contact_of[i],
+            );
             if self.free.contains(&i) && !self.resampled[i] {
-                let (p, m, c) = resample_member(points, mask, kept, &shared.loose[i], spacing, Some(&pressed[i]));
+                let (p, m, c) = resample_member(
+                    points,
+                    mask,
+                    kept,
+                    &shared.loose[i],
+                    spacing,
+                    Some(&pressed[i]),
+                );
                 starts.push(p);
                 masks.push(m);
                 contact_of.push(c);
@@ -734,7 +810,8 @@ impl State {
         }
         let lowest = python_min(self.lowest[self.lowest.len() - 1], self.energy);
         self.lowest.push(lowest);
-        self.lengths.push(self.length());
+        let length = self.length();
+        self.lengths.push(length);
         let ran = burst.ran;
         if ran.abnormal {
             self.abnormal_bursts += 1;
@@ -749,8 +826,8 @@ impl State {
         // An abnormal burst may have stopped anywhere, so only the streak
         // settles it. A burst cut short by moves back changed little
         // because of them, not because the shapes settled.
-        let cut_short =
-            burst.via_rejected.iter().any(|&c| c > 0) || burst.rejected_edges.iter().any(|&c| c > 0);
+        let cut_short = burst.via_rejected.iter().any(|&c| c > 0)
+            || burst.rejected_edges.iter().any(|&c| c > 0);
         let settings = shared.settings();
         self.settled = self.gave_up()
             || (!ran.abnormal
@@ -771,6 +848,8 @@ impl State {
             evaluating: ran.evaluating,
             rest,
             message: ran.message,
+            lowest,
+            length,
             members: self.free.clone(),
             lengths: self
                 .free
@@ -851,6 +930,22 @@ impl State {
     /// given up on at once. Returns how many members that move and how many
     /// vias went back.
     pub fn go_on_from(&mut self, earlier: &State) -> Result<(usize, usize), NotFinite> {
+        self.put_back(earlier, State::failing)
+    }
+
+    /// `go_on_from`, putting back what `failing` names.
+    fn put_back(
+        &mut self,
+        earlier: &State,
+        failing: impl Fn(
+            &State,
+            &[Vec<V2>],
+            &[Vec<bool>],
+            &[V2],
+            &Seen,
+            &BTreeSet<(usize, usize)>,
+        ) -> Vec<bool>,
+    ) -> Result<(usize, usize), NotFinite> {
         let shared = self.shared.clone();
         let count = shared.count();
         let ahead: Vec<bool> = shared
@@ -886,11 +981,14 @@ impl State {
         let (mut now, mut seen) = loop {
             let now = state(&back);
             let seen = shared.seeing(&now.points);
-            let mut failing = self.overstepping(&now.points, &now.masks, &now.positions, &seen);
-            for (i, j) in shared.entered(&now.points, &now.positions, &seen).difference(&at_start) {
-                failing[*i] = true;
-                failing[*j] = true;
-            }
+            let failing = failing(
+                self,
+                &now.points,
+                &now.masks,
+                &now.positions,
+                &seen,
+                &at_start,
+            );
             let mut roots: Vec<usize> = (0..failing.len())
                 .filter(|&k| failing[k])
                 .map(|k| unit[k])
@@ -928,5 +1026,269 @@ impl State {
             .count();
         let vias = unit[count..].iter().filter(|&&r| back[r]).count();
         Ok((members, vias))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::burst;
+    use crate::energy::EnergyParams;
+    use crate::members::{Member, Members, Trace};
+    use crate::optimize::{Outcome, advance};
+    use crate::testing::{Disc, FreeSpace};
+
+    fn params() -> EnergyParams {
+        EnergyParams {
+            repulsion: 0.5,
+            falloff_range: 1.0,
+            clearance_weight: 10.0,
+            standoff: 0.05,
+            points_per_edge: 3,
+            attraction: 0.0,
+            attraction_range: 3.0,
+        }
+    }
+
+    fn settings() -> Settings {
+        Settings {
+            spacing: 0.5,
+            settled_change: 0.005,
+            stall_window: 3,
+            stall_tolerance: 1e-3,
+            burst: burst::Settings {
+                max_iterations: 30,
+                ftol: 1e-9,
+                gtol: 1e-10,
+            },
+        }
+    }
+
+    /// A chain from (0, 0) to (10, 0) bowed up to `rise` at its middle, in
+    /// `field`, with a stitching via at (5, -5) if `via`.
+    fn problem(field: Arc<dyn Field>, rise: f64, via: bool) -> State {
+        let trace = Trace {
+            net: "A".into(),
+            width: 0.2,
+            clearance: 0.2,
+        };
+        let member = Member {
+            layer: "F.Cu".into(),
+            viewer: trace.clone(),
+            ignored: vec!["A".into()],
+            shown: vec![trace],
+            field,
+            width: 0.2,
+            contacts: vec![],
+            section: None,
+        };
+        let vias: Vec<ViaSetup> = if via {
+            vec![ViaSetup {
+                start: V2::new(5.0, -5.0),
+                carried: vec![],
+                copper: Arc::new(FreeSpace),
+                stop_parts: vec![None, None],
+            }]
+        } else {
+            vec![]
+        };
+        let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
+        let energy = Problem {
+            members: Members::new(vec![member]),
+            rings: none.clone(),
+            vias: vias
+                .iter()
+                .map(|v| super::super::problem::ProblemVia {
+                    diameter: 0.6,
+                    field: v.copper.clone(),
+                    stops: None,
+                })
+                .collect(),
+            repel: ViaSight::new(&none, &none, 1),
+            stop: ViaSight::new(&none, &none, 1),
+            pairs: None,
+            params: params(),
+            short_edge: 0.05,
+        };
+        State::new(Setup {
+            energy: Arc::new(energy),
+            members: vec![MemberSetup {
+                original: vec![V2::new(0.0, 0.0), V2::new(5.0, rise), V2::new(10.0, 0.0)],
+                anchors: vec![true, false, true],
+                contacts: vec![],
+                held: false,
+                limit: None,
+            }],
+            vias,
+            groups: vec![],
+            sight: ViaSight::new(&none, &none, 1),
+            settings: settings(),
+        })
+        .expect("finite")
+    }
+
+    /// Bursts that end where they start, at `point` if given, reporting
+    /// `rejected` edges per member and `moved_back` per via, cut if `cut`.
+    struct Still {
+        rejected: usize,
+        moved_back: usize,
+        point: Option<Vec<f64>>,
+        cut: bool,
+    }
+
+    impl Bursts<NotFinite> for Still {
+        fn run(
+            &mut self,
+            objective: Objective,
+            _lookups: Lookups,
+            start: Vec<f64>,
+            _scale: Vec<f64>,
+            _check: Check,
+            _report: &mut dyn FnMut(Notice) -> Result<(), NotFinite>,
+        ) -> Result<(Ran, Option<Round>), NotFinite> {
+            let members = objective.layout.starts.len();
+            let vias = objective.layout.via_index.len();
+            Ok((
+                Ran {
+                    point: self.point.clone().unwrap_or(start),
+                    abnormal: false,
+                    iterations: 1,
+                    evaluations: 1,
+                    message: String::new(),
+                    cut: self.cut,
+                    evaluating: 0.0,
+                },
+                Some(Round {
+                    members: vec![self.rejected; members],
+                    vias: vec![self.moved_back; vias],
+                }),
+            ))
+        }
+    }
+
+    fn still(rejected: usize, moved_back: usize) -> Still {
+        Still {
+            rejected,
+            moved_back,
+            point: None,
+            cut: false,
+        }
+    }
+
+    fn run(problem: &mut State, bursts: &mut dyn Bursts<NotFinite>, cap: u64) -> Outcome {
+        let mut iteration = 0;
+        advance(
+            &mut [problem],
+            &mut iteration,
+            cap,
+            false,
+            None,
+            bursts,
+            &mut |_| Ok(()),
+        )
+        .expect("finite")
+    }
+
+    // Too few bursts for the best energy to stall.
+    const STILL_ITERATIONS: u64 = 2;
+
+    #[test]
+    fn a_problem_whose_bursts_move_back_does_not_settle() {
+        let mut moving = problem(Arc::new(FreeSpace), 1.0, false);
+        assert_eq!(
+            run(&mut moving, &mut still(5, 0), STILL_ITERATIONS),
+            Outcome::IterationCap
+        );
+        let mut settling = problem(Arc::new(FreeSpace), 1.0, false);
+        assert_ne!(
+            run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
+            Outcome::IterationCap
+        );
+    }
+
+    #[test]
+    fn a_via_moved_back_keeps_its_problem_from_settling() {
+        let mut moving = problem(Arc::new(FreeSpace), 1.0, true);
+        assert_eq!(
+            run(&mut moving, &mut still(0, 1), STILL_ITERATIONS),
+            Outcome::IterationCap
+        );
+        let mut settling = problem(Arc::new(FreeSpace), 1.0, true);
+        assert_ne!(
+            run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
+            Outcome::IterationCap
+        );
+    }
+
+    /// How far the chain bows up from the post, mm: beyond the repulsion's
+    /// reach, as far as cutting under it saves more than crossing the post
+    /// costs.
+    const BOW: f64 = 3.0;
+
+    /// A small disc on the chord under the bow: straight across it is
+    /// shorter, and lower in energy, than the bow, and a violation.
+    fn post() -> Arc<dyn Field> {
+        Arc::new(Disc {
+            cx: 5.0,
+            cy: 0.0,
+            radius: 0.02,
+        })
+    }
+
+    fn straight(problem: &State) -> Vec<f64> {
+        let layout = problem.layout(problem.now.points.clone());
+        let mut x = layout::start_of(&layout, &problem.now.positions);
+        for y in x.iter_mut().skip(1).step_by(2) {
+            *y = 0.0;
+        }
+        x
+    }
+
+    #[test]
+    fn a_cut_burst_the_guard_rejects_is_not_kept() {
+        for (field, kept) in [
+            (post(), false),
+            (Arc::new(FreeSpace) as Arc<dyn Field>, true),
+        ] {
+            let mut p = problem(field, BOW, false);
+            let start = p.now.points.clone();
+            let mut cut = Still {
+                rejected: 0,
+                moved_back: 0,
+                point: Some(straight(&p)),
+                cut: true,
+            };
+            assert_eq!(run(&mut p, &mut cut, 1), Outcome::IterationCap);
+            assert!(p.energy < p.input_energy);
+            assert!(!p.settled);
+            assert_eq!(p.best.points == start, !kept);
+        }
+    }
+
+    #[test]
+    fn what_putting_back_misses_puts_the_whole_problem_back() {
+        let mut earlier = problem(post(), BOW, false);
+        let crossing = straight(&earlier);
+        let layout = earlier.layout(earlier.now.points.clone());
+        let (points, _) = layout.unflatten(&crossing);
+        earlier.best.points = points.clone();
+        let mut again = problem(post(), BOW, false);
+        let start = again.now.points.clone();
+        let nothing = |p: &State,
+                       _: &[Vec<V2>],
+                       _: &[Vec<bool>],
+                       _: &[V2],
+                       _: &Seen,
+                       _: &BTreeSet<(usize, usize)>| {
+            vec![false; p.shared.count() + p.shared.setup.vias.len()]
+        };
+        again.put_back(&earlier, nothing).expect("finite");
+        // The guard after putting back finds the crossing.
+        assert_eq!(again.now.points, start);
+        let mut ahead = problem(Arc::new(FreeSpace), BOW, false);
+        let mut clear = problem(Arc::new(FreeSpace), BOW, false);
+        clear.best.points = points.clone();
+        ahead.put_back(&clear, nothing).expect("finite");
+        assert_eq!(ahead.now.points, points);
     }
 }

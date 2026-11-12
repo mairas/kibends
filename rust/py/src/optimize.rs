@@ -8,7 +8,6 @@
 //! Python side keeps `bursts.run_burst` as the one place a burst runs; the
 //! evaluations stay in Rust.
 
-
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
@@ -17,8 +16,8 @@ use crate::arrays::{BoolArg, BoolArray, IntpArray};
 use crate::field::{Flags, Floats, Indices, Points, floats, points_of, vectors};
 use crate::fields::FieldArg;
 use crate::problem::{
-    FreeDistances, Lookups, Objective, Polyline, Problem, Seen, ViaSight, check_count,
-    masks_of, not_finite, polylines_of, vectors_list,
+    FreeDistances, Lookups, Objective, Polyline, Problem, Seen, ViaSight, check_count, masks_of,
+    not_finite, polylines_of, vectors_list,
 };
 use kibends_core::burst;
 use kibends_core::geometry::V2;
@@ -85,7 +84,11 @@ pub struct ProblemState {
 }
 
 impl ProblemState {
-    fn state(&self, polylines: &[Polyline<'_>], positions: &Polyline<'_>) -> PyResult<(Vec<Vec<V2>>, Vec<V2>)> {
+    fn state(
+        &self,
+        polylines: &[Polyline<'_>],
+        positions: &Polyline<'_>,
+    ) -> PyResult<(Vec<Vec<V2>>, Vec<V2>)> {
         let polylines = polylines_of(polylines)?;
         let positions = points_of(positions)?;
         let shared = self.inner.shared();
@@ -96,7 +99,11 @@ impl ProblemState {
 
     fn layout_of(&self, starts: &[Polyline<'_>]) -> PyResult<Layout> {
         let starts = polylines_of(starts)?;
-        check_count("starts", starts.len(), self.inner.shared().setup.members.len())?;
+        check_count(
+            "starts",
+            starts.len(),
+            self.inner.shared().setup.members.len(),
+        )?;
         for (s, mask) in starts.iter().zip(&self.inner.now.masks) {
             check_count("start vertices", s.len(), mask.len())?;
         }
@@ -169,13 +176,15 @@ impl ProblemState {
             .zip(anchors)
             .zip(contacts)
             .zip(held.into_iter().zip(limits))
-            .map(|(((original, anchors), contacts), (held, limit))| MemberSetup {
-                original,
-                anchors,
-                contacts,
-                held,
-                limit,
-            })
+            .map(
+                |(((original, anchors), contacts), (held, limit))| MemberSetup {
+                    original,
+                    anchors,
+                    contacts,
+                    held,
+                    limit,
+                },
+            )
             .collect();
         let vias = starts
             .into_iter()
@@ -331,7 +340,9 @@ impl ProblemState {
         best: bool,
     ) -> PyResult<(Points<'py>, Flags<'py>, Indices<'py>, usize)> {
         if k >= self.inner.shared().setup.members.len() {
-            return Err(pyo3::exceptions::PyIndexError::new_err(format!("no member {k}")));
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "no member {k}"
+            )));
         }
         let m = self.inner.member(k, best);
         Ok((
@@ -346,7 +357,9 @@ impl ProblemState {
     /// edges.
     fn via(&self, k: usize, best: bool) -> PyResult<((f64, f64), usize)> {
         if k >= self.inner.shared().setup.vias.len() {
-            return Err(pyo3::exceptions::PyIndexError::new_err(format!("no via {k}")));
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "no via {k}"
+            )));
         }
         let v = self.inner.via(k, best);
         Ok(((v.position.x, v.position.y), v.rejected_edges))
@@ -365,7 +378,9 @@ impl ProblemState {
     ) -> PyResult<bool> {
         let (polylines, positions) = self.state(&polylines, &positions)?;
         let masks = masks_of(&masks, &polylines)?;
-        Ok(self.inner.guard(&polylines, &masks, &positions, &seen.inner))
+        Ok(self
+            .inner
+            .guard(&polylines, &masks, &positions, &seen.inner))
     }
 
     /// Per member at `polylines`, its violations of its static copper, the
@@ -422,21 +437,54 @@ impl ProblemState {
         })
     }
 
-    /// The variables of a burst from `starts`: per member each vertex's
-    /// variable, -1 where it stays, and its offset from it, each via's
-    /// variable, and how many there are.
-    fn layout<'py>(
+    /// The variables of a burst from `starts` and the current centres.
+    fn layout(&self, starts: Vec<Polyline<'_>>) -> PyResult<BurstLayout> {
+        Ok(BurstLayout {
+            inner: self.layout_of(&starts)?,
+            positions: self.inner.now.positions.clone(),
+        })
+    }
+
+    /// Each (member, member or via) whose clearance the member's edges at
+    /// `polylines` enter, the vias at `positions` numbered after the
+    /// members, as `seen` shows them.
+    fn entered(
+        &self,
+        polylines: Vec<Polyline<'_>>,
+        positions: Polyline<'_>,
+        seen: PyRef<'_, Seen>,
+    ) -> PyResult<Vec<(usize, usize)>> {
+        let (polylines, positions) = self.state(&polylines, &positions)?;
+        Ok(self
+            .inner
+            .shared()
+            .entered(&polylines, &positions, &seen.inner)
+            .into_iter()
+            .collect())
+    }
+
+    /// For each member, then each via, whether at `polylines` and
+    /// `positions` it oversteps, enters a member or via it did not enter
+    /// at the start, `at_start` (`entered`), or is entered so.
+    fn failing<'py>(
         &self,
         py: Python<'py>,
-        starts: Vec<Polyline<'_>>,
-    ) -> PyResult<(Vec<Indices<'py>>, Vec<Points<'py>>, Indices<'py>, usize)> {
-        let layout = self.layout_of(&starts)?;
-        Ok((
-            layout.index.iter().map(|i| contacts(py, i)).collect(),
-            vectors_list(py, &layout.offsets)?,
-            crate::field::indices(py, &layout.via_index),
-            layout.count,
-        ))
+        polylines: Vec<Polyline<'_>>,
+        masks: Vec<BoolArg<'_>>,
+        positions: Polyline<'_>,
+        seen: PyRef<'_, Seen>,
+        at_start: Vec<(usize, usize)>,
+    ) -> PyResult<Flags<'py>> {
+        let (polylines, positions) = self.state(&polylines, &positions)?;
+        let masks = masks_of(&masks, &polylines)?;
+        let failing = self.inner.failing(
+            &polylines,
+            &masks,
+            &positions,
+            &seen.inner,
+            &at_start.into_iter().collect(),
+        );
+        Ok(flags(py, &failing))
     }
 
     /// Each flat coordinate's scale for a burst from `starts`, the
@@ -452,11 +500,9 @@ impl ProblemState {
     ) -> PyResult<Floats<'py>> {
         let layout = self.layout_of(&starts)?;
         let mut lookups = lookups;
-        let stiffness = self.inner.stiffness(
-            &layout,
-            &seen.inner,
-            lookups.as_mut().map(|l| &mut l.inner),
-        );
+        let stiffness =
+            self.inner
+                .stiffness(&layout, &seen.inner, lookups.as_mut().map(|l| &mut l.inner));
         Ok(floats(
             py,
             layout::scale(&stiffness, self.inner.shared().settings().spacing),
@@ -468,14 +514,92 @@ impl ProblemState {
     /// would come too close; returns how many members that move and how
     /// many vias went back. Raises ValueError if the energy there is not
     /// finite.
-    fn go_on_from(&mut self, py: Python<'_>, earlier: PyRef<'_, ProblemState>) -> PyResult<(usize, usize)> {
+    fn go_on_from(
+        &mut self,
+        py: Python<'_>,
+        earlier: PyRef<'_, ProblemState>,
+    ) -> PyResult<(usize, usize)> {
         let shared = self.inner.shared();
         let other = earlier.inner.shared();
-        check_count("members", other.setup.members.len(), shared.setup.members.len())?;
+        check_count(
+            "members",
+            other.setup.members.len(),
+            shared.setup.members.len(),
+        )?;
         check_count("vias", other.setup.vias.len(), shared.setup.vias.len())?;
         self.inner
             .go_on_from(&earlier.inner)
             .map_err(|e| not_finite(py, e.0))
+    }
+}
+
+/// How a burst's variables make the members' polylines and the vias'
+/// centres (`kibends_core::optimize::problem::Layout`).
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct BurstLayout {
+    inner: Layout,
+    positions: Vec<V2>,
+}
+
+#[gen_stub_pymethods]
+#[pymethods]
+impl BurstLayout {
+    /// Each member's start.
+    #[getter]
+    fn starts<'py>(&self, py: Python<'py>) -> PyResult<Vec<Points<'py>>> {
+        vectors_list(py, &self.inner.starts)
+    }
+
+    /// The vias' centres at the start.
+    #[getter]
+    fn positions<'py>(&self, py: Python<'py>) -> PyResult<Points<'py>> {
+        vectors(py, &self.positions)
+    }
+
+    /// Per member, each vertex's variable, -1 where it stays.
+    #[getter]
+    fn index<'py>(&self, py: Python<'py>) -> Vec<Indices<'py>> {
+        self.inner.index.iter().map(|i| contacts(py, i)).collect()
+    }
+
+    /// Per member, each vertex's offset from its variable.
+    #[getter]
+    fn offsets<'py>(&self, py: Python<'py>) -> PyResult<Vec<Points<'py>>> {
+        vectors_list(py, &self.inner.offsets)
+    }
+
+    /// Each via's variable.
+    #[getter]
+    fn via_index<'py>(&self, py: Python<'py>) -> Indices<'py> {
+        crate::field::indices(py, &self.inner.via_index)
+    }
+
+    /// How many variables there are.
+    #[getter]
+    fn count(&self) -> usize {
+        self.inner.count
+    }
+
+    /// The variables at the start, flat.
+    #[getter]
+    fn x0<'py>(&self, py: Python<'py>) -> Floats<'py> {
+        floats(py, layout::start_of(&self.inner, &self.positions))
+    }
+
+    /// The members' polylines and the vias' centres at `x`, flat.
+    fn unflatten<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<(Vec<Points<'py>>, Vec<Floats<'py>>)> {
+        let x = x.as_array().to_vec();
+        check_count("coordinates", x.len(), 2 * self.inner.count)?;
+        let (polylines, positions) = self.inner.unflatten(&x);
+        Ok((
+            vectors_list(py, &polylines)?,
+            positions.iter().map(|p| floats(py, vec![p.x, p.y])).collect(),
+        ))
     }
 }
 
@@ -494,7 +618,11 @@ pub struct Revert {
 #[gen_stub_pymethods]
 #[pymethods]
 impl Revert {
-    fn __call__(&mut self, py: Python<'_>, mut candidate: PyReadwriteArray1<'_, f64>) -> PyResult<usize> {
+    fn __call__(
+        &mut self,
+        py: Python<'_>,
+        mut candidate: PyReadwriteArray1<'_, f64>,
+    ) -> PyResult<usize> {
         let mut x = candidate.as_array().to_vec();
         check_count("coordinates", x.len(), self.check.start().len())?;
         let reverted = self.check.revert(&mut x);
@@ -554,6 +682,13 @@ pub struct BurstNotice {
     /// What L-BFGS says ended it; empty for a burst that did not run it.
     #[pyo3(get)]
     message: String,
+    /// The lowest energy the problem's bursts have reached, as the stall
+    /// rule takes it.
+    #[pyo3(get)]
+    lowest: f64,
+    /// The problem's tracks' summed length after the burst, mm.
+    #[pyo3(get)]
+    length: f64,
     /// The problem's free members, and each one's length and shape change.
     #[pyo3(get)]
     members: Vec<usize>,
@@ -593,6 +728,8 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
                 evaluating: b.evaluating,
                 rest: b.rest,
                 message: b.message,
+                lowest: b.lowest,
+                length: b.length,
                 members: b.members,
                 lengths: b.lengths,
                 changes: b.changes,
@@ -636,7 +773,13 @@ impl Bursts<Failure> for PythonBursts<'_, '_> {
     ) -> Result<(Ran, Option<Round>), Failure> {
         let py = self.py;
         let seen = objective.seen.clone();
-        let lookups = Py::new(py, Lookups { inner: lookups, seen })?;
+        let lookups = Py::new(
+            py,
+            Lookups {
+                inner: lookups,
+                seen,
+            },
+        )?;
         let objective = Py::new(py, Objective::of_problem(objective, Some(lookups)))?;
         let revert = Bound::new(
             py,
@@ -693,7 +836,8 @@ fn advance(
         problems.iter().map(|p| p.borrow_mut()).collect();
     let mut states: Vec<&mut State> = borrowed.iter_mut().map(|p| &mut p.inner).collect();
     let mut iteration = iteration;
-    let mut asked = expired.map(|e| move || -> Result<bool, Failure> { Ok(e.call0()?.is_truthy()?) });
+    let mut asked =
+        expired.map(|e| move || -> Result<bool, Failure> { Ok(e.call0()?.is_truthy()?) });
     let mut told = |n: Notice| -> Result<(), Failure> {
         report.call1(py, (notice(py, n)?,))?;
         Ok(())
@@ -759,6 +903,7 @@ fn stalled(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ProblemState>()?;
     m.add_class::<Revert>()?;
+    m.add_class::<BurstLayout>()?;
     m.add_class::<FallbackNotice>()?;
     m.add_class::<AbnormalNotice>()?;
     m.add_class::<BurstNotice>()?;
@@ -773,8 +918,23 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pyo3_stub_gen::module_variable!("kibends._core", "MAX_ABNORMAL_BURSTS", u32, core::MAX_ABNORMAL_BURSTS);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "MAX_ABNORMAL_BURSTS",
+    u32,
+    core::MAX_ABNORMAL_BURSTS
+);
 pyo3_stub_gen::module_variable!("kibends._core", "NOTHING_MOVED", f64, core::NOTHING_MOVED);
 pyo3_stub_gen::module_variable!("kibends._core", "PRESSED_DEPTH", f64, core::PRESSED_DEPTH);
-pyo3_stub_gen::module_variable!("kibends._core", "INSIDE_TOLERANCE", f64, core::INSIDE_TOLERANCE);
-pyo3_stub_gen::module_variable!("kibends._core", "DEEPER_ROUND_OFF", f64, core::DEEPER_ROUND_OFF);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "INSIDE_TOLERANCE",
+    f64,
+    core::INSIDE_TOLERANCE
+);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "DEEPER_ROUND_OFF",
+    f64,
+    core::DEEPER_ROUND_OFF
+);

@@ -547,22 +547,6 @@ def _progress(notice: _core.ProgressNotice, elapsed: float) -> str:
     )
 
 
-@dataclass(frozen=True)
-class _Layout:
-    """How a burst's variables make the members' polylines and the vias'
-    centres (`kibends_core::optimize::problem::Layout`)."""
-
-    starts: list[FloatArray]
-    positions: FloatArray
-    index: list[IntArray]
-    """Per member, each vertex's variable, -1 where it stays."""
-    offsets: list[FloatArray]
-    """Per member, each vertex's offset from its variable."""
-    via_index: IntArray
-    """Each via's variable."""
-    count: int
-
-
 def _one_net(via: _Via, other: _Via) -> bool:
     return via.given.via.net == other.given.via.net
 
@@ -863,11 +847,39 @@ class _Problem:
                 mask[end] = False
         return loose
 
-    def layout(self, starts: Sequence[FloatArray]) -> _Layout:
+    def layout(self, starts: Sequence[FloatArray]) -> _core.BurstLayout:
         """The variables of a burst from `starts` and the current centres."""
-        index, offsets, via_index, count = self.state.layout(list(starts))
-        return _Layout(
-            list(starts), self.state.positions, index, offsets, via_index, count
+        return self.state.layout(list(starts))
+
+    def entered(
+        self,
+        polylines: Sequence[FloatArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
+    ) -> list[tuple[int, int]]:
+        """Each (member, member or via) whose clearance the member's edges
+        at `polylines` enter, the vias at `positions`, numbered after the
+        members. `seen` is what the members see at `polylines`."""
+        return self.state.entered(list(polylines), positions_array(positions), seen)
+
+    def failing(
+        self,
+        polylines: Sequence[FloatArray],
+        masks: Sequence[BoolArray],
+        positions: Sequence[FloatArray],
+        seen: Seen,
+        at_start: Sequence[tuple[int, int]],
+    ) -> BoolArray:
+        """For each member, then each via, whether at `polylines` and
+        `positions` it oversteps, enters a member or via that it did not
+        enter at the start, `at_start` (`entered`), or is entered so, as
+        `go_on_from` judges what to put back."""
+        return self.state.failing(
+            list(polylines),
+            list(masks),
+            positions_array(positions),
+            seen,
+            list(at_start),
         )
 
     def lookups(self, seen: Seen) -> _core.Lookups:
@@ -876,7 +888,7 @@ class _Problem:
         return self.core.lookups(seen)
 
     def objective(
-        self, layout: _Layout, seen: Seen, lookups: _core.Lookups | None
+        self, layout: _core.BurstLayout, seen: Seen, lookups: _core.Lookups | None
     ) -> _core.Objective:
         """The problem's energy as a function of `layout`'s variables, with
         what each member sees of the others as `seen`, searching through

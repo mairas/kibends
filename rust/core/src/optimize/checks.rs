@@ -260,10 +260,15 @@ impl Check {
                     crossing[edges.edge[k]] = true;
                 }
             }
-            let now_clear = members[i]
-                .field
-                .segments_clear(&points[..points.len() - 1], &points[1..], 0.0);
-            for ((c, &before), &clear) in crossing.iter_mut().zip(&self.static_before[i]).zip(&now_clear) {
+            let now_clear =
+                members[i]
+                    .field
+                    .segments_clear(&points[..points.len() - 1], &points[1..], 0.0);
+            for ((c, &before), &clear) in crossing
+                .iter_mut()
+                .zip(&self.static_before[i])
+                .zip(&now_clear)
+            {
                 *c |= before && !clear;
             }
             for (k, &n) in new.iter().enumerate() {

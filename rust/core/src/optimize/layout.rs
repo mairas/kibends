@@ -34,7 +34,10 @@ pub const REFERENCE_EDGES: f64 = 2.0;
 
 /// Per member, each vertex's variable, None where it is fixed, with the
 /// ends of each of `groups` sharing one; and how many variables there are.
-pub fn variables(masks: &[Vec<bool>], groups: &[Vec<(usize, End)>]) -> (Vec<Vec<Option<usize>>>, usize) {
+pub fn variables(
+    masks: &[Vec<bool>],
+    groups: &[Vec<(usize, End)>],
+) -> (Vec<Vec<Option<usize>>>, usize) {
     let mut index: Vec<Vec<Option<usize>>> = masks.iter().map(|m| vec![None; m.len()]).collect();
     let mut count = 0;
     for group in groups {
@@ -65,7 +68,10 @@ pub fn layout(
     carried: &[Vec<(usize, End, V2)>],
 ) -> Layout {
     let (mut index, mut count) = variables(masks, groups);
-    let mut offsets: Vec<Vec<V2>> = starts.iter().map(|s| vec![V2::default(); s.len()]).collect();
+    let mut offsets: Vec<Vec<V2>> = starts
+        .iter()
+        .map(|s| vec![V2::default(); s.len()])
+        .collect();
     let via_index: Vec<usize> = (count..count + carried.len()).collect();
     for (&k, ends) in via_index.iter().zip(carried) {
         for &(i, end, offset) in ends {
@@ -142,7 +148,11 @@ pub fn scale(stiffness: &[f64], spacing: f64) -> Vec<f64> {
 /// unit it goes back with: a junction's branches share their loose end,
 /// and a via carries the ends of its chains. A unit is known by one of its
 /// own.
-pub fn units(count: usize, groups: &[Vec<(usize, End)>], carried: &[Vec<(usize, End, V2)>]) -> Vec<usize> {
+pub fn units(
+    count: usize,
+    groups: &[Vec<(usize, End)>],
+    carried: &[Vec<(usize, End, V2)>],
+) -> Vec<usize> {
     let mut root: Vec<usize> = (0..count + carried.len()).collect();
     fn find(root: &[usize], mut n: usize) -> usize {
         while root[n] != n {
@@ -193,15 +203,19 @@ mod tests {
 
     #[test]
     fn a_free_vertex_between_edges_of_the_spacing_scales_by_one() {
-        let starts = vec![vec![V2::new(0.0, 0.0), V2::new(0.1, 0.0), V2::new(0.2, 0.0)]];
+        let starts = vec![vec![
+            V2::new(0.0, 0.0),
+            V2::new(0.1, 0.0),
+            V2::new(0.2, 0.0),
+        ]];
         let layout = layout(starts, &[vec![true, false, true]], &[], &[]);
-        let stiffness = length_stiffness(&layout);
-        assert!((stiffness[0] - 20.0).abs() < 1e-9);
-        let s = scale(&stiffness, 0.1);
-        assert!((s[0] - 1.0).abs() < 1e-9);
+        let reference = REFERENCE_EDGES / 0.1;
+        assert_eq!(length_stiffness(&layout), vec![reference]);
         // Stiffer scales down, and nothing scales above 1.
-        assert!(scale(&[80.0], 0.1)[0] < 0.6);
-        assert_eq!(scale(&[0.0], 0.1), vec![1.0, 1.0]);
+        assert_eq!(
+            scale(&[0.0, reference, 4.0 * reference], 0.1),
+            vec![1.0, 1.0, 1.0, 1.0, 0.5, 0.5]
+        );
     }
 
     #[test]
