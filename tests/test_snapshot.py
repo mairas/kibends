@@ -19,6 +19,7 @@ from conftest import (
     kipy_bezier,
     kipy_board_arc,
     kipy_circle,
+    kipy_circular_outline,
     kipy_copper_zone,
     kipy_field,
     kipy_footprint,
@@ -1363,6 +1364,14 @@ class TestGeometryHelpers:
         p = (1.0, 2.0)
 
         assert arc_points(p, p, p) == [p, p]
+
+    def test_circular_zone_outline_reads_as_its_disc(self) -> None:
+        outline = kipy_circular_outline((5.0, 5.0), 2.0)
+
+        poly = snapshot_module._polygon(outline)  # pyright: ignore[reportPrivateUsage]
+
+        assert poly.is_valid
+        assert poly.area == pytest.approx(math.pi * 2.0**2, rel=0.01)
 
     def test_open_outline_is_not_closed(self) -> None:
         square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
