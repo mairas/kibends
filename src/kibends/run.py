@@ -611,11 +611,13 @@ def _simplify_and_report(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
     simplified = layout.whole_polylines(chains, final_tracks)
+    spacing = options.settings.spacing
     reports = _chain_reports(
         read.chains,
         optimized.whole,
-        _whole_results(optimized, unsimplified),
+        _whole_results(optimized, unsimplified, spacing),
         simplified,
+        spacing,
     )
     pair_reports = _pair_reports(optimized, chains, final_tracks)
     return _Outcome(
@@ -940,11 +942,11 @@ def _with_vias(
 
 
 def _whole_results(
-    optimized: _Optimized, unsimplified: Sequence[FloatArray]
+    optimized: _Optimized, unsimplified: Sequence[FloatArray], spacing: float
 ) -> list[_WholeResult]:
     """Each selected chain as the optimizer left it: a chain of its own as
     its result, a chain of a pair from its pieces and its sections' tracks,
-    measured before the run."""
+    measured before the run at the final `spacing`."""
     run, layout = optimized.run, optimized.layout
     results: list[_WholeResult] = []
     for k, slot in enumerate(layout.slots):
@@ -957,7 +959,7 @@ def _whole_results(
         results.append(
             _WholeResult(
                 unsimplified[k],
-                measure(optimized.whole[k].centreline.points, DEFAULT_SETTINGS.spacing),
+                measure(optimized.whole[k].centreline.points, spacing),
                 sum(p.rejected_edges for p in pieces),
             )
         )
@@ -1003,6 +1005,7 @@ def _chain_reports(
     inputs: Sequence[ChainInput],
     results: Sequence[_WholeResult],
     simplified: Sequence[FloatArray],
+    spacing: float,
 ) -> tuple[ChainReport, ...]:
     reports: list[ChainReport] = []
     changes = _changed_with_shared_tracks(
@@ -1025,7 +1028,7 @@ def _chain_reports(
                 description=given.centreline.description,
                 tracks=len(chain.segment_ids),
                 before=result.before,
-                after=measure(after, DEFAULT_SETTINGS.spacing),
+                after=measure(after, spacing),
                 rejected_edges=result.rejected_edges,
                 changed=changed,
             )
