@@ -36,6 +36,7 @@ from kibends.obstacles import (
     ChainCentreline,
     Obstacles,
     build_obstacles,
+    core_via,
     moving_via_obstacles,
     own_net_stops,
     split_via_obstacles,
@@ -1121,7 +1122,7 @@ class TestStaticViasSplit:
             assert alone is not None
             distance, _ = alone.signed_distance(at)
             kept = math.dist(via.position, s.via.position) - float(distance[0])
-            kept_by_pairs = pairs._kept(0, s)  # pyright: ignore[reportPrivateUsage]
+            kept_by_pairs = pairs.core.kept(0, core_via(s.via), s.clearance)
             assert kept_by_pairs == pytest.approx(kept, abs=NM_TOLERANCE)
 
     def test_without_a_pair_nothing_is_split(self) -> None:

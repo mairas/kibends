@@ -4,7 +4,7 @@ their design is in `kibends_core::members` and `kibends_core::seen`).
 
 A `Member` is a chain or a coupled section as its centreline. The others
 see a chain as itself and a section as its two tracks (`shown`), laid one
-after another, then each via's centre twice (`shown_flat`). `core_members`
+after another, then each via's centre twice. `core_members`
 reads the members once into the Rust `Members`, which gives what each
 member sees of the others (`seen_parts`) and their summed energy
 (`members_energy`).
@@ -47,26 +47,6 @@ def viewer_of(member: Member) -> tuple[ChainInput, frozenset[str]]:
     if isinstance(member, PairBlock):
         return member.facing, member.nets
     return member, diff_pair_nets(member.centreline.net)
-
-
-def shown_flat(
-    members: Sequence[Member],
-    polylines: Sequence[FloatArray],
-    positions: Sequence[FloatArray] = (),
-) -> FloatArray:
-    """What the others see of every member, polylines one after another,
-    then each via's centre twice, an edge of no length."""
-    return np.concatenate(
-        [
-            np.empty((0, 2)),
-            *(
-                points
-                for member, line in zip(members, polylines, strict=True)
-                for _, points in shown(member, line)
-            ),
-            *(np.array([at, at]) for at in positions),
-        ]
-    )
 
 
 def _trace(chain: ChainInput) -> tuple[str, float, float]:

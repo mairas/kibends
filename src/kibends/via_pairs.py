@@ -59,11 +59,6 @@ class ViaPairs:
         self.paired = self.core.paired
         """Per via, the problem's vias it pairs with."""
 
-    def _kept(self, k: int, other: StaticVia) -> float | None:
-        """The distance moving via k's centre keeps from `other`'s, as its
-        static field would count it."""
-        return self.core.kept(k, core_via(other.via), other.clearance)
-
     @property
     def empty(self) -> bool:
         return self.core.empty

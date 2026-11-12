@@ -33,9 +33,10 @@ from scenarios import (
 from shapely.geometry import box
 
 import kibends.optimize as optimize_module
-from kibends.bursts import DEFAULT_SETTINGS, point_distance
+from kibends.bursts import DEFAULT_SETTINGS
 from kibends.energy import (
     BoolArray,
+    DistanceField,
     EnergyParams,
     IntArray,
     bend_radius_energy,
@@ -51,7 +52,6 @@ from kibends.members import (
     members_energy,
     seen_parts,
     shown,
-    shown_flat,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -72,6 +72,31 @@ from kibends.seen import SKIN_LEAST
 from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import FreeDistances, MovingVias
 from kibends.vias import ViaInput
+
+
+def point_distance(field: DistanceField, point: FloatArray) -> float:
+    return float(field.signed_distance(point[None])[0][0])
+
+
+def shown_flat(
+    members: Sequence[Member],
+    polylines: Sequence[FloatArray],
+    positions: Sequence[FloatArray] = (),
+) -> FloatArray:
+    """What the others see of every member, polylines one after another,
+    then each via's centre twice, an edge of no length."""
+    return np.concatenate(
+        [
+            np.empty((0, 2)),
+            *(
+                points
+                for member, line in zip(members, polylines, strict=True)
+                for _, points in shown(member, line)
+            ),
+            *(np.array([at, at]) for at in positions),
+        ]
+    )
+
 
 Scenario = ChainsScenario | PairsScenario | ViasScenario
 

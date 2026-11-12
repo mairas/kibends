@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from kibends import _core
-from kibends.energy import DistanceField, FloatArray
+from kibends.energy import FloatArray
 
 FALLBACK_WARNING = (
     "A burst's crossings named nothing more to move back; moving the whole burst back"
@@ -113,10 +113,6 @@ class OptimizerSettings:
 
 
 DEFAULT_SETTINGS = OptimizerSettings()
-
-
-def point_distance(field: DistanceField, point: FloatArray) -> float:
-    return float(field.signed_distance(point[None])[0][0])
 
 
 Revert = Callable[[FloatArray], int]
