@@ -595,6 +595,9 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
 def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     log: list[str],
 ) -> None:
+    # Near the upper wall its misleading gradient outweighs the length's, so
+    # every trial of a burst's first line search raises the energy: each
+    # burst fails there, from the same start, whatever the last bits.
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
 
@@ -603,6 +606,7 @@ def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     costs = burst_costs(log)
     assert len(costs) == MAX_ABNORMAL_BURSTS
     for cost in costs:
+        assert cost.iterations == 0
         assert cost.evaluations > 0
         assert cost.ending.startswith("ABNORMAL")
 

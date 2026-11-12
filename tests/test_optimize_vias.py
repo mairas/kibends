@@ -2747,26 +2747,27 @@ def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
     return calls
 
 
-@pytest.mark.xfail(
-    reason="Pinned to scipy's trajectory, which last-bit changes in the pair "
-    "term's sum move: the run still converges, but its last stall check now "
-    "stalls without the vias' share too. Unit 5 re-measures it.",
-    strict=False,
-)
+CREEP_SETTINGS = replace(STITCHED_SETTINGS, stall_tolerance=5e-4, max_iterations=20)
+"""A stall tolerance at which the grid's last stall check lies well between
+the members' share and the members' and vias': measured, it stalls at
+iteration 12 on a gain of 2.0 µm, twice the members' share and a third of
+both shares. At the default tolerance the gain sat at the members' share."""
+
+
 def test_moving_vias_end_a_stitched_grid_s_creep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chains, vias = crossed_stitching()
     calls = spy_on_stalls(monkeypatch)
 
-    result = optimize_chains(chains, DEFAULT_PARAMS, STITCHED_SETTINGS, vias)
+    result = optimize_chains(chains, DEFAULT_PARAMS, CREEP_SETTINGS, vias)
 
     lowest, lengths, members, counted, answer = calls[-1]
     assert result.termination is Termination.CONVERGED
     assert answer
     assert (members, counted) == (len(chains), len(vias))
     # Without the vias' share the problem would have gone on.
-    assert not stalled(lowest, lengths, STITCHED_SETTINGS, members)
+    assert not stalled(lowest, lengths, CREEP_SETTINGS, members)
 
 
 def test_shortening_tracks_keep_a_stitched_grid_going(
