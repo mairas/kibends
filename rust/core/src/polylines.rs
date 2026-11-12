@@ -1,6 +1,7 @@
 //! Measures and checks on a single polyline that the optimizer applies to
-//! every member, independent of the problem, computed as the numpy code
-//! they replaced computed them, to the last bit.
+//! every member, independent of the problem, in numpy's order of
+//! operations (`numeric`), which keeps the optimizer on the recorded scipy
+//! baseline and the same on every platform.
 //!
 //! `resample` lays each span between fixed vertices out at uniform
 //! arc-length spacing, as every burst starts. `count_violations` counts

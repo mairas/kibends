@@ -18,9 +18,11 @@
 //! count against another, only where their spans overlap
 //! (`via_via_inflation`).
 //!
-//! The rules reproduce the Python code they replaced operation by
-//! operation, since the inflations become the fields' and so the
-//! optimizer's numbers.
+//! The inflations become the fields' and so the optimizer's numbers, and
+//! their order of operations keeps the optimizer's results on the recorded
+//! scipy baseline (`tests/test_scipy_baseline.py`) and the same on every
+//! platform. Changing it moves moving-via cases into other local minima,
+//! so re-run the baseline test after changing it.
 
 use crate::geometry::V2;
 

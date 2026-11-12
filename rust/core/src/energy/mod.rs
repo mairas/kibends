@@ -27,10 +27,13 @@
 //! Nothing derives one from the other: a change to an integrand must change
 //! its curvature too, which the tests check against central differences.
 //!
-//! The terms reproduce the numpy code they replaced operation by operation
-//! (`numeric`), except where numpy left the order of a sum to its BLAS,
-//! which differs between BLAS builds and even between the alignments of
-//! one array's rows. There the order is fixed instead: an edge's mean sums
+//! The terms keep numpy's order of operations (`numeric`), which keeps the
+//! optimizer's results on the recorded scipy baseline
+//! (`tests/test_scipy_baseline.py`); changing an order moves moving-via
+//! cases into other local minima, so re-run the baseline test after
+//! changing one. Where numpy leaves the order of a sum to its BLAS, which
+//! differs between BLAS builds and even between the alignments of one
+//! array's rows, the order is fixed instead: an edge's mean sums
 //! its samples in order (`quadrature::weighted_mean`), and a sum over a
 //! polyline's edges weighted by their lengths is correctly rounded
 //! (`numeric::exact_sum`). At a stationary point the line search's last

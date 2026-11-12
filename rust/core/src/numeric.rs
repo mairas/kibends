@@ -1,10 +1,14 @@
-//! Scalar operations as numpy performs them, so that results the optimizer
-//! takes agree with the numpy code they replaced to the last bit: its
-//! `minimum`, `maximum` and `clip`, which propagate NaN where Rust's `min`
-//! and `max` drop it, the pairwise summation of `numpy.sum` and the fused
-//! products of `numpy.einsum`; `numpy.interp` as the macOS arm64 wheel
-//! computes it, fused, which Linux wheels do not; and a correctly rounded
-//! sum, for the sums numpy left to its BLAS, whose order no platform shares.
+//! Scalar operations in numpy's order: its `minimum`, `maximum` and
+//! `clip`, which propagate NaN where Rust's `min` and `max` drop it, the
+//! pairwise summation of `numpy.sum` and the fused products of
+//! `numpy.einsum`; `numpy.interp` as the macOS arm64 wheel computes it,
+//! fused, which Linux wheels do not; and a correctly rounded sum where
+//! numpy leaves the order to its BLAS, whose order no platform shares.
+//!
+//! Keeping these orders keeps the optimizer's results on the recorded
+//! scipy baseline (`tests/test_scipy_baseline.py`) and the same on every
+//! platform. Changing one moves moving-via cases into other local minima,
+//! so re-run the baseline test after changing one.
 
 /// numpy's `minimum`: NaN if either is NaN.
 pub fn minimum(a: f64, b: f64) -> f64 {
