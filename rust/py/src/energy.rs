@@ -19,7 +19,7 @@ use kibends_core::energy::integrands::{
     Attraction, Curvature as CoreCurvature, Integrand as CoreIntegrand,
 };
 use kibends_core::energy::{
-    DEFAULT_ATTRACTION_RANGE, EnergyParams, MAX_SMOOTH_TURN, MIN_EDGE_LENGTH, polyline, quadrature,
+    DEFAULT_ATTRACTION_RANGE, EnergyParams, MAX_SMOOTH_TURN, polyline, quadrature,
 };
 use kibends_core::field::smooth::{self, SMOOTH_REACH, SMOOTH_WIDTH};
 use kibends_core::geometry::V2;
@@ -199,14 +199,6 @@ fn obstacle_reach(params: Params) -> f64 {
     params.0.obstacle_reach()
 }
 
-/// How far from a point the smooth distance looks for obstacles, for an
-/// energy whose terms end at `reach`, mm (SMOOTH_REACH).
-#[gen_stub_pyfunction]
-#[pyfunction]
-fn smooth_reach(reach: f64) -> f64 {
-    smooth::smooth_reach(reach)
-}
-
 fn polyline_of(
     points: &PyReadonlyArray2<'_, f64>,
     fixed: &BoolArg<'_>,
@@ -359,29 +351,6 @@ fn edge_curvature<'py>(
     ))
 }
 
-/// The diagonal second derivative of `integrand` at points by x and by y,
-/// (n, 2), from their smooth distances (n,) and gradients (n, 2)
-/// (`kibends_core::energy::quadrature::point_stiffness`).
-#[gen_stub_pyfunction]
-#[pyfunction]
-fn point_stiffness<'py>(
-    py: Python<'py>,
-    distance: PyReadonlyArray1<'_, f64>,
-    direction: PyReadonlyArray2<'_, f64>,
-    integrand: PyRef<'_, Integrand>,
-    curvature: PyRef<'_, Curvature>,
-) -> PyResult<Points<'py>> {
-    let distance = floats_of(&distance);
-    let direction = points_of(&direction)?;
-    same_lengths(&[distance.len(), direction.len()])?;
-    let stiffness: Vec<V2> = distance
-        .iter()
-        .zip(&direction)
-        .map(|(&d, &g)| quadrature::point_stiffness(d, g, &integrand.inner, &curvature.inner))
-        .collect();
-    vectors(py, &stiffness)
-}
-
 /// -τ·log Σ exp(-d/τ), τ = SMOOTH_WIDTH, at each of `count` points over the
 /// obstacles' distances d, obstacle k's distance[k] at point[k], +inf at a
 /// point with none; and each obstacle's share of the gradient there.
@@ -456,7 +425,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(obstacle_curvature, m)?)?;
     m.add_function(wrap_pyfunction!(hinge_curvature, m)?)?;
     m.add_function(wrap_pyfunction!(obstacle_reach, m)?)?;
-    m.add_function(wrap_pyfunction!(smooth_reach, m)?)?;
     m.add_function(wrap_pyfunction!(shape_energy, m)?)?;
     m.add_function(wrap_pyfunction!(bend_radius_energy, m)?)?;
     m.add_function(wrap_pyfunction!(edge_bend_radii, m)?)?;
@@ -464,11 +432,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quadrature_points, m)?)?;
     m.add_function(wrap_pyfunction!(edge_integral, m)?)?;
     m.add_function(wrap_pyfunction!(edge_curvature, m)?)?;
-    m.add_function(wrap_pyfunction!(point_stiffness, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_minimum, m)?)?;
     m.add_function(wrap_pyfunction!(weighted_sum, m)?)?;
     m.add_function(wrap_pyfunction!(combine_fields, m)?)?;
-    m.add("MIN_EDGE_LENGTH", MIN_EDGE_LENGTH)?;
     m.add("MAX_SMOOTH_TURN", MAX_SMOOTH_TURN)?;
     m.add("SMOOTH_WIDTH", SMOOTH_WIDTH)?;
     m.add("SMOOTH_REACH", SMOOTH_REACH)?;
@@ -476,7 +442,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pyo3_stub_gen::module_variable!("kibends._core", "MIN_EDGE_LENGTH", f64, MIN_EDGE_LENGTH);
 pyo3_stub_gen::module_variable!("kibends._core", "MAX_SMOOTH_TURN", f64, MAX_SMOOTH_TURN);
 pyo3_stub_gen::module_variable!("kibends._core", "SMOOTH_WIDTH", f64, SMOOTH_WIDTH);
 pyo3_stub_gen::module_variable!("kibends._core", "SMOOTH_REACH", f64, SMOOTH_REACH);

@@ -27,16 +27,10 @@ IntArray = NDArray[np.intp]
 TermValue = tuple[float, FloatArray]
 Integrand = _core.Integrand
 """A function of the distance, called with distances: its value and slope."""
-Curvature = _core.Curvature
-"""An integrand's second derivative by the distance."""
-PairIntegrand = _core.PairIntegrand
 
 DEFAULT_ATTRACTION_RANGE = _core.DEFAULT_ATTRACTION_RANGE
 """Centre distance at which a ground via and a regular one stop attracting
 each other, mm."""
-MIN_EDGE_LENGTH = _core.MIN_EDGE_LENGTH
-"""1 nm, KiCad's coordinate resolution: shorter edges are treated as
-degenerate."""
 MAX_SMOOTH_TURN = _core.MAX_SMOOTH_TURN
 """Beyond this turning angle the curvature 2·tan(φ/2) is continued
 linearly in φ."""
@@ -120,10 +114,8 @@ hinge_integrand = _core.hinge_integrand
 obstacle_curvature = _core.obstacle_curvature
 obstacle_integrand = _core.obstacle_integrand
 obstacle_reach = _core.obstacle_reach
-point_stiffness = _core.point_stiffness
 quadrature_points = _core.quadrature_points
 repulsion_integrand = _core.repulsion_integrand
 shape_energy = _core.shape_energy
 smooth_minimum = _core.smooth_minimum
-smooth_reach = _core.smooth_reach
 weighted_sum = _core.weighted_sum

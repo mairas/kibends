@@ -779,22 +779,6 @@ impl ViaSight {
         ))
     }
 
-    /// Each via's exact distance to each member and each via it sees, where
-    /// it is below `below`.
-    fn obstacle_distances(
-        &self,
-        polylines: Vec<Polyline<'_>>,
-        positions: Polyline<'_>,
-        below: f64,
-    ) -> PyResult<ObstacleDistances> {
-        let (polylines, positions) = self.inputs(&polylines, &positions)?;
-        Ok(ObstacleDistances {
-            inner: self
-                .inner
-                .obstacle_distances(&refs(&polylines), &positions, below),
-        })
-    }
-
     /// Each via's smooth distance to what it sees, with `reach`, and what
     /// answers it.
     fn smooth_answers(
@@ -1442,10 +1426,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(offset_pair_pullback, m)?)?;
     m.add("SKIN_LEAST", neighbours::SKIN_LEAST)?;
     m.add("SKIN_MOST", neighbours::SKIN_MOST)?;
-    m.add("STATIC_SKIN", neighbours::STATIC_SKIN)?;
     Ok(())
 }
 
 pyo3_stub_gen::module_variable!("kibends._core", "SKIN_LEAST", f64, neighbours::SKIN_LEAST);
 pyo3_stub_gen::module_variable!("kibends._core", "SKIN_MOST", f64, neighbours::SKIN_MOST);
-pyo3_stub_gen::module_variable!("kibends._core", "STATIC_SKIN", f64, neighbours::STATIC_SKIN);

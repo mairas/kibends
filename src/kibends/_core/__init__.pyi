@@ -32,7 +32,6 @@ __all__ = [
     "Lookups",
     "MAX_ABNORMAL_BURSTS",
     "MAX_SMOOTH_TURN",
-    "MIN_EDGE_LENGTH",
     "Member",
     "Members",
     "MovingVias",
@@ -52,7 +51,6 @@ __all__ = [
     "SKIN_MOST",
     "SMOOTH_REACH",
     "SMOOTH_WIDTH",
-    "STATIC_SKIN",
     "Seen",
     "SelfCheck",
     "Shapes",
@@ -99,7 +97,6 @@ __all__ = [
     "offset_pair_pullback",
     "own_net_stops",
     "pair_kind",
-    "point_stiffness",
     "quadrature_points",
     "repulsion_integrand",
     "resample",
@@ -108,7 +105,6 @@ __all__ = [
     "shape_change",
     "shape_energy",
     "smooth_minimum",
-    "smooth_reach",
     "split_via_obstacles",
     "stalled",
     "statistics",
@@ -134,14 +130,12 @@ INSIDE_TOLERANCE: builtins.float = 1e-07
 LINE: builtins.int = 0
 MAX_ABNORMAL_BURSTS: builtins.int = 3
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
-MIN_EDGE_LENGTH: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
 PRESSED_DEPTH: builtins.float = 0.02
 SKIN_LEAST: builtins.float = 0.05
 SKIN_MOST: builtins.float = 0.15
 SMOOTH_REACH: builtins.float = 0.05
 SMOOTH_WIDTH: builtins.float = 0.005
-STATIC_SKIN: builtins.float = 0.05
 @typing.final
 class AbnormalNotice:
     r"""
@@ -1107,11 +1101,6 @@ class ViaSight:
         Each via's exact distance to the nearest of what it sees, with the
         members at `polylines` and the vias at `positions`, within `reach`.
         """
-    def obstacle_distances(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> ObstacleDistances:
-        r"""
-        Each via's exact distance to each member and each via it sees, where
-        it is below `below`.
-        """
     def smooth_answers(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], reach: builtins.float) -> ViaSmooth:
         r"""
         Each via's smooth distance to what it sees, with `reach`, and what
@@ -1392,13 +1381,6 @@ def pair_kind(via: Via, ground: builtins.bool, other: Via, other_ground: builtin
     (`kibends_core::vias::pairs::pair_kind`).
     """
 
-def point_stiffness(distance: numpy.typing.NDArray[numpy.float64], direction: numpy.typing.NDArray[numpy.float64], integrand: Integrand, curvature: Curvature) -> numpy.typing.NDArray[numpy.float64]:
-    r"""
-    The diagonal second derivative of `integrand` at points by x and by y,
-    (n, 2), from their smooth distances (n,) and gradients (n, 2)
-    (`kibends_core::energy::quadrature::point_stiffness`).
-    """
-
 def quadrature_points(points: numpy.typing.NDArray[numpy.float64], points_per_edge: builtins.int) -> numpy.typing.NDArray[numpy.float64]:
     r"""
     The points at which `edge_integral` takes distances: the vertices, then
@@ -1451,12 +1433,6 @@ def smooth_minimum(point: numpy.typing.NDArray[numpy.intp], distance: numpy.typi
     -τ·log Σ exp(-d/τ), τ = SMOOTH_WIDTH, at each of `count` points over the
     obstacles' distances d, obstacle k's distance[k] at point[k], +inf at a
     point with none; and each obstacle's share of the gradient there.
-    """
-
-def smooth_reach(reach: builtins.float) -> builtins.float:
-    r"""
-    How far from a point the smooth distance looks for obstacles, for an
-    energy whose terms end at `reach`, mm (SMOOTH_REACH).
     """
 
 def split_via_obstacles(layers: typing.Sequence[BoardLayer], via: Via, split: typing.Sequence[builtins.str], moving: typing.Sequence[builtins.str], edge_clearance: builtins.float, hole_clearance: builtins.float, hole_to_hole: builtins.float, zones: typing.Sequence[Zone]) -> tuple[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]], typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]]]:
