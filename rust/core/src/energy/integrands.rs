@@ -2,7 +2,7 @@
 //! curvatures.
 
 use super::EnergyParams;
-use crate::numeric::{clip, maximum, minimum};
+use crate::numeric::{clip, cube, maximum, minimum};
 
 /// A function of the distance to an obstacle, giving its value and slope.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -172,8 +172,7 @@ pub fn falloff(falloff_range: f64, distance: f64) -> (f64, f64) {
     let remaining = 1.0 - clip(distance, 0.0, falloff_range) / falloff_range;
     let boundary_slope = -3.0 / falloff_range;
     let inside = minimum(distance, 0.0);
-    // numpy's `**3` is libm's pow, not two products.
-    let value = remaining.powf(3.0) + boundary_slope * inside;
+    let value = cube(remaining) + boundary_slope * inside;
     let slope = if distance < 0.0 {
         boundary_slope
     } else {

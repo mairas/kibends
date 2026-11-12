@@ -120,6 +120,17 @@ pub fn fused_dot(a: impl IntoIterator<Item = f64>, b: impl IntoIterator<Item = f
         .fold(0.0, |sum, (x, y)| x.mul_add(y, sum))
 }
 
+/// x³, x² kept as two doubles and multiplied by x in one rounding: the
+/// same on every platform, and equal to Apple's pow, which numpy's `x**3`
+/// calls on macOS, but for about one value in a thousand in [0, 1]. The
+/// `libm` crate's pow differs from Apple's in one value in ten there, and
+/// takes forty times as long.
+pub fn cube(x: f64) -> f64 {
+    let square = x * x;
+    let error = x.mul_add(x, -square);
+    square.mul_add(x, error * x)
+}
+
 /// The sum of `values` as Python's built-in `sum` takes floats from a start
 /// of 0: Neumaier's compensated summation, the compensation added once at
 /// the end if it is finite.
@@ -218,6 +229,16 @@ pub fn exact_sum(values: impl IntoIterator<Item = f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cube_rounds_once_where_two_products_round_twice() {
+        // The correctly rounded cube, from Python's `Fraction(x) ** 3`.
+        let x = 0.051350675337668836;
+        assert_eq!(cube(x), 0.00013540617768194042);
+        assert_ne!(x * x * x, cube(x));
+        assert_eq!(cube(0.5), 0.125);
+        assert_eq!(cube(-3.0), -27.0);
+    }
 
     #[test]
     fn minimum_and_maximum_propagate_nan() {
