@@ -55,8 +55,16 @@
 //! fails the guard goes back to its best shape and the others keep theirs
 //! (`State::merge`), and what is left becomes the best state if its energy
 //! did not rise, so that a bus pressed into clearance does not void a free
-//! track's progress. The final level keeps the whole-problem rule. A run
-//! stopped at a coarse level ends at the final spacing (`State::finish`).
+//! track's progress. A lone chain put back is held there for the rest of
+//! the level, and the change that settles the level is that of what it
+//! kept. The final level keeps the whole-problem rule. A run stopped at a
+//! coarse level ends at the final spacing (`State::finish`).
+//!
+//! The first burst at a level a coarser one handed over to settles it if
+//! it moves nothing, even if L-BFGS ended it abnormally: it starts from
+//! the coarser level's settled state, and a vertex resting on a kink of the
+//! energy, such as a chain end at a pad's corner, fails the first line
+//! search of every burst from there.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -467,6 +475,9 @@ pub struct State {
     /// Whether its next burst is the first at a level a coarser one handed
     /// over to.
     handed_over: bool,
+    /// Per member, whether it is held at its best shape for the rest of
+    /// the coarse level it runs at (`State::step`).
+    held: Vec<bool>,
     /// Per member, the violations the resampled start has, which the guard
     /// holds it to.
     pub allowed: Vec<usize>,
@@ -638,6 +649,7 @@ impl State {
             level,
             probing: moving && level > 0,
             handed_over: false,
+            held: vec![false; count],
             allowed,
             inside,
             stopped,
@@ -820,6 +832,7 @@ impl State {
         self.settled = false;
         // Level 0 comes after the probe, at the final spacing.
         self.handed_over = level > 0;
+        self.held.fill(false);
         self.reseed(now, seen, from_input)
     }
 
@@ -1065,7 +1078,7 @@ impl State {
                 &self.now.contact_of[i],
             );
             let here = self.member_spacing(i, spacing);
-            if self.free.contains(&i) && self.now.laid_out[i] != Some(here) {
+            if self.free.contains(&i) && !self.held[i] && self.now.laid_out[i] != Some(here) {
                 let (p, m, c) = resample_member(
                     points,
                     mask,
@@ -1087,30 +1100,17 @@ impl State {
         self.now.masks = masks;
         self.now.contact_of = contact_of;
         self.from_input = vec![false; starts.len()];
+        let mut burst_masks = self.now.masks.clone();
         for &i in &self.free {
-            self.now.laid_out[i] = None;
+            if self.held[i] {
+                burst_masks[i].fill(true);
+            } else {
+                self.now.laid_out[i] = None;
+            }
         }
-        let burst = self.burst(starts, bursts)?;
-        let changes: Vec<f64> = self
-            .free
-            .iter()
-            .map(|&i| shape_change(&before[i], &burst.polylines[i]))
-            .collect();
-        let change = changes
-            .iter()
-            .copied()
-            .chain(
-                burst
-                    .positions
-                    .iter()
-                    .zip(&self.now.positions)
-                    .map(|(&after, &before)| (after - before).norm()),
-            )
-            .reduce(python_max)
-            .unwrap_or(f64::NAN);
-        self.moved |= change > NOTHING_MOVED;
+        let burst = self.burst(starts, &burst_masks, bursts)?;
+        let positions = std::mem::replace(&mut self.now.positions, burst.positions);
         self.now.points = burst.polylines;
-        self.now.positions = burst.positions;
         self.seen = Arc::new(shared.seeing(&self.now.points));
         for (r, c) in self.rejected_edges.iter_mut().zip(&burst.rejected_edges) {
             *r += c;
@@ -1121,8 +1121,17 @@ impl State {
         if self.coarse() {
             // Each unit that fails the guard goes back to its best shape,
             // so that one cutting into clearance does not void the
-            // progress of the others.
-            let (now, seen, _) = self.merge_guarded(&self.now, &self.best);
+            // progress of the others, and a lone chain that does is held
+            // there for the rest of the level: restarted from coarse chords
+            // cut into clearance, it would take every burst's L-BFGS steps
+            // from the others. A chain of a junction or via is not, since
+            // the shared end it moves with stays a variable.
+            let (now, seen, back) = self.merge_guarded(&self.now, &self.best);
+            for &i in &self.free {
+                if back[i] && shared.loose[i].is_empty() && shared.carried_by[i].is_empty() {
+                    self.held[i] = true;
+                }
+            }
             self.now = now;
             self.seen = Arc::new(seen);
             self.energy = self.energy_at(&self.now, &self.seen)?;
@@ -1135,6 +1144,27 @@ impl State {
                 self.keep();
             }
         }
+        // At a coarse level the change is that of what the level kept: a
+        // unit put back every burst has not moved, and does not keep the
+        // others from settling.
+        let changes: Vec<f64> = self
+            .free
+            .iter()
+            .map(|&i| shape_change(&before[i], &self.now.points[i]))
+            .collect();
+        let change = changes
+            .iter()
+            .copied()
+            .chain(
+                self.now
+                    .positions
+                    .iter()
+                    .zip(&positions)
+                    .map(|(&after, &before)| (after - before).norm()),
+            )
+            .reduce(python_max)
+            .unwrap_or(f64::NAN);
+        self.moved |= change > NOTHING_MOVED;
         let lowest = python_min(self.lowest[self.lowest.len() - 1], self.energy);
         self.lowest.push(lowest);
         let length = self.length();
@@ -1193,6 +1223,12 @@ impl State {
                 .collect(),
             changes,
         }))?;
+        // With every member held and no via, a burst would have nothing to
+        // move.
+        if self.coarse() && shared.setup.vias.is_empty() && self.free.iter().all(|&i| self.held[i])
+        {
+            self.settled = true;
+        }
         if self.probing {
             // A problem the first burst at the final spacing settles has
             // nothing for the coarse levels to do, and they would only
@@ -1207,18 +1243,19 @@ impl State {
         Ok(change)
     }
 
-    /// One L-BFGS run over every free vertex and moving via of the problem,
-    /// with what moved back where edges newly crossed static copper, or
+    /// One L-BFGS run over every vertex `masks` leaves free and every
+    /// moving via of the problem, with what moved back where edges newly crossed static copper, or
     /// newly or more deeply another member's new shape, a section newly
     /// bent below its limit or a via ended newly or deeper inside its
     /// clearance of an obstacle (`checks`).
     fn burst<E: From<NotFinite>>(
         &self,
         starts: Vec<Vec<V2>>,
+        masks: &[Vec<bool>],
         bursts: &mut dyn Bursts<E>,
     ) -> Result<ProblemBurst, E> {
         let shared = &self.shared;
-        let layout = self.layout(starts.clone());
+        let layout = layout::layout(starts.clone(), masks, &shared.setup.groups, &shared.carried);
         let seen = Arc::new(shared.seeing(&starts));
         let mut lookups = shared.setup.energy.lookups(&seen);
         let stiffness = self.stiffness(&layout, &seen, Some(&mut lookups));
@@ -1228,7 +1265,7 @@ impl State {
             problem: shared.setup.energy.clone(),
             seen: seen.clone(),
             layout: layout.clone(),
-            masks: shared.energy_masks(&self.now.masks),
+            masks: shared.energy_masks(masks),
             contact_of: self.now.contact_of.clone(),
             short_edges: shared.short_edges(self.level_spacing()),
         };
@@ -1832,11 +1869,12 @@ mod tests {
 
     /// Bursts that leave every free vertex at `factor` times its height
     /// above y = 0, abnormal if `abnormal`, recording each burst's vertex
-    /// count per member.
+    /// count per member and its variables.
     struct Toward {
         factor: f64,
         abnormal: bool,
         counts: Vec<Vec<usize>>,
+        variables: Vec<usize>,
     }
 
     fn toward(factor: f64) -> Toward {
@@ -1844,6 +1882,7 @@ mod tests {
             factor,
             abnormal: false,
             counts: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -1859,6 +1898,7 @@ mod tests {
             let layout = &objective.layout;
             self.counts
                 .push(layout.starts.iter().map(Vec::len).collect());
+            self.variables.push(layout.count);
             let mut point = start;
             for y in point.iter_mut().skip(1).step_by(2) {
                 *y *= self.factor;
@@ -1972,8 +2012,8 @@ mod tests {
         p.enter(0).expect("finite");
         let entered = p.best.clone();
 
-        p.step(0, &mut toward(0.0), &mut |_| Ok(()))
-            .expect("finite");
+        let mut straighten = toward(0.0);
+        p.step(0, &mut straighten, &mut |_| Ok(())).expect("finite");
 
         // Straight across the post fails the guard; straight in free space
         // does not.
@@ -1981,6 +2021,17 @@ mod tests {
         assert!(p.best.points[1].iter().all(|v| v.y == 0.0));
         assert!(passes(&p, &p.best));
         assert_eq!(p.now, p.best);
+        // The chain put back is held for the rest of the level: the next
+        // burst moves only the other.
+        p.step(0, &mut straighten, &mut |_| Ok(())).expect("finite");
+        let pinned_ends = 2;
+        assert_eq!(
+            straighten.variables[1],
+            straighten.counts[1][1] - pinned_ends
+        );
+        // That settles the level, and the next tries the chain again.
+        assert_eq!(p.level, 1);
+        assert!(!p.held.iter().any(|&h| h));
     }
 
     #[test]
