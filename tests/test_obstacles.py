@@ -1,5 +1,6 @@
 import math
 from itertools import pairwise
+from typing import NamedTuple
 
 import kipy.board_types as kbt
 import numpy as np
@@ -26,13 +27,13 @@ from kipy.proto.board.board_types_pb2 import PadType
 from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
-import kibends.obstacles as obstacles_module
 from kibends.energy import (
     SMOOTH_REACH,
     SMOOTH_WIDTH,
     DistanceField,
     EnergyParams,
     FloatArray,
+    IntArray,
     ObstacleField,
     smooth_minimum,
     weighted_sum,
@@ -42,17 +43,16 @@ from kibends.obstacles import (
     HOLE_CLEARANCE,
     INDEXED_EDGES,
     ChainCentreline,
-    ComplexArray,
     CompositeField,
-    Found,
     Obstacle,
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
     containment,
-    static_distances,
 )
+from kibends.seen import ViaSight
 from kibends.snapshot import ViaZone
+from kibends.via_moves import free_distances
 
 LAYER = "F.Cu"
 NET = "SIG"
@@ -1209,55 +1209,6 @@ class TestEdgeList:
         assert (smooth == np.inf).all()
         assert (toward == 0.0).all()
 
-    def test_a_many_edged_item_measures_only_edges_near_each_point(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        measured: list[int] = []
-        offsets = obstacles_module._offsets  # pyright: ignore[reportPrivateUsage]
-
-        def counted(points: ComplexArray, *rest: ComplexArray) -> ComplexArray:
-            measured.append(len(points))
-            return offsets(points, *rest)
-
-        monkeypatch.setattr(obstacles_module, "_offsets", counted)
-        disc = Point(0.0, 0.0).buffer(3.0, quad_segs=256)
-        edges = len(disc.exterior.coords) - 1
-        assert edges > INDEXED_EDGES
-        field = Obstacles([Obstacle("logo", disc, 0.3)])
-        angle = np.linspace(0.0, 2 * np.pi, 400)
-        points = 3.5 * np.column_stack([np.cos(angle), np.sin(angle)])
-
-        field.static_edges.search(points, 0.6, 0.05)
-
-        assert sum(measured) < 0.1 * len(points) * edges
-
-    def test_an_indexed_search_finds_what_measuring_every_edge_finds(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        rng = np.random.default_rng(3)
-        strokes = [
-            LineString(rng.uniform(0.0, 1.5, (2, 2))).buffer(0.1, quad_segs=8)
-            for _ in range(10)
-        ]
-        items = [
-            Obstacle("text", shapely.union_all(strokes), 0.3),
-            Obstacle("logo", Point(4.0, 1.0).buffer(1.5, quad_segs=64), 0.2),
-            Obstacle("track", LineString([(0.0, 3.0), (6.0, 3.5)]), 0.35),
-            *SCENE[:3],
-        ]
-        outline = box(-1.0, -1.0, 7.0, 5.0).buffer(0.5, quad_segs=64)
-        points = rng.uniform(-1.5, 7.5, (300, 2))
-        for reach in (0.3, math.inf):
-            for slack in (0.0, 0.05):
-                found: list[Found] = []
-                # Every item through a tree over its edges, then none.
-                for indexed in (0, math.inf):
-                    monkeypatch.setattr(obstacles_module, "INDEXED_EDGES", indexed)
-                    field = Obstacles(items, outline, SCENE_EDGE_INFLATION)
-                    found.append(field.static_edges.search(points, reach, slack))
-                for a, b in zip(*found, strict=True):
-                    np.testing.assert_array_equal(a, b)
-
 
 def _shapely_by_obstacle(
     points: FloatArray, below: float
@@ -1275,6 +1226,23 @@ def _shapely_by_obstacle(
     }
 
 
+class StaticDistances(NamedTuple):
+    """(point, obstacle) pairs, by point then obstacle, and each point's
+    exact signed distance to its obstacle."""
+
+    point: IntArray
+    obstacle: IntArray
+    distance: FloatArray
+
+
+def static_distances(
+    field: Obstacles, points: FloatArray, below: float
+) -> StaticDistances:
+    """Each point's exact distance to each obstacle of `field` nearer than
+    `below`, as a clearance check judges it (`StaticEdges.distances`)."""
+    return StaticDistances(*field.static_edges.distances(points, below))
+
+
 class TestStaticDistances:
     """Each obstacle's exact distance from the static edges, as a clearance
     check judges it item by item."""
@@ -1284,7 +1252,7 @@ class TestStaticDistances:
         points = _scene_points(5)
         field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
 
-        got = static_distances([field.static_edges], points, below)
+        got = static_distances(field, points, below)
 
         expected = _shapely_by_obstacle(points, below)
         found = {
@@ -1305,7 +1273,7 @@ class TestStaticDistances:
         field = Obstacles([Obstacle("logo", disc, 0.3)])
         points = np.random.default_rng(7).uniform(-4.0, 4.0, (200, 2))
 
-        got = static_distances([field.static_edges], points, math.inf)
+        got = static_distances(field, points, math.inf)
 
         assert got.point.tolist() == list(range(len(points)))
         np.testing.assert_allclose(
@@ -1316,7 +1284,7 @@ class TestStaticDistances:
         points = _scene_points(6)
         field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
 
-        got = static_distances([field.static_edges], points, math.inf)
+        got = static_distances(field, points, math.inf)
 
         nearest = np.full(len(points), np.inf)
         np.minimum.at(nearest, got.point, got.distance)
@@ -1328,11 +1296,13 @@ class TestStaticDistances:
         first = Obstacles(SCENE[:2])
         second = Obstacles(SCENE[2:3], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
         # Inside the edge's clearance only: the second part's second obstacle.
-        at = np.array([[8.9, 3.9]])
+        at = [np.array([8.9, 3.9])]
 
-        got = static_distances([first.static_edges, second.static_edges], at, 0.0)
+        got = free_distances(
+            [[CompositeField([first, second])]], ViaSight([{}], [{}], 0), [], at, 0.0
+        )
 
-        assert got.obstacle.tolist() == [3]
+        assert got.static.key.tolist() == [3]
 
 
 JOINT_EXTENT = 0.1
@@ -1412,7 +1382,7 @@ class TestClearanceObstacles:
         field = _joint(LineString([(2.0, 0.0), (2.0, 2.0)]))
         at = np.array([[2.0, -0.1], [2.1, 1.0]])
 
-        got = static_distances([field.static_edges], at, math.inf)
+        got = static_distances(field, at, math.inf)
 
         assert got.point.tolist() == [0, 1]
         assert got.obstacle.tolist() == [0, 0]

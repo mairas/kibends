@@ -136,7 +136,7 @@ def smooth(options: SmoothOptions) -> None:
             logger.warning(warning)
         for description, n in optimized.abnormal:
             logger.debug(
-                f"L-BFGS-B ended {n} burst{'' if n == 1 else 's'} of "
+                f"L-BFGS ended {n} burst{'' if n == 1 else 's'} of "
                 f"{description} abnormally; the run judged each like any other"
             )
 
@@ -320,7 +320,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.burst_maxiter,
         metavar="N",
-        help="L-BFGS-B iterations per burst, which moves every chain and via "
+        help="L-BFGS iterations per burst, which moves every chain and via "
         "of a problem at once; fewer are faster but may leave a different "
         f"result (default: {DEFAULT_SETTINGS.burst_maxiter})",
     )
@@ -329,7 +329,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_SETTINGS.lbfgs_ftol,
         metavar="TOL",
-        help="L-BFGS-B ends a burst early when the energy's relative reduction "
+        help="L-BFGS ends a burst early when the energy's relative reduction "
         f"falls below this (default: {DEFAULT_SETTINGS.lbfgs_ftol:g})",
     )
     smooth_parser.add_argument(
@@ -337,8 +337,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_SETTINGS.lbfgs_gtol,
         metavar="TOL",
-        help="L-BFGS-B ends a burst early when the projected gradient falls "
-        f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
+        help="L-BFGS ends a burst early when the largest gradient component "
+        f"falls below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
     )
     smooth_parser.add_argument(
         "--time-limit",

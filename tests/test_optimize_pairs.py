@@ -13,8 +13,9 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, gap_range, layer_energy, total_energy
+from conftest import BurstClock, first_check, gap_range, layer_energy, total_energy
 from distance_fields import BoolArray, FloatArray, FreeSpace
+from reference_fields import chain_field, neighbour_field
 from scenarios import (
     DP_GAP,
     DP_PAD,
@@ -27,22 +28,24 @@ from shapely.geometry import LineString, Point
 
 import kibends.members as members_module
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import (
     DEFAULT_CHORD_TOLERANCE,
+    FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
     run_burst,
 )
 from kibends.chain import Chain
 from kibends.contacts import no_contacts
-from kibends.energy import EnergyParams, ObstacleField, TermValue, arc_lengths
+from kibends.energy import EnergyParams, ObstacleField, arc_lengths
 from kibends.members import Member, seen_parts
-from kibends.neighbours import ChainInput, chain_field, neighbour_field
-from kibends.obstacles import ChainCentreline
+from kibends.neighbours import ChainInput
+from kibends.obstacles import ChainCentreline, core_field
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import cut_parts, find_pairs, lay_out
@@ -422,15 +425,12 @@ class TestTightCorner:
     def test_bursts_reject_bends_below_the_limit_without_its_hinge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def unhinged(
-            points: FloatArray,
-            fixed: BoolArray,
-            limit: float,
-            params: EnergyParams,
-        ) -> TermValue:
-            return 0.0, np.zeros_like(points)
+        real = members_module.core_member
 
-        monkeypatch.setattr(members_module, "bend_radius_energy", unhinged)
+        def unhinged(member: Member) -> _core.Member:
+            return real(member, hinged=False)
+
+        monkeypatch.setattr(members_module, "core_member", unhinged)
         # Routed wider than the limit: length alone would pull it into the
         # corner, below the limit, and only the self check holds it back.
         (pair,) = run(scenarios.pair_round_corner(), CORNER).pairs
@@ -460,14 +460,14 @@ class TestTightCorner:
     def test_a_trial_step_that_folds_the_centreline_ends_no_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # L-BFGS-B's first trial of the first burst folds the centreline
+        # L-BFGS's first trial of the first burst folds the centreline
         # at its second free vertex.
         trials: list[FloatArray] = []
 
         def folding_first(
             objective: Objective,
             start: FloatArray,
-            revert: Revert,
+            revert: Check,
             settings: OptimizerSettings,
             stop: Stop | None = None,
         ) -> Burst:
@@ -826,7 +826,7 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     def fails_until_held(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -855,38 +855,6 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     assert result.termination is Termination.GAVE_UP
     # The abnormal bursts were all before the hold.
     assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-
-
-def test_what_putting_back_misses_puts_the_whole_problem_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def nothing_fails(
-        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        state: object,
-        seen: object,
-        at_start: object,
-    ) -> BoolArray:
-        return np.zeros(len(self.members) + len(self.vias), dtype=bool)
-
-    monkeypatch.setattr(
-        optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        "failing",
-        nothing_fails,
-    )
-    scenario = scenarios.pair_tent_under_roof()
-
-    # The roof has come down across where the pair was drawn, which only
-    # the guard after putting back now finds.
-    result = hold_once(
-        scenario, replace(COARSE, time_limit=HOLD_BUDGET), BurstClock(monkeypatch)
-    )
-
-    assert_held_as_drawn(result, scenario)
-    for chain, given in zip(result.chains, scenario.chains, strict=True):
-        np.testing.assert_array_equal(
-            chain.polyline,
-            resample(given.centreline.points, given.fixed, COARSE.spacing)[0],
-        )
 
 
 JOINED_AT = (9.5, 5.0)
@@ -1041,71 +1009,17 @@ PAIR_COST = 1.5
 chain along its centreline."""
 
 
-@dataclass
-class Counting:
-    """A field that counts the points it is asked about."""
-
-    field: ObstacleField
-    points: int = 0
-
-    def signed_distance(
-        self, points: FloatArray, reach: float = math.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        self.points += len(points)
-        return self.field.signed_distance(points, reach)
-
-    def smooth_distance(
-        self, points: FloatArray, reach: float = math.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        self.points += len(points)
-        return self.field.smooth_distance(points, reach)
-
-    def segments_clear(
-        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
-    ) -> BoolArray:
-        self.points += 2 * len(starts)
-        return self.field.segments_clear(starts, ends, tolerance)
-
-
 def test_a_pair_costs_about_one_chain() -> None:
     pair, chain = scenarios.pair_over_pad(), scenarios.centreline_over_pad()
     (section,), (centreline,) = pair.pairs, chain.chains
-    pair_field, chain_field = Counting(section.field), Counting(centreline.field)
+    _core.reset_statistics()
 
-    run(replace(pair, pairs=(replace(section, field=pair_field),)))
-    optimize_chains([replace(centreline, field=chain_field)], chain.params, COARSE)
+    run(pair)
+    optimize_chains([centreline], chain.params, COARSE)
 
-    assert pair_field.points < PAIR_COST * chain_field.points
-
-
-REJECTED = 5
-STILL_ITERATIONS = COARSE.stall_window - 1
-"""Too few bursts for the best energy to stall."""
-
-
-def test_a_problem_whose_bursts_move_back_does_not_settle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def still(
-        self: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
-        starts: list[FloatArray],
-        stop: Stop | None = None,
-    ) -> optimize_module._ProblemBurst:  # pyright: ignore[reportPrivateUsage]
-        count = len(starts)
-        return optimize_module._ProblemBurst(  # pyright: ignore[reportPrivateUsage]
-            list(starts),
-            list(self.positions),
-            [REJECTED] * count,
-            [0] * len(self.vias),
-            False,
-        )
-
-    monkeypatch.setattr(optimize_module._Problem, "burst", still)  # pyright: ignore[reportPrivateUsage]
-    settings = replace(COARSE, max_iterations=STILL_ITERATIONS)
-
-    result = run(scenarios.pair_corner(), settings)
-
-    assert result.termination is Termination.ITERATION_CAP
+    pair_points = _core.field_queries(core_field(section.field))
+    chain_points = _core.field_queries(core_field(centreline.field))
+    assert 0 < pair_points < PAIR_COST * chain_points
 
 
 def test_a_junction_where_a_pair_starts_stays_whole() -> None:
@@ -1169,7 +1083,7 @@ least."""
 LIKE_UNPINNED = 2e-3
 """mm: how far a pair pinned only in its end pads may end up from the same
 pair unpinned, whose direction pin is the pads' pin. The two runs resample
-differently and stop where L-BFGS-B's ftol ends them, about 1 µm apart."""
+differently and stop where L-BFGS's ftol ends them, about 1 µm apart."""
 
 
 def pinned_chain(net: str, track: FloatArray, *xs: float) -> Chain:
@@ -1572,3 +1486,82 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
     out = assert_kept_or_held(chains, DEFAULT_SPACING, gap)
 
     assert len(out.result.pairs) == 1
+
+
+SHARP_SPACING = 1.0
+"""A spacing at which the section's corner may turn by 100 degrees within
+the bend-radius limit."""
+TURN = math.radians(60.0)
+SHARPENING = math.radians(40.0)
+LEG = 5.0
+CORNER_AT = (LEG, 0.0)
+BEFORE_CORNER = (LEG - SHARP_SPACING, 0.0)
+SHARPENED = (BEFORE_CORNER[0], BEFORE_CORNER[1] + SHARP_SPACING * math.tan(SHARPENING))
+AFTER_CORNER = (LEG + SHARP_SPACING * math.cos(TURN), SHARP_SPACING * math.sin(TURN))
+POST_WIDTH = 0.1
+POST_LENGTH = 0.001
+
+
+def post_past_the_corner() -> PairsScenario:
+    """A pair turning left at `CORNER_AT`, and a short pinned post of
+    another net outside it, where track N's mitred corner reaches once the
+    vertex before the corner moves to `SHARPENED`: nearer to N's edge after
+    the corner than N's clearance, but not to N's corner, before or after,
+    nor to N where it starts."""
+    end = (LEG + LEG * math.cos(TURN), LEG * math.sin(TURN))
+    corners: list[FloatArray] = [
+        scenarios.tracks(at, CORNER_AT, AFTER_CORNER)[1][1]
+        for at in (BEFORE_CORNER, SHARPENED)
+    ]
+    before, sharpened = corners
+    heading = np.array([math.cos(TURN), math.sin(TURN)])
+    outward = np.array([heading[1], -heading[0]])
+    # N's corner slides from `before` to `sharpened`; the post faces the
+    # middle of that stretch, between N's reach of the edge and of the
+    # corners at either end of the stretch.
+    reach = (POST_WIDTH + PAIR_WIDTH) / 2 + PAIR_CLEARANCE
+    half = float(np.linalg.norm(before - sharpened)) / 2
+    beside = (reach + math.sqrt(reach**2 - half**2)) / 2
+    middle = (before + sharpened) / 2 + beside * outward
+    a, b = (middle + side * POST_LENGTH / 2 * heading for side in (-1, 1))
+    post = selected(
+        "post",
+        "X",
+        FreeSpace(),
+        (float(a[0]), float(a[1])),
+        (float(b[0]), float(b[1])),
+        width=POST_WIDTH,
+    )
+    return PairsScenario(
+        "post-past-the-corner",
+        (scenarios.coupled(FreeSpace(), (0.0, 0.0), CORNER_AT, end),),
+        (replace(post, fixed=np.ones(2, dtype=bool)),),
+    )
+
+
+@pytest.mark.fallback
+def test_a_crossing_that_names_nothing_moved_moves_the_burst_back_whole(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # N's corner slides back along its edge after the corner into the post,
+    # which names that edge's ends, the corner and the vertex after it,
+    # neither of which moved; the post is pinned. The section judges its
+    # own edges by its centreline's extent, which the post starts inside
+    # and gets no deeper into.
+    settings = replace(COARSE, spacing=SHARP_SPACING, max_iterations=1)
+    revert, start = first_check(
+        monkeypatch, lambda: run(post_past_the_corner(), settings)
+    )
+    assert not any(FALLBACK_WARNING in line for line in log)
+    log.clear()
+    candidate = start.copy()
+    vertices = candidate.reshape(-1, 2)
+    (moved,) = np.flatnonzero((vertices == BEFORE_CORNER).all(axis=1))
+    vertices[moved] = SHARPENED
+
+    crossings = revert(candidate)
+
+    assert crossings == 1
+    assert revert.reverted.all()
+    assert np.array_equal(candidate, start)
+    assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]

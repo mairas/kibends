@@ -27,6 +27,11 @@ Status: early development.
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
 - Python 3.14 or later.
+- A Rust toolchain, 1.90 or later, since installing builds kibends'
+  optimizer core from source. Without `cargo` on the path, the build
+  downloads one into its own cache; [rustup](https://rustup.rs) installs
+  one to keep. An older `cargo` on the path, such as a distribution's
+  package, stops the build.
 
 ## Installation
 
@@ -198,16 +203,18 @@ them, into one problem. The optimizer works in bursts: each burst moves
 every vertex and via of a problem at once, and undoes any move that would
 bring an edge or a via newly into another item's clearance. An outer iteration gives every
 problem that has not settled one burst. A problem settles when a burst
-barely changes it or its energy stops improving.
+barely changes it or its energy stops improving. Each evaluation of a
+burst spreads over every logical CPU; set the environment variable
+`RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
 nothing to do, or stopped at its iteration cap or the time limit, each
-keeping the best result found. It stopped on abnormal bursts when L-BFGS-B
+keeping the best result found. It stopped on abnormal bursts when L-BFGS
 ended three bursts of some problem in a row abnormally after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
-"L-BFGS-B terminated abnormally" and commits nothing.
+"L-BFGS terminated abnormally" and commits nothing.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
@@ -427,14 +434,14 @@ ground net leave each other alone, as vias of any other net do.
 | `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS-B iteration and ends the running burst there, so it runs over by about one L-BFGS-B iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
+| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so it runs over by about one L-BFGS iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
 | `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
-| `--burst-iterations N` | 50 | L-BFGS-B iterations per burst. Each burst resamples the tracks and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |
-| `--lbfgs-ftol TOL` | 1e-9 | L-BFGS-B ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
-| `--lbfgs-gtol TOL` | 1e-10 | L-BFGS-B ends a burst early when the projected gradient falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
+| `--burst-iterations N` | 50 | L-BFGS iterations per burst. Each burst resamples the tracks and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |
+| `--lbfgs-ftol TOL` | 1e-9 | L-BFGS ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
+| `--lbfgs-gtol TOL` | 1e-10 | L-BFGS ends a burst early when the largest gradient component falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
@@ -473,8 +480,10 @@ only slightly, but still replaces its tracks.
 
 ## Development
 
+Development needs a Rust toolchain with `clippy` and `rustfmt`.
+
 ```sh
-./run sync
-./run test       # fast tests, in parallel
+./run sync       # also builds the Rust core, kibends._core
+./run test       # Rust tests and fast Python tests, rebuilding first
 ./run test-all   # also the slow tests; run before committing
 ```

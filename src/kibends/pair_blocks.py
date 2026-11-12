@@ -28,7 +28,7 @@ The other blocks see the two tracks at the centreline's current shape. The
 centreline sees every other chain, and every track of another diff pair,
 as a track of the diff pair's outer extent would. The section and the chains of its
 two nets ignore each other, as chains of one net and the two nets of a diff
-pair do (`neighbours.neighbour_field`), so its fan-outs leave it freely.
+pair do (`kibends_core::members`), so its fan-outs leave it freely.
 """
 
 import math
@@ -38,10 +38,11 @@ from typing import NamedTuple
 
 import numpy as np
 
+from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
 from kibends.energy import BoolArray, FloatArray, IntArray, ObstacleField, arc_lengths
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, CompositeField
+from kibends.obstacles import ChainCentreline
 from kibends.pairs import (
     VERTEX_SNAP,
     BendCheck,
@@ -50,10 +51,8 @@ from kibends.pairs import (
     centreline,
     check_bend_radius,
     offset_pair,
-    offset_pair_pullback,
     with_nearest_vertices,
 )
-from kibends.simplify import kept_vertices
 
 STUB_SPACINGS = 2
 """An edge leaving a pin this many spacings long or longer gets a direction
@@ -65,7 +64,7 @@ well above the jogs and slivers KiCad's nanometre grid leaves, well below
 the micrometres a pair's end gap may differ from its gap by, which its end
 edges take up, and below the fold a short chamfer leaves in the inner track."""
 
-_NOWHERE = CompositeField(())
+_NOWHERE = _core.CompositeField([])
 """No obstacles, for merging a track's routing."""
 
 
@@ -108,7 +107,7 @@ def _separation(end: FloatArray, toward: FloatArray, point: FloatArray) -> float
     step = toward - end
     offset = point - end
     cross = step[0] * offset[1] - step[1] * offset[0]
-    return abs(float(cross)) / float(np.hypot(step[0], step[1]))
+    return abs(float(cross)) / math.hypot(step[0], step[1])
 
 
 class _Pins(NamedTuple):
@@ -124,13 +123,6 @@ class _Pins(NamedTuple):
         """Which vertices of the centreline at `points` hold a point of
         track a, and which one of track b."""
         return _at(points, self.a_at).any(axis=1), _at(points, self.b_at).any(axis=1)
-
-    def keep(self, points: FloatArray, a: FloatArray, b: FloatArray) -> None:
-        """Put the points the centreline at `points` holds into tracks `a`
-        and `b`, its offsets, which miss them by round-off."""
-        for at, own, track in ((self.a_at, self.a, a), (self.b_at, self.b, b)):
-            vertex, pin = np.nonzero(_at(points, at))
-            track[vertex] = own[pin]
 
 
 def _at(points: FloatArray, at: FloatArray) -> BoolArray:
@@ -170,6 +162,9 @@ class PairBlock:
     """The direction pins bounding an end edge whose own gap differs from
     the section's, so that track b's end edge, from the end to the pin,
     takes up the difference."""
+    core: _core.PairOffset
+    """Its tracks as the offset of the centreline, as the Rust energy takes
+    them (`kibends_core::pair_blocks`)."""
 
     @property
     def nets(self) -> frozenset[str]:
@@ -183,7 +178,7 @@ class PairBlock:
     def offset(self, points: FloatArray) -> tuple[FloatArray, FloatArray]:
         """Tracks a and b along the centreline at `points`, through the
         section's own ends and pins."""
-        return _offset(self.given, self.a_on_right, self.pins, self.held, points)
+        return self.core.offset(_points(points))
 
     def offset_pullback(
         self, points: FloatArray, at_a: FloatArray, at_b: FloatArray
@@ -193,17 +188,7 @@ class PairBlock:
         vertices. The tracks' ends and pins are the section's own, and a
         held section's tracks are its own throughout, so neither depends on
         the centreline."""
-        if self.held:
-            return np.zeros_like(points)
-        held_a, held_b = self.pins.held(points)
-        at_a, at_b = (
-            np.where(held_a[:, None], 0.0, at_a),
-            np.where(held_b[:, None], 0.0, at_b),
-        )
-        right, left = (at_a, at_b) if self.a_on_right else (at_b, at_a)
-        return offset_pair_pullback(
-            points, self.given.gap, self.given.a.width, right, left
-        )
+        return self.core.offset_pullback(_points(points), _points(at_a), _points(at_b))
 
     def bend(self, points: FloatArray) -> BendCheck:
         """The centreline at `points` against the bend-radius limit."""
@@ -244,7 +229,19 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
     )
     chain = ChainInput(pseudo, given.layer, fixed, given.field, held=held)
     facing = replace(chain, centreline=replace(pseudo, width=2 * half_pitch + width))
-    start_a, start_b = _offset(given, a_on_right, pins, held, line)
+    core = _core.PairOffset(
+        given.gap,
+        width,
+        a_on_right,
+        held,
+        _points(pins.a_at),
+        _points(pins.a),
+        _points(pins.b_at),
+        _points(pins.b),
+        _points(given.a.points),
+        _points(given.b.points),
+    )
+    start_a, start_b = core.offset(_points(line))
     track_a, track_b = (
         ChainInput(
             replace(track, points=points),
@@ -271,6 +268,7 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
         tight_start=tight_start,
         limit=limit,
         uneven=line[[1, -2]][directions[[1, -2]] & _uneven_ends(given)],
+        core=core,
     )
 
 
@@ -331,7 +329,9 @@ def _routed(given: PairInput) -> PairInput:
         fixed = pinned | _fixed_ends(len(pinned))
         tolerances = np.full(len(pinned), ROUTING_TOLERANCE)
         tolerances[[1, -2]] = INSIDE_TOLERANCE
-        kept = kept_vertices(track.points, fixed, _NOWHERE, tolerances)
+        # Not `simplify.simplify`: the end edges need their own tolerance,
+        # and the pins follow the kept vertices by index.
+        kept = _core.kept_vertices(track.points, fixed, _NOWHERE, tolerances)
         simplified.append((replace(track, points=track.points[kept]), pinned[kept]))
     (a, a_pinned), (b, b_pinned) = simplified
     return replace(given, a=a, b=b, a_pinned=a_pinned, b_pinned=b_pinned)
@@ -398,21 +398,9 @@ def _line(a: FloatArray, gap: float, width: float, a_on_right: bool) -> FloatArr
     return left if a_on_right else right
 
 
-def _offset(
-    given: PairInput,
-    a_on_right: bool,
-    pins: _Pins,
-    held: bool,
-    points: FloatArray,
-) -> tuple[FloatArray, FloatArray]:
-    """The tracks along the centreline at `points`, at the section's gap,
-    through the points it holds (`pins`)."""
-    if held:
-        return given.a.points, given.b.points
-    right, left = offset_pair(points, given.gap, given.a.width)
-    a, b = (right, left) if a_on_right else (left, right)
-    pins.keep(points, a, b)
-    return a, b
+def _points(points: FloatArray) -> FloatArray:
+    """`points` as an (n, 2) array of floats."""
+    return np.asarray(points, dtype=float).reshape(-1, 2)
 
 
 def _fixed_ends(count: int) -> BoolArray:
@@ -443,7 +431,7 @@ def _pin_directions(
     for k in range(len(line) - 1):
         start, end = line[k], line[k + 1]
         ends = (bool(pins[k]), bool(pins[k + 1]))
-        length = float(np.hypot(*(end - start)))
+        length = math.hypot(*(end - start))
         if length >= (STUB_SPACINGS + ends.count(True) - 1) * spacing:
             reach = spacing
         else:

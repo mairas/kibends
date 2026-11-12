@@ -12,7 +12,15 @@ import pytest
 import scenarios
 import shapely
 from conftest import clearances, total_energy, violations
-from distance_fields import Box, Disc, FloatArray, FreeSpace, MisleadingWalls, Union
+from distance_fields import (
+    Box,
+    Disc,
+    FloatArray,
+    FreeSpace,
+    MisleadingWalls,
+    ReachIgnored,
+    Union,
+)
 from scenarios import PARAMS, Scenario, chain, path
 from shapely import wkt
 
@@ -20,12 +28,12 @@ import kibends.optimize as optimize_module
 from kibends.bursts import (
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
 )
-from kibends.energy import BoolArray, ObstacleField
+from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
@@ -94,8 +102,7 @@ WRAP_SETTINGS = replace(
 )
 # A rerun on the wrap's own output wanders along the flat stretches before
 # it settles, by amounts that vary with the platform's floating point.
-# Measured: 4 iterations on macOS and Linux; 8.2 µm and 6.6 µm moved; the
-# length changed by -0.16 µm, -67 nm and +82 nm.
+# Measured on macOS: 4 iterations, 9.5 µm moved, the length 0.18 µm longer.
 RERUN_ITERATIONS = 6
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3
@@ -498,7 +505,7 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 
 
 BURST_LINE = re.compile(
-    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS-B iterations, "
+    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS iterations, "
     r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
     r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"$'
 )
@@ -566,7 +573,7 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
     def failing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -587,6 +594,9 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
 def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     log: list[str],
 ) -> None:
+    # Near the upper wall its misleading gradient outweighs the length's, so
+    # every trial of a burst's first line search raises the energy: each
+    # burst fails there, from the same start, whatever the last bits.
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
 
@@ -595,6 +605,7 @@ def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     costs = burst_costs(log)
     assert len(costs) == MAX_ABNORMAL_BURSTS
     for cost in costs:
+        assert cost.iterations == 0
         assert cost.evaluations > 0
         assert cost.ending.startswith("ABNORMAL")
 
@@ -605,7 +616,7 @@ def shortest_edge(points: FloatArray) -> float:
 
 # Starts at which two neighbouring vertices once collapsed onto each other in a
 # burst, the gradient across the vanishing edge between them failed
-# L-BFGS-B's line search, and the run ended abnormally. Starts 1 µm away from
+# L-BFGS's line search, and the run ended abnormally. Starts 1 µm away from
 # these converged, so the shifts matter.
 @pytest.mark.parametrize("y", [0.8 + 1e-6, 0.5 + 2e-6, 0.7])
 def test_channel_starts_that_collapsed_two_vertices_converge(y: float) -> None:
@@ -722,28 +733,6 @@ class TestStalled:
         assert not self.stalled([2 * e for e in lowest], twice, 2, 2)
 
 
-class ReachIgnored:
-    """The stall fixture's obstacles, always answering exactly."""
-
-    def __init__(self, field: Obstacles) -> None:
-        self.field = field
-
-    def signed_distance(
-        self, points: FloatArray, reach: float = np.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        return self.field.signed_distance(points)
-
-    def smooth_distance(
-        self, points: FloatArray, reach: float = np.inf
-    ) -> tuple[FloatArray, FloatArray]:
-        return self.field.smooth_distance(points)
-
-    def segments_clear(
-        self, starts: FloatArray, ends: FloatArray, tolerance: float = 0.0
-    ) -> BoolArray:
-        return self.field.segments_clear(starts, ends, tolerance)
-
-
 def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
     data = json.loads(STALL_FIXTURE.read_text())
     field = Obstacles(
@@ -758,7 +747,7 @@ def test_energy_with_a_reach_limited_field_is_unchanged() -> None:
 
     value, gradient = total_energy(points, fixed, field, params)
     exact_value, exact_gradient = total_energy(
-        points, fixed, ReachIgnored(field), params
+        points, fixed, ReachIgnored(field.core), params
     )
 
     assert value == pytest.approx(exact_value, rel=1e-12)

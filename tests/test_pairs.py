@@ -657,7 +657,7 @@ def turned(turn: float) -> FloatArray:
 
 FOLDED = array((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (1.5, 0.0), (1.0, 0.0))
 """A centreline folded straight back on itself at its middle vertex, as
-an L-BFGS-B trial step can leave it."""
+an L-BFGS trial step can leave it."""
 
 
 def test_a_fold_offsets_to_finite_tracks() -> None:

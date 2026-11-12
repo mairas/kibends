@@ -3,14 +3,18 @@ inflation rules, for tests that check those rules against the board's
 obstacles or use them as a reference."""
 
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import replace
 
 import numpy as np
 
+from kibends.energy import FloatArray, ObstacleField
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
     ChainCentreline,
     ChainField,
+    CompositeField,
     chain_inflation,
     chains_field,
     via_chain_inflation,
@@ -18,6 +22,38 @@ from kibends.obstacles import (
 )
 from kibends.pairs import diff_pair_nets
 from kibends.snapshot import Via, ViaZone
+
+
+def chain_field(
+    static: ObstacleField, neighbours: ObstacleField | None
+) -> ObstacleField:
+    """A chain's field: `static` alone, or with `neighbours` if not None."""
+    return static if neighbours is None else CompositeField([static, neighbours])
+
+
+def neighbour_field(
+    own: ChainInput,
+    shown: Iterable[tuple[ChainInput, FloatArray]],
+    *,
+    ignored: frozenset[str] | None = None,
+) -> ObstacleField | None:
+    """The chains of `shown`, each at its points and an obstacle of its own,
+    as obstacles to `own` in one field, inflated as `obstacles.chain_inflation`
+    gives it; None if nothing is left. Chains of the nets `ignored`, by
+    default `own`'s and the other net of its diff pair, are no obstacles.
+    The reference for what a member sees of the others
+    (`kibends_core::members`)."""
+    me = own.centreline
+    nets = diff_pair_nets(me.net) if ignored is None else ignored
+    parts: list[tuple[list[ChainCentreline], float]] = []
+    for other, points in shown:
+        them = other.centreline
+        inflation = chain_inflation(nets, me.width, me.clearance, them)
+        if inflation is not None:
+            parts.append(([replace(them, points=points)], inflation))
+    if not parts:
+        return None
+    return chains_field(parts)
 
 
 def chain_obstacles(

@@ -66,13 +66,11 @@ from kibends.energy import (
     ObstacleField,
     arc_lengths,
 )
-from kibends.neighbours import (
-    ChainInput,
-    chain_field,
-)
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     HOLE_TO_HOLE,
     ChainCentreline,
+    CompositeField,
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
@@ -239,7 +237,7 @@ class OptimizerReport:
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
     """The problems, each the chains of a layer or of the layers moving
-    vias tie together, whose bursts L-BFGS-B ended abnormally, by
+    vias tie together, whose bursts L-BFGS ended abnormally, by
     description, and how many there were, before and after any hold."""
     frame: UserFrame
     """The frame to print positions in. The report's positions stay in the
@@ -791,11 +789,11 @@ def _via_inputs(
     inputs: list[ViaInput] = []
     for m in movable:
         grounded = m.via.net in ground
-
-        def split(other: Via, via: Via = m.via, grounded: bool = grounded) -> bool:
-            standing = static.get(other.id)
-            return standing is not None and pairs_with(via, grounded, standing)
-
+        split = {
+            via_id
+            for via_id, standing in static.items()
+            if pairs_with(m.via, grounded, standing)
+        }
         field, static_vias = split_via_obstacles(
             layers,
             m.via,
@@ -936,7 +934,7 @@ def _with_vias(
         out.append(
             given
             if part is None
-            else replace(given, field=chain_field(given.field, part))
+            else replace(given, field=CompositeField([given.field, part]))
         )
     return out
 

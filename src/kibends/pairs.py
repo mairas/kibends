@@ -24,17 +24,14 @@ import shapely
 from shapely import STRtree
 from shapely.geometry import LineString
 
+from kibends import _core
 from kibends.chain import Chain
 from kibends.energy import (
     MAX_SMOOTH_TURN,
     BoolArray,
     FloatArray,
     IntArray,
-    edge_bend_radii,
 )
-
-_SUFFIX_COMPLEMENTS = {"+": "-", "-": "+", "P": "N", "N": "P"}
-_IGNORED_TRAILING = "0123456789_"
 
 GAP_TOLERANCE = 0.1
 """Fraction of the gap by which the tracks' spacing may differ from the pair's
@@ -64,10 +61,6 @@ SQUARE_SLACK = 1e-9
 that a point on a vertex lies on both edges there and edges that end square
 across each other still face each other."""
 
-BEND_RADIUS_TOLERANCE = 1e-3
-"""Relative: a dense polyline drawn at the radius limit measures a hair below
-it, R·cos(Δ/2) for a turn Δ per vertex, and must still pass."""
-
 MITER_FLOOR = 1.0 + math.cos(MAX_SMOOTH_TURN)
 """The least 1 + cos(turn) a miter divides by: that of MAX_SMOOTH_TURN, past
 which `energy` continues the curvature linearly. Past it a miter shrinks
@@ -75,28 +68,15 @@ back to nothing at a fold instead of growing without bound: a trial step
 that folds a centreline offsets it to finite tracks, and the bend-radius
 hinge and the self check keep the optimizer away from it."""
 
-FOLD_SLACK = 1e-12
-"""1 + cos(turn) at or below which a vertex is a fold: off the axes,
-rounding leaves an exact fold's 1 + cos a hair above 0, where sin / (1 + cos)
-is noise. A turn this close to a fold has a bend radius of well under a
-nanometre either way."""
-
 
 class PairError(ValueError):
     """Two chains cannot be treated as one differential pair."""
 
 
-def complementary_net(name: str) -> str | None:
-    """The name the other net of a diff pair would have, matching KiCad's
-    router (`MatchDpSuffix`): trailing digits and underscores are skipped,
-    and the character before them must be `+`, `-`, `P` or `N` (upper case
-    only). A net is of a diff pair only when that net exists
-    (`in_diff_pair`)."""
-    stem = name.rstrip(_IGNORED_TRAILING)
-    complement = _SUFFIX_COMPLEMENTS.get(stem[-1:])
-    if complement is None:
-        return None
-    return stem[:-1] + complement + name[len(stem) :]
+complementary_net = _core.complementary_net
+"""The name the other net of a diff pair would have, matching KiCad's
+router (`MatchDpSuffix`), or None (`kibends_core::pairs`). A net is of a
+diff pair only when that net exists (`in_diff_pair`)."""
 
 
 def in_diff_pair(net: str, nets: Collection[str]) -> bool:
@@ -111,12 +91,10 @@ def nets_pair(a: str, b: str) -> bool:
     return complementary_net(a) == b
 
 
-def diff_pair_nets(net: str) -> frozenset[str]:
-    """`net` and the other net of its diff pair, if it has one. Callers
-    match it only against nets of selected chains, so a complement that is
-    not on the board matches nothing, as `in_diff_pair` would have it."""
-    other = complementary_net(net)
-    return frozenset({net} if other is None else {net, other})
+diff_pair_nets = _core.diff_pair_nets
+"""`net` and the other net of its diff pair, if it has one. Callers match
+it only against nets of selected chains, so a complement that is not on
+the board matches nothing, as `in_diff_pair` would have it."""
 
 
 @dataclass(frozen=True)
@@ -360,7 +338,7 @@ class _Polyline(NamedTuple):
 
 def _polyline(points: FloatArray) -> _Polyline:
     delta = np.diff(points, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
+    lengths = np.linalg.norm(delta, axis=1)
     arc = np.concatenate([[0.0], np.cumsum(lengths)])
     return _Polyline(points[:-1], delta / lengths[:, None], lengths, arc)
 
@@ -373,8 +351,8 @@ def _point_at(points: FloatArray, distances: FloatArray) -> FloatArray:
     arc = _polyline(points).arc
     return np.stack(
         [
-            np.interp(distances, arc, points[:, 0]),
-            np.interp(distances, arc, points[:, 1]),
+            _core.interp(distances, arc, points[:, 0]),
+            _core.interp(distances, arc, points[:, 1]),
         ],
         axis=-1,
     )
@@ -642,7 +620,7 @@ def _with_vertices(
         arc = _polyline(points).arc
         if np.abs(arc - distance).min() > snap:
             index = int(np.searchsorted(arc, distance))
-            vertex = _point_at(points, np.array(distance))
+            vertex = _point_at(points, np.array([distance]))[0]
             points = np.insert(points, index, vertex, axis=0)
             pinned = np.insert(pinned, index, False)
     arc = _polyline(points).arc
@@ -710,15 +688,14 @@ def _nearest(points: FloatArray, polyline: FloatArray) -> _Nearest:
     t = np.clip(projection, 0.0, line.lengths[index])
     foot = line.starts[index] + t[:, None] * line.directions[index]
     offset = points - foot
-    return _Nearest(
-        foot, line.arc[index] + t, np.hypot(offset[:, 0], offset[:, 1]), index
-    )
+    return _Nearest(foot, line.arc[index] + t, np.linalg.norm(offset, axis=1), index)
 
 
 def offset_pair(
     centreline: FloatArray, gap: float, width: float
 ) -> tuple[FloatArray, FloatArray]:
-    """The two tracks of a pair at ±(gap + width)/2 from `centreline`.
+    """The two tracks of a pair at ±(gap + width)/2 from `centreline`
+    (`kibends_core::pair_blocks::offset_pair`).
 
     The first track lies to the right of the direction of travel as seen with
     y down, the second to the left. Vertices are mitred, so every offset
@@ -726,8 +703,7 @@ def offset_pair(
     The centreline must have no repeated points, and neither track folds
     while `check_bend_radius` passes.
     """
-    shift = (gap + width) / 2 * _miters(centreline)
-    return centreline + shift, centreline - shift
+    return _core.offset_pair(_floats(centreline), gap, width)
 
 
 def offset_pair_pullback(
@@ -739,40 +715,15 @@ def offset_pair_pullback(
 ) -> FloatArray:
     """The gradient of a function of `offset_pair`'s two tracks, `right` and
     `left` at each of their vertices, taken back to the centreline's
-    vertices."""
-    half_pitch = (gap + width) / 2
-    delta = np.diff(centreline, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
-    along = delta / lengths[:, None]
-    normal = np.stack([-along[:, 1], along[:, 0]], axis=1)
-    before = np.concatenate([normal[:1], normal])
-    after = np.concatenate([normal, normal[-1:]])
-    total = before + after
-    one_plus_cos = 1.0 + np.sum(before * after, axis=1)
-    scale = np.maximum(one_plus_cos, MITER_FLOOR)
-    at_miter = half_pitch * (right - left)
-    # The miter (b + a) / max(1 + b·a, MITER_FLOOR) of the normals b before
-    # and a after a vertex, differentiated in each.
-    weight = np.where(
-        one_plus_cos > MITER_FLOOR,
-        np.sum(total * at_miter, axis=1) / scale**2,
-        0.0,
+    vertices (`kibends_core::pair_blocks::offset_pair_pullback`)."""
+    return _core.offset_pair_pullback(
+        _floats(centreline), gap, width, _floats(right), _floats(left)
     )
-    at_before = at_miter / scale[:, None] - after * weight[:, None]
-    at_after = at_miter / scale[:, None] - before * weight[:, None]
-    at_normal = np.zeros_like(normal)
-    at_normal[0] += at_before[0]
-    at_normal += at_before[1:]
-    at_normal += at_after[:-1]
-    at_normal[-1] += at_after[-1]
-    # normal = R·along with R a quarter turn; along = delta / |delta|.
-    turned = np.stack([at_normal[:, 1], -at_normal[:, 0]], axis=1)
-    across = np.sum(normal * at_normal, axis=1)[:, None]
-    at_delta = (turned - along * across) / lengths[:, None]
-    gradient = right + left
-    gradient[1:] += at_delta
-    gradient[:-1] -= at_delta
-    return gradient
+
+
+def _floats(points: FloatArray) -> FloatArray:
+    """`points` as an (n, 2) array of floats."""
+    return np.asarray(points, dtype=float).reshape(-1, 2)
 
 
 def _miters(polyline: FloatArray) -> FloatArray:
@@ -780,7 +731,7 @@ def _miters(polyline: FloatArray) -> FloatArray:
     the right of travel (y down): the bisector, scaled by 1/cos(turn/2), at
     most as much as at MAX_SMOOTH_TURN (`MITER_FLOOR`)."""
     delta = np.diff(polyline, axis=0)
-    direction = delta / np.hypot(delta[:, 0], delta[:, 1])[:, None]
+    direction = delta / np.linalg.norm(delta, axis=1)[:, None]
     normal = np.stack([-direction[:, 1], direction[:, 0]], axis=1)
     before = np.concatenate([normal[:1], normal])
     after = np.concatenate([normal, normal[-1:]])
@@ -788,10 +739,9 @@ def _miters(polyline: FloatArray) -> FloatArray:
     return (before + after) / scale[:, None]
 
 
-def bend_radius_limit(gap: float, width: float) -> float:
-    """The smallest centreline bend radius at which the inner track's inner
-    edge still has a radius of at least zero."""
-    return (gap + width) / 2 + width / 2
+bend_radius_limit = _core.bend_radius_limit
+"""The smallest centreline bend radius at which the inner track's inner
+edge still has a radius of at least zero."""
 
 
 class BendCheck(NamedTuple):
@@ -807,36 +757,14 @@ def check_bend_radius(
 ) -> BendCheck:
     """The centreline's smallest bend radius and whether it is below the
     limit, counting the turns at the vertices `turning` (`bend_radii`)."""
-    radius = float(bend_radii(centreline, turning).min())
-    return BendCheck(radius, bool(too_tight(radius, bend_radius_limit(gap, width))))
+    return BendCheck(*_core.check_bend_radius(centreline, gap, width, turning))
 
 
-def bend_radii(centreline: FloatArray, turning: BoolArray | None = None) -> FloatArray:
-    """Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
-    beside a fold and for an edge of no length, where the centreline turns
-    on the spot. For a dense arc of radius R with turn Δ per vertex it is
-    R·cos(Δ/2). Only the turns and folds at the vertices `turning` count,
-    every vertex by default."""
-    delta = np.diff(centreline, axis=0)
-    lengths = np.hypot(delta[:, 0], delta[:, 1])
-    empty = lengths == 0.0
-    direction = np.divide(
-        delta, lengths[:, None], out=np.zeros_like(delta), where=~empty[:, None]
-    )
-    sine = _cross(direction[:-1], direction[1:])
-    one_plus_cos = 1.0 + np.sum(direction[:-1] * direction[1:], axis=1)
-    folds = one_plus_cos <= FOLD_SLACK
-    half_turns = np.divide(sine, one_plus_cos, out=np.zeros_like(sine), where=~folds)
-    if turning is not None:
-        folds &= turning[1:-1]
-        half_turns = np.where(turning[1:-1], half_turns, 0.0)
-    radii, _ = edge_bend_radii(lengths, half_turns)
-    radii[:-1][folds] = 0.0
-    radii[1:][folds] = 0.0
-    radii[empty] = 0.0
-    return radii
+bend_radii = _core.bend_radii
+"""Each edge's bend radius, as `energy.edge_bend_radii` defines it, 0
+beside a fold and for an edge of no length, where the centreline turns on
+the spot (`kibends_core::pairs::bend_radii`). Only the turns and folds at
+the vertices `turning` count, every vertex by default."""
 
-
-def too_tight(radius: FloatArray | float, limit: float) -> BoolArray:
-    """Whether each bend radius is below `limit`, beyond round-off."""
-    return np.asarray(radius) < limit * (1.0 - BEND_RADIUS_TOLERANCE)
+too_tight = _core.too_tight
+"""Whether each bend radius is below `limit`, beyond round-off."""

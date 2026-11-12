@@ -36,6 +36,7 @@ from kibends.obstacles import (
     ChainCentreline,
     Obstacles,
     build_obstacles,
+    core_via,
     moving_via_obstacles,
     own_net_stops,
     split_via_obstacles,
@@ -1029,9 +1030,11 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
     via = via_of(snaps)
     zones = (zone({"In1.Cu": box(-3, -3, 3, 3)}, min_width=0.25),)
 
-    def split(other: Via) -> bool:
-        return pairs_with(via, via.net in SPLIT_GROUND, standing(snaps, other))
-
+    split = {
+        other.id
+        for other in snaps[0].vias
+        if pairs_with(via, via.net in SPLIT_GROUND, standing(snaps, other))
+    }
     own = own_net_stops(snaps, via)
     field, static_vias = split_via_obstacles(snaps, via, split, zones=zones)
     whole = ViaInput(
@@ -1115,17 +1118,15 @@ class TestStaticViasSplit:
         assert static
 
         for s in static:
-            _, alone = split_via_obstacles(
-                snaps, via, lambda o, s=s: o.id == s.via.id, zones=apart.zones
-            )
+            _, alone = split_via_obstacles(snaps, via, {s.via.id}, zones=apart.zones)
             assert alone is not None
             distance, _ = alone.signed_distance(at)
             kept = math.dist(via.position, s.via.position) - float(distance[0])
-            kept_by_pairs = pairs._kept(0, s)  # pyright: ignore[reportPrivateUsage]
+            kept_by_pairs = pairs.core.kept(0, core_via(s.via), s.clearance)
             assert kept_by_pairs == pytest.approx(kept, abs=NM_TOLERANCE)
 
     def test_without_a_pair_nothing_is_split(self) -> None:
         snaps = slices(split_board("SIG"))
         via = via_of(snaps)
 
-        assert split_via_obstacles(snaps, via, lambda _: False)[1] is None
+        assert split_via_obstacles(snaps, via, ())[1] is None

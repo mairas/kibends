@@ -6,19 +6,20 @@ The repository is public. Never write host names, addresses or other details of 
 
 ## Commands
 
-- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs. Run it in every fresh worktree before testing.
-- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` tests.
-- `./run lint` runs `ruff check` and `ruff format --check`; `./run format` formats and applies ruff's fixes.
-- `./run typecheck` runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
+- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs, and builds the Rust extension `kibends._core` (crates `rust/core` and `rust/py`) in cargo's dev profile. Run it in every fresh worktree before testing.
+- `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` tests. Both sync quietly first, so they test the current Rust code, and run the core crate's `cargo test` before pytest.
+- `./run lint` runs `ruff check`, `ruff format --check`, `cargo fmt --check` and `cargo clippy -D warnings`; `./run format` formats with ruff and rustfmt and applies ruff's fixes.
+- `./run typecheck` regenerates the stubs of `kibends._core` (`./run stubs`, into `src/kibends/_core/`) and fails if they changed, then runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
+- `tests/data/scipy_baseline_darwin-arm64.json` holds what the scipy optimizer gave on macOS arm64 on the scenarios and one bench case, recorded as `scripts/record_baseline.py` says; `tests/test_scipy_baseline.py` runs the same cases on every platform and compares, since the Rust optimizer computes the same bits everywhere: rust/core calls the `libm` crate, not the platform's libm, and `clippy.toml` forbids std's f64 functions that call it.
 - `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing.
-- `./run bench` measures the optimizer's time, with its setup and the time outside L-BFGS-B apart, iterations, energy evaluations and neighbour-list searches on stitched planes, the scenarios, buses of parallel tracks (`--only bus`, one of them also timing simplification), a lone track solved beside a cluster of pressed tracks (`--only joint`, `--plot DIR` saving its length plots) and return vias; `--tree DIR` measures another checkout.
+- `./run bench` measures the optimizer's time, with its setup and the time outside L-BFGS apart, iterations, energy evaluations and neighbour-list searches on stitched planes, the scenarios, buses of parallel tracks (`--only bus`, one of them also timing simplification), a lone track solved beside a cluster of pressed tracks (`--only joint`, `--plot DIR` saving its length plots) and return vias. `--tree DIR` compares with another checkout of any era: it syncs DIR's virtualenv, runs DIR's own benchmark with DIR's interpreter, then this one's, and prints their rows side by side.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
 
 Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests`.
 
 ## Where design detail lives
 
-Module docstrings are the design reference; function and class docstrings hold the details. When behaviour changes, update the docstrings it touches, not this file. This file changes only when an instruction, command or invariant changes, so a work brief should not ask for a CLAUDE.md edit otherwise.
+The design reference is the module docs in both languages: the Python module docstrings, and the Rust `//!` module docs in `rust/core`. Function and class docstrings, and Rust item `///` docs, hold the details. When behaviour changes, update the docs it touches in either language, not this file. This file changes only when an instruction, command or invariant changes, so a work brief should not ask for a CLAUDE.md edit otherwise.
 
 ## Pipeline
 
@@ -27,7 +28,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 1. Read: `snapshot` reads the selection and the board once per run; nothing after it uses kipy until the commit.
 2. Extract: `chain` splits the selection into chains and pins them (contacts, junctions, stubs joining tracks); `vias` judges which selected vias move, stitching vias and zone containment included.
 3. Obstacles: `obstacles` builds each chain's and each moving via's static field, and the via's limits.
-4. Optimize: `optimize` minimises length plus repulsion with L-BFGS-B bursts (`bursts`), one problem per layer or per group of layers that moving vias tie together, and returns the types in `results`. `members`, `neighbours`, `seen` and `via_moves` give what the members see of each other and their energy; `via_pairs` gives the pairwise term between ground vias and other vias; `polylines` measures, resamples and checks polylines; `contacts` keeps vertices on their contacts; `pairs`, `pair_layout` and `pair_blocks` handle differential pairs.
+4. Optimize: `optimize` minimises length plus repulsion with bursts of L-BFGS (argmin's, ended by scipy's L-BFGS-B rules; `bursts`), one problem per layer or per group of layers that moving vias tie together, and returns the types in `results`. It sets the problems up and holds sections; the loop of bursts, checks, put-back and stall rules is Rust's (`kibends_core::optimize`). `members`, `neighbours`, `seen` and `via_moves` give what the members see of each other and their energy; `via_pairs` gives the pairwise term between ground vias and other vias; `polylines` measures, resamples and checks polylines; `contacts` keeps vertices on their contacts; `pairs`, `pair_layout` and `pair_blocks` handle differential pairs.
 5. Simplify: `simplify` merges each result into few straight segments, rechecking clearance.
 6. Unchanged chains are left out of the commit (`run`).
 7. Commit: `commit` re-reads what it replaces, refuses if it changed, and replaces tracks and vias in one KiCad commit.
@@ -44,6 +45,7 @@ Module docstrings are the design reference; function and class docstrings hold t
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
 - Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
 - Selected arcs are segmented before smoothing; output is always straight tracks.
+- Each energy evaluation spreads over rayon's default pool (`parallel`) and gives the same bits whatever the thread count; `./run test` and `test-all` run one rayon thread per xdist worker.
 
 ## Units and coordinates
 
@@ -70,6 +72,6 @@ The optimizer's floating-point result differs between platforms (BLAS, CPU), so 
 A slow suite slows every edit-test cycle for the person running it. Treat test run time as a requirement, not a detail.
 
 - `./run test` (the fast tier) finishes in under 10 s wall-clock.
-- No test in the fast tier takes more than 1 s on its own, setup included. Measure with `.venv/bin/python -m pytest -n0 -m "not slow" --durations=10`; the parallel run hides slow tests.
+- No test in the fast tier takes more than 1 s on its own, setup included. Measure with `./run test -n0 --durations=10`, which rebuilds the Rust extension first; the parallel run hides slow tests.
 - Make a slow test faster before marking it `slow`: coarser optimizer settings, a smaller scenario, a fake instead of the real thing. Mark it `slow` only when it needs the real thing.
 - Every change that adds or modifies tests checks the durations above and reports the fast-tier time.

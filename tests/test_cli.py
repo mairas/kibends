@@ -1,6 +1,8 @@
+import ctypes
 import itertools
 import math
 import re
+import signal
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -59,9 +61,9 @@ from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
 )
 from kibends.chain import NM_PER_MM, Point2
@@ -750,7 +752,7 @@ class TestSmooth:
         def failing(
             objective: Objective,
             start: FloatArray,
-            revert: Revert,
+            revert: Check,
             settings: OptimizerSettings,
             stop: Stop | None = None,
         ) -> Burst:
@@ -1030,6 +1032,28 @@ class TestErrors:
 
         assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
         assert board.calls == []
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_sigint_in_a_burst_ends_it_and_commits_nothing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        real = cast(Callable[..., Burst], optimize_module.run_burst)
+        libc_raise = getattr(ctypes.CDLL(None), "raise")
+        libc_raise.argtypes = [ctypes.c_int]
+        # Asked after the first iteration, the stop sends SIGINT from C, so
+        # no Python runs its handler: the signal is pending while the next
+        # evaluation runs detached. Asked again, it would end the burst.
+        answers = itertools.chain(map(libc_raise, [signal.SIGINT]), [True])
+
+        def sending(*args: object) -> Burst:
+            return real(*args[:4], answers.__next__)
+
+        monkeypatch.setattr(optimize_module, "run_burst", sending)
+
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
+        assert "push_commit" not in board.calls
+        assert list(answers) == [True], "the burst ran on past the signal"
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_vanished_track_exits_before_any_change(

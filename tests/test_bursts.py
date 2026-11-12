@@ -1,39 +1,30 @@
 from collections.abc import Callable
 from dataclasses import replace
-from typing import cast
 
 import numpy as np
 import pytest
-import scenarios
-from conftest import total_energy
-from distance_fields import BoolArray, FloatArray
-from scipy.optimize import OptimizeResult
+from conftest import Ticking
+from distance_fields import FloatArray
 
-import kibends.bursts as bursts_module
+import kibends.optimize as optimize_module
+from kibends import _core
+from kibends._core.testing import quadratic
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     FALLBACK_WARNING,
     ScaledObjective,
-    revert_until_clear,
     run_burst,
 )
-from kibends.polylines import resample
 
-# A burst of the wrap at these settings takes a few milliseconds.
-WRAP_SETTINGS = replace(DEFAULT_SETTINGS, spacing=0.5, burst_maxiter=10)
+SHORT_SETTINGS = replace(DEFAULT_SETTINGS, burst_maxiter=10)
 
 # How much steeper the valley's second coordinate is than its first.
 STEEPNESS = 100.0
 
+squared = quadratic([1.0, 1.0])
 
-def squared(x: FloatArray) -> tuple[float, FloatArray]:
-    return float(x @ x), 2 * x
-
-
-def steep_valley(x: FloatArray) -> tuple[float, FloatArray]:
-    """A quadratic that one L-BFGS-B iteration does not minimise."""
-    scale = np.array([1.0, STEEPNESS])
-    return float(scale @ x**2), 2 * scale * x
+steep_valley = quadratic([1.0, STEEPNESS])
+"""A quadratic that one L-BFGS iteration does not minimise."""
 
 
 def nothing_crosses(x: FloatArray) -> int:
@@ -54,26 +45,15 @@ def test_a_burst_without_coordinates_reports_no_work() -> None:
 
 
 def test_a_burst_reports_its_iterations_and_evaluations() -> None:
-    scenario = scenarios.wrap()
-    points, fixed = resample(scenario.polyline, scenario.fixed, WRAP_SETTINGS.spacing)
-    calls = 0
+    burst = run_burst(
+        steep_valley, np.array([3.0, 2.0]), nothing_crosses, SHORT_SETTINGS
+    )
 
-    def energy(x: FloatArray) -> tuple[float, FloatArray]:
-        nonlocal calls
-        calls += 1
-        moved = points.copy()
-        moved[~fixed] = x.reshape(-1, 2)
-        value, gradient = total_energy(moved, fixed, scenario.field, scenario.params)
-        return value, gradient[~fixed].ravel()
-
-    burst = run_burst(energy, points[~fixed].ravel(), nothing_crosses, WRAP_SETTINGS)
-
-    assert 1 <= burst.iterations <= WRAP_SETTINGS.burst_maxiter
-    assert burst.evaluations >= burst.iterations
-    assert burst.evaluations == calls
+    assert 1 <= burst.iterations <= SHORT_SETTINGS.burst_maxiter
+    assert burst.evaluations > burst.iterations
 
 
-def test_a_burst_reports_how_l_bfgs_b_ended_it() -> None:
+def test_a_burst_reports_how_l_bfgs_ended_it() -> None:
     one_iteration = replace(DEFAULT_SETTINGS, burst_maxiter=1)
     start = np.array([1.0, 2.0])
 
@@ -85,20 +65,58 @@ def test_a_burst_reports_how_l_bfgs_b_ended_it() -> None:
     assert capped.message.startswith("STOP")
 
 
-def test_lbfgs_tolerances_reach_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, object] = {}
-    real = cast(Callable[..., OptimizeResult], bursts_module.minimize)
+def test_a_gradient_below_gtol_ends_the_burst_before_its_first_iteration() -> None:
+    settings = replace(DEFAULT_SETTINGS, lbfgs_gtol=10.0)
 
-    def spy(*args: object, **kwargs: object) -> OptimizeResult:
-        seen.update(cast(dict[str, object], kwargs["options"]))
-        return real(*args, **kwargs)
+    burst = run_burst(squared, np.array([1.0, 2.0]), nothing_crosses, settings)
 
-    monkeypatch.setattr(bursts_module, "minimize", spy)
-    settings = replace(DEFAULT_SETTINGS, lbfgs_ftol=1e-8, lbfgs_gtol=1e-6)
+    assert burst.iterations == 0
+    assert burst.message == "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL"
 
-    run_burst(squared, np.array([1.0, 2.0]), nothing_crosses, settings)
 
-    assert (seen["ftol"], seen["gtol"]) == (1e-8, 1e-6)
+def test_a_relative_decrease_below_ftol_ends_the_burst() -> None:
+    # Every decrease of an energy that cannot fall below 0 is at most 1,
+    # relatively.
+    settings = replace(DEFAULT_SETTINGS, lbfgs_ftol=1.0)
+
+    burst = run_burst(steep_valley, np.array([1.0, 2.0]), nothing_crosses, settings)
+
+    assert burst.iterations == 1
+    assert burst.message == "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH"
+
+
+def test_a_burst_whose_line_search_fails_ends_abnormally_where_it_started() -> None:
+    start = np.array([1.0, 2.0])
+    reverted: list[FloatArray] = []
+
+    def checked(x: FloatArray) -> int:
+        reverted.append(x.copy())
+        return 0
+
+    burst = run_burst(
+        quadratic([1.0, 1.0], uphill=True), start, checked, SHORT_SETTINGS
+    )
+
+    assert burst.abnormal
+    assert burst.message.startswith("ABNORMAL")
+    assert burst.iterations == 0
+    assert burst.evaluations > 1
+    np.testing.assert_array_equal(burst.points, start)
+    np.testing.assert_array_equal(reverted[0], start)
+
+
+def test_an_exception_from_stop_ends_the_burst_and_propagates() -> None:
+    def interrupted() -> bool:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_burst(
+            steep_valley,
+            np.array([3.0, 2.0]),
+            nothing_crosses,
+            SHORT_SETTINGS,
+            interrupted,
+        )
 
 
 VALLEY_SCALE = np.array([1.0, 1.0 / np.sqrt(STEEPNESS)])
@@ -151,21 +169,11 @@ def test_a_scaled_objective_answers_as_its_objective() -> None:
 
 
 @pytest.mark.fallback
-def test_crossings_naming_nothing_to_move_back_move_all_back_and_warn(
-    log: list[str],
-) -> None:
-    start = np.zeros(4)
-    candidate = np.ones(4)
-    stuck = np.zeros(4, dtype=bool)
+def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None:
+    report = optimize_module._Report([], Ticking(), 0.0, 0.0)  # pyright: ignore[reportPrivateUsage]
 
-    def crossing_until_back(x: FloatArray) -> tuple[int, BoolArray]:
-        return int(x.any()), stuck
+    report(_core.FallbackNotice())
 
-    reverted, count = revert_until_clear(candidate, start, crossing_until_back)
-
-    assert count == 1
-    assert reverted.all()
-    assert np.array_equal(candidate, start)
     assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
 
 
@@ -183,9 +191,11 @@ def ask_until(answers: int) -> Callable[[], bool]:
 
 def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
     start = np.array([3.0, 2.0])
-    whole = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS)
+    whole = run_burst(steep_valley, start, nothing_crosses, SHORT_SETTINGS)
 
-    burst = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS, ask_until(2))
+    burst = run_burst(
+        steep_valley, start, nothing_crosses, SHORT_SETTINGS, ask_until(2)
+    )
 
     assert whole.iterations > 2
     assert burst.iterations == 2
@@ -195,10 +205,10 @@ def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
 
 def test_a_burst_its_stop_never_ends_runs_whole() -> None:
     start = np.array([3.0, 2.0])
-    whole = run_burst(steep_valley, start, nothing_crosses, WRAP_SETTINGS)
+    whole = run_burst(steep_valley, start, nothing_crosses, SHORT_SETTINGS)
 
     burst = run_burst(
-        steep_valley, start, nothing_crosses, WRAP_SETTINGS, lambda: False
+        steep_valley, start, nothing_crosses, SHORT_SETTINGS, lambda: False
     )
 
     np.testing.assert_array_equal(burst.points, whole.points)

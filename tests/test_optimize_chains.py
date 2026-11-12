@@ -24,16 +24,18 @@ from conftest import (
     total_energy,
 )
 from distance_fields import Disc, FloatArray, FreeSpace
+from reference_fields import chain_field, neighbour_field
 from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString, Point
 
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     ScaledObjective,
     Stop,
 )
@@ -41,7 +43,7 @@ from kibends.chain import NM_PER_MM, Segment
 from kibends.commit import snapped_points
 from kibends.energy import EnergyParams, ObstacleField
 from kibends.members import seen_parts
-from kibends.neighbours import ChainInput, chain_field, neighbour_field
+from kibends.neighbours import ChainInput
 from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE, ChainCentreline
 from kibends.optimize import (
     INSIDE_TOLERANCE,
@@ -360,7 +362,7 @@ def test_resampling_keeps_vertices_pressed_into_another_chains_clearance(
     def capturing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -524,7 +526,7 @@ def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
     def recording(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -537,7 +539,7 @@ def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
 
 
 TIMED_ITERATIONS = 2
-"""The L-BFGS-B iterations a burst runs before a clock that ticks a second
+"""The L-BFGS iterations a burst runs before a clock that ticks a second
 a reading, from 0, passes a limit half a second beyond: the run reads it
 when setup begins and ends, then after each iteration."""
 
@@ -568,30 +570,6 @@ def test_time_limit_ends_the_burst_at_the_iteration_past_it(
     # The cut burst's state passed the guard and is the best.
     for chain in result.chains:
         assert length(chain.polyline) < chain.before.length
-
-
-def test_a_burst_cut_by_the_time_limit_that_the_guard_rejects_is_not_kept(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scenario = bumps()
-    bursts = recorded_bursts(monkeypatch)
-
-    def rejecting(*_: object) -> bool:
-        return False
-
-    monkeypatch.setattr(optimize_module._Problem, "guard", rejecting)  # pyright: ignore[reportPrivateUsage]
-    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
-
-    result = optimize_chains(
-        scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
-    )
-
-    (burst,) = bursts
-    assert burst.cut
-    assert result.termination is Termination.TIME_LIMIT
-    for chain, given in zip(result.chains, scenario.chains, strict=True):
-        start = resample(given.centreline.points, given.fixed, COARSE.spacing)[0]
-        np.testing.assert_array_equal(chain.polyline, start)
 
 
 def test_time_limit_counts_from_when_the_stage_started() -> None:
@@ -628,19 +606,17 @@ def test_the_stall_rule_counts_a_problem_s_moving_members(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     counted: list[tuple[int, int]] = []
-    real = optimize_module.stalled
+    real = optimize_module._burst_done  # pyright: ignore[reportPrivateUsage]
 
+    # Each burst names the moving members the stall rule counts.
     def spy(
-        lowest: Sequence[float],
-        lengths: Sequence[float],
-        settings: OptimizerSettings,
-        members: int,
-        vias: int = 0,
-    ) -> bool:
-        counted.append((members, vias))
-        return real(lowest, lengths, settings, members, vias)
+        problem: optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        notice: _core.BurstNotice,
+    ) -> None:
+        counted.append((len(notice.members), len(problem.vias)))
+        real(problem, notice)
 
-    monkeypatch.setattr(optimize_module, "stalled", spy)
+    monkeypatch.setattr(optimize_module, "_burst_done", spy)
     chains = bumps().chains
 
     optimize_chains(
@@ -691,8 +667,8 @@ def test_straight_chains_have_nothing_to_do() -> None:
 
 
 # A rerun on the squeeze's own output settles within these, which vary with
-# the platform's floating point. Measured: 3 iterations and 18 µm moved on
-# macOS, 4 to 5 iterations and 32 µm on Linux.
+# the platform's floating point. Measured on macOS: 4 iterations and 10 µm
+# moved; under scipy, 4 to 5 iterations and 32 µm on Linux.
 REPEAT_ITERATIONS = 8
 REPEAT_DRIFT = 0.06
 
@@ -906,7 +882,7 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     def failing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -937,7 +913,7 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
     def back_fails(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -967,7 +943,7 @@ def test_a_normal_burst_ends_an_abnormal_streak(
     def second_normal(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -993,7 +969,7 @@ def test_an_abnormal_burst_s_last_check_is_not_counted(
     def through_the_disc(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -1456,8 +1432,6 @@ FREE_SCALE = 0.9
 """A free vertex between edges about the spacing long scales about by 1;
 those next to a pin may have a shorter edge."""
 PRESSED_SCALE = 0.5
-REFERENCE_STIFFNESS = optimize_module.REFERENCE_EDGES / DEFAULT_SETTINGS.spacing
-"""A free vertex's length stiffness between edges of the default spacing."""
 
 
 FAR_Y = -20.0
@@ -1487,10 +1461,8 @@ def pressed_and_free_scales() -> list[FloatArray]:
     problem = placed.problem
     layout = problem.layout(problem.points)
     seen = seen_parts(problem.members, layout.starts, problem.rings)
-    stiffness = problem.stiffness(layout, seen, problem.lookups(seen))
-    scale = optimize_module._scale(  # pyright: ignore[reportPrivateUsage]
-        stiffness, DEFAULT_SETTINGS.spacing
-    ).reshape(-1, 2)[:, 0]
+    scale = problem.scale(layout.starts, seen, problem.lookups(seen))
+    scale = scale.reshape(-1, 2)[:, 0]
     return [scale[index[index >= 0]] for index in layout.index]
 
 
@@ -1512,7 +1484,7 @@ def test_a_burst_minimises_over_its_scaled_variables(
     def capturing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -1532,31 +1504,3 @@ def test_a_burst_minimises_over_its_scaled_variables(
     middle = scale[start[:, 1] == PRESSED_PITCH]
     assert np.median(far) == 1.0
     assert np.median(middle) < PRESSED_SCALE
-
-
-def test_a_free_interior_vertex_between_edges_of_the_spacing_is_the_reference() -> None:
-    spacing = DEFAULT_SETTINGS.spacing
-    points = np.array([(0.0, 0.0), (spacing, 0.0), (2 * spacing, 0.0)])
-    layout = optimize_module._Layout(  # pyright: ignore[reportPrivateUsage]
-        starts=[points],
-        positions=[],
-        index=[np.array([-1, 0, -1], dtype=np.intp)],
-        offsets=[np.zeros_like(points)],
-        via_index=np.zeros(0, dtype=np.intp),
-        count=1,
-    )
-
-    stiffness = optimize_module._length_stiffness(  # pyright: ignore[reportPrivateUsage]
-        layout
-    )
-
-    np.testing.assert_array_equal(stiffness, [REFERENCE_STIFFNESS])
-
-
-def test_no_variable_scales_above_one() -> None:
-    scale = optimize_module._scale(  # pyright: ignore[reportPrivateUsage]
-        np.array([0.0, REFERENCE_STIFFNESS, 4 * REFERENCE_STIFFNESS]),
-        DEFAULT_SETTINGS.spacing,
-    )
-
-    np.testing.assert_array_equal(scale, [1.0, 1.0, 1.0, 1.0, 0.5, 0.5])

@@ -46,9 +46,9 @@ from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
 from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
-from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE
 from kibends.chain import (
     NM_PER_MM,
@@ -73,16 +73,18 @@ from kibends.energy import (
     obstacle_integrand,
     obstacle_reach,
     quadrature_points,
-    shape_energy,
 )
 from kibends.members import Member, members_energy, seen_parts
+from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
+    ChainCentreline,
     CompositeField,
     Obstacles,
     containment,
+    core_field,
     split_via_obstacles,
 )
 from kibends.polylines import count_violations
@@ -107,6 +109,14 @@ class Ticking:
         return now
 
 
+def in_pool[T](threads: int, work: Callable[[], T]) -> T:
+    """What `work` returns, run on a rayon pool of `threads` threads of its
+    own, over which its evaluations spread."""
+    answers: list[T] = []
+    _core.testing.in_pool(threads, lambda: answers.append(work()))
+    return answers[0]
+
+
 class BurstClock:
     """A clock that reads how many bursts have ended since it was made,
     however often it is read: one per problem and outer iteration. It does
@@ -125,6 +135,26 @@ class BurstClock:
 
     def __call__(self) -> float:
         return float(self.bursts)
+
+
+def first_check(
+    monkeypatch: pytest.MonkeyPatch, run: Callable[[], object]
+) -> tuple[_core.Revert, FloatArray]:
+    """The check of the first burst that `run` starts, and where the burst
+    starts."""
+    real = cast(Callable[..., object], optimize_module.run_burst)
+    captured: list[tuple[_core.Revert, FloatArray]] = []
+
+    def capturing(
+        objective: object, start: FloatArray, revert: object, *args: object
+    ) -> object:
+        assert isinstance(revert, _core.Revert)
+        captured.append((revert, start.copy()))
+        return real(objective, start, revert, *args)
+
+    monkeypatch.setattr(optimize_module, "run_burst", capturing)
+    run()
+    return captured[0]
 
 
 def _fallback_sink(warned: list[str]) -> int:
@@ -173,9 +203,9 @@ def _uses_a_fallback_fixture(node: pytest.Item | pytest.Collector) -> bool:
 
 @pytest.fixture(autouse=True)
 def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Fails any test in which a burst's check reaches the fallback of
-    `bursts.revert_until_clear`, or that uses a fixture whose setup did,
-    unless marked `fallback`."""
+    """Fails any test in which a burst's check reaches the fallback that
+    moves it back whole (`FALLBACK_WARNING`), or that uses a fixture whose
+    setup did, unless marked `fallback`."""
     warned: list[str] = []
     sink = _fallback_sink(warned)
     yield
@@ -290,21 +320,30 @@ def total_energy(
     bend_limit: float | None = None,
 ) -> TermValue:
     """One polyline's energy in `field` alone, as the optimizer sums its
-    terms, with the bend-radius hinge at `bend_limit` if given; raises
-    ValueError if it is not finite."""
-    value, gradient = shape_energy(points, fixed, short_edge)
-    obstacle_value, obstacle_gradient = obstacle_energy(points, field, params)
-    value += obstacle_value
-    gradient = gradient + obstacle_gradient
+    terms (`members.members_energy`), with the bend-radius hinge at
+    `bend_limit` if given; raises ValueError if it is not finite."""
+    points = np.asarray(points, dtype=float)
+    alone = ChainInput(
+        ChainCentreline("alone", "", 0.0, 0.0, points), "", fixed, core_field(field)
+    )
+    value, (gradient,), _ = members_energy(
+        [alone],
+        [points],
+        [fixed],
+        params,
+        short_edge,
+        seen_parts([alone], [points]),
+        (),
+    )
     if bend_limit is not None:
         bend_value, bend_gradient = bend_radius_energy(
             points, fixed, bend_limit, params
         )
         value += bend_value
         gradient = gradient + bend_gradient
-    if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
-        raise ValueError(f"energy is not finite: {value}")
-    gradient[fixed] = 0.0
+        if not (np.isfinite(value) and np.all(np.isfinite(gradient))):
+            raise ValueError(f"energy is not finite: {value}")
+        gradient[fixed] = 0.0
     return value, gradient
 
 
@@ -341,7 +380,7 @@ def build_via_obstacles(
     field, _ = split_via_obstacles(
         layers,
         via,
-        lambda _: False,
+        (),
         moving=moving,
         edge_clearance=edge_clearance,
         hole_clearance=hole_clearance,
@@ -1058,6 +1097,10 @@ def return_via_board(ground: tuple[float, float], *, stitching: bool) -> CommitB
     )
 
 
+NEUTRAL_TOLERANCE = 1e-12
+"""How near `neutral_distance` brackets the distance, mm."""
+
+
 def neutral_distance(params: EnergyParams, apart: float) -> float:
     """The centre distance at which a ground via and a regular one that
     keep `apart` stop pushing or pulling each other: where the slopes of
@@ -1070,4 +1113,12 @@ def neutral_distance(params: EnergyParams, apart: float) -> float:
         pull = attraction(np.array([r]), np.array([apart]))[1]
         return float(push[0] + pull[0])
 
-    return float(brentq(slope, apart, apart + params.falloff_range))
+    low, high = apart, apart + params.falloff_range
+    rising = slope(high) > slope(low)
+    while high - low > NEUTRAL_TOLERANCE:
+        middle = (low + high) / 2
+        if (slope(middle) > 0) == rising:
+            high = middle
+        else:
+            low = middle
+    return (low + high) / 2
