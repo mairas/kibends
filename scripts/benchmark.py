@@ -79,7 +79,7 @@ from typing import cast
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the optimizer.")
     parser.add_argument("--tree", type=Path, default=ROOT)
     parser.add_argument(
@@ -90,10 +90,12 @@ def parse_args() -> argparse.Namespace:
         "--plot", type=Path, help="directory for the joint cases' length plots"
     )
     parser.add_argument("smooth", nargs="*", help="arguments for kibends smooth")
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
-ARGS = parse_args()
+# Imported, as the baseline test imports it, it measures this tree at the
+# defaults.
+ARGS = parse_args(sys.argv[1:] if __name__ == "__main__" else [])
 TREE = ARGS.tree.resolve()
 sys.path[:0] = [str(TREE / "tests"), str(TREE / "src")]
 

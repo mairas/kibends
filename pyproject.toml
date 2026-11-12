@@ -65,6 +65,8 @@ cache-keys = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The baseline test runs its cases as scripts/record_baseline.py recorded them.
+pythonpath = ["scripts"]
 # Parallel by default; pass `-n 0` to run serially (e.g. for pdb).
 addopts = "-n auto"
 markers = [
@@ -89,4 +91,7 @@ venvPath = "."
 venv = ".venv"
 # plot_scenarios.py puts tests/ on sys.path; a custom environment also
 # loses pyright's automatic src root.
-executionEnvironments = [{ root = "scripts", extraPaths = ["src", "tests"] }]
+executionEnvironments = [
+    { root = "scripts", extraPaths = ["src", "tests"] },
+    { root = "tests", extraPaths = ["src", "scripts"] },
+]

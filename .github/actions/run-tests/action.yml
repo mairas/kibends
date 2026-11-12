@@ -31,19 +31,3 @@ runs:
     - name: Test
       shell: bash
       run: ./run test-all
-
-    # While no Linux baseline is committed, record one from this run to
-    # download and commit. Recording must happen while scipy runs the
-    # optimizer.
-    - name: Record the scipy baseline
-      id: baseline
-      if: runner.os == 'Linux' && hashFiles('tests/data/scipy_baseline_linux-*.json') == ''
-      shell: bash
-      run: OPENBLAS_NUM_THREADS=1 .venv/bin/python scripts/record_baseline.py
-
-    - name: Upload the scipy baseline
-      if: steps.baseline.outcome == 'success'
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-      with:
-        name: scipy-baseline-linux
-        path: tests/data/scipy_baseline_linux-*.json
