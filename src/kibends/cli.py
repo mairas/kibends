@@ -21,15 +21,20 @@ import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
-from typing import NoReturn, assert_never
+from typing import NoReturn, assert_never, cast
 
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
+from kibends.bursts import (
+    DEFAULT_CHORD_TOLERANCE,
+    DEFAULT_SETTINGS,
+    MAX_COARSE_LEVELS,
+)
 from kibends.chain import ChainError
 from kibends.commit import (
     BoardChangedError,
@@ -65,9 +70,15 @@ DEFAULT_ATTRACTION = 1.15
 # clearance boundary, which the burst's edge check keeps edges from newly
 # crossing.
 CLEARANCE_WEIGHT = 50.0
-# Above the worst-case sag between quadrature points at the default spacing.
+# Above the worst-case sag between quadrature points at the final spacing,
+# at most MAX_SPACING; the coarse levels' longer edges sag more, and the final
+# level runs at the final spacing.
 STANDOFF = 0.02
 POINTS_PER_EDGE = 3
+MAX_SPACING = 0.1
+"""The coarsest final spacing --spacing takes, mm: STANDOFF, the optimizer's
+PRESSED_DEPTH and the obstacle fields' MAX_EDGE_LENGTH are tuned to it."""
+DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
 
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
@@ -164,16 +175,22 @@ def format_outcome(report: OptimizerReport) -> str:
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """An iteration cap or time limit, one line each."""
+    """An iteration cap or time limit, one line each, saying whether the
+    run stopped before its final spacing."""
+    unfinished = (
+        "before reaching the final spacing"
+        if report.before_final_spacing
+        else "without converging"
+    )
     warnings: list[str] = []
     if report.termination is Termination.ITERATION_CAP:
         warnings.append(
             f"The optimizer stopped at its cap of {report.iterations} "
-            "outer iterations without converging; using the best result found"
+            f"outer iterations {unfinished}; using the best result found"
         )
     if report.termination is Termination.TIME_LIMIT:
         warnings.append(
-            "The optimizer stopped at its time limit without converging; "
+            f"The optimizer stopped at its time limit {unfinished}; "
             "using the best result found"
         )
     return warnings
@@ -205,6 +222,41 @@ def _positive_int(text: str) -> int:
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be positive, got {text}")
     return value
+
+
+class _Schedule(argparse.Action):
+    """Takes --spacing's values, each already positive and finite, as a
+    tuple once they fall strictly to a final spacing of at most MAX_SPACING
+    and number at most one more than MAX_COARSE_LEVELS."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[object] | None,
+        option_string: str | None = None,
+    ) -> None:
+        spacings = tuple(cast(Sequence[float], values))
+        if any(finer >= coarser for coarser, finer in pairwise(spacings)):
+            raise argparse.ArgumentError(
+                self, f"must fall strictly, coarsest first, got {_listed(spacings)}"
+            )
+        if spacings[-1] > MAX_SPACING:
+            raise argparse.ArgumentError(
+                self,
+                f"the final spacing, the last value, must be at most {MAX_SPACING:g}, "
+                f"got {spacings[-1]:g}",
+            )
+        if len(spacings) > MAX_COARSE_LEVELS + 1:
+            raise argparse.ArgumentError(
+                self,
+                f"takes at most {MAX_COARSE_LEVELS + 1} values, got {len(spacings)}",
+            )
+        setattr(namespace, self.dest, spacings)
+
+
+def _listed(spacings: Sequence[float]) -> str:
+    return " ".join(f"{s:g}" for s in spacings)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -278,6 +330,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="How far the committed tracks may depart from the optimised curve; "
         "larger values give fewer, longer tracks "
         f"(default: {DEFAULT_CHORD_TOLERANCE:g})",
+    )
+    smooth_parser.add_argument(
+        "--spacing",
+        nargs="+",
+        type=_positive,
+        action=_Schedule,
+        default=DEFAULT_SCHEDULE,
+        metavar="MM",
+        help="Distances between a chain's vertices that each problem runs at, "
+        "coarsest first, each handing over to the next as the problem "
+        "settles; the last, at most "
+        f"{MAX_SPACING:g}, is the final spacing, and one value runs at it alone "
+        f"(default: {_listed(DEFAULT_SCHEDULE)})",
     )
     smooth_parser.add_argument(
         "--settled-change",
@@ -407,6 +472,8 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         ground_nets=tuple(args.ground_nets),
         settings=replace(
             DEFAULT_SETTINGS,
+            spacing=args.spacing[-1],
+            coarse_spacings=args.spacing[:-1],
             settled_change=(
                 args.chord_tolerance / 2
                 if args.settled_change is None

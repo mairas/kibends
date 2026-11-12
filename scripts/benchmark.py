@@ -16,9 +16,16 @@ contain TEXT. `--plot` saves each joint case's per-chain length against
 outer iteration as a PNG in DIR.
 Arguments after `--` go to `kibends smooth` for the runs through a fake
 KiCad and give the crossed grids' energy parameters and optimizer settings
-and the buses' optimizer settings, a `--time-limit` among them overriding
-TIME_LIMIT, so a run can be measured at other settings. Each table row is
-one run.
+and the buses' and joint cases' optimizer settings, a `--time-limit` among
+them overriding TIME_LIMIT, so a run can be measured at other settings:
+`-- --spacing 0.1`, for one, runs those without coarse levels. The
+scenarios and return vias take none and run at the library defaults,
+coarse levels included. Each table row is one run.
+
+`--tree` gives TREE the same arguments, so `--spacing` there needs a
+`kibends smooth` that takes it. To compare one spacing here with a checkout
+from before coarse levels, run `./run bench -- --spacing 0.1` here and
+`./run bench` in that checkout, and compare their tables.
 
 `--tree` compares this checkout with TREE, another checkout such as an
 older commit from `git worktree add`, on one machine. It brings TREE's
@@ -46,7 +53,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings.
+  at default settings (`OptimizerSettings()`, coarse levels included).
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Five go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
@@ -230,6 +237,7 @@ from kibends import _core, cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
 from kibends.bursts import (  # noqa: E402
+    DEFAULT_SETTINGS,
     Burst,
     Check,
     Objective,
@@ -572,13 +580,16 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
 
 def run_scenario(
     s: scenarios.Scenario | Several,
+    settings: OptimizerSettings = DEFAULT_SETTINGS,
 ) -> OptimizeResult | RunResult:
-    """The scenario through the optimizer at default settings."""
+    """The scenario through the optimizer at `settings`, the defaults
+    unless given."""
     if isinstance(s, scenarios.Scenario):
-        return optimize(s.polyline, s.fixed, s.field, s.params)
+        return optimize(s.polyline, s.fixed, s.field, s.params, settings)
     return optimize_chains(
         s.chains,
         s.params,
+        settings,
         vias=s.vias if isinstance(s, ViasScenario) else (),
         pairs=s.pairs if isinstance(s, PairsScenario) else (),
     )

@@ -11,7 +11,8 @@
 //! checks take exact distances. Without moving vias the layers do not
 //! interact, so each layer is a problem of its own, and an outer iteration
 //! (`advance`) gives every problem that has not settled one burst
-//! (`state::State::step`): resample each chain to the spacing between its
+//! (`state::State::step`): resample each chain, at the spacing of the
+//! level it runs at (`state`), between its
 //! fixed vertices and those pressed into the others' clearance, which
 //! resampling keeps where they are (`state::State::pressed`), run L-BFGS
 //! over every free vertex without bounds (`Bursts`, `burst`), scaled by
@@ -58,7 +59,9 @@
 //! moves nothing back, when its lowest energy and its tracks' length stall
 //! over `stall_window` bursts, the energy by a tolerance for each moving
 //! member and via and the length by one (`stalled`), or after
-//! MAX_ABNORMAL_BURSTS abnormal bursts in a row. The settle threshold and
+//! MAX_ABNORMAL_BURSTS abnormal bursts in a row. At a coarse level any of
+//! these hands over to the next level instead (`state`), so only the final
+//! level gives up. The settle threshold and
 //! the energy's tolerance hold per member, so that a problem and far-apart
 //! copies of it stall together. Members that have settled still add their
 //! tolerance, so one still gaining energy while its length grows may stop
@@ -67,7 +70,8 @@
 //! cap or at the time limit, which ends the running burst at its next
 //! L-BFGS iteration; that burst's state goes through the checks and the
 //! guard as any, and it settles nothing. Each problem keeps its best state
-//! either way.
+//! either way. A run where every problem settled without moving anything
+//! had nothing to do.
 
 pub mod checks;
 pub mod layout;
@@ -122,12 +126,46 @@ impl End {
     }
 }
 
+/// The most coarse spacings a run's schedule may hold before its final
+/// spacing.
+pub const MAX_COARSE_LEVELS: usize = 7;
+
+/// The coarse spacings a problem runs at before its final spacing, mm,
+/// coarsest first; `Default` holds none, while the CLI and
+/// `kibends.bursts` default to 1.6 and 0.4. Held in a fixed array so that
+/// `Settings` stays `Copy`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CoarseSpacings {
+    values: [f64; MAX_COARSE_LEVELS],
+    count: usize,
+}
+
+impl CoarseSpacings {
+    /// `spacings`, or None if there are more than `MAX_COARSE_LEVELS`.
+    pub fn new(spacings: &[f64]) -> Option<Self> {
+        let count = spacings.len();
+        if count > MAX_COARSE_LEVELS {
+            return None;
+        }
+        let mut values = [0.0; MAX_COARSE_LEVELS];
+        values[..count].copy_from_slice(spacings);
+        Some(Self { values, count })
+    }
+
+    /// The spacings, coarsest first.
+    pub fn as_slice(&self) -> &[f64] {
+        &self.values[..self.count]
+    }
+}
+
 /// What the run loop and a problem's bursts take of the optimizer's
 /// settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
-    /// Target distance between resampled vertices, mm.
+    /// Target distance between resampled vertices at the final level, mm.
     pub spacing: f64,
+    /// The levels a problem runs at before the final spacing.
+    pub coarse: CoarseSpacings,
     /// A problem whose burst moves no shape and no via's centre by this
     /// much, mm, settles.
     pub settled_change: f64,
@@ -179,6 +217,8 @@ pub fn stalled(
 pub struct BurstReport {
     /// The problem, by its place among those the run advanced.
     pub problem: usize,
+    /// The level of the schedule it ran at (`state::Shared::spacing_at`).
+    pub level: usize,
     pub iterations: u64,
     pub evaluations: u64,
     /// Seconds the evaluations took.
@@ -208,6 +248,13 @@ pub enum Notice {
         streak: u32,
     },
     Burst(BurstReport),
+    /// The problem enters `level` of a schedule with coarse levels: each
+    /// coarse level, and the final one after a coarser one hands over. Not
+    /// for the probe at the final spacing that runs before them.
+    Stage {
+        problem: usize,
+        level: usize,
+    },
     /// After an outer iteration: its number, its largest change, and each
     /// problem's length and energy.
     Progress {
@@ -249,7 +296,8 @@ pub trait Bursts<E> {
 /// How an `advance` ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The first outer iteration settled every problem and moved nothing.
+    /// Every problem settled, none on abnormal bursts, and none moved
+    /// anything.
     NothingToDo,
     /// Every problem settled, none on abnormal bursts.
     Converged,
@@ -298,11 +346,10 @@ pub fn advance<E: From<NotFinite>>(
             energies: problems.iter().map(|p| p.energy).collect(),
         })?;
         if problems.iter().all(|p| p.settled) {
-            if *iteration == 1 && !problems.iter().any(|p| p.moved) {
-                return Ok(Outcome::NothingToDo);
-            }
             return Ok(if gave_up || problems.iter().any(|p| p.gave_up()) {
                 Outcome::GaveUp
+            } else if !problems.iter().any(|p| p.moved) {
+                Outcome::NothingToDo
             } else {
                 Outcome::Converged
             });
@@ -321,6 +368,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             spacing: 0.1,
+            coarse: CoarseSpacings::default(),
             settled_change: 0.005,
             stall_window: 3,
             stall_tolerance: 1e-3,
@@ -330,6 +378,16 @@ mod tests {
                 gtol: 1e-10,
             },
         }
+    }
+
+    #[test]
+    fn coarse_spacings_hold_up_to_the_most_levels_in_order() {
+        let most = [6.4, 3.2, 1.6, 0.8, 0.4, 0.2, 0.15];
+        assert_eq!(CoarseSpacings::new(&most).unwrap().as_slice(), most);
+        assert_eq!(CoarseSpacings::new(&[]).unwrap().as_slice(), &[] as &[f64]);
+        assert_eq!(CoarseSpacings::new(&[]), Some(CoarseSpacings::default()));
+        let too_many = [12.8, 6.4, 3.2, 1.6, 0.8, 0.4, 0.2, 0.15];
+        assert_eq!(CoarseSpacings::new(&too_many), None);
     }
 
     #[test]

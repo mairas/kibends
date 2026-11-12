@@ -49,7 +49,7 @@ from loguru import logger
 
 import kibends.optimize as optimize_module
 from kibends import _core
-from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE
+from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE, OptimizerSettings
 from kibends.chain import (
     NM_PER_MM,
     Chain,
@@ -93,6 +93,15 @@ from kibends.snapshot import BoardSnapshot, Disc, LayerSnapshot, Via, ViaZone
 PAD_HALF_SIZE = 0.25
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
+
+
+def all_abnormal_bursts(settings: OptimizerSettings) -> int:
+    """The bursts a problem whose every burst ends abnormally takes under
+    `settings`: with coarse levels, the probe at the final spacing, then a
+    streak of `optimize.MAX_ABNORMAL_BURSTS` at each level, since a level
+    that gives up hands over; else one streak."""
+    levels = len(settings.coarse_spacings)
+    return int(levels > 0) + (levels + 1) * optimize_module.MAX_ABNORMAL_BURSTS
 
 
 class Ticking:

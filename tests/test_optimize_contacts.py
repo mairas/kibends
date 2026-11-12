@@ -65,10 +65,18 @@ def passing_over() -> ChainInput:
     return sliding(replace(chain, fixed=np.array([True, False, True])), {1: OVER})
 
 
-def test_an_end_in_a_pad_slides_toward_the_route_and_stays_inside() -> None:
+@pytest.mark.parametrize("coarse", [(), (1.2, 0.6)], ids=["one spacing", "levels"])
+def test_an_end_in_a_pad_slides_toward_the_route_and_stays_inside(
+    coarse: tuple[float, ...],
+) -> None:
+    # The end comes to rest on the pad's corner, a kink of its stop where
+    # every burst fails its first line search; with levels, each handover
+    # starts one such burst.
     chain = end_in_pad()
 
-    result = optimize_chains([chain], scenarios.PARAMS, SETTINGS)
+    result = optimize_chains(
+        [chain], scenarios.PARAMS, replace(SETTINGS, coarse_spacings=coarse)
+    )
 
     (got,) = result.chains
     assert result.termination is Termination.CONVERGED

@@ -77,6 +77,7 @@ from kibends.obstacles import ChainCentreline, Obstacles
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
+from kibends.polylines import measure
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
 from kibends.vias import StaticVia, ViaInput
@@ -149,8 +150,17 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+L_COARSE_BURSTS = 8
+"""Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
+reaches the final spacing."""
 
 
+SPACING_MEASURED = 1e-3
+"""Relative difference between a reported bend radius and the committed
+tracks' own at the same spacing, from their rounding to nanometres; a
+different spacing scales the radius of a corner with it."""
 KEPT = 1e-3
 """mm a chain's length may rise by between runs, as repulsion trades it."""
 # The runs of `return_via_board` with `BALANCED` here end 0.0005 to
@@ -805,6 +815,41 @@ class TestSmooth:
             segment(t) for t in cast(list[kbt.Track], capped.created)
         ]
 
+    @pytest.mark.parametrize(
+        ("limit", "warning"),
+        # Of the L's run: the probe, then bursts at 1.2 mm until the level
+        # settles at L_COARSE_BURSTS.
+        [
+            (1.5, "time limit before reaching the final spacing"),
+            (L_COARSE_BURSTS + 0.5, "time limit without converging"),
+        ],
+        ids=["at a coarse level", "at the final level"],
+    )
+    def test_a_time_limit_warns_whether_it_stopped_before_the_final_spacing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        limit: float,
+        warning: str,
+    ) -> None:
+        connect.to(l_board())
+        monkeypatch.setattr(
+            pipeline,
+            "optimize_chains",
+            at(replace(COARSE, coarse_spacings=COARSE_LEVELS)),
+        )
+        monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
+
+        run("--dry-run", f"--time-limit={limit}")
+
+        (stopped,) = [
+            line
+            for line in log
+            if line.startswith("WARNING The optimizer stopped at its time limit")
+        ]
+        assert warning in stopped
+
     def test_reports_the_optimize_stages_wall_time(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -878,6 +923,93 @@ class TestSmooth:
         options = cli.smooth_options(cli.parse_args(["smooth"]))
 
         assert options.settings == DEFAULT_SETTINGS
+
+    @pytest.mark.parametrize(
+        ("args", "coarse", "final"),
+        [
+            (("--spacing", "1.6", "0.4", "0.1"), (1.6, 0.4), 0.1),
+            (("--spacing", "0.05"), (), 0.05),
+            (
+                ("--spacing", "12.8", "6.4", "3.2", "1.6", "0.8", "0.4", "0.2", "0.1"),
+                (12.8, 6.4, 3.2, 1.6, 0.8, 0.4, 0.2),
+                0.1,
+            ),
+        ],
+        ids=["levels", "one", "most"],
+    )
+    def test_the_spacing_schedule_ends_at_the_final_spacing(
+        self, args: tuple[str, ...], coarse: tuple[float, ...], final: float
+    ) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+
+        assert options.settings.coarse_spacings == coarse
+        assert options.settings.spacing == final
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            ("0.1", "0.4"),
+            ("0.4", "0.4"),
+            ("0",),
+            ("-0.1",),
+            ("nan",),
+            ("inf", "0.1"),
+            ("0.2",),
+            ("0.4", "0.2"),
+            ("25.6", "12.8", "6.4", "3.2", "1.6", "0.8", "0.4", "0.2", "0.1"),
+        ],
+        ids=[
+            "increasing",
+            "repeated",
+            "zero",
+            "negative",
+            "nan",
+            "infinite",
+            "coarse-final",
+            "coarse-final-after-levels",
+            "nine",
+        ],
+    )
+    def test_a_bad_spacing_schedule_is_rejected(
+        self, values: tuple[str, ...], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as raised:
+            cli.parse_args(["smooth", "--spacing", *values])
+
+        assert raised.value.code == 2
+        assert "argument --spacing:" in capsys.readouterr().err
+
+    def test_the_final_spacing_reaches_the_optimizer_and_the_reports(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        board = connect.to(l_board())
+        given: list[OptimizerSettings] = []
+        real = at(COARSE)
+
+        def spy(
+            chains: object, params: object, settings: OptimizerSettings, **kw: object
+        ) -> RunResult:
+            given.append(settings)
+            return real(chains, params, settings, **kw)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", spy)
+
+        run("--spacing", "0.05")
+
+        ((settings,), (report,)) = given, reports
+        assert (settings.coarse_spacings, settings.spacing) == ((), 0.05)
+        committed = np.array(created_path(board).coords)
+        tightest = report.chains[0].after.tightest_bend_radius
+        assert tightest == pytest.approx(
+            measure(committed, 0.05).tightest_bend_radius, rel=SPACING_MEASURED
+        )
+        assert tightest != pytest.approx(
+            measure(committed, DEFAULT_SETTINGS.spacing).tightest_bend_radius,
+            rel=SPACING_MEASURED,
+        )
 
     def test_settled_change_is_half_the_chord_tolerance(self) -> None:
         args = cli.parse_args(["smooth", "--chord-tolerance=0.04"])
@@ -1629,7 +1761,10 @@ def test_an_equally_spaced_bus_converges(
     """The energy is differentiable at the tie, so no problem gives up and
     every track of the bus shortens."""
     monkeypatch.setattr(
-        pipeline, "optimize_chains", at(replace(COARSE, spacing=Z_BUS_SPACING))
+        pipeline,
+        "optimize_chains",
+        # At that spacing alone: it is coarser than the default coarse levels.
+        at(replace(COARSE, spacing=Z_BUS_SPACING, coarse_spacings=())),
     )
     connect.to(z_bus_board())
 
@@ -3393,7 +3528,7 @@ def test_outcome_counts_the_vias_rejected_edge_moves() -> None:
     chain = pipeline.ChainReport("SIG", "F.Cu", WIDTH, "SIG", 1, stats, stats, 2, True)
     via = pipeline.ViaReport("v", VIA, (4.0, 1.0), rejected_edges=3)
     report = pipeline.OptimizerReport(
-        (chain,), (via,), (), Termination.CONVERGED, 7, 3.42, (), BOARD_FRAME
+        (chain,), (via,), (), Termination.CONVERGED, 7, False, 3.42, (), BOARD_FRAME
     )
 
     outcome = cli.format_outcome(report)
@@ -3425,6 +3560,7 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
         (pair,),
         Termination.CONVERGED,
         7,
+        False,
         0.04,
         ((problem, 2),),
         UserFrame((0.5, 3.0)),

@@ -17,6 +17,7 @@ from conftest import (
     CURVATURE_ATOL,
     CURVATURE_RTOL,
     CURVATURE_STEP,
+    all_abnormal_bursts,
     build_via_obstacles,
     first_check,
     neutral_distance,
@@ -67,6 +68,13 @@ from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+
+
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+ONE_SPACING_OR_LEVELS = pytest.mark.parametrize(
+    "coarse", [(), COARSE_LEVELS], ids=["one spacing", "levels"]
+)
 
 
 def run(scenario: ViasScenario, settings: OptimizerSettings = COARSE) -> RunResult:
@@ -144,8 +152,11 @@ def off_centre() -> ViasScenario:
     )
 
 
-def test_ends_off_the_via_s_centre_keep_their_offsets_exactly() -> None:
-    result = run(off_centre())
+@ONE_SPACING_OR_LEVELS
+def test_ends_off_the_via_s_centre_keep_their_offsets_exactly(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(off_centre(), replace(COARSE, coarse_spacings=coarse))
 
     given = off_centre()
     (via,) = result.vias
@@ -159,8 +170,11 @@ def test_ends_off_the_via_s_centre_keep_their_offsets_exactly() -> None:
     )
 
 
-def test_chains_on_one_layer_move_with_their_via_together() -> None:
-    result = run(scenarios.via_on_one_layer())
+@ONE_SPACING_OR_LEVELS
+def test_chains_on_one_layer_move_with_their_via_together(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(scenarios.via_on_one_layer(), replace(COARSE, coarse_spacings=coarse))
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
@@ -486,8 +500,11 @@ def test_a_via_is_not_held_back_by_a_chain_it_passes(nudge: float) -> None:
     assert via.position[1] < 0.1
 
 
-def test_three_chains_meet_where_the_via_joins_them_shortest() -> None:
-    result = run(scenarios.via_fermat())
+@ONE_SPACING_OR_LEVELS
+def test_three_chains_meet_where_the_via_joins_them_shortest(
+    coarse: tuple[float, ...],
+) -> None:
+    result = run(scenarios.via_fermat(), replace(COARSE, coarse_spacings=coarse))
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
@@ -1441,9 +1458,10 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     result = run(scenarios.via_detour())
 
     problem = "the chains and vias on F.Cu and B.Cu"
-    assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
+    every = all_abnormal_bursts(COARSE)
+    assert result.iterations == len(bursts) == every
     assert result.gave_up == ((problem, MAX_ABNORMAL_BURSTS),)
-    assert result.abnormal == ((problem, MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == ((problem, every),)
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
 
 
@@ -1719,7 +1737,10 @@ def moving_vias(scenario: ViasScenario) -> MovingVias:
 def test_chains_straightened_in_one_burst_are_kept() -> None:
     # Two free vertices a chain: one burst straightens the route, and the
     # via's move in it is less than the tolerance.
-    few = OptimizerSettings(spacing=2.5, settled_change=0.025, burst_maxiter=30)
+    # At that spacing alone: it is coarser than the default coarse levels.
+    few = OptimizerSettings(
+        spacing=2.5, coarse_spacings=(), settled_change=0.025, burst_maxiter=30
+    )
 
     result = run(scenarios.via_slack(FreeSpace(), (5.0, 0.01)), few)
 

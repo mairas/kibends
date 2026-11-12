@@ -1,7 +1,7 @@
 //! The run loop as Python sees it (`kibends_core::optimize`): a problem's
 //! state (`ProblemState`), the outer iterations that advance the problems
 //! (`advance`) and what they tell Python as they go (`FallbackNotice`,
-//! `AbnormalNotice`, `BurstNotice`, `ProgressNotice`).
+//! `AbnormalNotice`, `BurstNotice`, `StageNotice`, `ProgressNotice`).
 //!
 //! Each burst runs through the Python callable `advance` takes, given the
 //! burst's objective, start, scale and check (`Revert`), so that the
@@ -26,7 +26,7 @@ use kibends_core::optimize::layout;
 use kibends_core::optimize::problem::{self, Layout};
 use kibends_core::optimize::state::{MemberSetup, Setup, State, ViaSetup};
 use kibends_core::optimize::{
-    self as core, Bursts, End, NotFinite, Notice, Outcome, Ran, Settings,
+    self as core, Bursts, CoarseSpacings, End, NotFinite, Notice, Outcome, Ran, Settings,
 };
 
 /// An error of the run: Python's, or an energy that is not finite.
@@ -123,7 +123,9 @@ impl ProblemState {
     /// static `copper` and what only stops it in parts (`stop_parts`); the
     /// loose ends that share a point (`groups`, each member and whether it
     /// is its last point), what the vias' checks see (`sight`) and the
-    /// run's settings. Raises ValueError if its energy is not finite.
+    /// run's settings, the final `spacing` after the `coarse_spacings`.
+    /// Raises ValueError if its energy is not finite or there are more
+    /// than `MAX_COARSE_LEVELS` coarse spacings.
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -141,6 +143,7 @@ impl ProblemState {
         groups: Vec<Vec<(usize, bool)>>,
         sight: PyRef<'_, ViaSight>,
         spacing: f64,
+        coarse_spacings: Vec<f64>,
         settled_change: f64,
         stall_window: usize,
         stall_tolerance: f64,
@@ -148,6 +151,13 @@ impl ProblemState {
         ftol: f64,
         gtol: f64,
     ) -> PyResult<Self> {
+        let coarse = CoarseSpacings::new(&coarse_spacings).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "at most {} coarse spacings, got {}",
+                core::MAX_COARSE_LEVELS,
+                coarse_spacings.len()
+            ))
+        })?;
         let originals = polylines_of(&originals)?;
         let count = energy.inner.members.len();
         let anchors = masks_of(&anchors, &originals)?;
@@ -211,6 +221,7 @@ impl ProblemState {
             sight: sight.inner.clone(),
             settings: Settings {
                 spacing,
+                coarse,
                 settled_change,
                 stall_window,
                 stall_tolerance,
@@ -505,8 +516,25 @@ impl ProblemState {
                 .stiffness(&layout, &seen.inner, lookups.as_mut().map(|l| &mut l.inner));
         Ok(floats(
             py,
-            layout::scale(&stiffness, self.inner.shared().settings().spacing),
+            layout::scale(&stiffness, self.inner.level_spacing()),
         ))
+    }
+
+    /// The level of the schedule it runs at: its coarse spacings, then the
+    /// final one.
+    #[getter]
+    fn level(&self) -> usize {
+        self.inner.level
+    }
+
+    /// End a run stopped at a coarse level at the final spacing: its best
+    /// state subdivided there if some coarse burst ended normally, that
+    /// passes the guard and its energy is no higher than that of the
+    /// probe's best, or of the inputs if the probe moved nothing; else that
+    /// state. Does nothing at the final level. Raises ValueError if the
+    /// energy there is not finite.
+    fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.inner.finish().map_err(|e| not_finite(py, e.0))
     }
 
     /// Take `earlier`'s best state, keeping the sections held only here as
@@ -679,6 +707,10 @@ pub struct BurstNotice {
     /// The problem, by its place among those advanced.
     #[pyo3(get)]
     problem: usize,
+    /// The level of the schedule it ran at: its coarse spacings, then the
+    /// final one.
+    #[pyo3(get)]
+    level: usize,
     /// L-BFGS's iterations.
     #[pyo3(get)]
     iterations: u64,
@@ -710,6 +742,20 @@ pub struct BurstNotice {
     changes: Vec<f64>,
 }
 
+/// A problem enters a level of a schedule with coarse levels: each coarse
+/// level, and the final one after a coarser one hands over; not the probe
+/// at the final spacing that runs before them.
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct StageNotice {
+    /// The problem, by its place among those advanced.
+    #[pyo3(get)]
+    problem: usize,
+    /// The level of the schedule: its coarse spacings, then the final one.
+    #[pyo3(get)]
+    level: usize,
+}
+
 /// After an outer iteration: its number, its largest change, and each
 /// problem's length and energy.
 #[gen_stub_pyclass]
@@ -734,6 +780,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
             py,
             BurstNotice {
                 problem: b.problem,
+                level: b.level,
                 iterations: b.iterations,
                 evaluations: b.evaluations,
                 evaluating: b.evaluating,
@@ -747,6 +794,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
             },
         )?
         .into_any(),
+        Notice::Stage { problem, level } => Py::new(py, StageNotice { problem, level })?.into_any(),
         Notice::Progress {
             iteration,
             change,
@@ -849,7 +897,7 @@ fn advance(
     ))]
     burst: Bound<'_, PyAny>,
     #[gen_stub(override_type(
-        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]",
+        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]",
         imports = ("collections.abc",)
     ))]
     report: Py<PyAny>,
@@ -911,6 +959,7 @@ fn stalled(
     check_count("lengths", lengths.len(), lowest.len())?;
     let settings = Settings {
         spacing: 1.0,
+        coarse: CoarseSpacings::default(),
         settled_change: 0.0,
         stall_window: window,
         stall_tolerance: tolerance,
@@ -931,12 +980,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FallbackNotice>()?;
     m.add_class::<AbnormalNotice>()?;
     m.add_class::<BurstNotice>()?;
+    m.add_class::<StageNotice>()?;
     m.add_class::<ProgressNotice>()?;
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;
     m.add("MAX_ABNORMAL_BURSTS", core::MAX_ABNORMAL_BURSTS)?;
     m.add("PRESSED_DEPTH", core::PRESSED_DEPTH)?;
     m.add("INSIDE_TOLERANCE", core::INSIDE_TOLERANCE)?;
+    m.add("MAX_COARSE_LEVELS", core::MAX_COARSE_LEVELS)?;
     Ok(())
 }
 
@@ -952,4 +1003,10 @@ pyo3_stub_gen::module_variable!(
     "INSIDE_TOLERANCE",
     f64,
     core::INSIDE_TOLERANCE
+);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "MAX_COARSE_LEVELS",
+    usize,
+    core::MAX_COARSE_LEVELS
 );

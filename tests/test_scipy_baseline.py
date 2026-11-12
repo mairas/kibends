@@ -2,7 +2,8 @@
 (`tests/data/scipy_baseline_darwin-arm64.json`, recorded on macOS arm64
 while scipy ran the optimizer, as `scripts/record_baseline.py` says),
 which every platform compares with, since the Rust optimizer computes the
-same bits on every platform: every case ends as
+same bits on every platform. The cases run at one spacing, as recorded
+(`record_baseline.SETTINGS`), so they check that path: every case ends as
 it did under scipy, converged where it converged, its tracks no longer and
 no nearer to copper than scipy's by more than the tolerances below, and
 each moving via no nearer to what the baseline fixes: its static copper,

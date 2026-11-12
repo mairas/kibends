@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
-from conftest import clearances, total_energy, violations
+from conftest import all_abnormal_bursts, clearances, total_energy, violations
 from distance_fields import (
     Box,
     Disc,
@@ -27,6 +27,7 @@ from shapely import wkt
 import kibends.optimize as optimize_module
 from kibends.bursts import (
     INSIDE_TOLERANCE,
+    MAX_COARSE_LEVELS,
     Burst,
     Check,
     Objective,
@@ -36,7 +37,7 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize
+from kibends.optimize import optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
@@ -100,9 +101,11 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 WRAP_SETTINGS = replace(
     SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
 )
-# A rerun on the wrap's own output wanders along the flat stretches before
-# it settles, by amounts that vary with the platform's floating point.
-# Measured on macOS: 4 iterations, 9.5 µm moved, the length 0.18 µm longer.
+# A rerun at the defaults on the wrap's own output settles within these.
+# Measured: 1 iteration, 1.2 µm moved, the length 4 nm longer. At
+# WRAP_SETTINGS' coarser final spacing, resampling the output cuts its
+# chords into the repulsion, and pushing them out runs the coarse levels
+# again, rejecting edge moves.
 RERUN_ITERATIONS = 6
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3
@@ -138,13 +141,14 @@ class TestWrap:
             scenarios.ENVELOPE, rel=0.3
         )
 
-    def test_rerun_on_own_output_is_near_no_op(self, wrapped: OptimizeResult) -> None:
+    def test_rerun_on_own_output_is_near_no_op(self) -> None:
+        wrapped = run(scenarios.wrap(), SETTINGS)
         again = optimize(
             wrapped.polyline,
             wrapped.fixed,
             scenarios.WRAP_BOX,
             scenarios.wrap().params,
-            WRAP_SETTINGS,
+            SETTINGS,
         )
 
         assert again.rejected_edges == 0
@@ -469,6 +473,16 @@ def test_endpoints_must_be_fixed() -> None:
         optimize(polyline, np.array([True, False]), FreeSpace(), PARAMS)
 
 
+def test_the_optimizer_refuses_more_coarse_spacings_than_it_holds() -> None:
+    polyline, fixed = chain((0.0, 0.0), (1.0, 0.0), (1.0, 1.0))
+    too_many = tuple(0.2 * 2.0**k for k in reversed(range(MAX_COARSE_LEVELS + 1)))
+    settings = replace(SETTINGS)
+    # Past OptimizerSettings' own check, to reach the binding's.
+    object.__setattr__(settings, "coarse_spacings", too_many)
+    with pytest.raises(ValueError, match="coarse spacings"):
+        optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
+
+
 def test_measure_reports_bend_and_length() -> None:
     angles = np.linspace(0.0, np.pi, 200)
     radius = 1.5
@@ -507,7 +521,8 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 BURST_LINE = re.compile(
     r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS iterations, "
     r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
-    r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"$'
+    r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"'
+    r"(?:, at (\d+(?:\.\d+)?) mm spacing)?$"
 )
 LOGGED_BURSTS = 3
 
@@ -518,6 +533,9 @@ class BurstCost(NamedTuple):
     evaluating: float
     rest: float
     ending: str
+    coarse: float | None
+    """The spacing of the coarse level it ran at, mm; None at the final
+    spacing."""
 
 
 def burst_costs(log: list[str]) -> list[BurstCost]:
@@ -526,7 +544,14 @@ def burst_costs(log: list[str]) -> list[BurstCost]:
     matches = [BURST_LINE.match(line) for line in lines]
     assert all(matches), lines
     return [
-        BurstCost(int(m[1]), int(m[2]), float(m[3]), float(m[4]), m[5])
+        BurstCost(
+            int(m[1]),
+            int(m[2]),
+            float(m[3]),
+            float(m[4]),
+            m[5],
+            None if m[6] is None else float(m[6]),
+        )
         for m in matches
         if m
     ]
@@ -551,6 +576,87 @@ def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
     assert info and not any("Burst" in line for line in info)
 
 
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+BOWED = ((0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
+"""A chain the probe at the final spacing does not settle."""
+
+
+def stage_lines(log: list[str]) -> list[str]:
+    """The lines that say a problem enters a level."""
+    return [line.strip() for line in log if "coarsely" in line or "Refining" in line]
+
+
+def on_two_layers(*vertices: tuple[float, float]) -> list[ChainInput]:
+    """A chain on F.Cu and a copy on B.Cu: two problems."""
+    return [
+        scenarios.selected(layer, layer, FreeSpace(), *vertices, layer=layer)
+        for layer in ("F.Cu", "B.Cu")
+    ]
+
+
+def test_each_problem_logs_each_level_it_enters_once_at_info(log: list[str]) -> None:
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+
+    result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
+
+    assert result.termination is Termination.CONVERGED
+    for layer in ("F.Cu", "B.Cu"):
+        assert [line for line in stage_lines(log) if f" on {layer} " in line] == [
+            f"INFO Optimizing the chains on {layer} coarsely, at 1.2 mm spacing",
+            f"INFO Optimizing the chains on {layer} coarsely, at 0.6 mm spacing",
+            f"INFO Refining the chains on {layer} at 0.3 mm spacing",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("vertices", "coarse"),
+    [(BOWED, ()), (((0.0, 0.0), (10.0, 0.0)), COARSE_LEVELS)],
+    ids=["one spacing", "nothing to do"],
+)
+def test_a_run_without_levels_to_enter_logs_no_stage(
+    log: list[str],
+    vertices: tuple[tuple[float, float], ...],
+    coarse: tuple[float, ...],
+) -> None:
+    optimize_chains(
+        on_two_layers(*vertices), PARAMS, replace(COARSE, coarse_spacings=coarse)
+    )
+
+    assert stage_lines(log) == []
+
+
+def test_a_burst_at_a_coarse_level_logs_its_spacing(log: list[str]) -> None:
+    polyline, fixed = chain(*BOWED)
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+
+    optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
+
+    levels = [cost.coarse for cost in burst_costs(log)]
+    # The probe at the final spacing, then each level in turn.
+    assert levels[0] is None
+    assert levels[-1] is None
+    assert [c for c in dict.fromkeys(levels) if c is not None] == list(COARSE_LEVELS)
+
+
+@pytest.mark.parametrize(
+    ("cap", "before_final"),
+    # Of BOWED's run: the probe, two bursts at 1.2 mm, one at 0.6 mm, then
+    # the final spacing.
+    [(2, True), (4, False)],
+    ids=["at a coarse level", "at the final level"],
+)
+def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
+    cap: int, before_final: bool
+) -> None:
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, max_iterations=cap)
+
+    result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
+
+    assert result.termination is Termination.ITERATION_CAP
+    assert result.before_final_spacing is before_final
+
+
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     # Straight and off the walls' midline, the chain is as short as it can
     # be, so every step the misleading gradient takes, towards the nearer
@@ -561,7 +667,7 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     result = optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
     assert result.termination is Termination.ABNORMAL
-    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert result.abnormal_bursts == all_abnormal_bursts(SETTINGS)
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
@@ -585,7 +691,7 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
     result = optimize(polyline, fixed, FreeSpace(), PARAMS, COARSE)
 
     assert result.termination is Termination.GAVE_UP
-    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert result.abnormal_bursts == all_abnormal_bursts(COARSE)
     # The bursts before the streak ended were kept: the best state is shorter.
     assert result.after.length < result.before.length
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
@@ -603,7 +709,7 @@ def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
     costs = burst_costs(log)
-    assert len(costs) == MAX_ABNORMAL_BURSTS
+    assert len(costs) == all_abnormal_bursts(SETTINGS)
     for cost in costs:
         assert cost.iterations == 0
         assert cost.evaluations > 0

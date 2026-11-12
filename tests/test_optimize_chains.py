@@ -18,6 +18,7 @@ from conftest import (
     BOARD_FRAME,
     BurstClock,
     Ticking,
+    all_abnormal_bursts,
     clearances,
     extract_chains,
     layer_energy,
@@ -57,6 +58,9 @@ from kibends.simplify import simplify_chains
 from kibends.via_moves import MovingVias
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+ONE_SPACING = replace(COARSE, coarse_spacings=())
+"""COARSE at its final spacing alone, for a premise that counts the bursts of
+one abnormal streak: a coarse level hands its streak over."""
 
 
 EQUAL_PITCH = 0.6
@@ -652,24 +656,153 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
     assert energies[-1] < energies[0]
 
 
-def test_straight_chains_have_nothing_to_do() -> None:
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+LEVELS = (1.6, 0.4)
+"""Coarse spacings above the default final 0.1 mm."""
+
+
+@pytest.mark.parametrize("coarse", [(), COARSE_LEVELS], ids=["one spacing", "levels"])
+def test_straight_chains_have_nothing_to_do(coarse: tuple[float, ...]) -> None:
     free = FreeSpace()
     chains = (
         selected("A", "A", free, (0.0, 0.0), (10.0, 0.0)),
         selected("B", "B", free, (0.0, 1.0), (10.0, 1.0)),
     )
 
-    result = optimize_chains(chains, scenarios.PARAMS, COARSE)
+    result = optimize_chains(
+        chains, scenarios.PARAMS, replace(COARSE, coarse_spacings=coarse)
+    )
 
     assert result.termination is Termination.NOTHING_TO_DO
+    assert result.iterations == 1
     for chain, given in zip(result.chains, chains, strict=True):
         np.testing.assert_array_equal(chain.polyline, given.centreline.points)
 
 
-# A rerun on the squeeze's own output settles within these, which vary with
-# the platform's floating point. Measured on macOS: 4 iterations and 10 µm
-# moved; under scipy, 4 to 5 iterations and 32 µm on Linux.
-REPEAT_ITERATIONS = 8
+def test_a_rerun_with_coarse_levels_on_converged_output_has_nothing_to_do() -> None:
+    # The first burst runs at the final spacing, and finds nothing to move.
+    # Not every scenario's output is still enough for that: the squeeze's
+    # first burst moves about 5 µm, and the levels run again.
+    scenario = scenarios.drape()
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    first = run(scenario, settings)
+    again = tuple(
+        replace(
+            given,
+            centreline=replace(given.centreline, points=chain.polyline),
+            fixed=chain.fixed,
+        )
+        for given, chain in zip(scenario.chains, first.chains, strict=True)
+    )
+
+    second = optimize_chains(again, scenario.params, settings)
+
+    assert second.termination is Termination.NOTHING_TO_DO
+    assert second.iterations == 1
+    for before, chain in zip(first.chains, second.chains, strict=True):
+        np.testing.assert_array_equal(chain.polyline, before.polyline)
+
+
+def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input() -> None:
+    # The tent's first burst on its own output moves it, so the coarse
+    # levels run again; what they leave counts only if it costs no more.
+    scenario = scenarios.tent()
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    first = run(scenario, settings)
+    again = tuple(
+        replace(
+            given,
+            centreline=replace(given.centreline, points=chain.polyline),
+            fixed=chain.fixed,
+        )
+        for given, chain in zip(scenario.chains, first.chains, strict=True)
+    )
+
+    second = optimize_chains(again, scenario.params, settings)
+    unchanged = optimize_chains(
+        again, scenario.params, replace(settings, max_iterations=0)
+    )
+
+    assert second.iterations > 1
+
+    def energy(of: RunResult) -> float:
+        return committed_energy(again, of, scenario.params, settings)
+
+    assert energy(second) <= energy(unchanged)
+
+
+BURST_BUDGET = 4
+"""Bursts too few at 0.1 mm for `bowed_among_many`'s long track to go
+taut."""
+BOWED = 0.05
+"""mm longer than its solo length that the long track still is after
+BURST_BUDGET bursts at one spacing; measured about 0.106."""
+TAUT = 1e-3
+"""mm longer than its solo length that the long track may end taut;
+measured below 1e-5."""
+LAID_OUT = 1e-6
+"""Relative amount an edge may exceed the spacing it was laid out at, the
+resampling's slack."""
+
+
+def excess(result: RunResult) -> float:
+    """How much longer than its solo length the long track of
+    `scenarios.bowed_among_many` ends, mm."""
+    return length(result.chains[0].polyline) - scenarios.BOWED_LENGTH
+
+
+def test_a_long_track_among_many_goes_taut_only_with_coarse_levels() -> None:
+    scenario = scenarios.bowed_among_many()
+    budget = OptimizerSettings(max_iterations=BURST_BUDGET, coarse_spacings=())
+
+    one = run(scenario, budget)
+    levels = run(scenario, replace(budget, coarse_spacings=LEVELS))
+
+    assert excess(one) > BOWED
+    assert excess(levels) < TAUT
+
+
+def test_a_run_stopped_at_a_coarse_level_ends_at_the_final_spacing() -> None:
+    # Capped after the first burst at 1.6 mm.
+    scenario = scenarios.bowed_among_many()
+    settings = OptimizerSettings(max_iterations=2, coarse_spacings=LEVELS)
+
+    result = run(scenario, settings)
+
+    assert result.termination is Termination.ITERATION_CAP
+    for chain in result.chains:
+        edges = np.linalg.norm(np.diff(chain.polyline, axis=0), axis=1)
+        assert edges.max() <= settings.spacing * (1 + LAID_OUT)
+    unchanged = run(scenario, replace(settings, max_iterations=0))
+
+    def energy(of: RunResult) -> float:
+        return committed_energy(scenario.chains, of, scenario.params, settings)
+
+    assert energy(result) < energy(unchanged)
+
+
+def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> None:
+    # The bus's coarse chords cut its corner into the next track's
+    # clearance; the free track keeps its progress all the same.
+    scenario = scenarios.bowed_beside_bus()
+
+    result = run(scenario, OptimizerSettings(coarse_spacings=LEVELS))
+
+    assert result.termination is Termination.CONVERGED
+    assert excess(result) < TAUT
+    bus = [c.polyline for c in result.chains[1:]]
+    for a, b in itertools.pairwise(bus):
+        assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+
+
+# A rerun on the squeeze's own output settles within these. Measured with
+# the default coarse levels: 13 iterations and 23 µm moved, and as many
+# iterations at the default final spacing: the first burst moves the
+# output by more than the settle threshold without shortening it, and the
+# problem runs the coarse levels again. At one spacing it took 4
+# iterations and 10 µm.
+REPEAT_ITERATIONS = 16
 REPEAT_DRIFT = 0.06
 
 
@@ -895,13 +1028,44 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
 
     result = run(scenario)
 
-    assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
+    every = all_abnormal_bursts(COARSE)
+    assert result.iterations == len(bursts) == every
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == (("the chains on F.Cu", every),)
     # The bursts were taken: the run lowered the energy, but did not converge.
     assert result.termination is Termination.GAVE_UP
     for chain in result.chains:
         assert length(chain.polyline) < chain.before.length
+
+
+LAID_OUT_SPACING = 0.25
+"""A spacing that divides 5 mm."""
+
+
+def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        return Burst(start.copy(), abnormal=True)
+
+    monkeypatch.setattr(optimize_module, "run_burst", failing)
+    # Legs of 5 mm, which LAID_OUT_SPACING resamples onto themselves and the
+    # coarse levels' chords cut across the apex.
+    chain = selected("V", "A", FreeSpace(), (0.0, 0.0), (4.0, 3.0), (8.0, 0.0))
+    settings = replace(COARSE, spacing=LAID_OUT_SPACING)
+
+    result = optimize_chains([chain], scenarios.PARAMS, settings)
+
+    # No burst descended at a coarse level, so the run ends at its inputs
+    # and is refused, as at one spacing.
+    assert result.iterations == all_abnormal_bursts(settings)
+    assert result.termination is Termination.ABNORMAL
 
 
 def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
@@ -954,7 +1118,7 @@ def test_a_normal_burst_ends_an_abnormal_streak(
     monkeypatch.setattr(optimize_module, "run_burst", second_normal)
 
     # The normal burst does not settle the problem at this settled change.
-    result = run(bumps(), replace(COARSE, settled_change=3e-4))
+    result = run(bumps(), replace(ONE_SPACING, settled_change=3e-4))
 
     # One abnormal burst, a normal one, then a full streak.
     assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS + 2
@@ -1393,8 +1557,11 @@ BUS_SHORTENED = 316.0
 """A summed length the bus falls below once it moves, mm: from 324.853 mm,
 where the nearest neighbour alone left it, about a third of the way to
 straight."""
-BUS_SETTINGS = OptimizerSettings(spacing=1.6, burst_maxiter=30, max_iterations=4)
-"""Coarse settings: vertices as far apart as issue 106's faster experiment."""
+BUS_SETTINGS = OptimizerSettings(
+    spacing=1.6, coarse_spacings=(), burst_maxiter=30, max_iterations=4
+)
+"""Coarse settings: vertices as far apart as issue 106's faster experiment,
+at that spacing alone, which is no finer than the default coarse levels."""
 
 
 def test_an_equally_spaced_bus_moves() -> None:

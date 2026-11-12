@@ -12,6 +12,7 @@ from kibends._core.testing import quadratic
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     FALLBACK_WARNING,
+    OptimizerSettings,
     ScaledObjective,
     run_burst,
 )
@@ -214,3 +215,32 @@ def test_a_burst_its_stop_never_ends_runs_whole() -> None:
     np.testing.assert_array_equal(burst.points, whole.points)
     assert burst.iterations == whole.iterations
     assert not burst.cut
+
+
+def test_settings_take_coarse_spacings_above_the_final_one_coarsest_first() -> None:
+    settings = OptimizerSettings(spacing=0.1, coarse_spacings=(1.6, 0.4))
+    assert settings.coarse_spacings == (1.6, 0.4)
+    assert settings.spacing == 0.1
+
+
+def test_settings_run_coarse_levels_by_default() -> None:
+    assert DEFAULT_SETTINGS.coarse_spacings == (1.6, 0.4)
+
+
+@pytest.mark.parametrize(
+    "coarse",
+    [(0.1,), (0.05,), (0.4, 0.1), (0.4, 0.4), (0.4, 1.6)],
+    ids=["equal", "below", "last-equal", "repeated", "increasing"],
+)
+def test_settings_refuse_coarse_spacings_not_falling_above_the_final_one(
+    coarse: tuple[float, ...],
+) -> None:
+    with pytest.raises(ValueError, match="coarse_spacings"):
+        OptimizerSettings(spacing=0.1, coarse_spacings=coarse)
+
+
+def test_settings_refuse_more_coarse_spacings_than_the_optimizer_holds() -> None:
+    most = tuple(0.2 * 2.0**k for k in reversed(range(_core.MAX_COARSE_LEVELS)))
+    assert OptimizerSettings(coarse_spacings=most).coarse_spacings == most
+    with pytest.raises(ValueError, match="coarse_spacings"):
+        OptimizerSettings(coarse_spacings=(2.0 * most[0], *most))

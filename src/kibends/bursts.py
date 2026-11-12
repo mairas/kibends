@@ -22,6 +22,7 @@ burst's result stay in x.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import pairwise
 
 from kibends import _core
 from kibends.energy import FloatArray
@@ -36,6 +37,9 @@ INSIDE_TOLERANCE = _core.INSIDE_TOLERANCE
 """Depth inside the clearance, mm, that the violation guard ignores as float
 noise: a track routed at exactly the clearance resamples to vertices about
 1e-15 mm inside. Far below KiCad's 1 nm coordinate step."""
+
+MAX_COARSE_LEVELS = _core.MAX_COARSE_LEVELS
+"""The most coarse spacings a schedule may hold before its final spacing."""
 
 # Edges shorter than this fraction of the spacing meet the short-edge barrier.
 # Resampling leaves every edge at a free vertex at least half the spacing.
@@ -60,7 +64,19 @@ strayed visibly from the optimised curve."""
 @dataclass(frozen=True)
 class OptimizerSettings:
     spacing: float = 0.1
-    """Target distance between resampled vertices, mm."""
+    """Target distance between resampled vertices at the final level, mm."""
+    coarse_spacings: tuple[float, ...] = (1.6, 0.4)
+    """The spacings a problem runs at before `spacing`, mm, coarsest first:
+    each above the next and the last above `spacing`, at most
+    `MAX_COARSE_LEVELS` of them. Empty runs at `spacing` alone.
+
+    A long track bowed across its whole span barely moves per burst at
+    0.1 mm among many other tracks; with few vertices it straightens in a
+    few bursts. On a region of a real board, 92 chains and 70 moving vias in
+    one problem, 1.6 and 0.4 took 31 iterations and 8.7 s where 0.1 alone
+    took 113 and 45 s and left a 45 mm track bowed, and the whole board
+    ran best with them among the schedules compared
+    (https://github.com/mairas/kibends/issues/184)."""
     settled_change: float = DEFAULT_CHORD_TOLERANCE / 2
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles. Half the chord tolerance, the run's own unless
@@ -105,6 +121,17 @@ class OptimizerSettings:
     def __post_init__(self) -> None:
         if self.spacing <= 0.0:
             raise ValueError(f"spacing must be positive, got {self.spacing}")
+        levels = (*self.coarse_spacings, self.spacing)
+        if any(finer >= coarser for coarser, finer in pairwise(levels)):
+            raise ValueError(
+                "coarse_spacings must fall strictly, coarsest first, to above "
+                f"spacing {self.spacing}, got {self.coarse_spacings}"
+            )
+        if len(self.coarse_spacings) > MAX_COARSE_LEVELS:
+            raise ValueError(
+                f"coarse_spacings holds at most {MAX_COARSE_LEVELS} spacings, "
+                f"got {len(self.coarse_spacings)}"
+            )
 
     @property
     def short_edge(self) -> float:

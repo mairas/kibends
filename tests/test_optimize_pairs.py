@@ -13,7 +13,14 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, first_check, gap_range, layer_energy, total_energy
+from conftest import (
+    BurstClock,
+    all_abnormal_bursts,
+    first_check,
+    gap_range,
+    layer_energy,
+    total_energy,
+)
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from reference_fields import chain_field, neighbour_field
 from scenarios import (
@@ -61,6 +68,9 @@ from kibends.simplify import simplify_chains
 from kibends.vias import ViaInput
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+ONE_SPACING = replace(COARSE, coarse_spacings=())
+"""COARSE at its final spacing alone, for a premise that counts bursts at one
+spacing or compares with the inputs resampled at it."""
 CORNER = OptimizerSettings(burst_maxiter=30)
 """The default spacing, at which a centreline pulled taut against its
 direction pins bends tighter than the limit, with short bursts."""
@@ -659,15 +669,17 @@ starts with the section held: two settled runs reach the same shape from
 different starts, each within `COARSE.settled_change`."""
 
 HOLD_BUDGET = 4
-"""Bursts of `pair_tent_under_roof` that the time limit allows: the pair has
-come down onto the bar, and the roof has followed it."""
+"""Bursts of `pair_tent_under_roof` at one spacing that the time limit
+allows: the pair has come down onto the bar, and the roof has followed it."""
 
 
 def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = scenarios.pair_tent_under_roof()
-    limited = replace(COARSE, time_limit=HOLD_BUDGET)
+    # Stopped at a coarse level, the roof would go back to its coarse
+    # resampling, not to the inputs at the final spacing.
+    limited = replace(ONE_SPACING, time_limit=HOLD_BUDGET)
     plain = optimize_chains(
         scenario.chains,
         scenario.params,
@@ -701,6 +713,30 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
             COARSE.spacing,
         )[0],
     )
+
+
+HELD_COARSELY = 8
+"""An iteration cap at which `pair_tent_under_roof` with coarse levels
+1.2 and 0.6 mm reaches it at 0.6 mm, so that its section is held there."""
+
+
+def test_a_hold_at_a_coarse_level_logs_no_stage_again(log: list[str]) -> None:
+    settings = replace(COARSE, coarse_spacings=(1.2, 0.6), max_iterations=HELD_COARSELY)
+
+    result = hold_once(scenarios.pair_tent_under_roof(), settings)
+
+    assert result.termination is Termination.CONVERGED
+    stages = [
+        line.strip()
+        for line in log
+        if any(word in line for word in ("coarsely", "Refining", "Holding"))
+    ]
+    assert [line.split(" and going on")[0] for line in stages] == [
+        "INFO Optimizing the chains on F.Cu coarsely, at 1.2 mm spacing",
+        "INFO Optimizing the chains on F.Cu coarsely, at 0.6 mm spacing",
+        "INFO Holding 1 coupled section of the chains on F.Cu as drawn",
+        "INFO Refining the chains on F.Cu at 0.3 mm spacing",
+    ]
 
 
 TENT_SHIFT = 12.0
@@ -851,10 +887,11 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
 
     # Named when the run gave up, and again, held, when it converged.
     assert holds == [0, 0]
+    every = all_abnormal_bursts(COARSE)
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
     # The abnormal bursts were all before the hold.
-    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == (("the chains on F.Cu", every),)
 
 
 JOINED_AT = (9.5, 5.0)
@@ -1490,7 +1527,8 @@ def test_a_pin_at_the_outer_corner_of_a_wider_pair_stays_on_its_track(
 
 SHARP_SPACING = 1.0
 """A spacing at which the section's corner may turn by 100 degrees within
-the bend-radius limit."""
+the bend-radius limit, run alone: the default coarse levels must each be
+above the final spacing, and 0.4 mm is not."""
 TURN = math.radians(60.0)
 SHARPENING = math.radians(40.0)
 LEG = 5.0
@@ -1548,7 +1586,7 @@ def test_a_crossing_that_names_nothing_moved_moves_the_burst_back_whole(
     # neither of which moved; the post is pinned. The section judges its
     # own edges by its centreline's extent, which the post starts inside
     # and gets no deeper into.
-    settings = replace(COARSE, spacing=SHARP_SPACING, max_iterations=1)
+    settings = replace(ONE_SPACING, spacing=SHARP_SPACING, max_iterations=1)
     revert, start = first_check(
         monkeypatch, lambda: run(post_past_the_corner(), settings)
     )

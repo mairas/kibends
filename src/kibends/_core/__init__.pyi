@@ -31,6 +31,7 @@ __all__ = [
     "LINE",
     "Lookups",
     "MAX_ABNORMAL_BURSTS",
+    "MAX_COARSE_LEVELS",
     "MAX_SMOOTH_TURN",
     "Member",
     "Members",
@@ -55,6 +56,7 @@ __all__ = [
     "SelfCheck",
     "Shapes",
     "SmoothAnswer",
+    "StageNotice",
     "StaticEdges",
     "StaticFree",
     "Statistics",
@@ -131,6 +133,7 @@ INDEXED_EDGES: builtins.int = 128
 INSIDE_TOLERANCE: builtins.float = 1e-07
 LINE: builtins.int = 0
 MAX_ABNORMAL_BURSTS: builtins.int = 3
+MAX_COARSE_LEVELS: builtins.int = 7
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
 OUTSIDE: builtins.int = 2
 PRESSED_DEPTH: builtins.float = 0.02
@@ -228,6 +231,12 @@ class BurstNotice:
     def problem(self) -> builtins.int:
         r"""
         The problem, by its place among those advanced.
+        """
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule it ran at: its coarse spacings, then the
+        final one.
         """
     @property
     def iterations(self) -> builtins.int:
@@ -790,7 +799,13 @@ class ProblemState:
         r"""
         Its abnormal bursts in a row, up to the last.
         """
-    def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule it runs at: its coarse spacings, then the
+        final one.
+        """
+    def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its
         centreline as given (`originals`), its pinned vertices (`anchors`),
@@ -801,7 +816,9 @@ class ProblemState:
         static `copper` and what only stops it in parts (`stop_parts`); the
         loose ends that share a point (`groups`, each member and whether it
         is its last point), what the vias' checks see (`sight`) and the
-        run's settings. Raises ValueError if its energy is not finite.
+        run's settings, the final `spacing` after the `coarse_spacings`.
+        Raises ValueError if its energy is not finite or there are more
+        than `MAX_COARSE_LEVELS` coarse spacings.
         """
     def length(self) -> builtins.float:
         r"""
@@ -864,6 +881,15 @@ class ProblemState:
         Each flat coordinate's scale for a burst from `starts`, the
         stiffness taken as `seen` shows the members there, searching
         through `lookups` if given.
+        """
+    def finish(self) -> None:
+        r"""
+        End a run stopped at a coarse level at the final spacing: its best
+        state subdivided there if some coarse burst ended normally, that
+        passes the guard and its energy is no higher than that of the
+        probe's best, or of the inputs if the probe moved nothing; else that
+        state. Does nothing at the final level. Raises ValueError if the
+        energy there is not finite.
         """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
         r"""
@@ -988,6 +1014,24 @@ class SmoothAnswer:
     def share(self) -> numpy.typing.NDArray[numpy.float64]: ...
     @property
     def direction(self) -> numpy.typing.NDArray[numpy.float64]: ...
+
+@typing.final
+class StageNotice:
+    r"""
+    A problem enters a level of a schedule with coarse levels: each coarse
+    level, and the final one after a coarser one hands over; not the probe
+    at the final spacing that runs before them.
+    """
+    @property
+    def problem(self) -> builtins.int:
+        r"""
+        The problem, by its place among those advanced.
+        """
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule: its coarse spacings, then the final one.
+        """
 
 @typing.final
 class StaticEdges:
@@ -1152,7 +1196,7 @@ class Zone:
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
     Outer iterations of `problems` from `iteration` until `cap`, each giving
     every problem that has not settled one burst, until every problem has

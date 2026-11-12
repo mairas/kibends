@@ -298,6 +298,63 @@ def squeeze() -> ChainsScenario:
     )
 
 
+BOWED_LENGTH = 40.0
+"""mm between the ends of `bowed_among_many`'s long track: its solo length."""
+BOWED_RISE = 2.0
+BOWED_OTHERS = 20
+BUS_TRACKS = 2
+BUS_CORNER = 10.0
+"""mm along x where `bowed_beside_bus`'s bus turns up."""
+
+
+def bowed_among_many() -> ChainsScenario:
+    """A 40 mm free track bowed up at its middle, then many short kinked
+    chains of other nets above it, all in one problem. At 0.1 mm the track
+    has 400 vertices, and its bow across the whole span is about N² softer
+    than one vertex, so a few bursts at that spacing leave it bowed."""
+    free = FreeSpace()
+    others = tuple(
+        selected(f"o{k}", f"N{k}", free, (x, 10.0), (x + 1.5, 11.0), (x + 3.0, 10.0))
+        for k in range(BOWED_OTHERS)
+        for x in (4.0 * k,)
+    )
+    return ChainsScenario(
+        "bowed-among-many",
+        (
+            selected(
+                "long",
+                "L",
+                free,
+                (0.0, 0.0),
+                (BOWED_LENGTH / 2, BOWED_RISE),
+                (BOWED_LENGTH, 0.0),
+            ),
+            *others,
+        ),
+    )
+
+
+def bowed_beside_bus() -> ChainsScenario:
+    """`bowed_among_many`'s long track beside a bus of tracks that turn a
+    corner nested at their clearance, so that coarse chords cut the
+    corners into each other's clearance."""
+    free = FreeSpace()
+    bus = tuple(
+        selected(
+            f"bus{k}",
+            f"B{k}",
+            free,
+            (0.0, 10.0 + offset),
+            (BUS_CORNER - offset, 10.0 + offset),
+            (BUS_CORNER - offset, 20.0),
+        )
+        for k in range(BUS_TRACKS)
+        for offset in (k * PAIR_INFLATION,)
+    )
+    long = bowed_among_many().chains[0]
+    return ChainsScenario("bowed-beside-bus", (long, *bus))
+
+
 def hooks() -> ChainsScenario:
     """Two interlocked hooks, each pulled tight around the other's end."""
     free = FreeSpace()

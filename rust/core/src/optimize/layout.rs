@@ -6,8 +6,8 @@
 //! (`problem::Layout`).
 //!
 //! A burst scales each variable by 1/sqrt of its stiffness at the burst's
-//! start, relative to that of a vertex between two edges of the spacing in
-//! free space, and never above 1 (`scale`). L-BFGS builds one curvature
+//! start, relative to that of a vertex between two edges of its level's
+//! spacing in free space, and never above 1 (`scale`). L-BFGS builds one curvature
 //! model for the whole problem: unscaled, it fits the stiffest members,
 //! such as tracks pressed together at clearance, and a far chain that could
 //! settle in a few bursts moves 3 to 10 times less per burst
