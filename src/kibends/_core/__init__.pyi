@@ -1424,9 +1424,9 @@ def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], 
     r"""
     Minimises `objective` from `start` with L-BFGS, over y with x =
     `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
-    `gtol` ends it (`kibends_core::burst`). After each iteration that did
-    not converge it checks for signals and asks `stop`, if given, which
-    ends the burst by answering true. An exception raised there or by the
+    `gtol` ends it (`kibends_core::burst`). After each iteration it checks
+    for signals and asks `stop`, if given, which ends the burst by
+    answering true before the cap. An exception raised there or by the
     objective ends the burst and propagates.
     """
 

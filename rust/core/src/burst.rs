@@ -8,11 +8,13 @@
 //!
 //! - before the first iteration, when the gradient's largest component is
 //!   at most `gtol`;
-//! - after an iteration, when the gradient's largest component is at most
-//!   `gtol`, when the energy fell by at most `ftol` relative to the larger
-//!   of the two energies and 1, when `stop` answers true, or at the
-//!   iteration cap, in that order, as scipy checks them. `stop` is asked
-//!   after every iteration that did not converge, the last included.
+//! - after an iteration, at the iteration cap, when `stop` answers true,
+//!   when the gradient's largest component is at most `gtol`, or when the
+//!   energy fell by at most `ftol` relative to the larger of the two
+//!   energies and 1, in that order. scipy asks its callback and checks its
+//!   cap as an iteration ends and tests convergence only when it is called
+//!   for the next one, so the cap and `stop` come first, and the cap before
+//!   `stop`, which is asked after every iteration, the last included.
 //!
 //! An iteration is accepted when its line search ended at an energy no
 //! higher than the one it started from. The wrapper keeps the last accepted
@@ -159,8 +161,7 @@ pub type Evaluation = (f64, Vec<f64>);
 pub type Objective<'a, E> = dyn FnMut(&[f64]) -> Result<Evaluation, E> + 'a;
 
 /// Minimises `objective` from `start` over y with x = `scale` ⊙ y, or over
-/// x without a scale, asking `stop` after each iteration that did not
-/// converge.
+/// x without a scale, asking `stop` after each iteration.
 pub fn run<E>(
     objective: &mut Objective<'_, E>,
     start: &[f64],
@@ -568,27 +569,27 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
 
     fn terminate(&mut self, _state: &Iterate) -> TerminationStatus {
         let settings = self.settings;
+        let iterated = self.record.iterations > 0;
+        if iterated {
+            let stopped = match (self.stop)() {
+                Ok(stopped) => stopped,
+                Err(e) => {
+                    self.record.failure = Some(e);
+                    return self.end(Ending::Abnormal("stop failed".into()));
+                }
+            };
+            if self.record.iterations >= settings.max_iterations {
+                return self.end(Ending::MaxIterations);
+            }
+            if stopped {
+                return self.end(Ending::Stopped);
+            }
+        }
         if self.record.largest <= settings.gtol {
             return self.end(Ending::Gradient);
         }
-        if self.record.iterations == 0 {
-            return TerminationStatus::NotTerminated;
-        }
-        if self.record.decrease <= settings.ftol {
+        if iterated && self.record.decrease <= settings.ftol {
             return self.end(Ending::Decrease);
-        }
-        let stopped = match (self.stop)() {
-            Ok(stopped) => stopped,
-            Err(e) => {
-                self.record.failure = Some(e);
-                return self.end(Ending::Abnormal("stop failed".into()));
-            }
-        };
-        if self.record.iterations >= settings.max_iterations {
-            return self.end(Ending::MaxIterations);
-        }
-        if stopped {
-            return self.end(Ending::Stopped);
         }
         TerminationStatus::NotTerminated
     }
@@ -720,6 +721,82 @@ mod tests {
         assert_eq!(b.ending, Ending::MaxIterations);
         assert_eq!(b.iterations, 2);
         assert!(!b.cut());
+    }
+
+    fn always() -> impl FnMut() -> Result<bool, ()> {
+        || Ok(true)
+    }
+
+    #[test]
+    fn stop_answering_true_on_the_iteration_that_meets_ftol_cuts_the_burst() {
+        let loose = Settings {
+            ftol: 1.0,
+            ..SETTINGS
+        };
+
+        let b = run(&mut rosenbrock, &[-1.2, 1.0], None, &loose, &mut always()).unwrap();
+
+        assert_eq!(b.ending, Ending::Stopped);
+        assert_eq!(b.iterations, 1);
+        assert!(b.cut());
+    }
+
+    #[test]
+    fn stop_answering_true_on_the_iteration_that_meets_gtol_cuts_the_burst() {
+        let loose = Settings {
+            gtol: 1.0,
+            ..SETTINGS
+        };
+        let start = [1.0, 2.0];
+        let unstopped = burst(&mut quadratic(&[1.0, 1.0]), &start, &loose);
+        assert_eq!(unstopped.ending, Ending::Gradient);
+        let mut asked = 0;
+        let mut stop = || {
+            asked += 1;
+            Ok::<_, ()>(asked >= unstopped.iterations)
+        };
+
+        let b = run(&mut quadratic(&[1.0, 1.0]), &start, None, &loose, &mut stop).unwrap();
+
+        assert_eq!(b.ending, Ending::Stopped);
+        assert_eq!(b.iterations, unstopped.iterations);
+        assert!(b.cut());
+    }
+
+    #[test]
+    fn ftol_met_at_the_cap_ends_at_the_cap() {
+        let capped = Settings {
+            max_iterations: 1,
+            ftol: 1.0,
+            ..SETTINGS
+        };
+
+        let b = burst(&mut rosenbrock, &[-1.2, 1.0], &capped);
+
+        assert_eq!(b.ending, Ending::MaxIterations);
+        assert_eq!(b.iterations, 1);
+        assert!(!b.cut());
+    }
+
+    #[test]
+    fn a_gradient_below_gtol_ends_the_burst_before_stop_is_asked() {
+        let mut asked = 0;
+        let mut stop = || {
+            asked += 1;
+            Ok::<_, ()>(true)
+        };
+
+        let b = run(
+            &mut quadratic(&[1.0, 1.0]),
+            &[0.0, 0.0],
+            None,
+            &SETTINGS,
+            &mut stop,
+        )
+        .unwrap();
+
+        assert_eq!(b.ending, Ending::Gradient);
+        assert_eq!(asked, 0);
     }
 
     #[test]
