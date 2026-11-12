@@ -1,32 +1,40 @@
 """Measure the optimizer: wall and CPU time, the seconds of setup and those
-after it outside L-BFGS-B, outer iterations, bursts, energy evaluations, the
+after it outside L-BFGS, outer iterations, bursts, energy evaluations, the
 times a layer's neighbour list found its pairs (`seen.NeighbourList`), both
-from the Rust statistics (`kibends._core.statistics`) or, for a tree without
-them, by patching its Python search, and
+from the Rust statistics (`kibends._core.statistics`), and
 the farthest move in one burst on stitched ground planes, on the synthetic
 scenarios and on buses of parallel tracks, how a lone track settles in one
 problem with a cluster of others, and where return vias settle.
 
-Usage: ./run bench [--tree DIR]
+Usage: ./run bench [--tree TREE]
                    [--only grid|crossed|scenarios|bus|return|joint]
                    [--case TEXT] [--plot DIR]
                    [-- SMOOTH_ARGS]
 
-`--tree` measures another checkout's source and tests, such as an older
-commit unpacked with `git archive`, so that two versions can be compared
-on one machine. `--case` runs only the planes, grids, buses and joint
-cases whose names contain TEXT. `--plot` saves each joint case's
-per-chain length against outer iteration as a PNG in DIR.
+`--case` runs only the planes, grids, buses and joint cases whose names
+contain TEXT. `--plot` saves each joint case's per-chain length against
+outer iteration as a PNG in DIR.
 Arguments after `--` go to `kibends smooth` for the runs through a fake
 KiCad and give the crossed grids' energy parameters and optimizer settings
 and the buses' optimizer settings, a `--time-limit` among them overriding
 TIME_LIMIT, so a run can be measured at other settings. Each table row is
 one run.
 
+`--tree` compares this checkout with TREE, another checkout such as an
+older commit from `git worktree add`, on one machine. It brings TREE's
+virtualenv up to date with `uv sync --frozen --all-extras`, creating it if
+TREE has none and building TREE's Rust extension if it has one; runs
+TREE's own `scripts/benchmark.py` with TREE's interpreter, then this
+checkout's, each with the other arguments; and after both outputs prints
+every table row of this checkout's, with the row of the same case from
+TREE's above it where TREE has one. Each runs in its own interpreter, so TREE may be
+of any era, scipy's or Rust's. With `--plot`, TREE's plots go to DIR's
+`before` and this checkout's to its `after`.
+
 Setup ends when the optimizer logs that its problems are built; in a run
 through a fake KiCad it holds reading the board and building the obstacle
-fields too. The seconds outside L-BFGS-B are the rest of the run but
-L-BFGS-B and the energy evaluations it makes: resampling, the checks
+fields too. The seconds outside L-BFGS are the rest of the run but
+L-BFGS and the energy evaluations it makes: resampling, the checks
 around each burst, the guard and, through a fake KiCad, simplifying.
 
 - grid: two-layer GND planes whose stitching vias are all selected, among
@@ -38,8 +46,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings; width-change and starts-inside are each skipped for
-  a tree without them (an older tree's neck-down is another geometry).
+  at default settings.
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Five go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
@@ -48,7 +55,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   262 chains of 5 mm for one outer iteration, to time setup and the
   work around a burst among many chains; the same, then simplified, the
   simplification timed in its note and counted in its wall time and its
-  time outside L-BFGS-B; and the same chains all of one
+  time outside L-BFGS; and the same chains all of one
   net with one of another net far from them. The last runs
   end to end
   through a fake KiCad as the planes do: ten tracks 2 mm apart between
@@ -60,28 +67,31 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   and its shape change (`polylines.shape_change`); the table gives the lone
   track's length when the alone run settled and when the joint run did.
 - return: a signal via and a ground via settling together, at default
-  settings and without repulsion; skipped for a tree without return-via
-  attraction or without the test helpers it builds its boards with.
+  settings and without repulsion.
 """
 
 import argparse
-import importlib
 import itertools
 import math
+import os
+import subprocess
 import sys
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections import Counter
+from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse_args(args: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the optimizer.")
-    parser.add_argument("--tree", type=Path, default=ROOT)
+    parser.add_argument(
+        "--tree", type=Path, help="another checkout to compare this one with"
+    )
     parser.add_argument(
         "--only", choices=("grid", "crossed", "scenarios", "bus", "return", "joint")
     )
@@ -96,10 +106,104 @@ def parse_args(args: list[str]) -> argparse.Namespace:
 # Imported, as the baseline test imports it, it measures this tree at the
 # defaults.
 ARGS = parse_args(sys.argv[1:] if __name__ == "__main__" else [])
-TREE = ARGS.tree.resolve()
-sys.path[:0] = [str(TREE / "tests"), str(TREE / "src")]
 
-# Imported from the tree measured, after its paths are set.
+Row = tuple[str, ...]
+"""A table row's cells."""
+Table = tuple[Row, list[Row]]
+"""A table's header and rows."""
+
+
+def tree_args(plot: str) -> list[str]:
+    """This run's arguments without `--tree`, plots going to `plot` under
+    the `--plot` directory."""
+    args: list[str] = []
+    if ARGS.only is not None:
+        args += ["--only", ARGS.only]
+    if ARGS.case:
+        args += ["--case", ARGS.case]
+    if ARGS.plot is not None:
+        args += ["--plot", str(ARGS.plot.resolve() / plot)]
+    return [*args, "--", *ARGS.smooth]
+
+
+def run_tree(tree: Path, python: Path, plot: str) -> list[str]:
+    """Run `tree`'s benchmark with `python`, echoing its output; returns
+    its lines."""
+    command = [str(python), str(tree / "scripts" / "benchmark.py"), *tree_args(plot)]
+    lines: list[str] = []
+    with subprocess.Popen(
+        command, cwd=tree, stdout=subprocess.PIPE, text=True
+    ) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            lines.append(line.rstrip("\n"))
+    if process.returncode:
+        sys.exit(f"{command[1]} failed with exit status {process.returncode}")
+    return lines
+
+
+def tables(lines: Sequence[str]) -> Iterator[Table]:
+    """The markdown tables in a benchmark's output."""
+    header: Row | None = None
+    rows: list[Row] = []
+    for line, after in itertools.zip_longest(lines, lines[1:], fillvalue=""):
+        if not line.startswith("|"):
+            if header is not None:
+                yield header, rows
+            header, rows = None, []
+        elif after.startswith("|---"):
+            header = cells(line)
+        elif not line.startswith("|---"):
+            rows.append(cells(line))
+
+
+def cells(line: str) -> Row:
+    return tuple(c.strip() for c in line.strip("|").split("|"))
+
+
+def keyed(rows: Sequence[Row]) -> Iterator[tuple[tuple[str, int], Row]]:
+    """Each row by its case and how many rows of that case came before it,
+    the scenarios' total under one case whatever its count."""
+    seen: Counter[str] = Counter()
+    for row in rows:
+        case = "**all**" if row[0].startswith("**all ") else row[0]
+        yield (case, seen[case]), row
+        seen[case] += 1
+
+
+def compare_trees(tree: Path) -> None:
+    """Measure `tree` and this checkout, each in its own interpreter, and
+    print their common rows side by side."""
+    environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    python = tree / ".venv" / "bin" / "python"
+    subprocess.run(
+        ["uv", "sync", "--frozen", "--all-extras", "--quiet"],
+        cwd=tree,
+        env={**environment, "PYO3_PYTHON": str(python)},
+        check=True,
+    )
+    before = run_tree(tree, python, "before")
+    print()
+    after = run_tree(ROOT, Path(sys.executable), "after")
+    earlier = dict(keyed([row for _, rows in tables(before) for row in rows]))
+    print(f"\nBefore: {tree}\nAfter: {ROOT}")
+    for header, rows in tables(after):
+        print(f"\n| {header[0]} | tree | {' | '.join(header[1:])} |")
+        print(f"|{'---|' * (len(header) + 1)}")
+        for key, row in keyed(rows):
+            old = earlier.get(key)
+            if old is not None and len(old) == len(row):
+                print(f"| {old[0]} | before | {' | '.join(old[1:])} |")
+            print(f"| {row[0]} | after | {' | '.join(row[1:])} |")
+
+
+if __name__ == "__main__" and ARGS.tree is not None:
+    compare_trees(ARGS.tree.resolve())
+    sys.exit()
+
+sys.path[:0] = [str(ROOT / "tests"), str(ROOT / "src")]
+
 import conftest  # noqa: E402
 import numpy as np  # noqa: E402
 import scenarios  # noqa: E402
@@ -120,12 +224,12 @@ from scenarios import ChainsScenario, PairsScenario, ViasScenario  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
 import kibends  # noqa: E402
-from kibends import bursts as bursts_module  # noqa: E402
-from kibends import cli  # noqa: E402
+from kibends import _core, cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
 from kibends.bursts import (  # noqa: E402
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
 )
@@ -138,19 +242,13 @@ from kibends.optimize import (  # noqa: E402
     optimize,
     optimize_chains,
 )
-from kibends.polylines import shape_change  # noqa: E402
 from kibends.simplify import simplify_chains  # noqa: E402
 from kibends.snapshot import ViaZone  # noqa: E402
 from kibends.vias import ViaInput  # noqa: E402
 
-# Only for annotations: an older tree has no `_core`.
-if TYPE_CHECKING:
-    from kibends import _core
-    from kibends.bursts import Check
-
 Problem = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
 
-assert Path(kibends.__file__).is_relative_to(TREE), kibends.__file__
+assert Path(kibends.__file__).is_relative_to(ROOT), kibends.__file__
 
 
 SET_UP = "Optimizer set up"
@@ -169,58 +267,16 @@ class Count:
     """When the optimizer first had its problems built, as
     `time.perf_counter` reads; None while it has not."""
     minimising: float = 0.0
-    """Seconds L-BFGS-B ran, its energy evaluations included."""
-
-
-Statistics = Callable[[], tuple[int, int]]
-"""The energy evaluations and neighbour-list searches so far."""
-
-
-def python_search() -> bool:
-    """Whether the measured tree's neighbour lists search in Python
-    (`seen.Seen.candidates`), as before its energy moved to Rust."""
-    seen = getattr(importlib.import_module("kibends.seen"), "Seen")  # noqa: B009
-    return hasattr(seen, "candidates")
-
-
-def rust_statistics() -> Statistics | None:
-    """The measured tree's Rust statistics, None for a tree that searches
-    in Python."""
-    if python_search():
-        return None
-    from kibends._core import statistics
-
-    def read() -> tuple[int, int]:
-        counts = statistics()
-        return counts.evaluations, counts.list_searches
-
-    return read
-
-
-def count_python_searches(count: Count) -> Callable[[], None]:
-    """Count a tree's Python neighbour-list searches (`seen.Seen.candidates`)
-    in `count`; returns what undoes it."""
-    # Looked up by name: this tree's own `seen` has no Python search.
-    module = importlib.import_module("kibends.seen")
-    seen: type = getattr(module, "Seen")  # noqa: B009
-    candidates: Callable[..., object] = getattr(seen, "candidates")  # noqa: B009
-
-    def searched(*args: object) -> object:
-        count.searches += 1
-        return candidates(*args)
-
-    setattr(seen, "candidates", searched)  # noqa: B010
-    return lambda: setattr(seen, "candidates", candidates)
+    """Seconds L-BFGS ran, its energy evaluations included."""
 
 
 @contextmanager
 def counted() -> Generator[Count]:
     """Count the bursts the optimizer runs and the energy evaluations in
-    them, and time its setup and L-BFGS-B."""
+    them, and time its setup and L-BFGS."""
     count = Count()
     real = optimize_module.run_burst
-    statistics = rust_statistics()
-    started = None if statistics is None else statistics()
+    started = _core.statistics()
 
     def heard(message: str) -> None:
         if count.ready is None and message.startswith(SET_UP):
@@ -236,23 +292,6 @@ def counted() -> Generator[Count]:
         count.bursts += 1
         checking = 0.0
 
-        def counting(x: FloatArray) -> tuple[float, FloatArray]:
-            count.evaluations += 1
-            return objective(x)
-
-        # A tree with Rust statistics counts its evaluations there, and
-        # this tree's bursts evaluate only its Rust objective. An older
-        # tree's is a Python function, counted here; a scaled one keeps its
-        # scale, and a still older tree has none.
-        evaluated = objective
-        if statistics is None:
-            evaluated = cast(Objective, counting)
-            if hasattr(bursts_module, "ScaledObjective") and isinstance(
-                objective, bursts_module.ScaledObjective
-            ):
-                scaled = cast(Callable[..., Objective], bursts_module.ScaledObjective)
-                evaluated = scaled(counting, objective.scale)
-
         def checked(x: FloatArray) -> int:
             nonlocal checking
             began = time.perf_counter()
@@ -261,12 +300,7 @@ def counted() -> Generator[Count]:
             return crossed
 
         began = time.perf_counter()
-        # An older tree's bursts take no stop.
-        result = (
-            real(evaluated, start, checked, settings)
-            if stop is None
-            else real(evaluated, start, checked, settings, stop)
-        )
+        result = real(objective, start, checked, settings, stop)
         count.minimising += time.perf_counter() - began - checking
         if len(start):
             moved = (result.points - start).reshape(-1, 2)
@@ -274,18 +308,14 @@ def counted() -> Generator[Count]:
         return result
 
     setattr(optimize_module, "run_burst", burst)  # noqa: B010
-    undo = None if statistics is not None else count_python_searches(count)
     sink = logger.add(heard, level="INFO", format="{message}")
     try:
         yield count
     finally:
         logger.remove(sink)
-        if undo is not None:
-            undo()
-        if statistics is not None and started is not None:
-            evaluations, searches = statistics()
-            count.evaluations = evaluations - started[0]
-            count.searches = searches - started[1]
+        ended = _core.statistics()
+        count.evaluations = ended.evaluations - started.evaluations
+        count.searches = ended.list_searches - started.list_searches
         setattr(optimize_module, "run_burst", real)  # noqa: B010
 
 
@@ -297,7 +327,7 @@ class Measured:
     """Seconds until the optimizer had its problems built: the whole run if
     it never had."""
     outside: float
-    """Seconds after setup outside L-BFGS-B."""
+    """Seconds after setup outside L-BFGS."""
     iterations: int
     count: Count
     note: str
@@ -322,7 +352,7 @@ def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
 
 
 HEADER = (
-    "| case | wall s | CPU s | setup s | outside L-BFGS-B s | iterations | bursts "
+    "| case | wall s | CPU s | setup s | outside L-BFGS s | iterations | bursts "
     "| evaluations | list searches | largest step mm | result |\n"
     "|---|---|---|---|---|---|---|---|---|---|---|"
 )
@@ -496,11 +526,7 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
         "channel-1": lambda: scenarios.channel(1.0),
         "topology": scenarios.topology,
         "pad-row": scenarios.pad_row,
-        **(
-            {"starts-inside": scenarios.starts_inside}
-            if hasattr(scenarios, "starts_inside")
-            else {}
-        ),
+        "starts-inside": scenarios.starts_inside,
         "detour": scenarios.detour,
         "narrow-gap": scenarios.narrow_gap,
         "channel-pair": scenarios.channel_pair,
@@ -511,12 +537,7 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
         "drape": scenarios.drape,
         "squeeze": scenarios.squeeze,
         "hooks": scenarios.hooks,
-        # An older tree's neck-down holds its corner, so it is no stand-in.
-        **(
-            {"width-change": scenarios.width_change}
-            if hasattr(scenarios, "width_change")
-            else {}
-        ),
+        "width-change": scenarios.width_change,
         "centreline-over-pad": scenarios.centreline_over_pad,
         "via-detour": scenarios.via_detour,
         "via-on-one-layer": scenarios.via_on_one_layer,
@@ -583,8 +604,6 @@ def length(points: FloatArray) -> float:
 
 
 def scenarios_table() -> None:
-    if not hasattr(scenarios, "width_change"):
-        print("scenarios: width-change skipped, the tree has no width_change")
     print(HEADER)
     total = Count()
     wall = cpu = setup = outside = 0.0
@@ -602,8 +621,6 @@ def scenarios_table() -> None:
         f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
         f"| {total.searches} | {total.step:.2f} | |"
     )
-    if not hasattr(scenarios, "starts_inside"):
-        print("starts-inside: skipped, the tree has no scenarios.starts_inside")
 
 
 CROSSED = {
@@ -649,9 +666,7 @@ def crossed_grid(count: int, pitch: float, routes: int) -> ViasScenario:
                 stitching = ViaInput(
                     via, (), FreeSpace(), scenarios.PAIR_CLEARANCE, zones=(zone,)
                 )
-                if getattr(params, "attraction", 0.0):
-                    stitching = replace(stitching, ground=True)
-                vias.append(stitching)
+                vias.append(replace(stitching, ground=bool(params.attraction)))
     return ViasScenario("crossed", tuple(chains), tuple(vias), params)
 
 
@@ -802,7 +817,7 @@ def bus_note(
     termination: str, before: float, after: float, abnormal: Sequence[tuple[str, int]]
 ) -> str:
     """A bus run's outcome, its chains' summed length after and before, mm,
-    and how many of its bursts L-BFGS-B ended abnormally."""
+    and how many of its bursts L-BFGS ended abnormally."""
     bursts = sum(n for _, n in abnormal)
     return (
         f"{termination}; chains {after:.3f} mm, from {before:.3f} mm; "
@@ -900,54 +915,31 @@ class ChainTrace:
 
 @contextmanager
 def traced() -> Generator[dict[str, ChainTrace]]:
-    """Record every free member's length and shape change after each burst:
+    """Record every free member's length and shape change after each burst,
     from what each burst reports (`optimize._burst_done`), whose shape
     change counts the first burst from the shapes as given, as the settle
-    rule does, or, for an older tree, around its Python `_Problem.step`."""
+    rule does."""
     traces: dict[str, ChainTrace] = {}
     began = time.perf_counter()
+    done = cast(Callable[..., None], getattr(optimize_module, "_burst_done"))  # noqa: B009
 
-    def add(name: str, chain_length: float, move: float) -> None:
-        trace = traces.setdefault(name, ChainTrace([], [], []))
-        trace.lengths.append(chain_length)
-        trace.moves.append(move)
-        trace.seconds.append(time.perf_counter() - began)
+    def reported(problem: Problem, notice: _core.BurstNotice) -> None:
+        done(problem, notice)
+        for i, chain_length, move in zip(
+            notice.members, notice.lengths, notice.changes, strict=True
+        ):
+            trace = traces.setdefault(
+                problem.bodies[i].centreline.description, ChainTrace([], [], [])
+            )
+            trace.lengths.append(chain_length)
+            trace.moves.append(move)
+            trace.seconds.append(time.perf_counter() - began)
 
-    # Looked up by name: an older tree has no `_burst_done`, this one no
-    # `_Problem.step`.
-    if hasattr(optimize_module, "_burst_done"):
-        done = cast(Callable[..., None], getattr(optimize_module, "_burst_done"))  # noqa: B009
-
-        def reported(problem: Problem, notice: _core.BurstNotice) -> None:
-            done(problem, notice)
-            for i, chain_length, move in zip(
-                notice.members, notice.lengths, notice.changes, strict=True
-            ):
-                add(problem.bodies[i].centreline.description, chain_length, move)
-
-        setattr(optimize_module, "_burst_done", reported)  # noqa: B010
-        try:
-            yield traces
-        finally:
-            setattr(optimize_module, "_burst_done", done)  # noqa: B010
-        return
-    problem_class: type = getattr(optimize_module, "_Problem")  # noqa: B009
-    real = cast(Callable[..., float], getattr(problem_class, "step"))  # noqa: B009
-
-    def step(problem: Problem, stop: Callable[[], bool] | None = None) -> float:
-        before = list(problem.points)
-        change = real(problem, stop)
-        for i in problem.free:
-            name = problem.bodies[i].centreline.description
-            after = problem.points[i]
-            add(name, length(after), shape_change(before[i], after))
-        return change
-
-    setattr(problem_class, "step", step)  # noqa: B010
+    setattr(optimize_module, "_burst_done", reported)  # noqa: B010
     try:
         yield traces
     finally:
-        setattr(problem_class, "step", real)  # noqa: B010
+        setattr(optimize_module, "_burst_done", done)  # noqa: B010
 
 
 def lone_track() -> ChainInput:
@@ -1115,9 +1107,6 @@ RETURN_CASES = {
     "stitching GND via 2.5 mm across the route": ((5.0, 2.5), True),
 }
 RETURN_SETTINGS = {"defaults": [], "--repulsion 0": ["--repulsion", "0"]}
-RETURN_HELPERS = ("return_via_board", "RETURN_VIAS_APART", "neutral_distance")
-"""What the return section builds and measures with from the measured
-tree's `tests/conftest.py`."""
 
 
 def return_run(
@@ -1163,7 +1152,7 @@ def return_vias() -> None:
 
 def main() -> None:
     logger.remove()
-    print(f"Source: {TREE}\n")
+    print(f"Source: {ROOT}\n")
     if ARGS.only in (None, "grid"):
         grid()
         print()
@@ -1180,15 +1169,7 @@ def main() -> None:
         joint()
         print()
     if ARGS.only in (None, "return"):
-        fields = EnergyParams.__dataclass_fields__
-        missing = [
-            *(() if "attraction" in fields else ("return-via attraction",)),
-            *(f"conftest.{h}" for h in RETURN_HELPERS if not hasattr(conftest, h)),
-        ]
-        if missing:
-            print(f"return: skipped, the tree has no {', '.join(missing)}")
-        else:
-            return_vias()
+        return_vias()
 
 
 if __name__ == "__main__":
