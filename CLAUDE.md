@@ -45,6 +45,7 @@ The design reference is the module docs in both languages: the Python module doc
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
 - Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
 - Selected arcs are segmented before smoothing; output is always straight tracks.
+- Each energy evaluation spreads over rayon's default pool (`parallel`) and gives the same bits whatever the thread count; `./run test` and `test-all` run one rayon thread per xdist worker.
 
 ## Units and coordinates
 
