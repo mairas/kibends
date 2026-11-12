@@ -704,6 +704,34 @@ def test_a_rerun_with_coarse_levels_on_converged_output_has_nothing_to_do() -> N
         np.testing.assert_array_equal(chain.polyline, before.polyline)
 
 
+def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input() -> None:
+    # The tent's first burst on its own output moves it, so the coarse
+    # levels run again; what they leave counts only if it costs no more.
+    scenario = scenarios.tent()
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    first = run(scenario, settings)
+    again = tuple(
+        replace(
+            given,
+            centreline=replace(given.centreline, points=chain.polyline),
+            fixed=chain.fixed,
+        )
+        for given, chain in zip(scenario.chains, first.chains, strict=True)
+    )
+
+    second = optimize_chains(again, scenario.params, settings)
+    unchanged = optimize_chains(
+        again, scenario.params, replace(settings, max_iterations=0)
+    )
+
+    assert second.iterations > 1
+
+    def energy(of: RunResult) -> float:
+        return committed_energy(again, of, scenario.params, settings)
+
+    assert energy(second) <= energy(unchanged)
+
+
 BURST_BUDGET = 4
 """Bursts too few at 0.1 mm for `bowed_among_many`'s long track to go
 taut."""
@@ -1008,6 +1036,36 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     assert result.termination is Termination.GAVE_UP
     for chain in result.chains:
         assert length(chain.polyline) < chain.before.length
+
+
+LAID_OUT_SPACING = 0.25
+"""A spacing that divides 5 mm."""
+
+
+def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        return Burst(start.copy(), abnormal=True)
+
+    monkeypatch.setattr(optimize_module, "run_burst", failing)
+    # Legs of 5 mm, which LAID_OUT_SPACING resamples onto themselves and the
+    # coarse levels' chords cut across the apex.
+    chain = selected("V", "A", FreeSpace(), (0.0, 0.0), (4.0, 3.0), (8.0, 0.0))
+    settings = replace(COARSE, spacing=LAID_OUT_SPACING)
+
+    result = optimize_chains([chain], scenarios.PARAMS, settings)
+
+    # No burst descended at a coarse level, so the run ends at its inputs
+    # and is refused, as at one spacing.
+    assert result.iterations == all_abnormal_bursts(settings)
+    assert result.termination is Termination.ABNORMAL
 
 
 def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(

@@ -164,7 +164,11 @@ def optimize_chains(
     Each problem keeps its best state, replaced only after a
     burst that does not raise its energy, leaves no chain or section with
     more violations than it started with, and leaves no via deeper inside
-    its clearance or its stops than it started.
+    its clearance or its stops than it started. It goes on at the final
+    spacing from the coarse levels' best state only if some coarse burst
+    ended normally and that state costs no more than the first burst's
+    best, or than its inputs if that burst moved nothing; else from that
+    best or the inputs.
 
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back, or when the lowest energy its

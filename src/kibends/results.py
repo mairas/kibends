@@ -131,4 +131,6 @@ class RunResult:
     before_final_spacing: bool = False
     """Whether the run stopped, at its iteration cap or time limit, while
     some problem ran at a coarse level: its result is that level's best
-    state subdivided to the final spacing, or its input."""
+    state subdivided to the final spacing, or, where that costs more or no
+    coarse burst ended normally, the best state of its first burst at the
+    final spacing, or its input."""

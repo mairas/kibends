@@ -885,9 +885,11 @@ class ProblemState:
     def finish(self) -> None:
         r"""
         End a run stopped at a coarse level at the final spacing: its best
-        state subdivided there if that passes the guard and its energy is
-        no higher than the inputs', else the inputs. Does nothing at the
-        final level. Raises ValueError if the energy there is not finite.
+        state subdivided there if some coarse burst ended normally, that
+        passes the guard and its energy is no higher than that of the
+        probe's best, or of the inputs if the probe moved nothing; else that
+        state. Does nothing at the final level. Raises ValueError if the
+        energy there is not finite.
         """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
         r"""
