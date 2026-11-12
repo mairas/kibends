@@ -337,8 +337,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_SETTINGS.lbfgs_gtol,
         metavar="TOL",
-        help="L-BFGS ends a burst early when the projected gradient falls "
-        f"below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
+        help="L-BFGS ends a burst early when the largest gradient component "
+        f"falls below this (default: {DEFAULT_SETTINGS.lbfgs_gtol:g})",
     )
     smooth_parser.add_argument(
         "--time-limit",
