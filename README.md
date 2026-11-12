@@ -27,9 +27,11 @@ Status: early development.
 - KiCad 10 or later, with the API server enabled
   (Preferences > Plugins > Enable KiCad API).
 - Python 3.14 or later.
-- A Rust toolchain, since installing builds kibends' optimizer core from
-  source. Without `cargo` on the path, the build downloads one into its
-  own cache; [rustup](https://rustup.rs) installs one to keep.
+- A Rust toolchain, 1.90 or later, since installing builds kibends'
+  optimizer core from source. Without `cargo` on the path, the build
+  downloads one into its own cache; [rustup](https://rustup.rs) installs
+  one to keep. An older `cargo` on the path, such as a distribution's
+  package, stops the build.
 
 ## Installation
 

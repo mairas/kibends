@@ -4,6 +4,7 @@ description = "The extension module kibends._core, a thin binding of kibends-cor
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

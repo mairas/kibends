@@ -6,6 +6,7 @@ resolver = "3"
 version = "0.0.1"
 authors = ["Matti Airas <matti.airas@hatlabs.fi>"]
 edition = "2024"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/mairas/kibends"
 publish = false
