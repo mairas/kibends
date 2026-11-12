@@ -5,6 +5,7 @@ import pytest
 from distance_fields import FreeSpace
 from shapely.geometry import LineString
 
+from kibends import pairs as pairs_module
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.energy import BoolArray, FloatArray
@@ -12,7 +13,9 @@ from kibends.pairs import (
     Pair,
     PairError,
     Piece,
+    _coupled_spans,  # pyright: ignore[reportPrivateUsage]
     _ends,  # pyright: ignore[reportPrivateUsage]
+    _SectionEnds,  # pyright: ignore[reportPrivateUsage]
     bend_radius_limit,
     centreline,
     check_bend_radius,
@@ -340,6 +343,91 @@ def test_section_end_snaps_to_a_vertex_at_most_a_sample_step_outward(
 
     assert ends.a == expected
     assert ends.b == expected
+
+
+def test_section_ends_of_a_run_shorter_than_a_pitch_do_not_cross() -> None:
+    """The run reaches 5.0..5.05 mm; in-band vertices lie inward of each run
+    end, past the other, but within a pitch of it."""
+    step = 0.02
+    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
+    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
+    candidates = array((4.8, 4.8), (5.25, 5.25))
+
+    ends = _ends(a, b, (5.0, 5.05), (5.0, 5.05), candidates, 2 * HALF_PITCH, step)
+
+    assert ends.a == pytest.approx((5.0, 5.05))
+    assert ends.b == pytest.approx((5.0, 5.05))
+
+
+def test_a_span_running_backwards_along_a_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no in-band vertex near, `_ends` leaves a run's ends where the
+    run and b's run, projected onto a, end; when the two do not overlap the
+    ends cross by more than a sample step. Such a span is no section."""
+    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
+    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
+    no_candidates = np.zeros((0, 2))
+    crossed = _ends(a, b, (2.0, 3.0), (5.0, 6.0), no_candidates, 2 * HALF_PITCH, 0.05)
+    assert crossed.a[0] - crossed.a[1] > 1.0
+
+    def crossing_ends(*_: object) -> _SectionEnds:
+        return crossed
+
+    monkeypatch.setattr(pairs_module, "_ends", crossing_ends)
+
+    assert _coupled_spans(a, b, WIDTH, CHORD) == []
+
+
+def test_pair_widening_briefly_at_its_pads_is_coupled_from_the_jog() -> None:
+    """A hand-routed pair (gap 0.25 mm) that widens by 17 µm for 0.25 mm
+    after its pads, then runs on at 45° to a fan-out. The pad stubs shadow
+    the widened stretch, so its sampled run is shorter than a sample step:
+    the section starts at the jog back to the pair's gap."""
+    width = 0.1326
+    pinned = (True, True, False, False, False, False, True)
+    a = Chain(
+        points=(
+            (130.891301, 82.713801),
+            (130.9, 82.7225),
+            (130.9, 82.4725),
+            (130.8913, 82.4638),
+            (130.8913, 82.28924),
+            (131.940375, 81.240165),
+            (132.200165, 81.240165),
+        ),
+        pinned=pinned,
+        width=width,
+        layer="F.Cu",
+        net="USB_D+",
+        segment_ids=(),
+    )
+    b = Chain(
+        points=(
+            (130.508699, 82.713801),
+            (130.5, 82.7225),
+            (130.5, 82.4725),
+            (130.5087, 82.4638),
+            (130.5087, 82.13076),
+            (131.669835, 80.969625),
+            (131.669835, 80.709835),
+        ),
+        pinned=pinned,
+        width=width,
+        layer="F.Cu",
+        net="USB_D-",
+        segment_ids=(),
+    )
+
+    pair = find_pair(a, b, CHORD)
+
+    assert pair is not None
+    (section,) = pair.sections
+    assert not section.b_reversed
+    coupled_a, coupled_b = pair.coupled(section)
+    np.testing.assert_allclose(coupled_a, a.points[2:6])
+    np.testing.assert_allclose(coupled_b, b.points[3:6])
+    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING_TOLERANCE)
 
 
 def test_u_turn_is_one_coupled_section() -> None:
