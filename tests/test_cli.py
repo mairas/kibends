@@ -1260,6 +1260,125 @@ class TestStages:
         )
 
 
+def board_with_more() -> CommitBoard:
+    """`l_board`, its L selected, with a far track and a locked via not."""
+    board = l_board()
+    far = kipy_track("far", "OTHER", (20, 0), (30, 0), width=WIDTH)
+    board.tracks = [*board.tracks, far]
+    board.vias = [kipy_via("v", "GND", 20, 20, locked=True)]
+    return board
+
+
+class TestScope:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_all_reads_the_whole_board_whatever_is_selected(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        connect.to(board_with_more())
+
+        run("--all", "-n")
+
+        (report,) = reports
+        assert report.scope == pipeline.Scope(
+            pipeline.ScopeKind.BOARD, tracks=3, vias=1
+        )
+        assert {c.net for c in report.chains} == {"SIG", "OTHER"}
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_whole_board_run_commits_and_adds_nothing_to_the_selection(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(board_with_more())
+        board.selection = list(board.vias)
+
+        run("--all")
+
+        (report,) = reports
+        assert report.committed
+        assert board.calls == [c for c in COMMIT_CALLS if c != "select"]
+        assert board.selected_ids() == ["v"]
+
+    @pytest.mark.parametrize("call", ["get_groups", "get_items_by_id", "get_as_string"])
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (ApiError("busy", code=ApiStatusCode.AS_BUSY), "KiCad is busy"),
+            (KiCadConnectionError("timed out"), "Cannot reach KiCad"),
+        ],
+    )
+    def test_a_failure_reading_the_groups_ends_the_run(
+        self,
+        connect: Connector,
+        log: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        call: str,
+        error: Exception,
+        expected: str,
+    ) -> None:
+        board = connect.to(board_with_more())
+        board.groups = [kipy_group("Tuning Pattern", board.tracks[:1])]
+
+        def fail(*_args: object) -> NoReturn:
+            raise error
+
+        monkeypatch.setattr(board, call, fail)
+
+        assert expected in exit_message(log, "--all")
+        assert "begin_commit" not in board.calls
+
+    def test_all_on_a_board_without_tracks_or_vias_fails(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(CommitBoard(pads=[kipy_pad("pad", "GND", *PAD)]))
+
+        assert "board has no tracks or vias" in exit_message(log, "--all")
+
+    def test_without_all_an_empty_selection_still_fails(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = board_with_more()
+        board.selection = []
+        connect.to(board)
+
+        assert "selection has no tracks or vias" in exit_message(log)
+
+    @pytest.mark.parametrize(
+        ("args", "scope"),
+        [
+            ((), pipeline.ScopeOption.SELECTION),
+            (("--all",), pipeline.ScopeOption.BOARD),
+        ],
+    )
+    def test_all_sets_the_option(
+        self, args: tuple[str, ...], scope: pipeline.ScopeOption
+    ) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+
+        assert options.scope is scope
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize(
+        ("selected", "scope"),
+        [
+            (False, pipeline.Scope(pipeline.ScopeKind.BOARD, tracks=3, vias=1)),
+            (True, pipeline.Scope(pipeline.ScopeKind.SELECTION, tracks=2, vias=0)),
+        ],
+        ids=["nothing-selected", "selection"],
+    )
+    def test_selection_else_board_reads_the_board_only_without_a_selection(
+        self, connect: Connector, selected: bool, scope: pipeline.Scope
+    ) -> None:
+        board = connect.to(board_with_more())
+        if not selected:
+            board.selection = []
+        options = replace(
+            cli.smooth_options(cli.parse_args(["smooth", "-n"])),
+            scope=pipeline.ScopeOption.SELECTION_ELSE_BOARD,
+        )
+
+        assert pipeline.run_smooth(options).scope == scope
+
+
 class TestProgress:
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_comes_after_every_iteration_with_the_optimize_stages_clock(

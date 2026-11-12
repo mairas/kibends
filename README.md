@@ -152,7 +152,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
    set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
-   the active layer.
+   the active layer. `--all` smooths the whole board instead, whatever is
+   selected.
 3. Run:
 
 ```sh
@@ -262,8 +263,10 @@ changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
 After the commit, the new tracks and moved vias are added to the selection,
 so it covers the same copper as before the run and a second run needs no
-new selection; selected items the run left unchanged stay selected. A dry
-run, or a run that commits nothing, leaves the selection as it was.
+new selection; selected items the run left unchanged stay selected. A run
+with `--all` adds nothing to the selection: what was selected and left
+unchanged stays selected. A dry run, or a run that commits nothing, leaves
+the selection as it was.
 A track or via edited in KiCad since the run read it stops the commit.
 kibends does not refill zones and does not run KiCad's DRC: refill the
 zones yourself (B), or run the DRC, which refills them and checks the result
@@ -469,6 +472,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS ends a burst early when the largest gradient component falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
+| `--all` | | Smooth every track, arc and via on the board instead of the selection, whatever is selected, visible or filtered in KiCad. Members of groups, such as tuning patterns, stay as drawn, as in a selected group. Every unlocked via may move, stitching vias included (see [Usage](#usage)). The run adds nothing to KiCad's selection. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 | `--verbose`, `-v` | | Log at DEBUG: progress after every iteration and the debug lines, such as why a selected via stays where it is. Overrides the level the `LOGURU_LEVEL` environment variable sets; without either, kibends logs at INFO. |

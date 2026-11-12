@@ -50,6 +50,7 @@ from kibends.run import (
     NoBoardError,
     OptimizerReport,
     PlotUnavailableError,
+    ScopeOption,
     SmoothOptions,
     run_smooth,
 )
@@ -417,6 +418,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "found so far (default: no limit)",
     )
     smooth_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Smooth every track and via on the board, whatever is selected, "
+        "shown or filtered in KiCad; group members stay as drawn",
+    )
+    smooth_parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
@@ -474,6 +481,7 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
         ground_nets=tuple(args.ground_nets),
+        scope=ScopeOption.BOARD if args.all else ScopeOption.SELECTION,
         settings=replace(
             DEFAULT_SETTINGS,
             spacing=args.spacing[-1],

@@ -4,7 +4,9 @@ The command line and the GUI both call `run_smooth` and present the reports
 it hands over; it prints nothing.
 
 `run_smooth` reads the edge and hole clearance the options leave out from
-the project file (`rules.read_clearances`), reads the board once, extracts
+the project file (`rules.read_clearances`), reads the selection, or the
+whole board as `SmoothOptions.scope` asks (`ScopeOption`; what it read is
+called the selection below), and the board once, extracts
 the chains, cut at every
 selected via that may move, and, if any of them stays fixed, extracts them
 again with the chains through that via whole and its copper pinning. A diff
@@ -112,6 +114,7 @@ from kibends.snapshot import (
     GroundSource,
     LayerSnapshot,
     Via,
+    read_board,
     read_selection,
     read_user_frame,
 )
@@ -151,6 +154,16 @@ class PlotUnavailableError(RuntimeError):
     pass
 
 
+class ScopeOption(Enum):
+    """What a run is asked to read."""
+
+    SELECTION = "selection"
+    BOARD = "board"
+    """Every track, arc and via on the board, ignoring the selection."""
+    SELECTION_ELSE_BOARD = "selection else board"
+    """The selection, or the whole board when nothing is selected."""
+
+
 @dataclass(frozen=True)
 class SmoothOptions:
     params: EnergyParams
@@ -172,6 +185,7 @@ class SmoothOptions:
     ground_nets: tuple[str, ...] = ()
     """The ground nets, overriding their detection when not empty
     (`BoardSnapshot.ground_nets`)."""
+    scope: ScopeOption = ScopeOption.SELECTION
 
 
 class Stage(Enum):
@@ -188,6 +202,8 @@ class ScopeKind(Enum):
     """What a run reads from the board."""
 
     SELECTION = "selection"
+    BOARD = "board"
+    """The whole board."""
 
 
 @dataclass(frozen=True)
@@ -196,7 +212,7 @@ class Scope:
 
     kind: ScopeKind
     tracks: int
-    """Tracks and arcs, those of selected groups included."""
+    """Tracks and arcs, those of groups included."""
     vias: int
 
 
@@ -382,7 +398,10 @@ def run_smooth(
     on_stage: Callable[[Stage], None] = lambda _stage: None,
     on_progress: Callable[[Progress], None] | None = None,
 ) -> RunReport:
-    """Smooth the chains selected in KiCad and, unless dry-running, commit them.
+    """Smooth the chains selected in KiCad, or the whole board's as
+    `options.scope` asks, and, unless dry-running, commit them; a selection's
+    run adds what it created to KiCad's selection, a whole-board run adds
+    nothing.
 
     `on_optimized` gets the optimizer's report before the commit, which may
     raise. Raises on failures that leave nothing to report (no board, a bad
@@ -411,6 +430,7 @@ def run_smooth(
         board,
         read_user_frame(board),
         clearances,
+        scope=options.scope,
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
@@ -469,14 +489,22 @@ def _read(
     frame: UserFrame,
     clearances: Clearances,
     *,
+    scope: ScopeOption = ScopeOption.SELECTION,
     ground_nets: Collection[str] = (),
     paired: bool = True,
 ) -> _Read:
-    """Read the selection and the copper it needs, split it into chains and
-    judge which selected vias move, giving positions in `frame`. When a
-    selected via may move and vias are `paired`, find the ground nets,
-    `ground_nets` if given, and name them."""
-    selection = read_selection(board)
+    """Read the selection, or the whole board as `scope` asks, and the
+    copper it needs, split it into chains and judge which of its vias move,
+    giving positions in `frame`. When such a via may move and vias are
+    `paired`, find the ground nets, `ground_nets` if given, and name
+    them."""
+    match scope:
+        case ScopeOption.SELECTION:
+            selection = read_selection(board)
+        case ScopeOption.BOARD:
+            selection = read_board(board)
+        case ScopeOption.SELECTION_ELSE_BOARD:
+            selection = read_selection(board, else_board=True)
     selected = selection.segments
     # Locked tracks stay on the board, so they are obstacles or pins like any
     # unselected track.
@@ -542,8 +570,10 @@ def _read(
     )
     # Extracting again may order the chains differently.
     movable = [replace(m, ends=carried_ends(m.via, chains)) for m in movable]
-    scope = Scope(
-        ScopeKind.SELECTION, len({s.id for s in selected}), len(selection.vias)
+    read_scope = Scope(
+        ScopeKind.BOARD if selection.whole_board else ScopeKind.SELECTION,
+        len({s.id for s in selected}),
+        len(selection.vias),
     )
     return _Read(
         selected,
@@ -553,7 +583,7 @@ def _read(
         frame,
         ground,
         selection.arcs,
-        scope,
+        read_scope,
         clearances,
     )
 
@@ -808,7 +838,14 @@ def _commit(
         if r.moved
     ]
     on_stage(Stage.COMMITTING)
-    commit_chains(board, changed, read.selected, read.arcs, moves)
+    commit_chains(
+        board,
+        changed,
+        read.selected,
+        read.arcs,
+        moves,
+        select=read.scope.kind is ScopeKind.SELECTION,
+    )
     return report(committed=True)
 
 
