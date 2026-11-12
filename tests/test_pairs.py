@@ -5,6 +5,7 @@ import pytest
 from distance_fields import FreeSpace
 from shapely.geometry import LineString
 
+from kibends import pairs as pairs_module
 from kibends.bursts import DEFAULT_CHORD_TOLERANCE
 from kibends.chain import Chain, Point2
 from kibends.energy import BoolArray, FloatArray
@@ -12,7 +13,9 @@ from kibends.pairs import (
     Pair,
     PairError,
     Piece,
+    _coupled_spans,  # pyright: ignore[reportPrivateUsage]
     _ends,  # pyright: ignore[reportPrivateUsage]
+    _SectionEnds,  # pyright: ignore[reportPrivateUsage]
     bend_radius_limit,
     centreline,
     check_bend_radius,
@@ -354,6 +357,26 @@ def test_section_ends_of_a_run_shorter_than_a_pitch_do_not_cross() -> None:
 
     assert ends.a == pytest.approx((5.0, 5.05))
     assert ends.b == pytest.approx((5.0, 5.05))
+
+
+def test_a_span_running_backwards_along_a_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no in-band vertex near, `_ends` leaves a run's ends where the
+    run and b's run, projected onto a, end; when the two do not overlap the
+    ends cross by more than a sample step. Such a span is no section."""
+    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
+    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
+    no_candidates = np.zeros((0, 2))
+    crossed = _ends(a, b, (2.0, 3.0), (5.0, 6.0), no_candidates, 2 * HALF_PITCH, 0.05)
+    assert crossed.a[0] - crossed.a[1] > 1.0
+
+    def crossing_ends(*_: object) -> _SectionEnds:
+        return crossed
+
+    monkeypatch.setattr(pairs_module, "_ends", crossing_ends)
+
+    assert _coupled_spans(a, b, WIDTH, CHORD) == []
 
 
 def test_pair_widening_briefly_at_its_pads_is_coupled_from_the_jog() -> None:
