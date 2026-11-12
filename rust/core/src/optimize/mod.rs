@@ -215,6 +215,8 @@ pub fn stalled(
 pub struct BurstReport {
     /// The problem, by its place among those the run advanced.
     pub problem: usize,
+    /// The level of the schedule it ran at (`state::Shared::spacing_at`).
+    pub level: usize,
     pub iterations: u64,
     pub evaluations: u64,
     /// Seconds the evaluations took.
@@ -244,6 +246,13 @@ pub enum Notice {
         streak: u32,
     },
     Burst(BurstReport),
+    /// The problem enters `level` of a schedule with coarse levels: each
+    /// coarse level, and the final one after a coarser one hands over. Not
+    /// for the probe at the final spacing that runs before them.
+    Stage {
+        problem: usize,
+        level: usize,
+    },
     /// After an outer iteration: its number, its largest change, and each
     /// problem's length and energy.
     Progress {

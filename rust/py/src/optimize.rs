@@ -1,7 +1,7 @@
 //! The run loop as Python sees it (`kibends_core::optimize`): a problem's
 //! state (`ProblemState`), the outer iterations that advance the problems
 //! (`advance`) and what they tell Python as they go (`FallbackNotice`,
-//! `AbnormalNotice`, `BurstNotice`, `ProgressNotice`).
+//! `AbnormalNotice`, `BurstNotice`, `StageNotice`, `ProgressNotice`).
 //!
 //! Each burst runs through the Python callable `advance` takes, given the
 //! burst's objective, start, scale and check (`Revert`), so that the
@@ -705,6 +705,10 @@ pub struct BurstNotice {
     /// The problem, by its place among those advanced.
     #[pyo3(get)]
     problem: usize,
+    /// The level of the schedule it ran at: its coarse spacings, then the
+    /// final one.
+    #[pyo3(get)]
+    level: usize,
     /// L-BFGS's iterations.
     #[pyo3(get)]
     iterations: u64,
@@ -736,6 +740,20 @@ pub struct BurstNotice {
     changes: Vec<f64>,
 }
 
+/// A problem enters a level of a schedule with coarse levels: each coarse
+/// level, and the final one after a coarser one hands over; not the probe
+/// at the final spacing that runs before them.
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct StageNotice {
+    /// The problem, by its place among those advanced.
+    #[pyo3(get)]
+    problem: usize,
+    /// The level of the schedule: its coarse spacings, then the final one.
+    #[pyo3(get)]
+    level: usize,
+}
+
 /// After an outer iteration: its number, its largest change, and each
 /// problem's length and energy.
 #[gen_stub_pyclass]
@@ -760,6 +778,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
             py,
             BurstNotice {
                 problem: b.problem,
+                level: b.level,
                 iterations: b.iterations,
                 evaluations: b.evaluations,
                 evaluating: b.evaluating,
@@ -773,6 +792,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
             },
         )?
         .into_any(),
+        Notice::Stage { problem, level } => Py::new(py, StageNotice { problem, level })?.into_any(),
         Notice::Progress {
             iteration,
             change,
@@ -875,7 +895,7 @@ fn advance(
     ))]
     burst: Bound<'_, PyAny>,
     #[gen_stub(override_type(
-        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]",
+        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]",
         imports = ("collections.abc",)
     ))]
     report: Py<PyAny>,
@@ -958,6 +978,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FallbackNotice>()?;
     m.add_class::<AbnormalNotice>()?;
     m.add_class::<BurstNotice>()?;
+    m.add_class::<StageNotice>()?;
     m.add_class::<ProgressNotice>()?;
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;

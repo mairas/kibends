@@ -56,6 +56,7 @@ __all__ = [
     "SelfCheck",
     "Shapes",
     "SmoothAnswer",
+    "StageNotice",
     "StaticEdges",
     "StaticFree",
     "Statistics",
@@ -230,6 +231,12 @@ class BurstNotice:
     def problem(self) -> builtins.int:
         r"""
         The problem, by its place among those advanced.
+        """
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule it ran at: its coarse spacings, then the
+        final one.
         """
     @property
     def iterations(self) -> builtins.int:
@@ -1007,6 +1014,24 @@ class SmoothAnswer:
     def direction(self) -> numpy.typing.NDArray[numpy.float64]: ...
 
 @typing.final
+class StageNotice:
+    r"""
+    A problem enters a level of a schedule with coarse levels: each coarse
+    level, and the final one after a coarser one hands over; not the probe
+    at the final spacing that runs before them.
+    """
+    @property
+    def problem(self) -> builtins.int:
+        r"""
+        The problem, by its place among those advanced.
+        """
+    @property
+    def level(self) -> builtins.int:
+        r"""
+        The level of the schedule: its coarse spacings, then the final one.
+        """
+
+@typing.final
 class StaticEdges:
     r"""
     A static field's obstacles as edges (`kibends_core::field::edges`).
@@ -1169,7 +1194,7 @@ class Zone:
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
     Outer iterations of `problems` from `iteration` until `cap`, each giving
     every problem that has not settled one burst, until every problem has

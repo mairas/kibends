@@ -1208,6 +1208,7 @@ impl State {
         let rest = began.elapsed().as_secs_f64() - ran.evaluating;
         report(Notice::Burst(BurstReport {
             problem: n,
+            level: self.level,
             iterations: ran.iterations,
             evaluations: ran.evaluations,
             evaluating: ran.evaluating,
@@ -1229,16 +1230,20 @@ impl State {
         {
             self.settled = true;
         }
-        if self.probing {
+        let entering = if self.probing {
             // A problem the first burst at the final spacing settles has
             // nothing for the coarse levels to do, and they would only
             // move a converged route.
             self.probing = false;
-            if !self.settled {
-                self.enter(0)?;
-            }
+            (!self.settled).then_some(0)
         } else if self.settled && self.coarse() {
-            self.enter(self.level + 1)?;
+            Some(self.level + 1)
+        } else {
+            None
+        };
+        if let Some(level) = entering {
+            self.enter(level)?;
+            report(Notice::Stage { problem: n, level })?;
         }
         Ok(change)
     }
@@ -1953,6 +1958,55 @@ mod tests {
             "{counts:?}"
         );
         assert!(longest_edge(&p.best.points[0]) <= settings().spacing + EDGE_ROUND_OFF);
+    }
+
+    /// The levels a run of `p` reports entering, and those its bursts ran at.
+    fn stages(p: &mut State, bursts: &mut dyn Bursts<NotFinite>) -> (Vec<usize>, Vec<usize>) {
+        let (mut entered, mut ran) = (Vec::new(), Vec::new());
+        let mut iteration = 0;
+        advance(
+            &mut [p],
+            &mut iteration,
+            100,
+            false,
+            None,
+            bursts,
+            &mut |notice| {
+                match notice {
+                    Notice::Stage { problem, level } => {
+                        assert_eq!(problem, 0);
+                        entered.push(level);
+                    }
+                    Notice::Burst(b) => ran.push(b.level),
+                    _ => {}
+                }
+                Ok(())
+            },
+        )
+        .expect("finite");
+        (entered, ran)
+    }
+
+    #[test]
+    fn a_problem_reports_entering_each_level_once_and_not_the_probe() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), 1.0, &LEVELS);
+
+        let (entered, ran) = stages(&mut p, &mut toward(0.5));
+
+        assert_eq!(entered, (0..=LEVELS.len()).collect::<Vec<_>>());
+        // The probe at the final level, then each level in turn.
+        assert_eq!(ran[0], LEVELS.len());
+        assert!(ran[1..].windows(2).all(|w| w[0] <= w[1]), "{ran:?}");
+        assert_eq!(ran[1], 0);
+    }
+
+    #[test]
+    fn a_problem_without_coarse_levels_or_settled_by_the_probe_reports_no_level() {
+        let mut single = coarse_problem(Arc::new(FreeSpace), 1.0, &[]);
+        let mut probed = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
+
+        assert_eq!(stages(&mut single, &mut toward(0.5)).0, Vec::<usize>::new());
+        assert_eq!(stages(&mut probed, &mut toward(0.0)).0, Vec::<usize>::new());
     }
 
     #[test]
