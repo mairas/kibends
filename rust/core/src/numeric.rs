@@ -53,7 +53,7 @@ fn pairwise_sum(values: &[f64]) -> f64 {
         let mut r = [0.0; UNROLLED];
         r.copy_from_slice(&values[..UNROLLED]);
         let whole = n - n % UNROLLED;
-        for chunk in values[UNROLLED..whole].chunks_exact(UNROLLED) {
+        for chunk in values[UNROLLED..whole].as_chunks::<UNROLLED>().0 {
             for (sum, &v) in r.iter_mut().zip(chunk) {
                 *sum += v;
             }
