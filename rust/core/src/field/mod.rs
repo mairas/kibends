@@ -45,7 +45,10 @@ pub mod search;
 pub mod smooth;
 mod union_find;
 
+use std::sync::Arc;
+
 use crate::geometry::V2;
+use edges::StaticEdges;
 
 /// Signed distance to the nearest inflated obstacle boundary, and segment
 /// checks.
@@ -67,6 +70,14 @@ pub trait Field: Send + Sync {
     /// inflated obstacle: it does not enter the region where the signed
     /// distance is below -`tolerance`; touching the boundary is clear.
     fn segments_clear(&self, starts: &[V2], ends: &[V2], tolerance: f64) -> Vec<bool>;
+
+    /// The field as `StaticEdges`, one per field it joins, for a search
+    /// that answers several points of an asker at once and is kept between
+    /// evaluations (`neighbours::StaticList`); None for a field that gives
+    /// none, which answers by its own `smooth_distance`.
+    fn static_parts(&self) -> Option<Vec<Arc<StaticEdges>>> {
+        None
+    }
 }
 
 /// Closer than this to the nearest feature, the direction to it is noise;

@@ -270,6 +270,10 @@ impl Field for Obstacles {
     fn segments_clear(&self, starts: &[V2], ends: &[V2], tolerance: f64) -> Vec<bool> {
         Obstacles::segments_clear(self, starts, ends, tolerance)
     }
+
+    fn static_parts(&self) -> Option<Vec<Arc<StaticEdges>>> {
+        Some(vec![self.edges().clone()])
+    }
 }
 
 /// Each item's obstacle, numbered from 0. Items of one geometry are one

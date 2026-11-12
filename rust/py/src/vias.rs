@@ -65,7 +65,7 @@ fn pair_vias(
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct ViaPairs {
-    inner: pairs::ViaPairs,
+    pub(crate) inner: std::sync::Arc<pairs::ViaPairs>,
 }
 
 #[gen_stub_pymethods]
@@ -95,7 +95,7 @@ impl ViaPairs {
         let none: Vec<Vec<PyRef<'_, Zone>>> = statics.iter().map(|_| Vec::new()).collect();
         let still = pair_vias(&statics, &static_grounds, &static_clearances, &none)?;
         Ok(Self {
-            inner: pairs::ViaPairs::new(
+            inner: std::sync::Arc::new(pairs::ViaPairs::new(
                 moving,
                 &apart,
                 still,
@@ -104,7 +104,7 @@ impl ViaPairs {
                     hole_clearance,
                     hole_to_hole,
                 },
-            ),
+            )),
         })
     }
 

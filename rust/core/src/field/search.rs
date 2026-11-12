@@ -12,6 +12,7 @@ use crate::geometry::{V2, closest_point, segment_distance};
 
 /// The items of several `StaticEdges`, numbered one part after another,
 /// for what `static_smooth` asks of an item.
+#[derive(Clone)]
 pub struct StaticItems {
     parts: Vec<Arc<StaticEdges>>,
     /// Where each part's items start, and then their count.

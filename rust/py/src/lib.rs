@@ -9,6 +9,7 @@ mod energy;
 mod field;
 mod fields;
 mod helpers;
+mod problem;
 mod testing;
 mod vias;
 
@@ -49,6 +50,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     fields::register(m)?;
     energy::register(m)?;
     helpers::register(m)?;
+    problem::register(m)?;
     testing::register(m)?;
     vias::register(m)?;
     m.add_type_alias::<Field>()?;

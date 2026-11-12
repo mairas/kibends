@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::Field;
+use super::edges::StaticEdges;
 use super::smooth::combine_fields;
 use crate::geometry::V2;
 
@@ -82,5 +83,13 @@ impl Field for CompositeField {
             }
         }
         clear
+    }
+
+    fn static_parts(&self) -> Option<Vec<Arc<StaticEdges>>> {
+        let mut parts = Vec::new();
+        for field in &self.fields {
+            parts.extend(field.static_parts()?);
+        }
+        Some(parts)
     }
 }

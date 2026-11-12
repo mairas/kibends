@@ -23,7 +23,7 @@ pub struct NearestEdge {
 /// it: per obstacle that has a share at a point, the point, the pair
 /// nearest it of that obstacle, its share and its unit gradient, in the
 /// order of their points.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SmoothAnswer {
     pub distance: Vec<f64>,
     pub gradient: Vec<V2>,

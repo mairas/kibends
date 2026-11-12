@@ -15,23 +15,42 @@ __all__ = [
     "CompositeField",
     "Curvature",
     "DEFAULT_ATTRACTION_RANGE",
+    "EdgesClear",
     "Field",
+    "FreeDistances",
     "INDEXED_EDGES",
     "Integrand",
     "LINE",
+    "Lookups",
     "MAX_SMOOTH_TURN",
     "MIN_EDGE_LENGTH",
+    "Member",
+    "Members",
     "MovingVias",
+    "NeighbourList",
     "OUTSIDE",
+    "Objective",
+    "ObstacleDistances",
     "Obstacles",
     "PairIntegrand",
+    "PairOffset",
+    "Problem",
+    "SKIN_LEAST",
+    "SKIN_MOST",
     "SMOOTH_REACH",
     "SMOOTH_WIDTH",
+    "STATIC_SKIN",
+    "Seen",
     "Shapes",
+    "SmoothAnswer",
     "StaticEdges",
+    "StaticFree",
     "StaticItems",
+    "Statistics",
     "Via",
     "ViaPairs",
+    "ViaSight",
+    "ViaSmooth",
     "Zone",
     "arc_lengths",
     "attraction_integrand",
@@ -51,16 +70,21 @@ __all__ = [
     "edge_bend_radii",
     "edge_curvature",
     "edge_integral",
+    "field_queries",
+    "free_distances",
     "hinge_curvature",
     "hinge_integrand",
     "kept_vertices",
     "moving_via_obstacles",
     "near_segments",
     "nearest_of_pairs",
+    "newly_inside",
     "obstacle_curvature",
     "obstacle_integrand",
     "obstacle_order",
     "obstacle_reach",
+    "offset_pair",
+    "offset_pair_pullback",
     "own_net_stops",
     "pair_depths",
     "pair_kind",
@@ -69,6 +93,7 @@ __all__ = [
     "point_stiffness",
     "quadrature_points",
     "repulsion_integrand",
+    "reset_statistics",
     "search_parts",
     "shape_energy",
     "smooth_minimum",
@@ -77,6 +102,7 @@ __all__ = [
     "split_via_obstacles",
     "static_distances",
     "static_smooth",
+    "statistics",
     "testing",
     "too_tight",
     "track_inflation",
@@ -99,8 +125,11 @@ LINE: builtins.int = 0
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
 MIN_EDGE_LENGTH: builtins.float = 1e-06
 OUTSIDE: builtins.int = 2
+SKIN_LEAST: builtins.float = 0.05
+SKIN_MOST: builtins.float = 0.15
 SMOOTH_REACH: builtins.float = 0.05
 SMOOTH_WIDTH: builtins.float = 0.005
+STATIC_SKIN: builtins.float = 0.05
 @typing.final
 class BoardLayer:
     r"""
@@ -197,12 +226,111 @@ class Curvature:
     def __call__(self, distance: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]: ...
 
 @typing.final
+class EdgesClear:
+    r"""
+    Whether each edge of a member stays out of the pieces it sees, and what
+    those that do not enter (`kibends_core::seen::EdgesClear`).
+    """
+    @property
+    def clear(self) -> numpy.typing.NDArray[numpy.bool_]:
+        r"""
+        Whether each edge stays out.
+        """
+    @property
+    def edge(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Per (edge, piece) pair entered, the edge.
+        """
+    @property
+    def vertex(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The first vertex of the piece's edge, numbered across what the
+        members show, so that a via's is its first vertex there.
+        """
+    @property
+    def obstacle(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The piece's obstacle, its track or its via (`Seen.obstacle`).
+        """
+    @property
+    def depth(self) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        How deep the edge is inside the piece.
+        """
+
+@typing.final
+class FreeDistances:
+    r"""
+    The free distance of each via to each obstacle
+    (`kibends_core::vias::free::FreeDistances`).
+    """
+    @property
+    def static(self) -> StaticFree:
+        r"""
+        To each of what stands still.
+        """
+    @property
+    def by_obstacle(self) -> ObstacleDistances:
+        r"""
+        To each member and via its sight finds.
+        """
+
+@typing.final
 class Integrand:
     r"""
     A function of the distance to an obstacle: called with distances, it
     gives its value and slope at each.
     """
     def __call__(self, distance: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]: ...
+
+@typing.final
+class Lookups:
+    r"""
+    What one objective's evaluations search through
+    (`kibends_core::problem::Lookups`).
+    """
+    ...
+
+@typing.final
+class Member:
+    r"""
+    A chain, or a coupled section as its centreline
+    (`kibends_core::members::Member`).
+    """
+    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: builtins.float = 0.0) -> Member:
+        r"""
+        On `layer`, keeping clear of the others as the track `viewer`,
+        ignoring the tracks of the nets `ignored`, showing the others the
+        tracks `shown`, in its static `field`, its contact stops weighed by
+        `width` and its contacts' regions `contacts`; a coupled section with
+        its `section` offset and its bend-radius `limit`.
+        """
+
+@typing.final
+class Members:
+    r"""
+    The members of a problem (`kibends_core::members::Members`).
+    """
+    def __new__(cls, members: typing.Sequence[Member]) -> Members: ...
+    def __len__(self) -> builtins.int: ...
+    def seen(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]] = []) -> Seen:
+        r"""
+        What each member sees of the others with the members at
+        `polylines`, each via of `rings` seen by the members it names,
+        inflated by the distance it gives.
+        """
+    def shown_flat(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        What the others see of every member at `polylines`, one after
+        another, then each via's centre at `positions` twice.
+        """
+    def energy(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], params: energy.EnergyParams, short_edge: builtins.float, seen: Seen, positions: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        The members' summed energy at `polylines` as `seen` shows them, with
+        vias at `positions` among them; its gradient at every vertex, the
+        vertices of `masks` zeroed, and at each via's centre. Raises
+        ValueError if it is not finite.
+        """
 
 @typing.final
 class MovingVias:
@@ -237,6 +365,49 @@ class MovingVias:
         r"""
         The chains near via v, and how far each keeps its centreline from
         v's centre.
+        """
+
+@typing.final
+class NeighbourList:
+    r"""
+    A Verlet list of the pairs of a `Seen` (`kibends_core::neighbours::
+    NeighbourList`).
+    """
+    def __new__(cls, seen: Seen, reach: builtins.float) -> NeighbourList:
+        r"""
+        A list for `seen`'s layers, for an energy whose terms end at `reach`.
+        """
+
+@typing.final
+class Objective:
+    r"""
+    A burst's energy as a function of its variables
+    (`kibends_core::problem::Objective`): called with the variables, flat,
+    it gives the energy and its gradient.
+    """
+    def __call__(self, x: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]: ...
+
+@typing.final
+class ObstacleDistances:
+    r"""
+    (via, obstacle) pairs and each via's exact distance to its obstacle
+    (`kibends_core::vias::sight::ObstacleDistances`).
+    """
+    @property
+    def key(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def via(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def obstacle(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        A member by its index, a via by the number of members plus its.
+        """
+    @property
+    def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def vertex(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The member's edge's first vertex, or the via's index.
         """
 
 @typing.final
@@ -281,6 +452,128 @@ class PairIntegrand:
     def __call__(self, distance: numpy.typing.NDArray[numpy.float64], limit: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]: ...
 
 @typing.final
+class PairOffset:
+    r"""
+    A coupled section's tracks as the offset of its centreline
+    (`kibends_core::pair_blocks::PairOffset`).
+    """
+    def __new__(cls, gap: builtins.float, width: builtins.float, a_on_right: builtins.bool, held: builtins.bool, a_at: numpy.typing.NDArray[numpy.float64], a: numpy.typing.NDArray[numpy.float64], b_at: numpy.typing.NDArray[numpy.float64], b: numpy.typing.NDArray[numpy.float64], track_a: numpy.typing.NDArray[numpy.float64], track_b: numpy.typing.NDArray[numpy.float64]) -> PairOffset:
+        r"""
+        Its `gap` and track `width`, mm, whether track a lies to the right
+        of the centreline, whether it is `held`, the centreline's vertices
+        `a_at` and `b_at` holding the tracks' own points `a` and `b`, and the
+        tracks as given, which a held section keeps.
+        """
+    def offset(self, points: numpy.typing.NDArray[numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Tracks a and b along the centreline at `points`, through the
+        section's own ends and pins.
+        """
+    def offset_pullback(self, points: numpy.typing.NDArray[numpy.float64], at_a: numpy.typing.NDArray[numpy.float64], at_b: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        The gradient of a function of `offset(points)`, `at_a` and `at_b` at
+        the vertices of tracks a and b, taken back to the centreline's
+        vertices.
+        """
+
+@typing.final
+class Problem:
+    r"""
+    The members, moving vias and terms of one problem
+    (`kibends_core::problem::Problem`).
+    """
+    def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams, short_edge: builtins.float) -> Problem:
+        r"""
+        The problem of `members`, the vias seen by the members `rings`
+        names at those distances, each moving via with its `diameter`, its
+        static `fields` and its `stops`, what the vias' full terms see
+        (`repel`) and what their stops see (`stop`), the pairwise term
+        `pairs`, the energy's `params` and its `short_edge`.
+        """
+    def seen(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> Seen:
+        r"""
+        What each member sees of the others and of the vias with the
+        members at `polylines`.
+        """
+    def shown_flat(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        What the others see of every member at `polylines`, one after
+        another, then each via's centre at `positions` twice.
+        """
+    def lookups(self, seen: Seen) -> Lookups:
+        r"""
+        The lists for the evaluations of one objective, made for `seen`.
+        """
+    def total(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contact_of: typing.Sequence[numpy.typing.NDArray[numpy.intp]], seen: Seen, lookups: typing.Optional[Lookups] = None) -> tuple[builtins.float, builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        The problem's energy at `polylines` and `positions`, the members'
+        terms with the vertices of `masks` zeroed and each vertex's contact
+        by `contact_of`, -1 for none, as `seen` shows them, and its gradient
+        at every vertex and every via's centre; searching through
+        `lookups`, made for `seen`, if given. Raises ValueError if the
+        members' energy is not finite.
+        """
+    def via_energy(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        The moving vias' own obstacle terms at `polylines` and `positions`,
+        and their gradient at every vertex and at every via's centre.
+        """
+    def via_stiffness(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        Each moving via's stiffness under its own obstacle terms.
+        """
+    def stiffness(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen, lookups: typing.Optional[Lookups] = None) -> tuple[builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Per member, each vertex's stiffness under its obstacle term, and
+        each via's under its own terms, at `polylines` and `positions` as
+        `seen` shows them, searching through `lookups` if given.
+        """
+    def objective(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]], index: typing.Sequence[numpy.typing.NDArray[numpy.intp]], offsets: typing.Sequence[numpy.typing.NDArray[numpy.float64]], via_index: numpy.typing.NDArray[numpy.intp], count: builtins.int, masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contact_of: typing.Sequence[numpy.typing.NDArray[numpy.intp]], seen: Seen, lookups: typing.Optional[Lookups] = None) -> Objective:
+        r"""
+        The problem's energy as a function of a burst's variables, laid out
+        from `starts` with each vertex's variable in `index`, -1 where it
+        stays, and its offset from it in `offsets`, each via's variable in
+        `via_index`, of `count` variables; with what each member sees of the
+        others as `seen`, the energy `masks` and each vertex's contact by
+        `contact_of`, searching through `lookups` if given.
+        """
+
+@typing.final
+class Seen:
+    r"""
+    What each member of a problem sees of the others at one set of shapes
+    (`kibends_core::seen::Seen`).
+    """
+    @property
+    def layer_count(self) -> builtins.int:
+        r"""
+        How many layers its members are on.
+        """
+    @property
+    def obstacle(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        Each piece's obstacle for the smooth minimum: its track, or its via.
+        """
+    def distances(self, queries: typing.Sequence[numpy.typing.NDArray[numpy.float64]], flat: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Per member, the signed distance from each of its `queries` to the
+        nearest piece it sees, +inf where it sees none; exact below `below`,
+        elsewhere at least `below`. `flat` is what the members show.
+        """
+    def segments_clear(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], flat: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> builtins.list[EdgesClear]:
+        r"""
+        Per member at `polylines`, whether each of its edges stays out of
+        the pieces it sees at `flat`, entering by at most `tolerance`, and
+        what each edge that does not enters.
+        """
+    def smooth_answers(self, queries: typing.Sequence[numpy.typing.NDArray[numpy.float64]], flat: numpy.typing.NDArray[numpy.float64], reach: builtins.float, listed: typing.Optional[NeighbourList] = None) -> builtins.list[SmoothAnswer]:
+        r"""
+        Per member, the smooth distance from each of its `queries` to the
+        pieces it sees at `flat`, with `reach`, and what answers it; with
+        `listed`, made for this, each layer looks only at the pairs it lists.
+        """
+
+@typing.final
 class Shapes:
     r"""
     Geometries as plain coordinates: each shape's parts, each part a polygon
@@ -292,6 +585,26 @@ class Shapes:
     """
     def __new__(cls, coords: numpy.typing.NDArray[numpy.float64], ring_ends: numpy.typing.NDArray[numpy.intp], part_ends: numpy.typing.NDArray[numpy.intp], part_polygon: numpy.typing.NDArray[numpy.bool_], shape_ends: numpy.typing.NDArray[numpy.intp], type_ids: numpy.typing.NDArray[numpy.int32]) -> Shapes: ...
     def __len__(self) -> builtins.int: ...
+
+@typing.final
+class SmoothAnswer:
+    r"""
+    The smooth distance at each point and its gradient, and what answers
+    it: per obstacle that has a share at a point, the point, the piece
+    nearest it of that obstacle, its share and its unit gradient.
+    """
+    @property
+    def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def gradient(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def point(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def edge(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def share(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def direction(self) -> numpy.typing.NDArray[numpy.float64]: ...
 
 @typing.final
 class StaticEdges:
@@ -353,6 +666,19 @@ class StaticEdges:
         """
 
 @typing.final
+class StaticFree:
+    r"""
+    (via, obstacle) pairs of what stands still for each via and each via's
+    exact distance to its obstacle (`kibends_core::vias::free::StaticFree`).
+    """
+    @property
+    def key(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def via(self) -> numpy.typing.NDArray[numpy.intp]: ...
+    @property
+    def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
+
+@typing.final
 class StaticItems:
     r"""
     The items of several `StaticEdges`, numbered one part after another.
@@ -371,6 +697,23 @@ class StaticItems:
         r"""
         The unit gradient at a point lying on an item's edges, numbered
         across the parts.
+        """
+
+@typing.final
+class Statistics:
+    r"""
+    What the optimizer's energy cost since the last `reset_statistics`
+    (`kibends_core::stats`).
+    """
+    @property
+    def evaluations(self) -> builtins.int:
+        r"""
+        Energy evaluations of the bursts' objectives.
+        """
+    @property
+    def list_searches(self) -> builtins.int:
+        r"""
+        Searches of a layer's neighbour list for its pairs.
         """
 
 @typing.final
@@ -415,6 +758,67 @@ class ViaPairs:
         The term's value with the problem's vias at (n, 2) `positions`, and
         its gradient at each via's centre.
         """
+
+@typing.final
+class ViaSight:
+    r"""
+    What each moving via sees of the members and the other vias
+    (`kibends_core::vias::sight::ViaSight`).
+    """
+    def __new__(cls, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], apart: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], members: builtins.int) -> ViaSight:
+        r"""
+        Each via, by its index, seeing the members its `rings` names and the
+        vias its `apart` names, at those distances, among `members`.
+        """
+    def distances(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], reach: builtins.float) -> numpy.typing.NDArray[numpy.float64]:
+        r"""
+        Each via's exact distance to the nearest of what it sees, with the
+        members at `polylines` and the vias at `positions`, within `reach`.
+        """
+    def obstacle_distances(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> ObstacleDistances:
+        r"""
+        Each via's exact distance to each member and each via it sees, where
+        it is below `below`.
+        """
+    def smooth_answers(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], reach: builtins.float) -> ViaSmooth:
+        r"""
+        Each via's smooth distance to what it sees, with `reach`, and what
+        answers it.
+        """
+
+@typing.final
+class ViaSmooth:
+    r"""
+    Each moving via's smooth distance and its gradient, and what answers it
+    (`kibends_core::vias::sight::ViaSmooth`).
+    """
+    @property
+    def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def gradient(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def point(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The via each answer is for.
+        """
+    @property
+    def member(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The member that answers, -1 for a via.
+        """
+    @property
+    def vertex(self) -> numpy.typing.NDArray[numpy.intp]:
+        r"""
+        The member's edge's first vertex, or the via.
+        """
+    @property
+    def starts(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def ends(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def share(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def direction(self) -> numpy.typing.NDArray[numpy.float64]: ...
 
 @typing.final
 class Zone:
@@ -544,6 +948,20 @@ def edge_integral(points: numpy.typing.NDArray[numpy.float64], distance: numpy.t
     quadrature point.
     """
 
+def field_queries(field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField) -> builtins.int:
+    r"""
+    The points the energy asked `field` about since the last
+    `reset_statistics`.
+    """
+
+def free_distances(statics: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.NanField]]], sight: ViaSight, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:
+    r"""
+    The free distance of each via to each obstacle nearer than `below`: to
+    each part of its `statics`, and to each of the members at `polylines`
+    and the vias at `positions` that `sight` finds
+    (`kibends_core::vias::free::free_distances`).
+    """
+
 def hinge_curvature(params: energy.EnergyParams) -> Curvature:
     r"""
     The second derivative of `hinge_integrand` by the distance, inside an
@@ -586,6 +1004,13 @@ def nearest_of_pairs(query: numpy.typing.NDArray[numpy.complex128], point: numpy
     none does.
     """
 
+def newly_inside(now: FreeDistances, start: FreeDistances, tolerance: builtins.float, slack: builtins.float = 0.0) -> tuple[numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
+    r"""
+    Which of the pairs of what stands still and of what the vias see, at
+    `now`, are newly inside by more than `tolerance`, or more than `slack`
+    deeper inside than at `start` (`kibends_core::vias::free::newly_inside`).
+    """
+
 def obstacle_curvature(params: energy.EnergyParams) -> Curvature:
     r"""
     The second derivative of `obstacle_integrand` by the distance, and
@@ -607,6 +1032,19 @@ def obstacle_reach(params: energy.EnergyParams) -> builtins.float:
     r"""
     Distance from an obstacle beyond which both obstacle terms of the
     energy are zero, mm, so farther copper need not be looked up.
+    """
+
+def offset_pair(centreline: numpy.typing.NDArray[numpy.float64], gap: builtins.float, width: builtins.float) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    r"""
+    Tracks a and b of a pair at ±(gap + width)/2 from `centreline`, to its
+    right and to its left (`kibends_core::pair_blocks::offset_pair`).
+    """
+
+def offset_pair_pullback(centreline: numpy.typing.NDArray[numpy.float64], gap: builtins.float, width: builtins.float, right: numpy.typing.NDArray[numpy.float64], left: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    The gradient of a function of `offset_pair`'s two tracks, `right` and
+    `left` at each of their vertices, taken back to the centreline's
+    vertices (`kibends_core::pair_blocks::offset_pair_pullback`).
     """
 
 def own_net_stops(layers: typing.Sequence[BoardLayer], via: Via, moving: typing.Sequence[builtins.str], hole_clearance: builtins.float, hole_to_hole: builtins.float, allow_via_in_pad: builtins.bool) -> tuple[typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]], typing.Optional[ChainField]]:
@@ -658,6 +1096,11 @@ def repulsion_integrand(params: energy.EnergyParams) -> Integrand:
     r"""
     The repulsion of `obstacle_integrand` alone, weighted: for what pushes
     away without being a wall.
+    """
+
+def reset_statistics() -> None:
+    r"""
+    Every statistic back to zero.
     """
 
 def search_parts(parts: typing.Sequence[tuple[StaticEdges, builtins.int]], coords: numpy.typing.NDArray[numpy.float64], reach: builtins.float, slack: builtins.float) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.complex128], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.bool_], numpy.typing.NDArray[numpy.bool_]]:
@@ -712,6 +1155,11 @@ def static_smooth(query: numpy.typing.NDArray[numpy.complex128], point: numpy.ty
     The smooth distance at each point of `query` and its gradient over the
     pairs of `obstacles.Found`'s fields, their items numbered as `items`
     numbers them.
+    """
+
+def statistics() -> Statistics:
+    r"""
+    The energy's statistics so far.
     """
 
 def too_tight(radius: numpy.typing.NDArray[numpy.float64], limit: builtins.float) -> numpy.typing.NDArray[numpy.bool_]:

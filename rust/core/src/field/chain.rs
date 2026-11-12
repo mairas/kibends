@@ -267,6 +267,10 @@ impl Field for ChainField {
         }
         clear
     }
+
+    fn static_parts(&self) -> Option<Vec<Arc<StaticEdges>>> {
+        Some(vec![self.static_edges().clone()])
+    }
 }
 
 fn gather<T: Copy>(values: &[T], at: &[usize]) -> Vec<T> {

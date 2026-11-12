@@ -5,10 +5,16 @@ pub mod contacts;
 pub mod energy;
 pub mod field;
 pub mod geometry;
+pub mod members;
+pub mod neighbours;
 pub mod numeric;
+pub mod pair_blocks;
 pub mod pairs;
+pub mod problem;
 pub mod rules;
+pub mod seen;
 pub mod simplify;
+pub mod stats;
 pub mod testing;
 pub mod vias;
 
