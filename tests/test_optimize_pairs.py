@@ -33,9 +33,9 @@ from kibends.bursts import (
     FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
     run_burst,
 )
@@ -466,7 +466,7 @@ class TestTightCorner:
         def folding_first(
             objective: Objective,
             start: FloatArray,
-            revert: Revert,
+            revert: Check,
             settings: OptimizerSettings,
             stop: Stop | None = None,
         ) -> Burst:
@@ -825,7 +825,7 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     def fails_until_held(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:

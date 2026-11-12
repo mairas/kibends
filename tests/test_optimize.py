@@ -28,9 +28,9 @@ import kibends.optimize as optimize_module
 from kibends.bursts import (
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
 )
 from kibends.energy import ObstacleField
@@ -573,7 +573,7 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
     def failing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:

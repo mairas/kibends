@@ -115,7 +115,10 @@ class OptimizerSettings:
 DEFAULT_SETTINGS = OptimizerSettings()
 
 
-Revert = Callable[[FloatArray], int]
+Check = Callable[[FloatArray], int]
+"""What a burst runs after L-BFGS, such as a `kibends._core.Revert`: it moves
+back, in place, what newly crosses an obstacle and returns how many edges
+crossed."""
 Stop = Callable[[], bool]
 
 
@@ -155,7 +158,7 @@ class Burst:
 def run_burst(
     objective: Objective,
     start: FloatArray,
-    revert: Revert,
+    revert: Check,
     settings: OptimizerSettings,
     stop: Stop | None = None,
 ) -> Burst:

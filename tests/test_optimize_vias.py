@@ -33,9 +33,9 @@ from kibends.bursts import (
     FALLBACK_WARNING,
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
 )
 from kibends.energy import (
@@ -1428,7 +1428,7 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     def failing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:

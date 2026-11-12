@@ -32,9 +32,9 @@ from kibends import _core
 from kibends.bursts import (
     DEFAULT_SETTINGS,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     ScaledObjective,
     Stop,
 )
@@ -361,7 +361,7 @@ def test_resampling_keeps_vertices_pressed_into_another_chains_clearance(
     def capturing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -525,7 +525,7 @@ def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
     def recording(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -881,7 +881,7 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     def failing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -912,7 +912,7 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
     def back_fails(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -942,7 +942,7 @@ def test_a_normal_burst_ends_an_abnormal_streak(
     def second_normal(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -968,7 +968,7 @@ def test_an_abnormal_burst_s_last_check_is_not_counted(
     def through_the_disc(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
@@ -1483,7 +1483,7 @@ def test_a_burst_minimises_over_its_scaled_variables(
     def capturing(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:

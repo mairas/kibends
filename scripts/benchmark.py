@@ -128,7 +128,6 @@ from kibends.bursts import (  # noqa: E402
     Burst,
     Objective,
     OptimizerSettings,
-    Revert,
 )
 from kibends.chain import NM_PER_MM  # noqa: E402
 from kibends.energy import EnergyParams, FloatArray  # noqa: E402
@@ -147,6 +146,7 @@ from kibends.vias import ViaInput  # noqa: E402
 # Only for annotations: an older tree has no `_core`.
 if TYPE_CHECKING:
     from kibends import _core
+    from kibends.bursts import Check
 
 Problem = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
 
@@ -229,7 +229,7 @@ def counted() -> Generator[Count]:
     def burst(
         objective: Objective,
         start: FloatArray,
-        revert: Revert,
+        revert: Check,
         settings: OptimizerSettings,
         stop: Callable[[], bool] | None = None,
     ) -> Burst:

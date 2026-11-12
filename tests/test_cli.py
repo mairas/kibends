@@ -59,9 +59,9 @@ from kibends.bursts import (
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     Burst,
+    Check,
     Objective,
     OptimizerSettings,
-    Revert,
     Stop,
 )
 from kibends.chain import NM_PER_MM, Point2
@@ -750,7 +750,7 @@ class TestSmooth:
         def failing(
             objective: Objective,
             start: FloatArray,
-            revert: Revert,
+            revert: Check,
             settings: OptimizerSettings,
             stop: Stop | None = None,
         ) -> Burst:
