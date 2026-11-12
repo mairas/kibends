@@ -207,13 +207,32 @@ barely changes it or its energy stops improving. Each evaluation of a
 burst spreads over every logical CPU; set the environment variable
 `RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
+Each problem runs through a schedule of spacings, the distances between a
+chain's vertices: by default 1.6, 0.4 and 0.1 mm (`--spacing`). Its first
+burst runs at the final spacing, and a problem that burst settles is
+done. Otherwise its chains run at
+each coarser spacing in turn, coarsest first, each handing over to the
+next when the problem settles at it, and end at the final spacing. A long
+track bowed across its whole span barely moves per burst at 0.1 mm among
+many other tracks, but with few vertices it straightens in a few bursts;
+the final spacing then adds the detail near obstacles. Coupled sections
+stay at the final spacing throughout. At a coarse spacing, a chain whose
+burst leaves it in more clearance violations than it started with goes
+back to its last good shape while the others keep theirs, and the result
+is always at the final spacing. With so few vertices, a chain may pass
+another moving chain in one burst and settle on its far side, where the
+shorter route is clear. Results differ from those of kibends versions that
+ran at 0.1 mm alone; `--spacing 0.1` runs that way again.
+
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
 nothing to do, or stopped at its iteration cap or the time limit, each
 keeping the best result found; the warning of a run that stopped while some
 problem was still at a coarse spacing says it stopped before reaching the
 final spacing. It stopped on abnormal bursts when L-BFGS
-ended three bursts of some problem in a row abnormally after the run had
+ended three bursts of some problem in a row abnormally at the final
+spacing (at a coarse spacing, such a streak hands over to the next one)
+after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS terminated abnormally" and commits nothing.
@@ -226,7 +245,8 @@ their starting summed length and energy. With coarse spacings, it says
 when each problem starts at each of them ("Optimizing the chains on F.Cu
 coarsely, at 1.6 mm spacing") and at the final spacing ("Refining the chains
 on F.Cu at 0.1 mm spacing"); a problem that settles in its first burst,
-which runs at the final spacing, skips the coarse spacings and logs neither. When it holds a differential
+which runs at the final spacing, skips the coarse spacings and logs
+neither. When it holds a differential
 pair's section, it says how many chains and vias it put back.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
@@ -316,7 +336,7 @@ A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
 followed the optimised one: at the gap, segment for segment in parallel,
 and meeting the fan-outs in the direction they did. Where an end was
-routed at another gap, one track's end edge, about a spacing long, takes up
+routed at another gap, one track's end edge, about the final spacing long, takes up
 the difference and turns slightly off the direction it had. kibends does
 not check the committed tracks' gap again; KiCad's DRC reports a pair's tracks that end up closer
 than their clearance.
@@ -441,7 +461,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so it runs over by about one L-BFGS iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
-| `--spacing MM ...` | 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles. The last is the final spacing, at most 0.1, and one value runs at it alone. At most 8 values, each smaller than the one before. |
+| `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |

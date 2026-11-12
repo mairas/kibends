@@ -11,7 +11,8 @@
 //! checks take exact distances. Without moving vias the layers do not
 //! interact, so each layer is a problem of its own, and an outer iteration
 //! (`advance`) gives every problem that has not settled one burst
-//! (`state::State::step`): resample each chain to the spacing between its
+//! (`state::State::step`): resample each chain, at the spacing of the
+//! level it runs at (`state`), between its
 //! fixed vertices and those pressed into the others' clearance, which
 //! resampling keeps where they are (`state::State::pressed`), run L-BFGS
 //! over every free vertex without bounds (`Bursts`, `burst`), scaled by
@@ -130,7 +131,8 @@ impl End {
 pub const MAX_COARSE_LEVELS: usize = 7;
 
 /// The coarse spacings a problem runs at before its final spacing, mm,
-/// coarsest first; none by default. Held in a fixed array so that
+/// coarsest first; `Default` holds none, while the CLI and
+/// `kibends.bursts` default to 1.6 and 0.4. Held in a fixed array so that
 /// `Settings` stays `Copy`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CoarseSpacings {

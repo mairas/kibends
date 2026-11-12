@@ -70,7 +70,9 @@ DEFAULT_ATTRACTION = 1.15
 # clearance boundary, which the burst's edge check keeps edges from newly
 # crossing.
 CLEARANCE_WEIGHT = 50.0
-# Above the worst-case sag between quadrature points at the default spacing.
+# Above the worst-case sag between quadrature points at the final spacing,
+# at most MAX_SPACING; the coarse levels' longer edges sag more, and the final
+# level runs at the final spacing.
 STANDOFF = 0.02
 POINTS_PER_EDGE = 3
 MAX_SPACING = 0.1

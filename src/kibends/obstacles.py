@@ -89,7 +89,8 @@ DEGENERATE_DISTANCE = 1e-9
 TOUCH_TOLERANCE = 1e-6
 # Other chains' edges are split to at most this length, so that a point near an
 # edge is also near its midpoint, where the k-d tree finds it. Chains resampled
-# at the default 0.1 mm `OptimizerSettings.spacing` are never split.
+# at the final spacing, `OptimizerSettings.spacing` of at most 0.1 mm, are
+# never split; at a coarse level, edges longer than this are.
 MAX_EDGE_LENGTH = 0.5
 
 POLYGON_TYPE = 3

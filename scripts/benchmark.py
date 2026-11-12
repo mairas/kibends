@@ -16,9 +16,11 @@ contain TEXT. `--plot` saves each joint case's per-chain length against
 outer iteration as a PNG in DIR.
 Arguments after `--` go to `kibends smooth` for the runs through a fake
 KiCad and give the crossed grids' energy parameters and optimizer settings
-and the buses' optimizer settings, a `--time-limit` among them overriding
-TIME_LIMIT, so a run can be measured at other settings. Each table row is
-one run.
+and the buses' and joint cases' optimizer settings, a `--time-limit` among
+them overriding TIME_LIMIT, so a run can be measured at other settings:
+`-- --spacing 0.1`, for one, runs those without coarse levels. The
+scenarios and return vias take none and run at the library defaults,
+coarse levels included. Each table row is one run.
 
 `--tree` compares this checkout with TREE, another checkout such as an
 older commit from `git worktree add`, on one machine. It brings TREE's
@@ -46,7 +48,7 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   each through the optimizer at default settings, stopped after TIME_LIMIT
   seconds unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
-  at default settings.
+  at default settings (`OptimizerSettings()`, coarse levels included).
 - bus: tracks of different nets side by side, each case stopped after
   TIME_LIMIT seconds unless it ends first. Five go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of

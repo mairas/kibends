@@ -155,7 +155,13 @@ def optimize_chains(
     ends come back at one point, loose. A via keeps `hole_clearance` and
     `hole_to_hole` where holes are involved. `static_vias` are the board's
     vias that are none of `vias`; each problem keeps those its moving vias
-    share a layer with. Each problem keeps its best state, replaced only after a
+    share a layer with.
+
+    Each problem runs through `settings`' schedule: its first burst at the
+    final spacing, and, unless that settles it, its chains at each of
+    `coarse_spacings` in turn, then at the final spacing, a level handing
+    over when the problem settles at it (`kibends_core::optimize::state`).
+    Each problem keeps its best state, replaced only after a
     burst that does not raise its energy, leaves no chain or section with
     more violations than it started with, and leaves no via deeper inside
     its clearance or its stops than it started.
@@ -164,7 +170,8 @@ def optimize_chains(
     `settled_change` and moved nothing back, or when the lowest energy its
     bursts reached, whether or not the guard took them as its best state,
     and its tracks' length stalled over `stall_window` bursts (`stalled`),
-    or after MAX_ABNORMAL_BURSTS abnormal bursts in a row; the run converges
+    or after MAX_ABNORMAL_BURSTS abnormal bursts in a row, at a coarse level
+    handing over instead; the run converges
     when every problem has, and gives up (`Termination.GAVE_UP`) if some
     problem settled on abnormal bursts. A run that gave up on some problem
     and whose best states sum to no less energy than its inputs ends

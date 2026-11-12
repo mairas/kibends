@@ -68,7 +68,15 @@ class OptimizerSettings:
     coarse_spacings: tuple[float, ...] = (1.6, 0.4)
     """The spacings a problem runs at before `spacing`, mm, coarsest first:
     each above the next and the last above `spacing`, at most
-    `MAX_COARSE_LEVELS` of them. Empty runs at `spacing` alone."""
+    `MAX_COARSE_LEVELS` of them. Empty runs at `spacing` alone.
+
+    A long track bowed across its whole span barely moves per burst at
+    0.1 mm among many other tracks; with few vertices it straightens in a
+    few bursts. On a region of a real board, 92 chains and 70 moving vias in
+    one problem, 1.6 and 0.4 took 31 iterations and 8.7 s where 0.1 alone
+    took 113 and 45 s and left a 45 mm track bowed, and the whole board
+    ran best with them among the schedules compared
+    (https://github.com/mairas/kibends/issues/184)."""
     settled_change: float = DEFAULT_CHORD_TOLERANCE / 2
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles. Half the chord tolerance, the run's own unless

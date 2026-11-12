@@ -4,8 +4,9 @@
 //! problem has settled. The chains come first, then the sections, as their
 //! centrelines.
 //!
-//! A burst starts from the members resampled; the shapes as the burst left
-//! them are what the energy, the guard and the best state see. Resampling
+//! A burst starts from the members resampled at its level's spacing (see
+//! Coarse levels); the shapes as the burst left them are what the energy,
+//! the guard and the best state see. Resampling
 //! can lay a chord across an obstacle corner, and a burst only rejects
 //! crossings its own moves create (`checks`), so the best state is limited
 //! to no more violations per member than the resampled start
@@ -13,8 +14,9 @@
 //! its clearance of any obstacle, or its stops, than it started
 //! (`vias::free::newly_inside`), each obstacle judged apart. Each problem
 //! keeps its best state, taken only from a burst that does not raise its
-//! energy and passes that guard. Resampling renumbers the edges, so the
-//! guard compares counts, not edges.
+//! energy and passes that guard, at a coarse level unit by unit.
+//! Resampling renumbers the edges, so the guard compares counts, not
+//! edges.
 //!
 //! A vertex or via that starts inside its clearance moves like any other:
 //! the clearance hinge pushes it out, and the check after a burst moves
@@ -59,6 +61,14 @@
 //! the level, and the change that settles the level is that of what it
 //! kept. The final level keeps the whole-problem rule. A run stopped at a
 //! coarse level ends at the final spacing (`State::finish`).
+//!
+//! The checks judge where a burst leaves the shapes, not the way there, so
+//! at a coarse level, where few vertices take long steps, a chain may pass
+//! through another moving member in one burst and settle on its far side
+//! where that route is shorter and keeps clearance, as the arch of the
+//! drape scenario (`tests/scenarios.py`) does under its bar. A re-run on converged output whose
+//! first burst moves it by `settled_change` or more, as resampling it can,
+//! runs the coarse levels again.
 //!
 //! The first burst at a level a coarser one handed over to settles it if
 //! it moves nothing, even if L-BFGS ended it abnormally: it starts from
