@@ -652,18 +652,116 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
     assert energies[-1] < energies[0]
 
 
-def test_straight_chains_have_nothing_to_do() -> None:
+COARSE_LEVELS = (1.2, 0.6)
+"""Coarse spacings above COARSE's final 0.3 mm."""
+LEVELS = (1.6, 0.4)
+"""Coarse spacings above the default final 0.1 mm."""
+
+
+@pytest.mark.parametrize("coarse", [(), COARSE_LEVELS], ids=["one spacing", "levels"])
+def test_straight_chains_have_nothing_to_do(coarse: tuple[float, ...]) -> None:
     free = FreeSpace()
     chains = (
         selected("A", "A", free, (0.0, 0.0), (10.0, 0.0)),
         selected("B", "B", free, (0.0, 1.0), (10.0, 1.0)),
     )
 
-    result = optimize_chains(chains, scenarios.PARAMS, COARSE)
+    result = optimize_chains(
+        chains, scenarios.PARAMS, replace(COARSE, coarse_spacings=coarse)
+    )
 
     assert result.termination is Termination.NOTHING_TO_DO
+    assert result.iterations == 1
     for chain, given in zip(result.chains, chains, strict=True):
         np.testing.assert_array_equal(chain.polyline, given.centreline.points)
+
+
+def test_a_rerun_with_coarse_levels_on_converged_output_has_nothing_to_do() -> None:
+    # The first burst runs at the final spacing, and finds nothing to move.
+    # Not every scenario's output is still enough for that: the squeeze's
+    # first burst moves about 5 µm, and the levels run again.
+    scenario = scenarios.drape()
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    first = run(scenario, settings)
+    again = tuple(
+        replace(
+            given,
+            centreline=replace(given.centreline, points=chain.polyline),
+            fixed=chain.fixed,
+        )
+        for given, chain in zip(scenario.chains, first.chains, strict=True)
+    )
+
+    second = optimize_chains(again, scenario.params, settings)
+
+    assert second.termination is Termination.NOTHING_TO_DO
+    assert second.iterations == 1
+    for before, chain in zip(first.chains, second.chains, strict=True):
+        np.testing.assert_array_equal(chain.polyline, before.polyline)
+
+
+BURST_BUDGET = 4
+"""Bursts too few at 0.1 mm for `bowed_among_many`'s long track to go
+taut."""
+BOWED = 0.05
+"""mm longer than its solo length that the long track still is after
+BURST_BUDGET bursts at one spacing; measured about 0.106."""
+TAUT = 1e-3
+"""mm longer than its solo length that the long track may end taut;
+measured below 1e-5."""
+LAID_OUT = 1e-6
+"""Relative amount an edge may exceed the spacing it was laid out at, the
+resampling's slack."""
+
+
+def excess(result: RunResult) -> float:
+    """How much longer than its solo length the long track of
+    `scenarios.bowed_among_many` ends, mm."""
+    return length(result.chains[0].polyline) - scenarios.BOWED_LENGTH
+
+
+def test_a_long_track_among_many_goes_taut_only_with_coarse_levels() -> None:
+    scenario = scenarios.bowed_among_many()
+    budget = OptimizerSettings(max_iterations=BURST_BUDGET)
+
+    one = run(scenario, budget)
+    levels = run(scenario, replace(budget, coarse_spacings=LEVELS))
+
+    assert excess(one) > BOWED
+    assert excess(levels) < TAUT
+
+
+def test_a_run_stopped_at_a_coarse_level_ends_at_the_final_spacing() -> None:
+    # Capped after the first burst at 1.6 mm.
+    scenario = scenarios.bowed_among_many()
+    settings = OptimizerSettings(max_iterations=2, coarse_spacings=LEVELS)
+
+    result = run(scenario, settings)
+
+    assert result.termination is Termination.ITERATION_CAP
+    for chain in result.chains:
+        edges = np.linalg.norm(np.diff(chain.polyline, axis=0), axis=1)
+        assert edges.max() <= settings.spacing * (1 + LAID_OUT)
+    unchanged = run(scenario, replace(settings, max_iterations=0))
+
+    def energy(of: RunResult) -> float:
+        return committed_energy(scenario.chains, of, scenario.params, settings)
+
+    assert energy(result) < energy(unchanged)
+
+
+def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> None:
+    # The bus's coarse chords cut its corner into the next track's
+    # clearance; the free track keeps its progress all the same.
+    scenario = scenarios.bowed_beside_bus()
+
+    result = run(scenario, OptimizerSettings(coarse_spacings=LEVELS))
+
+    assert result.termination is Termination.CONVERGED
+    assert excess(result) < TAUT
+    bus = [c.polyline for c in result.chains[1:]]
+    for a, b in itertools.pairwise(bus):
+        assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
 
 
 # A rerun on the squeeze's own output settles within these, which vary with
