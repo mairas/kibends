@@ -1,5 +1,6 @@
 import ctypes
 import itertools
+import json
 import math
 import re
 import signal
@@ -73,7 +74,12 @@ from kibends.energy import (
     FloatArray,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, Obstacles
+from kibends.obstacles import (
+    EDGE_CLEARANCE,
+    HOLE_CLEARANCE,
+    ChainCentreline,
+    Obstacles,
+)
 from kibends.optimize import MAX_ABNORMAL_BURSTS, Progress, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
@@ -1023,6 +1029,77 @@ class TestSmooth:
         options = cli.smooth_options(cli.parse_args(args))
 
         assert options.settings.settled_change == 0.003
+
+
+class TestProjectClearances:
+    """Edge and hole clearance from the project file (`rules`), or the flags."""
+
+    @staticmethod
+    def seen(
+        connect: Connector, monkeypatch: pytest.MonkeyPatch, *args: str
+    ) -> dict[str, object]:
+        """The clearances the obstacle fields and the optimizer get in a run
+        of `straight_board` whose project file gives 0.5 and 0.2 mm."""
+        seen: dict[str, object] = {}
+        real_build: Callable[..., Obstacles] = pipeline.build_obstacles
+
+        def build_spy(*a: object, **kwargs: object) -> Obstacles:
+            seen.update(kwargs)
+            return real_build(*a, **kwargs)
+
+        def optimize_spy(*_a: object, **kwargs: object) -> NoReturn:
+            seen["optimizer"] = kwargs["hole_clearance"]
+            raise SystemExit(0)
+
+        monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
+        monkeypatch.setattr(pipeline, "optimize_chains", optimize_spy)
+        with pytest.raises(SystemExit):
+            run(*args)
+        return {k: seen[k] for k in ("edge_clearance", "hole_clearance", "optimizer")}
+
+    @pytest.fixture
+    def project(self, connect: Connector, tmp_path: Path) -> CommitBoard:
+        rules = {"min_copper_edge_clearance": 0.5, "min_hole_clearance": 0.2}
+        settings = {"board": {"design_settings": {"rules": rules}}}
+        (tmp_path / "boat.kicad_pro").write_text(json.dumps(settings))
+        board = straight_board()
+        board.project_path, board.project_name = str(tmp_path), "boat"
+        return connect.to(board)
+
+    @pytest.mark.usefixtures("project")
+    def test_come_from_the_project_file(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        assert self.seen(connect, monkeypatch) == {
+            "edge_clearance": 0.5,
+            "hole_clearance": 0.2,
+            "optimizer": 0.2,
+        }
+        assert sum("from boat.kicad_pro" in line for line in log) == 1
+
+    @pytest.mark.usefixtures("project")
+    def test_flags_win_over_the_project_file(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self.seen(
+            connect, monkeypatch, "--edge-clearance=0.1", "--hole-clearance=0.3"
+        ) == {"edge_clearance": 0.1, "hole_clearance": 0.3, "optimizer": 0.3}
+
+    def test_without_a_project_are_the_defaults(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(straight_board())
+
+        assert self.seen(connect, monkeypatch) == {
+            "edge_clearance": EDGE_CLEARANCE,
+            "hole_clearance": HOLE_CLEARANCE,
+            "optimizer": HOLE_CLEARANCE,
+        }
+
+    def test_flags_default_to_the_project(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+
+        assert (options.edge_clearance, options.hole_clearance) == (None, None)
 
 
 def stopping(monkeypatch: pytest.MonkeyPatch, stop: Callable[[], bool]) -> None:

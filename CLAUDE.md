@@ -53,7 +53,7 @@ Segment endpoints and widths from KiCad are integer nanometres, so endpoint matc
 
 ## KiCad API limits
 
-- kicad-python 0.8.0 cannot read board design rules: no minimum clearance, no custom rules, no edge or hole clearance. The optimizer uses netclass clearances plus `--edge-clearance` and `--hole-clearance`; the user's KiCad DRC checks everything else. Recheck newer kicad-python releases for a rules getter.
+- kicad-python 0.8.0 cannot read board design rules: no minimum clearance, no custom rules, no edge or hole clearance. The optimizer uses netclass clearances plus the edge and hole clearance it reads from the project file (`.kicad_pro`, `rules`), which `--edge-clearance` and `--hole-clearance` override; the user's KiCad DRC checks everything else. Recheck newer kicad-python releases for a rules getter.
 - An intermittent "KiCad is busy" error (`AS_BUSY`) means the user has a tool or dialog open in the PCB editor. It is not a code regression.
 - Every IPC failure ends the run with one log line through `cli._exit_on_failure`, except a copper-text render KiCad refuses for another reason, which only warns and leaves the text to KiCad's DRC, and the selection after a push (`commit._select`), which is logged at debug since the commit has landed.
 

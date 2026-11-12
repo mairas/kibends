@@ -72,11 +72,12 @@ from kibends.snapshot import (
 
 ObjectArray = NDArray[np.object_]
 
-# The API cannot report the board's copper-to-edge and copper-to-hole rules.
-# 0.3 mm to the edge meets common fabs' minimum for routed outlines, and
-# 0.25 mm to holes and between holes are the hole clearance and hole-to-hole
-# minimum KiCad's own project templates set. KiCad's DRC, which the user runs,
-# enforces the board's real rules.
+# The edge and hole clearance when the project file gives none (`rules`); the
+# API cannot report the hole-to-hole rule. 0.3 mm to the edge meets common
+# fabs' minimum for routed outlines, and 0.25 mm to holes and between holes
+# are the hole clearance and hole-to-hole minimum KiCad's own project
+# templates set. KiCad's DRC, which the user runs, enforces the board's real
+# rules.
 EDGE_CLEARANCE = 0.3
 HOLE_CLEARANCE = 0.25
 HOLE_TO_HOLE = 0.25

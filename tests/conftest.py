@@ -799,6 +799,10 @@ class FakeClient:
 @dataclass
 class FakeProject:
     netclasses: list[NetClass]
+    path: str = ""
+    """The project's directory, empty when the board has no project."""
+    name: str = ""
+    """The project's name, its file's without `.kicad_pro`."""
 
     def get_net_classes(self) -> list[NetClass]:
         return self.netclasses
@@ -833,6 +837,9 @@ class FakeBoard:
     client: FakeClient = field(default_factory=FakeClient)
     grid_origin: tuple[float, float] = (0.0, 0.0)
     """mm."""
+    project_path: str = ""
+    """As `FakeProject.path`."""
+    project_name: str = ""
     reads: Counter[str] = field(default_factory=Counter[str])
 
     def get_origin(self, origin_type: BoardOriginType.ValueType) -> Vector2:
@@ -926,7 +933,11 @@ class FakeBoard:
 
     def get_project(self) -> FakeProject:
         self.reads["get_project"] += 1
-        return FakeProject([self.default_netclass(), *self.netclasses.values()])
+        return FakeProject(
+            [self.default_netclass(), *self.netclasses.values()],
+            self.project_path,
+            self.project_name,
+        )
 
 
 def layer_snapshot(

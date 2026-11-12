@@ -3,7 +3,9 @@
 The command line and the GUI both call `run_smooth` and present the reports
 it hands over; it prints nothing.
 
-`run_smooth` reads the board once, extracts the chains, cut at every
+`run_smooth` reads the edge and hole clearance the options leave out from
+the project file (`rules.read_clearances`), reads the board once, extracts
+the chains, cut at every
 selected via that may move, and, if any of them stays fixed, extracts them
 again with the chains through that via whole and its copper pinning. A diff
 pair's vias never move (`vias.may_move`), so no moving via carries a paired
@@ -101,6 +103,7 @@ from kibends.results import (
     RunResult,
     Termination,
 )
+from kibends.rules import Clearances, read_clearances
 from kibends.simplify import simplify_chains
 from kibends.snapshot import (
     FALLBACK_GROUND,
@@ -151,11 +154,14 @@ class PlotUnavailableError(RuntimeError):
 @dataclass(frozen=True)
 class SmoothOptions:
     params: EnergyParams
-    edge_clearance: float
-    hole_clearance: float
     chord_tolerance: float
     dry_run: bool
     plot: Path | None
+    edge_clearance: float | None = None
+    """mm; None takes the project's Board Setup rule, else the default
+    (`rules.read_clearances`)."""
+    hole_clearance: float | None = None
+    """As `edge_clearance`."""
     allow_via_in_pad: bool = False
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
@@ -312,6 +318,7 @@ class _Read:
     arcs: tuple[Arc, ...]
     """The selected arcs, whose segments are among `selected`, as read."""
     scope: Scope
+    clearances: Clearances
 
 
 @dataclass(frozen=True)
@@ -397,9 +404,13 @@ def run_smooth(
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
     board = _open_board(kicad)
     on_stage(Stage.READING)
+    clearances = read_clearances(
+        board, edge=options.edge_clearance, hole=options.hole_clearance
+    )
     read = _read(
         board,
         read_user_frame(board),
+        clearances,
         ground_nets=options.ground_nets,
         paired=options.params.attraction > 0.0,
     )
@@ -416,7 +427,7 @@ def run_smooth(
     run = optimized.run
     if options.plot is not None:
         if read.chains:
-            _draw(options.plot, read, optimized, outcome, options)
+            _draw(options.plot, read, optimized, outcome)
         else:
             logger.info("No plot: the selection has no chains to draw")
     on_optimized(
@@ -456,6 +467,7 @@ def _stopped(read: _Read) -> RunReport:
 def _read(
     board: kipy.board.Board,
     frame: UserFrame,
+    clearances: Clearances,
     *,
     ground_nets: Collection[str] = (),
     paired: bool = True,
@@ -534,7 +546,15 @@ def _read(
         ScopeKind.SELECTION, len({s.id for s in selected}), len(selection.vias)
     )
     return _Read(
-        selected, chains, snapshots, movable, frame, ground, selection.arcs, scope
+        selected,
+        chains,
+        snapshots,
+        movable,
+        frame,
+        ground,
+        selection.arcs,
+        scope,
+        clearances,
     )
 
 
@@ -615,7 +635,8 @@ def _ground_nets(whole: BoardSnapshot, given: Collection[str]) -> frozenset[str]
 def _build(read: _Read, options: SmoothOptions) -> _Built:
     """The optimizer's inputs for the chains and vias of `read`."""
     moving = {m.via.id for m in read.movable}
-    whole = _chain_inputs(read.chains, read.snapshots, options, moving, read.frame)
+    clearances = read.clearances
+    whole = _chain_inputs(read.chains, read.snapshots, clearances, moving, read.frame)
     # A diff pair's tracks keep their contacts where they are.
     parts = cut_parts(
         [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
@@ -632,8 +653,8 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
             a,
             b,
             gap,
-            edge_clearance=options.edge_clearance,
-            hole_clearance=options.hole_clearance,
+            edge_clearance=clearances.edge,
+            hole_clearance=clearances.hole,
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
@@ -641,7 +662,7 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
     via_inputs = _via_inputs(
-        read.movable, read.snapshots, options, read.ground_nets, static
+        read.movable, read.snapshots, options, clearances, read.ground_nets, static
     )
     return _Built(whole, parts, pairs, layout, via_inputs, static)
 
@@ -664,7 +685,7 @@ def _optimize(
         options.params,
         options.settings,
         vias=_laid_out_vias(layout, built.via_inputs),
-        hole_clearance=options.hole_clearance,
+        hole_clearance=read.clearances.hole,
         pairs=layout.sections,
         clock=monotonic,
         started=started,
@@ -713,7 +734,9 @@ def _simplify_and_report(
     run, layout = optimized.run, optimized.built.layout
     via_reports = _via_reports(read.movable, run)
     tracks = _section_tracks(layout.sections, run.pairs)
-    chains, final_tracks = _simplify(optimized, tracks, via_reports, options)
+    chains, final_tracks = _simplify(
+        optimized, tracks, via_reports, options, read.clearances.hole
+    )
     unsimplified = layout.whole_polylines(
         [c.polyline for c in run.chains], [(t.a, t.b) for t in tracks]
     )
@@ -833,7 +856,7 @@ def _extract_chains(
 def _chain_inputs(
     chains: Sequence[Chain],
     snapshots: Mapping[str, LayerSnapshot],
-    options: SmoothOptions,
+    clearances: Clearances,
     moving: Collection[str],
     frame: UserFrame,
 ) -> list[ChainInput]:
@@ -847,7 +870,7 @@ def _chain_inputs(
         snapshot = snapshots[chain.layer]
         key = (chain.layer, chain.net, chain.width)
         if key not in fields:
-            fields[key] = _static_field(snapshot, chain, options, moving)
+            fields[key] = _static_field(snapshot, chain, clearances, moving)
         centreline = ChainCentreline(
             f"{chain.net} on {chain.layer} from {frame.point(chain.points[0])}",
             chain.net,
@@ -871,7 +894,7 @@ def _chain_inputs(
 def _static_field(
     snapshot: LayerSnapshot,
     chain: Chain,
-    options: SmoothOptions,
+    clearances: Clearances,
     moving: Collection[str],
 ) -> Obstacles:
     """The obstacles of `chain`'s net and width on `snapshot`'s layer, but
@@ -881,8 +904,8 @@ def _static_field(
         replace(snapshot, vias=still),
         chain.net,
         chain.width,
-        edge_clearance=options.edge_clearance,
-        hole_clearance=options.hole_clearance,
+        edge_clearance=clearances.edge,
+        hole_clearance=clearances.hole,
     )
 
 
@@ -890,6 +913,7 @@ def _via_inputs(
     movable: Sequence[MovableVia],
     snapshots: Mapping[str, LayerSnapshot],
     options: SmoothOptions,
+    clearances: Clearances,
     ground: Collection[str],
     static: Mapping[str, StaticVia],
 ) -> list[ViaInput]:
@@ -912,8 +936,8 @@ def _via_inputs(
             m.via,
             split,
             moving=moving,
-            edge_clearance=options.edge_clearance,
-            hole_clearance=options.hole_clearance,
+            edge_clearance=clearances.edge,
+            hole_clearance=clearances.hole,
             zones=m.zones,
         )
         inputs.append(
@@ -927,7 +951,7 @@ def _via_inputs(
                     layers,
                     m.via,
                     moving=moving,
-                    hole_clearance=options.hole_clearance,
+                    hole_clearance=clearances.hole,
                     allow_via_in_pad=options.allow_via_in_pad,
                 ),
                 ground=grounded,
@@ -982,6 +1006,7 @@ def _simplify(
     tracks: Sequence[_Tracks],
     via_reports: Sequence[ViaReport],
     options: SmoothOptions,
+    hole_clearance: float,
 ) -> tuple[list[FloatArray], list[tuple[FloatArray, FloatArray]]]:
     """The optimizer's chains and each section's centreline simplified
     together, each against the others and the moved vias where they end
@@ -1008,7 +1033,7 @@ def _simplify(
             inputs,
             _laid_out_vias(layout, optimized.built.via_inputs),
             via_reports,
-            options,
+            hole_clearance,
         ),
         replace(run, chains=tuple(results)),
         tolerance=options.chord_tolerance,
@@ -1033,13 +1058,13 @@ def _with_vias(
     inputs: Sequence[ChainInput],
     via_inputs: Sequence[ViaInput],
     vias: Sequence[ViaReport],
-    options: SmoothOptions,
+    hole_clearance: float,
 ) -> list[ChainInput]:
     """`inputs` with the movable vias where they end up added to the fields
     of the chains near them, as the optimizer adds them."""
     if not via_inputs:
         return list(inputs)
-    moving = MovingVias(inputs, via_inputs, options.hole_clearance, HOLE_TO_HOLE)
+    moving = MovingVias(inputs, via_inputs, hole_clearance, HOLE_TO_HOLE)
     positions = [np.array(r.end, dtype=float) for r in vias]
     out: list[ChainInput] = []
     for i, given in enumerate(inputs):
@@ -1169,7 +1194,6 @@ def _draw(
     read: _Read,
     optimized: _Optimized,
     outcome: _Outcome,
-    options: SmoothOptions,
 ) -> None:
     """One panel per chain, over its own static field with the moved vias
     where they end up, with the start and end of each via it ends at."""
@@ -1206,7 +1230,7 @@ def _draw(
                         optimized.built.whole,
                         optimized.built.via_inputs,
                         outcome.via_reports,
-                        options,
+                        read.clearances.hole,
                     ),
                     outcome.unsimplified,
                     outcome.simplified,

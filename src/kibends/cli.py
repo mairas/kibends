@@ -313,18 +313,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     smooth_parser.add_argument(
         "--edge-clearance",
         type=_non_negative,
-        default=EDGE_CLEARANCE,
         metavar="MM",
-        help="Clearance to the board edge; KiCad's API does not expose the "
-        f"board's own (default: {EDGE_CLEARANCE:g})",
+        help="Clearance to the board edge (default: the minimum copper to edge "
+        "clearance in the project's Board Setup, as last saved, else "
+        f"{EDGE_CLEARANCE:g})",
     )
     smooth_parser.add_argument(
         "--hole-clearance",
         type=_non_negative,
-        default=HOLE_CLEARANCE,
         metavar="MM",
-        help="Clearance to drilled holes; KiCad's API does not expose the "
-        f"board's own (default: {HOLE_CLEARANCE:g})",
+        help="Clearance to drilled holes (default: the minimum hole clearance "
+        "in the project's Board Setup, as last saved, else "
+        f"{HOLE_CLEARANCE:g})",
     )
     smooth_parser.add_argument(
         "--chord-tolerance",
