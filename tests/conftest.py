@@ -46,7 +46,6 @@ from kipy.proto.common.types.base_types_pb2 import KIID, DocumentSpecifier
 from kipy.util.proto import pack_any
 from kipy.wrapper import Wrapper
 from loguru import logger
-from scipy.optimize import brentq
 
 import kibends.optimize as optimize_module
 from kibends import _core
@@ -1098,6 +1097,10 @@ def return_via_board(ground: tuple[float, float], *, stitching: bool) -> CommitB
     )
 
 
+NEUTRAL_TOLERANCE = 1e-12
+"""How near `neutral_distance` brackets the distance, mm."""
+
+
 def neutral_distance(params: EnergyParams, apart: float) -> float:
     """The centre distance at which a ground via and a regular one that
     keep `apart` stop pushing or pulling each other: where the slopes of
@@ -1110,4 +1113,12 @@ def neutral_distance(params: EnergyParams, apart: float) -> float:
         pull = attraction(np.array([r]), np.array([apart]))[1]
         return float(push[0] + pull[0])
 
-    return float(brentq(slope, apart, apart + params.falloff_range))
+    low, high = apart, apart + params.falloff_range
+    rising = slope(high) > slope(low)
+    while high - low > NEUTRAL_TOLERANCE:
+        middle = (low + high) / 2
+        if (slope(middle) > 0) == rising:
+            high = middle
+        else:
+            low = middle
+    return (low + high) / 2
