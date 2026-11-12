@@ -550,7 +550,7 @@ def _reference_vias(
         direction = (
             static_share[0] * static_direction[0] + seen_share[0] * (near.gradient[0])
         )
-        term, slope = problem.integrand(distance)
+        term, slope = obstacle_integrand(problem.params)(distance)
         weight = via.given.via.diameter * slope[0]
         value += via.given.via.diameter * float(term[0])
         via_gradients[k] += weight * direction

@@ -239,8 +239,6 @@ from kibends.energy import (
     FloatArray,
     IntArray,
     ObstacleField,
-    hinge_integrand,
-    obstacle_integrand,
     obstacle_reach,
 )
 from kibends.members import Member, body_of, core_members, positions_array, shown
@@ -1011,8 +1009,6 @@ class _Problem:
         self.params = params
         self.settings = settings
         self.reach = obstacle_reach(params)
-        self.integrand = obstacle_integrand(params)
-        self.limit = hinge_integrand(params)
         self.core = _core.Problem(
             core_members(self.members),
             rings,

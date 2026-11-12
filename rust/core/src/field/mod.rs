@@ -32,7 +32,7 @@
 //! copper. Every distance is measured by GEOS's formulas (`geometry`), so an
 //! `Obstacles` field's distances are shapely's to round-off. The energy
 //! keeps each member's and moving via's search between evaluations
-//! (`seen.StaticList` in Python), so that static copper costs no tree query
+//! (`neighbours::StaticList`), so that static copper costs no tree query
 //! per evaluation.
 
 pub mod build;

@@ -44,6 +44,7 @@ from kibends.energy import (
     ObstacleField,
     attraction_integrand,
     combine_fields,
+    hinge_integrand,
     obstacle_integrand,
     obstacle_reach,
     repulsion_integrand,
@@ -2087,8 +2088,8 @@ def reference_via_energy(
         given = via.given
         at = positions[k]
         for static, near, integrand in (
-            (given.field, sights[0], problem.integrand),
-            (given.stops, sights[1], problem.limit),
+            (given.field, sights[0], obstacle_integrand(problem.params)),
+            (given.stops, sights[1], hinge_integrand(problem.params)),
         ):
             d, g = np.array([math.inf]), np.zeros((1, 2))
             if static is not None:
