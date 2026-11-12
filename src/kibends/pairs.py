@@ -601,6 +601,8 @@ def _ends(
         foot = _nearest(_point_at(a, np.array([target])), b).along
         return target, float(foot[0])
 
+    # The start snaps first and bounds the end; bounding each by the other's
+    # unsnapped target would let them cross again.
     first = snap(start, 1.0, end)
     last = snap(end, -1.0, first[0])
     return _SectionEnds((first[0], last[0]), (first[1], last[1]))
