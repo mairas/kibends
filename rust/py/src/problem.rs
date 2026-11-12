@@ -1233,8 +1233,10 @@ impl Objective {
             ObjectiveKind::Problem { inner, lookups } => {
                 check_count("coordinates", x.len(), 2 * inner.layout.count)?;
                 let mut lookups = lookups.as_ref().map(|l| l.borrow_mut(py));
-                inner
-                    .evaluate(x, lookups.as_deref_mut().map(|l| &mut l.inner))
+                let lookups = lookups.as_deref_mut().map(|l| &mut l.inner);
+                // The evaluation touches no Python object, and its workers
+                // need no GIL.
+                py.detach(|| inner.evaluate(x, lookups))
                     .map_err(|v| not_finite(py, v))
             }
             ObjectiveKind::Quadratic { curvatures, uphill } => {
