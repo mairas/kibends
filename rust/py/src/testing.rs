@@ -266,6 +266,27 @@ fn quadratic(curvatures: Vec<f64>, uphill: bool) -> Objective {
     Objective::quadratic(curvatures, uphill)
 }
 
+/// Calls `work` on a thread of a rayon pool of `threads` threads of its
+/// own, so that the evaluations it makes spread over them whatever pool the
+/// process has (`kibends_core::parallel`).
+#[gen_stub_pyfunction(module = "kibends._core.testing")]
+#[pyfunction]
+fn in_pool(
+    py: Python<'_>,
+    threads: usize,
+    #[gen_stub(override_type(
+        type_repr = "collections.abc.Callable[[], None]",
+        imports = ("collections.abc")
+    ))]
+    work: Py<PyAny>,
+) -> PyResult<()> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    py.detach(|| pool.install(|| Python::attach(|py| work.call0(py).map(drop))))
+}
+
 pyo3_stub_gen::module_variable!("kibends._core.testing", "FAR", f64, testing::FAR);
 
 /// The submodule `kibends._core.testing`, registered in `sys.modules` so
@@ -282,6 +303,7 @@ pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ReachIgnored>()?;
     m.add_class::<NanField>()?;
     m.add_function(wrap_pyfunction!(quadratic, &m)?)?;
+    m.add_function(wrap_pyfunction!(in_pool, &m)?)?;
     m.add("FAR", testing::FAR)?;
     parent.add_submodule(&m)?;
     py.import("sys")?

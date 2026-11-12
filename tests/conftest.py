@@ -110,6 +110,14 @@ class Ticking:
         return now
 
 
+def in_pool[T](threads: int, work: Callable[[], T]) -> T:
+    """What `work` returns, run on a rayon pool of `threads` threads of its
+    own, over which its evaluations spread."""
+    answers: list[T] = []
+    _core.testing.in_pool(threads, lambda: answers.append(work()))
+    return answers[0]
+
+
 class BurstClock:
     """A clock that reads how many bursts have ended since it was made,
     however often it is read: one per problem and outer iteration. It does

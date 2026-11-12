@@ -26,6 +26,7 @@ from conftest import (
     FakeKiCad,
     Ticking,
     gap_range,
+    in_pool,
     kipy_arc,
     kipy_copper_zone,
     kipy_group,
@@ -1032,8 +1033,13 @@ class TestErrors:
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize("threads", [None, 8], ids=["main thread", "8 threads"])
     def test_interrupt_in_a_burst_commits_nothing(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        threads: int | None,
     ) -> None:
         board = connect.to(l_board())
         real = optimize_module.run_burst
@@ -1056,7 +1062,10 @@ class TestErrors:
         monkeypatch.setattr(optimize_module, "run_burst", tracked)
         monkeypatch.setattr(pipeline, "monotonic", clock)
 
-        message = exit_message(log, "--time-limit=100")
+        def interrupted() -> str:
+            return exit_message(log, "--time-limit=100")
+
+        message = interrupted() if threads is None else in_pool(threads, interrupted)
 
         assert message == "ERROR Interrupted: nothing committed\n"
         assert "push_commit" not in board.calls

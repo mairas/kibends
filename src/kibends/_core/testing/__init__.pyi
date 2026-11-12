@@ -2,6 +2,7 @@
 # ruff: noqa: E501, F401, F403, F405
 
 import builtins
+import collections.abc
 from kibends import _core
 import numpy
 import numpy.typing
@@ -16,6 +17,7 @@ __all__ = [
     "ReachIgnored",
     "Union",
     "Walls",
+    "in_pool",
     "quadratic",
 ]
 
@@ -222,6 +224,13 @@ class Walls:
         Whether each segment from starts[i] to ends[i] stays out of
         the field's obstacles, by at most `tolerance`.
         """
+
+def in_pool(threads: builtins.int, work: collections.abc.Callable[[], None]) -> None:
+    r"""
+    Calls `work` on a thread of a rayon pool of `threads` threads of its
+    own, so that the evaluations it makes spread over them whatever pool the
+    process has (`kibends_core::parallel`).
+    """
 
 def quadratic(curvatures: typing.Sequence[builtins.float], uphill: builtins.bool = False) -> _core.Objective:
     r"""
