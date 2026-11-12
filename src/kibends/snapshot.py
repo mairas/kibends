@@ -4,8 +4,9 @@ Everything returned is free of kipy: segments use integer nanometres as
 `kibends.chain` expects, the rest is mm floats and shapely geometry. Every
 coordinate is in KiCad's board frame, with y pointing down.
 
-A run reads the selection and the board once: the copper layers of the
-selection, or every enabled copper layer when a selected via may move.
+A run reads the selection, or every track, arc and via of the board
+(`read_board`), and the board once: the copper layers of what it read, or
+every enabled copper layer when a via it read may move.
 `BoardSnapshot.slice` gives one `LayerSnapshot` per layer without further
 requests.
 
@@ -32,12 +33,13 @@ canonical layer naming are copied and trimmed from kistitch's snapshot.py
 
 import enum
 import math
+import re
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 from itertools import pairwise
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import kipy.board
 import kipy.board_types as kbt
@@ -341,6 +343,8 @@ class Selection:
     nets: frozenset[str] = frozenset()
     """The names of the board's nets, read only when an unlocked via is
     selected, to tell which vias are on a diff pair (`pairs.in_diff_pair`)."""
+    whole_board: bool = False
+    """Read from the whole board rather than the selection (`read_board`)."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -596,21 +600,65 @@ class BoardSnapshot:
         return snap
 
 
-def read_selection(board: kipy.board.Board) -> Selection:
+def read_selection(board: kipy.board.Board, *, else_board: bool = False) -> Selection:
     """The selected tracks and vias, either of which may be absent, anything
-    else ignored. An arc becomes the straight segments of `Arc.segments`,
-    which chain extraction treats as one track split into several edges.
+    else ignored; the whole board instead (`read_board`) when nothing at all
+    is selected and `else_board` is set. An arc becomes the straight
+    segments of `Arc.segments`, which chain extraction treats as one track
+    split into several edges.
 
     A selected group, such as a length-tuning pattern, counts as its items
     and those of the groups in it, at any depth (`_grouped`): its tracks
     and arcs are held as drawn (`Segment.held`), and its vias stay fixed as
     locked ones do."""
     items = board.get_selection()
-    grouped = _grouped(board, items)
+    if not items and else_board:
+        return read_board(board)
+    held = _grouped(board, [i for i in items if isinstance(i, kbt.Group)])
+    selection = _selection(
+        board, [*((i, False) for i in items), *((i, True) for i in held)]
+    )
+    if selection is None:
+        raise SelectionError("selection has no tracks or vias")
+    return selection
+
+
+_GENERATED = re.compile(r'\(generated\s+\(uuid "([^"]+)"\)')
+"""The uuid of each generator, such as a tuning pattern, in KiCad's board
+file text."""
+
+
+def read_board(board: kipy.board.Board) -> Selection:
+    """Every track, arc and via on the board, whatever KiCad shows or lets
+    be selected, as `read_selection` reads them; the members of the
+    board's groups and tuning patterns, at any depth, are held as a
+    selected group's are.
+
+    `get_groups` leaves tuning patterns out and KiCad refuses a query for
+    generators, so their ids come from the board file's `(generated (uuid
+    ...))` blocks; fetched by id, each is a group, as when selected."""
+    items: list[Wrapper] = [*board.get_tracks(), *board.get_vias()]
+    ids = [KIID(value=i) for i in _GENERATED.findall(board.get_as_string())]
+    patterns: Sequence[Wrapper] = board.get_items_by_id(ids) if ids else []
+    groups = [*board.get_groups(), *(p for p in patterns if isinstance(p, kbt.Group))]
+    held = {cast(kbt.BoardItem, i).id.value for i in _grouped(board, groups)}
+    selection = _selection(
+        board, [(i, cast(kbt.BoardItem, i).id.value in held) for i in items]
+    )
+    if selection is None:
+        raise SelectionError("board has no tracks or vias")
+    return replace(selection, whole_board=True)
+
+
+def _selection(
+    board: kipy.board.Board, items: Iterable[tuple[Wrapper, bool]]
+) -> Selection | None:
+    """The tracks, arcs and vias among `items`, each with whether it is
+    held; None when there are none."""
     segments: list[Segment] = []
     arcs: list[Arc] = []
     vias: list[Via] = []
-    for item, held in [*((i, False) for i in items), *((i, True) for i in grouped)]:
+    for item, held in items:
         if isinstance(item, kbt.Track):
             segments.append(replace(segment_from_track(item), held=held))
         elif isinstance(item, kbt.ArcTrack):
@@ -620,7 +668,7 @@ def read_selection(board: kipy.board.Board) -> Selection:
             via = via_from_kipy(item)
             vias.append(replace(via, locked=True) if held else via)
     if not segments and not vias:
-        raise SelectionError("selection has no tracks or vias")
+        return None
     read = tuple(vias)
     # A locked via stays fixed whatever its net.
     unlocked = any(not v.locked for v in read)
@@ -628,13 +676,12 @@ def read_selection(board: kipy.board.Board) -> Selection:
     return Selection(segments, read, tuple(arcs), nets)
 
 
-def _grouped(board: kipy.board.Board, items: Sequence[Wrapper]) -> list[Wrapper]:
-    """The items of the groups among `items`, and of the groups in those,
-    each group read once. kipy leaves a selected group's `items` empty; its
-    proto lists their ids."""
+def _grouped(board: kipy.board.Board, groups: Sequence[kbt.Group]) -> list[Wrapper]:
+    """The items of `groups`, and of the groups in those, each group read
+    once. kipy leaves a selected group's `items` empty; its proto lists
+    their ids."""
     members: list[Wrapper] = []
     seen: set[str] = set()
-    groups = [i for i in items if isinstance(i, kbt.Group)]
     while groups:
         fresh = {g.id.value: g for g in groups if g.id.value not in seen}
         seen |= fresh.keys()

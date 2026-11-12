@@ -827,7 +827,14 @@ class FakeBoard:
     )
     zones: list[kbt.Zone] = field(default_factory=list[kbt.Zone])
     groups: list[kbt.Group] = field(default_factory=list[kbt.Group])
-    """Groups that `get_items_by_id` finds, as members of other groups."""
+    """Groups that `get_items_by_id` finds, as members of other groups, and
+    that `get_groups` gives unless `top_groups` is set."""
+    top_groups: list[kbt.Group] | None = None
+    """What `get_groups` gives instead of `groups`, as KiCad might leave out
+    groups inside groups."""
+    patterns: list[kbt.Group] = field(default_factory=list[kbt.Group])
+    """Tuning patterns: `get_items_by_id` finds them and `get_as_string`'s
+    board text lists them, but `get_groups` leaves them out, as KiCad does."""
     netclasses: dict[str, NetClass] = field(default_factory=dict[str, NetClass])
     default_clearance: float | None = 0.2
     drops_pads: bool = False
@@ -855,8 +862,21 @@ class FakeBoard:
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
         self.reads["get_items_by_id"] += 1
         wanted = {i.value for i in ids}
-        items = [*self.tracks, *self.vias, *self.groups]
+        items = [*self.tracks, *self.vias, *self.groups, *self.patterns]
         return [i for i in items if i.id.value in wanted]
+
+    def get_as_string(self) -> str:
+        self.reads["get_as_string"] += 1
+        generated = "".join(
+            f'\t(generated\n\t\t(uuid "{p.id.value}")\n'
+            f"\t\t(type tuning_pattern)\n\t\t(name {p.proto.name!r})\n\t)\n"
+            for p in self.patterns
+        )
+        return f'(kicad_pcb\n\t(generator "pcbnew")\n{generated})\n'
+
+    def get_groups(self) -> list[kbt.Group]:
+        self.reads["get_groups"] += 1
+        return self.groups if self.top_groups is None else self.top_groups
 
     def selected_ids(self) -> list[str]:
         return [cast(kbt.BoardItem, i).id.value for i in self.selection]
