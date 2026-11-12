@@ -17,6 +17,7 @@ from conftest import (
     CURVATURE_ATOL,
     CURVATURE_RTOL,
     CURVATURE_STEP,
+    all_abnormal_bursts,
     build_via_obstacles,
     first_check,
     neutral_distance,
@@ -1454,13 +1455,13 @@ def test_two_layers_joined_by_a_via_are_one_problem(
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
 
-    # A streak at one spacing: a coarse level hands a streak over.
-    result = run(scenarios.via_detour(), replace(COARSE, coarse_spacings=()))
+    result = run(scenarios.via_detour())
 
     problem = "the chains and vias on F.Cu and B.Cu"
-    assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
+    every = all_abnormal_bursts(COARSE)
+    assert result.iterations == len(bursts) == every
     assert result.gave_up == ((problem, MAX_ABNORMAL_BURSTS),)
-    assert result.abnormal == ((problem, MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == ((problem, every),)
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
 
 

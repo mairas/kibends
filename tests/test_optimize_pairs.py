@@ -13,7 +13,14 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import BurstClock, first_check, gap_range, layer_energy, total_energy
+from conftest import (
+    BurstClock,
+    all_abnormal_bursts,
+    first_check,
+    gap_range,
+    layer_energy,
+    total_energy,
+)
 from distance_fields import BoolArray, FloatArray, FreeSpace
 from reference_fields import chain_field, neighbour_field
 from scenarios import (
@@ -873,17 +880,18 @@ def test_a_give_up_before_a_hold_outlasts_a_convergence_after_it(
     result = optimize_chains(
         scenario.chains,
         scenario.params,
-        ONE_SPACING,
+        COARSE,
         pairs=scenario.pairs,
         to_hold=counted,
     )
 
     # Named when the run gave up, and again, held, when it converged.
     assert holds == [0, 0]
+    every = all_abnormal_bursts(COARSE)
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP
     # The abnormal bursts were all before the hold.
-    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == (("the chains on F.Cu", every),)
 
 
 JOINED_AT = (9.5, 5.0)

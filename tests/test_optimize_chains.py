@@ -18,6 +18,7 @@ from conftest import (
     BOARD_FRAME,
     BurstClock,
     Ticking,
+    all_abnormal_bursts,
     clearances,
     extract_chains,
     layer_energy,
@@ -58,9 +59,8 @@ from kibends.via_moves import MovingVias
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 ONE_SPACING = replace(COARSE, coarse_spacings=())
-"""COARSE at its final spacing alone, for a premise that counts bursts at one
-spacing: a coarse level hands an abnormal streak over, and the first burst
-after a handover settles if it moves nothing, abnormal or not."""
+"""COARSE at its final spacing alone, for a premise that counts the bursts of
+one abnormal streak: a coarse level hands its streak over."""
 
 
 EQUAL_PITCH = 0.6
@@ -998,11 +998,12 @@ def test_a_problem_whose_bursts_all_fail_gives_up_once(
     monkeypatch.setattr(optimize_module, "run_burst", failing)
     scenario = bumps()
 
-    result = run(scenario, ONE_SPACING)
+    result = run(scenario)
 
-    assert result.iterations == len(bursts) == MAX_ABNORMAL_BURSTS
+    every = all_abnormal_bursts(COARSE)
+    assert result.iterations == len(bursts) == every
     assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    assert result.abnormal == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
+    assert result.abnormal == (("the chains on F.Cu", every),)
     # The bursts were taken: the run lowered the energy, but did not converge.
     assert result.termination is Termination.GAVE_UP
     for chain in result.chains:
@@ -1033,7 +1034,7 @@ def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
         "back", "B", free, (0.0, 0.0), (reach, 1.5), (2 * reach, 0.0), layer="B.Cu"
     )
 
-    result = optimize_chains([front, back], scenarios.PARAMS, ONE_SPACING)
+    result = optimize_chains([front, back], scenarios.PARAMS, COARSE)
 
     assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
     assert result.termination is Termination.GAVE_UP

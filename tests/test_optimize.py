@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import scenarios
 import shapely
-from conftest import clearances, total_energy, violations
+from conftest import all_abnormal_bursts, clearances, total_energy, violations
 from distance_fields import (
     Box,
     Disc,
@@ -37,16 +37,12 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize, optimize_chains
+from kibends.optimize import optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, Termination
 from kibends.via_moves import MovingVias
 
 SETTINGS = OptimizerSettings()
-ONE_SPACING = replace(SETTINGS, coarse_spacings=())
-"""The defaults at the final spacing alone, for a premise that counts
-bursts at one spacing: a coarse level hands an abnormal streak over, and the
-first burst after a handover settles if it moves nothing, abnormal or not."""
 # For long runs: about 20x faster than the defaults and, on the detour and
 # stall scenarios, still converging within 1 µm of the default result's length.
 COARSE = replace(SETTINGS, spacing=0.3, settled_change=0.003, burst_maxiter=30)
@@ -668,10 +664,10 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     polyline, fixed = chain((0.0, 0.3), (5.0, 0.3), (10.0, 0.3))
     params = replace(PARAMS, repulsion=5.0)
 
-    result = optimize(polyline, fixed, MisleadingWalls(1.0), params, ONE_SPACING)
+    result = optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
     assert result.termination is Termination.ABNORMAL
-    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert result.abnormal_bursts == all_abnormal_bursts(SETTINGS)
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
@@ -692,12 +688,10 @@ def test_bursts_that_all_fail_after_progress_end_the_run_given_up(
     monkeypatch.setattr(optimize_module, "run_burst", failing)
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
 
-    result = optimize(
-        polyline, fixed, FreeSpace(), PARAMS, replace(COARSE, coarse_spacings=())
-    )
+    result = optimize(polyline, fixed, FreeSpace(), PARAMS, COARSE)
 
     assert result.termination is Termination.GAVE_UP
-    assert result.abnormal_bursts == MAX_ABNORMAL_BURSTS
+    assert result.abnormal_bursts == all_abnormal_bursts(COARSE)
     # The bursts before the streak ended were kept: the best state is shorter.
     assert result.after.length < result.before.length
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
@@ -712,10 +706,10 @@ def test_a_burst_that_ends_abnormally_logs_its_evaluations_and_ending(
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.8), (10.0, 0.0))
     params = replace(PARAMS, repulsion=5.0)
 
-    optimize(polyline, fixed, MisleadingWalls(1.0), params, ONE_SPACING)
+    optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
     costs = burst_costs(log)
-    assert len(costs) == MAX_ABNORMAL_BURSTS
+    assert len(costs) == all_abnormal_bursts(SETTINGS)
     for cost in costs:
         assert cost.iterations == 0
         assert cost.evaluations > 0
