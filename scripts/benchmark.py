@@ -230,6 +230,7 @@ from kibends import _core, cli  # noqa: E402
 from kibends import optimize as optimize_module  # noqa: E402
 from kibends import run as pipeline  # noqa: E402
 from kibends.bursts import (  # noqa: E402
+    DEFAULT_SETTINGS,
     Burst,
     Check,
     Objective,
@@ -572,13 +573,16 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
 
 def run_scenario(
     s: scenarios.Scenario | Several,
+    settings: OptimizerSettings = DEFAULT_SETTINGS,
 ) -> OptimizeResult | RunResult:
-    """The scenario through the optimizer at default settings."""
+    """The scenario through the optimizer at `settings`, the defaults
+    unless given."""
     if isinstance(s, scenarios.Scenario):
-        return optimize(s.polyline, s.fixed, s.field, s.params)
+        return optimize(s.polyline, s.fixed, s.field, s.params, settings)
     return optimize_chains(
         s.chains,
         s.params,
+        settings,
         vias=s.vias if isinstance(s, ViasScenario) else (),
         pairs=s.pairs if isinstance(s, PairsScenario) else (),
     )

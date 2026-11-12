@@ -7,7 +7,9 @@ reference every platform compares with: the Rust optimizer computes the
 same bits on every platform. The cases are
 each scenario of `tests/scenarios.py` that `./run bench --only scenarios`
 runs, at default settings, and the bench case "10 tracks between pad rows
-at 1 mm" through a fake KiCad. For each, a record holds how the run
+at 1 mm" through a fake KiCad. The defaults then ran at one spacing, so
+the cases run at the defaults without coarse levels (`SETTINGS`), and stay
+a check of that path. For each, a record holds how the run
 ended, its outer iterations and energy evaluations, each chain's length,
 each coupled section's track lengths, each moving via's position, and
 the clearances the scenario defines: each chain's and
@@ -29,10 +31,14 @@ from distance_fields import FAR
 from scenarios import PairsScenario, Scenario, ViasScenario
 from shapely import LineString
 
+from kibends.bursts import DEFAULT_SETTINGS
 from kibends.energy import DistanceField, FloatArray
 from kibends.optimize import OptimizeResult, RunResult
 
 PAD_ROWS = "10 tracks between pad rows at 1 mm"
+
+SETTINGS = replace(DEFAULT_SETTINGS, coarse_spacings=())
+"""The defaults at the final spacing alone, as the baseline was recorded."""
 
 type Record = dict[str, object]
 
@@ -70,7 +76,7 @@ def scenario_run(
 ) -> tuple[Record, OptimizeResult | RunResult]:
     """The scenario's record and the result it was made from."""
     with benchmark.counted() as count:
-        result = benchmark.run_scenario(s)
+        result = benchmark.run_scenario(s, SETTINGS)
     record: Record = {
         "termination": result.termination.value,
         "iterations": result.iterations,
@@ -121,7 +127,12 @@ def scenario_run(
 
 def pad_rows_record() -> Record:
     board = benchmark.pad_rows_board()
-    options = replace(benchmark.smooth_options(), dry_run=True)
+    options = benchmark.smooth_options()
+    options = replace(
+        options,
+        dry_run=True,
+        settings=replace(options.settings, coarse_spacings=SETTINGS.coarse_spacings),
+    )
     with benchmark.counted() as count:
         report = benchmark.smooth_board(board, options)
     return {
