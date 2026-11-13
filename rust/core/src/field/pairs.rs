@@ -317,36 +317,30 @@ impl PointTree {
 
 type Boxed = GeomWithData<Rectangle<[f64; 2]>, usize>;
 
-/// A tree over segments' bounding boxes, which finds every segment that may
-/// come within a distance of a point or of a box. A segment lies in its
-/// box, so a segment near a query has its box near it too, and a long
-/// segment is found only near its own box.
-pub struct SegmentTree {
+/// A tree over boxes, each by its index, which finds the boxes near a point
+/// or a box. It adds no margin of its own, and finds none for a NaN or
+/// negative reach.
+pub struct BoxTree {
     tree: RTree<Boxed>,
 }
 
-impl SegmentTree {
-    /// The segments from starts[k] to ends[k].
-    pub fn new(starts: &[V2], ends: &[V2]) -> Self {
-        let items = starts
-            .iter()
-            .zip(ends)
-            .enumerate()
-            .map(|(k, (a, b))| GeomWithData::new(Rectangle::from_corners(a.array(), b.array()), k))
+impl BoxTree {
+    /// Each box by its index and two opposite corners.
+    pub fn new(boxes: impl IntoIterator<Item = (usize, V2, V2)>) -> Self {
+        let items = boxes
+            .into_iter()
+            .map(|(k, a, b)| GeomWithData::new(Rectangle::from_corners(a.array(), b.array()), k))
             .collect();
         Self {
             tree: RTree::bulk_load(items),
         }
     }
 
-    /// The segments, by index ascending, whose boxes lie within `radius`
-    /// and DEGENERATE_DISTANCE of `p`: among them every one that comes
-    /// within `radius` of it. None for a NaN or negative radius.
-    pub fn near(&self, p: V2, radius: f64) -> Vec<usize> {
-        if radius.is_nan() || radius < 0.0 {
+    /// The indices of the boxes within `reach` of `p`, ascending.
+    pub fn within(&self, p: V2, reach: f64) -> Vec<usize> {
+        if reach.is_nan() || reach < 0.0 {
             return Vec::new();
         }
-        let reach = radius + DEGENERATE_DISTANCE;
         let mut found: Vec<usize> = self
             .tree
             .locate_within_distance(p.array(), reach * reach)
@@ -356,15 +350,12 @@ impl SegmentTree {
         found
     }
 
-    /// The segments, by index ascending, whose boxes meet the box from
-    /// `low` to `high` grown by `radius` and DEGENERATE_DISTANCE: among
-    /// them every one that comes within `radius` of a point in it. None
-    /// for a NaN or negative radius.
-    pub fn near_box(&self, low: V2, high: V2, radius: f64) -> Vec<usize> {
-        if radius.is_nan() || radius < 0.0 {
+    /// The indices of the boxes that meet the box from `low` to `high`
+    /// grown by `reach`, ascending.
+    pub fn meeting(&self, low: V2, high: V2, reach: f64) -> Vec<usize> {
+        if reach.is_nan() || reach < 0.0 {
             return Vec::new();
         }
-        let reach = radius + DEGENERATE_DISTANCE;
         let envelope = AABB::from_corners(
             [low.x - reach, low.y - reach],
             [high.x + reach, high.y + reach],
@@ -376,6 +367,58 @@ impl SegmentTree {
             .collect();
         found.sort_unstable();
         found
+    }
+
+    /// The boxes from the nearest `p` outward, each by its index and its
+    /// squared distance.
+    pub fn nearest_first(&self, p: V2) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.tree
+            .nearest_neighbor_iter_with_distance_2(p.array())
+            .map(|(g, d2)| (g.data, d2))
+    }
+}
+
+/// A tree over segments' bounding boxes, which finds every segment that may
+/// come within a distance of a point or of a box. A segment lies in its
+/// box, so a segment near a query has its box near it too, and a long
+/// segment is found only near its own box.
+pub struct SegmentTree {
+    boxes: BoxTree,
+}
+
+impl SegmentTree {
+    /// The segments from starts[k] to ends[k].
+    pub fn new(starts: &[V2], ends: &[V2]) -> Self {
+        Self {
+            boxes: BoxTree::new(
+                starts
+                    .iter()
+                    .zip(ends)
+                    .enumerate()
+                    .map(|(k, (&a, &b))| (k, a, b)),
+            ),
+        }
+    }
+
+    /// The segments, by index ascending, whose boxes lie within `radius`
+    /// and DEGENERATE_DISTANCE of `p`: among them every one that comes
+    /// within `radius` of it. None for a NaN or negative radius.
+    pub fn near(&self, p: V2, radius: f64) -> Vec<usize> {
+        if radius.is_nan() || radius < 0.0 {
+            return Vec::new();
+        }
+        self.boxes.within(p, radius + DEGENERATE_DISTANCE)
+    }
+
+    /// The segments, by index ascending, whose boxes meet the box from
+    /// `low` to `high` grown by `radius` and DEGENERATE_DISTANCE: among
+    /// them every one that comes within `radius` of a point in it. None
+    /// for a NaN or negative radius.
+    pub fn near_box(&self, low: V2, high: V2, radius: f64) -> Vec<usize> {
+        if radius.is_nan() || radius < 0.0 {
+            return Vec::new();
+        }
+        self.boxes.meeting(low, high, radius + DEGENERATE_DISTANCE)
     }
 }
 
@@ -529,6 +572,18 @@ pub(crate) mod tests {
         assert!(tree.near(V2::new(15.0, 9.0), -1.0).is_empty());
         assert!(tree.near_box(low, high, f64::NAN).is_empty());
         assert!(tree.near_box(low, high, -1.0).is_empty());
+    }
+
+    #[test]
+    fn a_box_tree_finds_nothing_for_a_nan_or_negative_reach() {
+        let tree = BoxTree::new([(7, V2::new(0.0, 0.0), V2::new(1.0, 1.0))]);
+        let (low, high) = (V2::new(0.0, 0.0), V2::new(1.0, 1.0));
+        assert_eq!(tree.within(V2::new(0.5, 0.5), 0.0), vec![7]);
+        assert_eq!(tree.meeting(low, high, 0.0), vec![7]);
+        for reach in [f64::NAN, -1.0] {
+            assert!(tree.within(V2::new(0.5, 0.5), reach).is_empty());
+            assert!(tree.meeting(low, high, reach).is_empty());
+        }
     }
 
     /// A xorshift generator, so that random segments are the same every run.
