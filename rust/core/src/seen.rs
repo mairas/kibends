@@ -601,16 +601,8 @@ impl Seen {
             let (b, _, _) = gathered(&ends_of, &layer.members);
             let mut crossing = vec![false; a.len()];
             let mut found = EdgesClear::default();
-            let reach = largest(layer.members.iter().map(|&i| self.within[i]), 0.0) - tolerance;
-            if !layer.edges.is_empty() && !a.is_empty() && reach > 0.0 {
-                let longest = largest(a.iter().zip(&b).map(|(&p, &q)| (q - p).hypot()), 0.0);
-                let radius = reach + longest / 2.0;
-                let middles: Vec<V2> = a
-                    .iter()
-                    .zip(&b)
-                    .map(|(&p, &q)| V2::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0))
-                    .collect();
-                let pairs = self.pairs(layer, &middles, &owner, flat, radius, false);
+            let pairs = self.edge_pairs(layer, &a, &b, &owner, flat, tolerance);
+            if !pairs.is_empty() {
                 let (starts, along) = self.shapes(flat, &pairs.piece);
                 let segment_a: Vec<V2> = pairs.point.iter().map(|&s| a[s]).collect();
                 let segment_ab: Vec<V2> = pairs.point.iter().map(|&s| b[s] - a[s]).collect();
@@ -656,6 +648,34 @@ impl Seen {
             }
         }
         answers
+    }
+
+    /// (edge, piece) pairs of `layer`, among them every pair whose edge,
+    /// from a[k] to b[k], of the member `owner` gives by its place on the
+    /// layer, may come within the piece's inflation less `tolerance` of a
+    /// piece the member sees, and each pair's inflation; by edge, then by
+    /// the piece's edge as the layer lists them.
+    fn edge_pairs(
+        &self,
+        layer: &SeenLayer,
+        a: &[V2],
+        b: &[V2],
+        owner: &[usize],
+        flat: &[V2],
+        tolerance: f64,
+    ) -> Pairs {
+        let reach = largest(layer.members.iter().map(|&i| self.within[i]), 0.0) - tolerance;
+        if layer.edges.is_empty() || a.is_empty() || reach.is_nan() || reach <= 0.0 {
+            return Pairs::default();
+        }
+        let longest = largest(a.iter().zip(b).map(|(&p, &q)| (q - p).hypot()), 0.0);
+        let radius = reach + longest / 2.0;
+        let middles: Vec<V2> = a
+            .iter()
+            .zip(b)
+            .map(|(&p, &q)| V2::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0))
+            .collect();
+        self.pairs(layer, &middles, owner, flat, radius, false)
     }
 
     /// The (point, piece) pairs of layer n, with its members' quadrature
