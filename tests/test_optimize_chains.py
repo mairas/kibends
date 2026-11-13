@@ -8,7 +8,7 @@ finite differences."""
 import itertools
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -338,11 +338,12 @@ def test_chains_racing_toward_each_other_head_on_stop_at_their_clearance(
 
 def test_moves_into_another_chains_clearance_are_undone_and_counted() -> None:
     # The hinge is too weak to hold the chains apart: only moving back the
-    # edges that newly enter the other chain's clearance does.
+    # edges that newly enter the other chain's clearance does. At one
+    # spacing: at a coarse level the guard puts a chain back whole first.
     scenario = scenarios.squeeze()
     params = replace(scenario.params, clearance_weight=0.1)
 
-    result = optimize_chains(scenario.chains, params, COARSE)
+    result = optimize_chains(scenario.chains, params, ONE_SPACING)
 
     a, b = (c.polyline for c in result.chains)
     assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
@@ -802,39 +803,21 @@ def test_straight_chains_have_nothing_to_do(coarse: tuple[float, ...]) -> None:
     )
 
     assert result.termination is Termination.NOTHING_TO_DO
-    assert result.iterations == 1
+    # One burst at each level, none moving anything.
+    assert result.iterations == len(coarse) + 1
     for chain, given in zip(result.chains, chains, strict=True):
         np.testing.assert_array_equal(chain.polyline, given.centreline.points)
 
 
-def test_a_rerun_with_coarse_levels_on_converged_output_has_nothing_to_do() -> None:
-    # The first burst runs at the final spacing, and finds nothing to move.
-    # Not every scenario's output is still enough for that: the squeeze's
-    # first burst moves about 5 µm, and the levels run again.
-    scenario = scenarios.drape()
-    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
-    first = run(scenario, settings)
-    again = tuple(
-        replace(
-            given,
-            centreline=replace(given.centreline, points=chain.polyline),
-            fixed=chain.fixed,
-        )
-        for given, chain in zip(scenario.chains, first.chains, strict=True)
-    )
-
-    second = optimize_chains(again, scenario.params, settings)
-
-    assert second.termination is Termination.NOTHING_TO_DO
-    assert second.iterations == 1
-    for before, chain in zip(first.chains, second.chains, strict=True):
-        np.testing.assert_array_equal(chain.polyline, before.polyline)
-
-
-def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input() -> None:
-    # The tent's first burst on its own output moves it, so the coarse
-    # levels run again; what they leave counts only if it costs no more.
-    scenario = scenarios.tent()
+@pytest.mark.parametrize(
+    "make", [scenarios.drape, scenarios.tent], ids=["drape", "tent"]
+)
+def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input(
+    make: Callable[[], ChainsScenario],
+) -> None:
+    # A rerun on converged output runs the coarse levels again; what they
+    # leave counts only if it costs no more.
+    scenario = make()
     settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
     first = run(scenario, settings)
     again = tuple(
@@ -891,7 +874,7 @@ def test_a_long_track_among_many_goes_taut_only_with_coarse_levels() -> None:
 
 
 def test_a_run_stopped_at_a_coarse_level_ends_at_the_final_spacing() -> None:
-    # Capped after the first burst at 1.6 mm.
+    # Capped after two bursts at 1.6 mm, the second handing over to 0.4 mm.
     scenario = scenarios.bowed_among_many()
     settings = OptimizerSettings(max_iterations=2, coarse_spacings=LEVELS)
 
@@ -923,13 +906,12 @@ def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> Non
         assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
 
 
-# A rerun on the squeeze's own output settles within these. Measured with
-# the default coarse levels: 13 iterations and 23 µm moved, and as many
-# iterations at the default final spacing: the first burst moves the
-# output by more than the settle threshold without shortening it, and the
-# problem runs the coarse levels again. At one spacing it took 4
-# iterations and 10 µm.
-REPEAT_ITERATIONS = 16
+# A rerun on the squeeze's own output settles within these. It runs the
+# coarse levels again, from their resample of the output. Measured with the
+# default coarse levels: 17 iterations and 7 µm moved, and 9 iterations and
+# 1.5 µm at the default final spacing. At one spacing it took 4 iterations
+# and 10 µm.
+REPEAT_ITERATIONS = 20
 REPEAT_DRIFT = 0.06
 
 
@@ -1812,8 +1794,12 @@ def test_a_burst_minimises_over_its_scaled_variables(
 
     monkeypatch.setattr(optimize_module, "run_burst", capturing)
 
+    # At one spacing, so that the first burst runs at the final spacing, as
+    # `pressed_and_free_scales` lays it out.
     optimize_chains(
-        pressed_and_free(), PRESSED_PARAMS, replace(DEFAULT_SETTINGS, max_iterations=1)
+        pressed_and_free(),
+        PRESSED_PARAMS,
+        replace(DEFAULT_SETTINGS, max_iterations=1, coarse_spacings=()),
     )
 
     objective, start = given[0]

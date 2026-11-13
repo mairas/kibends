@@ -431,10 +431,11 @@ def test_a_move_cutting_an_edge_across_a_corner_is_undone() -> None:
 def first_revert(
     monkeypatch: pytest.MonkeyPatch, scenario: ViasScenario
 ) -> tuple[_core.Revert, FloatArray]:
-    """The check of the first burst of `scenario`'s run, and where the burst
-    starts; its one via's centre is the last variable."""
+    """The check of the first burst of `scenario`'s run at one spacing, and
+    where the burst starts; its one via's centre is the last variable."""
     return first_check(
-        monkeypatch, lambda: run(scenario, replace(COARSE, max_iterations=1))
+        monkeypatch,
+        lambda: run(scenario, replace(COARSE, max_iterations=1, coarse_spacings=())),
     )
 
 
@@ -741,10 +742,11 @@ def over_short_pinned() -> ViasScenario:
 
 def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
     # The hinge is too weak to hold the via off the pinned chain: only moving
-    # it back when it newly enters its clearance does.
+    # it back when it newly enters its clearance does. At one spacing: at a
+    # coarse level the guard puts the via back whole first.
     scenario = over_short_pinned()
     params = replace(scenario.params, clearance_weight=0.1)
-    shorter = replace(COARSE, burst_maxiter=15)
+    shorter = replace(COARSE, burst_maxiter=15, coarse_spacings=())
 
     result = optimize_chains(scenario.chains, params, shorter, scenario.vias)
 
@@ -763,7 +765,8 @@ def test_a_via_starting_inside_one_obstacle_is_checked_against_the_others() -> N
     scenario = over_short_pinned()
     (given,) = scenario.vias
     params = replace(scenario.params, clearance_weight=0.1)
-    shorter = replace(COARSE, burst_maxiter=15)
+    # At one spacing, as the test above.
+    shorter = replace(COARSE, burst_maxiter=15, coarse_spacings=())
 
     result = optimize_chains(
         scenario.chains, params, shorter, [replace(given, field=PUSHING_DOWN)]

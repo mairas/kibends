@@ -108,10 +108,9 @@ WRAP_SETTINGS = replace(
     SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
 )
 # A rerun at the defaults on the wrap's own output settles within these.
-# Measured: 1 iteration, 1.2 µm moved, the length 4 nm longer. At
-# WRAP_SETTINGS' coarser final spacing, resampling the output cuts its
-# chords into the repulsion, and pushing them out runs the coarse levels
-# again, rejecting edge moves.
+# It runs the coarse levels again, whose chords cut into the repulsion, and
+# pushing them out rejects edge moves. Measured: 5 iterations, 1 rejected
+# edge move, 4.4 µm moved, the length 0.5 µm longer.
 RERUN_ITERATIONS = 6
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3
@@ -157,7 +156,6 @@ class TestWrap:
             SETTINGS,
         )
 
-        assert again.rejected_edges == 0
         assert again.termination is Termination.CONVERGED
         assert again.iterations <= RERUN_ITERATIONS
         moved = shapely.LineString(again.polyline).hausdorff_distance(
@@ -413,7 +411,9 @@ def test_track_at_exact_clearance_starts_with_no_violation() -> None:
     polyline, fixed = chain(
         (10.3, 45.6), (11.3, at_clearance), (13.3, at_clearance), (14.3, 45.6)
     )
-    settings = replace(SETTINGS, max_iterations=EXACT_PAD_CAP)
+    # At one spacing, so that the capped bursts move it there: stopped at a
+    # coarse level, a run may end at its inputs, as close as drawn.
+    settings = replace(SETTINGS, max_iterations=EXACT_PAD_CAP, coarse_spacings=())
     resampled, mask = resample(polyline, fixed, settings.spacing)
 
     result = optimize(polyline, fixed, EXACT_PAD, PARAMS, settings)
@@ -566,7 +566,9 @@ def burst_costs(log: list[str]) -> list[BurstCost]:
 def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
     log: list[str],
 ) -> None:
-    settings = replace(COARSE, max_iterations=LOGGED_BURSTS)
+    # At one spacing: the first bursts at a coarse level evaluate too few
+    # vertices to show in milliseconds.
+    settings = replace(COARSE, max_iterations=LOGGED_BURSTS, coarse_spacings=())
 
     result = run(scenarios.wrap(), settings)
 
@@ -585,7 +587,7 @@ def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
 COARSE_LEVELS = (1.2, 0.6)
 """Coarse spacings above COARSE's final 0.3 mm."""
 BOWED = ((0.0, 0.0), (5.0, 3.0), (10.0, 0.0))
-"""A chain the probe at the final spacing does not settle."""
+"""A chain that takes more than one burst at the coarsest level."""
 
 
 def stage_lines(log: list[str]) -> list[str]:
@@ -615,19 +617,8 @@ def test_each_problem_logs_each_level_it_enters_once_at_info(log: list[str]) -> 
         ]
 
 
-@pytest.mark.parametrize(
-    ("vertices", "coarse"),
-    [(BOWED, ()), (((0.0, 0.0), (10.0, 0.0)), COARSE_LEVELS)],
-    ids=["one spacing", "nothing to do"],
-)
-def test_a_run_without_levels_to_enter_logs_no_stage(
-    log: list[str],
-    vertices: tuple[tuple[float, float], ...],
-    coarse: tuple[float, ...],
-) -> None:
-    optimize_chains(
-        on_two_layers(*vertices), PARAMS, replace(COARSE, coarse_spacings=coarse)
-    )
+def test_a_run_at_one_spacing_logs_no_stage(log: list[str]) -> None:
+    optimize_chains(on_two_layers(*BOWED), PARAMS, replace(COARSE, coarse_spacings=()))
 
     assert stage_lines(log) == []
 
@@ -639,17 +630,17 @@ def test_a_burst_at_a_coarse_level_logs_its_spacing(log: list[str]) -> None:
     optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
 
     levels = [cost.coarse for cost in burst_costs(log)]
-    # The probe at the final spacing, then each level in turn.
-    assert levels[0] is None
+    # Each level in turn, the coarsest first, then the final spacing.
+    assert levels[0] == COARSE_LEVELS[0]
     assert levels[-1] is None
     assert [c for c in dict.fromkeys(levels) if c is not None] == list(COARSE_LEVELS)
 
 
 @pytest.mark.parametrize(
     ("cap", "before_final"),
-    # Of BOWED's run: the probe, two bursts at 1.2 mm, one at 0.6 mm, then
-    # the final spacing.
-    [(2, True), (4, False)],
+    # Of BOWED's run: two bursts at 1.2 mm, one at 0.6 mm, then one at the
+    # final spacing.
+    [(2, True), (3, False)],
     ids=["at a coarse level", "at the final level"],
 )
 def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
@@ -666,7 +657,7 @@ def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
 @pytest.mark.parametrize(
     ("iterations", "before_final"),
     # As the capped run above.
-    [(2, True), (4, False)],
+    [(2, True), (3, False)],
     ids=["at a coarse level", "at the final level"],
 )
 def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
@@ -684,6 +675,25 @@ def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
     assert result.iterations == iterations
     assert clock.bursts == iterations * len(chains)
     assert result.before_final_spacing is before_final
+
+
+def test_a_problem_stopped_before_its_first_step_is_before_the_final_spacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The straight chain's first burst settles its one coarse level and
+    # takes it to the final one; the stop comes before the bowed chain's.
+    chains = [
+        scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
+        scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
+    ]
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS[:1])
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(chains, PARAMS, settings, stop=lambda: clock.bursts >= 1)
+
+    assert result.termination is Termination.STOPPED
+    assert clock.bursts == 1
+    assert result.before_final_spacing
 
 
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
@@ -899,7 +909,8 @@ def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
     )
 
     assert result.termination is Termination.CONVERGED
-    assert result.iterations == 1
+    # One burst at each level, each settling it.
+    assert result.iterations == len(lax.coarse_spacings) + 1
     assert (
         clearances(result.polyline, scenario.field).mean()
         > clearances(scenario.polyline, scenario.field).mean()

@@ -133,7 +133,7 @@ class RunResult:
     its problem, so it is counted once, for the problem."""
     before_final_spacing: bool = False
     """Whether the run stopped, at its iteration cap, its time limit or the
-    caller's stop, while some problem ran at a coarse level: its result is
-    that level's best state subdivided to the final spacing, or, where that
-    costs more or no coarse burst ended normally, the best state of its
-    first burst at the final spacing, or its input."""
+    caller's stop, while some problem ran at a coarse level or had taken no
+    step: its result is that level's best state subdivided to the final
+    spacing, or, where that costs more than its input, no coarse burst
+    ended normally or it took no step, its input."""

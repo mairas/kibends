@@ -248,9 +248,9 @@ pub enum Notice {
         streak: u32,
     },
     Burst(BurstReport),
-    /// The problem enters `level` of a schedule with coarse levels: each
-    /// coarse level, and the final one after a coarser one hands over. Not
-    /// for the probe at the final spacing that runs before them.
+    /// The problem enters `level` of a schedule with coarse levels: the
+    /// coarsest before its first burst, each finer one, and the final one,
+    /// as a coarser one hands over.
     Stage {
         problem: usize,
         level: usize,

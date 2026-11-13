@@ -171,8 +171,7 @@ def optimize_chains(
     vias that are none of `vias`; each problem keeps those its moving vias
     share a layer with.
 
-    Each problem runs through `settings`' schedule: its first burst at the
-    final spacing, and, unless that settles it, its chains at each of
+    Each problem runs through `settings`' schedule: its chains at each of
     `coarse_spacings` in turn, then at the final spacing, a level handing
     over when the problem settles at it (`kibends_core::optimize::state`).
     Each problem keeps its best state, replaced only after a
@@ -180,9 +179,8 @@ def optimize_chains(
     more violations than it started with, and leaves no via deeper inside
     its clearance or its stops than it started. It goes on at the final
     spacing from the coarse levels' best state only if some coarse burst
-    ended normally and that state costs no more than the first burst's
-    best, or than its inputs if that burst moved nothing; else from that
-    best or the inputs.
+    ended normally and that state costs no more than its inputs; else from
+    the inputs.
 
     A problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back, or when the lowest energy its
@@ -202,8 +200,8 @@ def optimize_chains(
     `Termination.STOPPED` if `stop` answered true before the time limit
     passed, else `Termination.TIME_LIMIT`. A run stopped, by either, while
     some problem runs at a coarse level ends each such problem at the final
-    spacing (`ProblemState.finish`) and says so
-    (`RunResult.before_final_spacing`).
+    spacing (`ProblemState.finish`), and one that has taken no step at its
+    inputs; either way it says so (`RunResult.before_final_spacing`).
 
     Whenever the run would end, `to_hold` is given each section's best
     state and names the sections to hold (`Hold.CROWDING`). Each problem
@@ -377,7 +375,7 @@ def optimize_chains(
     if termination is Termination.TIME_LIMIT and first_end is Termination.STOPPED:
         termination = Termination.STOPPED
     # A run stopped at a coarse level still ends at the final spacing.
-    before_final = any(p.state.level < len(settings.coarse_spacings) for p in moving)
+    before_final = any(p.state.before_final for p in moving)
     for p in moving:
         p.state.finish()
     final = replace(
