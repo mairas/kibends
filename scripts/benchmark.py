@@ -561,8 +561,10 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
         "via-over-bowed-N": lambda: scenarios.via_over_bowed("N"),
         "via-over-bowed-P": lambda: scenarios.via_over_bowed("P"),
         "via-detour-over": lambda: scenarios.via_detour_over(free),
-        "via-detour-over-box": lambda: scenarios.via_detour_over(
-            Box(4.9, 2.0, 0.05, 0.05)
+        # A 0.15 mm track on F.Cu with 0.2 mm clearance each side, 2 mm
+        # long, across the via's way down.
+        "via-detour-over-track": lambda: scenarios.via_detour_over(
+            Box(4.9, 2.0, 1.0, 0.275)
         ),
         "via-slack": lambda: scenarios.via_slack(free),
         "via-across-chain": scenarios.via_across_chain,

@@ -442,8 +442,9 @@ def first_revert(
 @pytest.mark.parametrize(
     ("scenario", "to"),
     [
-        # Its end edge on F.Cu cuts across the post, both ends clear of it.
-        (scenarios.via_detour_over(Box(4.9, 2.0, 0.05, 0.05)), (5.0, 1.5)),
+        # Its end edge on F.Cu cuts across a track crossing, a 0.15 mm track
+        # and its 0.2 mm clearance each side, both ends clear of it.
+        (scenarios.via_detour_over(Box(4.9, 2.0, 1.0, 0.275)), (5.0, 1.5)),
         # Onto the pinned chain of another net on In1.Cu.
         (scenarios.via_over_pinned("P"), (5.0, scenarios.PINNED_LEVEL)),
     ],
