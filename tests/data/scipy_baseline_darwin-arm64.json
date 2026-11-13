@@ -2,16 +2,15 @@
   "platform": "darwin-arm64",
   "python": "3.14.10",
   "numpy": "2.5.4",
-  "scipy": "1.18.1",
   "cases": {
     "wrap": {
       "termination": "converged",
-      "iterations": 8,
-      "evaluations": 464,
+      "iterations": 7,
+      "evaluations": 407,
       "chains": [
         {
-          "length": 17.146850553176364,
-          "clearance": 0.01815465688559703
+          "length": 17.14618996219408,
+          "clearance": 0.018457525342763015
         }
       ]
     },
@@ -29,10 +28,10 @@
     "channel-1": {
       "termination": "converged",
       "iterations": 2,
-      "evaluations": 88,
+      "evaluations": 108,
       "chains": [
         {
-          "length": 20.438930370258994,
+          "length": 20.438814607678133,
           "clearance": 0.19999999999999996
         }
       ]
@@ -40,118 +39,118 @@
     "topology": {
       "termination": "converged",
       "iterations": 4,
-      "evaluations": 230,
+      "evaluations": 228,
       "chains": [
         {
-          "length": 10.208804828619435,
-          "clearance": 0.019223073640029176
+          "length": 10.208728366726431,
+          "clearance": 0.019335841793992836
         }
       ]
     },
     "pad-row": {
       "termination": "converged",
       "iterations": 3,
-      "evaluations": 126,
+      "evaluations": 160,
       "chains": [
         {
-          "length": 10.238456635375316,
-          "clearance": 0.5937157044995811
+          "length": 10.23847319266557,
+          "clearance": 0.5937176299000376
         }
       ]
     },
     "starts-inside": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 388,
+      "iterations": 8,
+      "evaluations": 408,
       "chains": [
         {
-          "length": 10.000000466278417,
-          "clearance": 0.9987818288281556
+          "length": 10.000000105112385,
+          "clearance": 0.9996983251351585
         }
       ]
     },
     "detour": {
       "termination": "converged",
-      "iterations": 9,
-      "evaluations": 572,
+      "iterations": 10,
+      "evaluations": 626,
       "chains": [
         {
-          "length": 20.00010673810285,
-          "clearance": 0.3235305337809109
+          "length": 20.000061792717865,
+          "clearance": 0.32713129118754836
         }
       ]
     },
     "narrow-gap": {
       "termination": "converged",
       "iterations": 3,
-      "evaluations": 174,
+      "evaluations": 175,
       "chains": [
         {
-          "length": 11.047376709228491,
-          "clearance": 0.019037627682575442
+          "length": 11.04723003861379,
+          "clearance": 0.01918458086246866
         }
       ]
     },
     "channel-pair": {
       "termination": "converged",
       "iterations": 2,
-      "evaluations": 75,
+      "evaluations": 114,
       "chains": [
         {
-          "length": 20.15388273373133,
+          "length": 20.154110816234294,
           "clearance": 0.19999999999999996
         },
         {
-          "length": 20.15388273373133,
+          "length": 20.154110816234294,
           "clearance": 0.19999999999999996
         }
       ],
-      "gap": 0.7356420416862208
+      "gap": 0.7355551962986333
     },
     "uneven-channel-pair": {
       "termination": "converged",
       "iterations": 2,
-      "evaluations": 109,
+      "evaluations": 108,
       "chains": [
         {
-          "length": 20.098980025625785,
+          "length": 20.098925614089026,
           "clearance": 0.19999999999999996
         },
         {
-          "length": 20.029759669587264,
-          "clearance": 0.532125919426778
+          "length": 20.029778077618793,
+          "clearance": 0.5321559026243889
         }
       ],
-      "gap": 0.7356389593765307
+      "gap": 0.7356407461493977
     },
     "tent": {
       "termination": "converged",
-      "iterations": 5,
-      "evaluations": 329,
+      "iterations": 6,
+      "evaluations": 380,
       "chains": [
         {
-          "length": 10.494627427648103,
+          "length": 10.49450878763295,
           "clearance": null
         },
         {
-          "length": 2.000002436600113,
+          "length": 2.0000037800565464,
           "clearance": null
         }
       ],
-      "gap": 0.21868262772210406
+      "gap": 0.21882290168036983
     },
     "same-net-wrap": {
       "termination": "converged",
       "iterations": 5,
-      "evaluations": 289,
+      "evaluations": 283,
       "chains": [
         {
-          "length": 10.208801156386079,
-          "clearance": 0.0191193918371384
+          "length": 10.208712209712205,
+          "clearance": 0.01935771029835953
         },
         {
-          "length": 10.077188930587504,
-          "clearance": 0.019250080084294074
+          "length": 10.07720450010585,
+          "clearance": 0.01932419214564085
         }
       ],
       "gap": null
@@ -159,78 +158,78 @@
     "crowded": {
       "termination": "converged",
       "iterations": 5,
-      "evaluations": 212,
+      "evaluations": 269,
       "chains": [
         {
-          "length": 10.000000024560595,
+          "length": 10.000000071573984,
           "clearance": null
         },
         {
-          "length": 10.0000001687606,
+          "length": 10.00000132432359,
           "clearance": null
         }
       ],
-      "gap": 0.7997043407052515
+      "gap": 0.7977990356789371
     },
     "drape": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 241,
+      "iterations": 6,
+      "evaluations": 357,
       "chains": [
         {
-          "length": 10.485268219466777,
+          "length": 10.485072182411917,
           "clearance": null
         },
         {
-          "length": 4.0000069198477055,
+          "length": 4.000004158295192,
           "clearance": null
         }
       ],
-      "gap": 0.21857855681598648
+      "gap": 0.2188543250833973
     },
     "squeeze": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 479,
+      "iterations": 5,
+      "evaluations": 302,
       "chains": [
         {
-          "length": 11.940141780489622,
+          "length": 11.939878248544012,
           "clearance": null
         },
         {
-          "length": 2.0000020893883317,
+          "length": 2.00000239493895,
           "clearance": null
         }
       ],
-      "gap": 0.21852595743788134
+      "gap": 0.21876465886276647
     },
     "hooks": {
       "termination": "converged",
-      "iterations": 8,
-      "evaluations": 498,
+      "iterations": 7,
+      "evaluations": 409,
       "chains": [
         {
-          "length": 8.048874414098368,
+          "length": 8.048108998467184,
           "clearance": null
         },
         {
-          "length": 9.400280396390535,
+          "length": 9.399233978386647,
           "clearance": null
         }
       ],
-      "gap": 0.2180995294778788
+      "gap": 0.21855251205153503
     },
     "width-change": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 353,
+      "iterations": 8,
+      "evaluations": 419,
       "chains": [
         {
-          "length": 12.827810394701068,
+          "length": 12.822430351802723,
           "clearance": null
         },
         {
-          "length": 7.568268389105722,
+          "length": 7.573649879190267,
           "clearance": null
         }
       ],
@@ -239,200 +238,200 @@
     "centreline-over-pad": {
       "termination": "converged",
       "iterations": 4,
-      "evaluations": 235,
+      "evaluations": 233,
       "chains": [
         {
-          "length": 10.334333268540068,
-          "clearance": 0.019024746784716995
+          "length": 10.334249785282932,
+          "clearance": 0.01923171561018655
         }
       ],
       "gap": null
     },
     "via-detour": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 371,
+      "iterations": 8,
+      "evaluations": 441,
       "chains": [
         {
-          "length": 5.023168788553581,
+          "length": 4.9697233139593475,
           "clearance": null
         },
         {
-          "length": 4.976831888368063,
+          "length": 5.030277116409534,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.02316844484928,
-          0.0014641869120370526
+          4.969723045913617,
+          0.0008155568865900565
         ]
       ]
     },
     "via-on-one-layer": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 371,
+      "iterations": 8,
+      "evaluations": 441,
       "chains": [
         {
-          "length": 5.023168788553581,
+          "length": 4.9697233139593475,
           "clearance": null
         },
         {
-          "length": 4.976831888368063,
+          "length": 5.030277116409534,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.02316844484928,
-          0.0014641869120370526
+          4.969723045913617,
+          0.0008155568865900565
         ]
       ]
     },
     "via-fermat": {
       "termination": "converged",
-      "iterations": 15,
-      "evaluations": 1024,
+      "iterations": 17,
+      "evaluations": 1108,
       "chains": [
         {
-          "length": 5.772326243089705,
+          "length": 5.7732556687509256,
           "clearance": null
         },
         {
-          "length": 5.771065170097516,
+          "length": 5.772422890525309,
           "clearance": null
         },
         {
-          "length": 2.116866024431415,
+          "length": 2.114576170648228,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.000728146803181,
-          2.88313425981653
+          5.00048087097865,
+          2.885423887504856
         ]
       ]
     },
     "via-hemmed": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 229,
+      "iterations": 5,
+      "evaluations": 230,
       "chains": [
         {
-          "length": 5.257372679965968,
+          "length": 5.311845126332695,
           "clearance": null
         },
         {
-          "length": 5.2541580304076945,
+          "length": 5.3127316867282275,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.001689543056494,
-          1.6195890224540106
+          4.999529033548906,
+          1.7945495504013118
         ]
       ]
     },
     "via-corner": {
       "termination": "converged",
       "iterations": 9,
-      "evaluations": 601,
+      "evaluations": 643,
       "chains": [
         {
-          "length": 5.222698235668218,
-          "clearance": 0.01443254846028452
+          "length": 5.196991418551342,
+          "clearance": 0.014355242400388175
         },
         {
-          "length": 5.036447483954066,
+          "length": 5.063036563923642,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.003237818404067,
-          0.6310025583027754
+          4.9770027831528,
+          0.6353550229273878
         ]
       ]
     },
     "via-beside-chain": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 445,
+      "iterations": 11,
+      "evaluations": 674,
       "chains": [
         {
-          "length": 5.01453828615543,
+          "length": 5.0605131636867675,
           "clearance": null
         },
         {
-          "length": 5.122289158912711,
+          "length": 5.085176179057839,
           "clearance": null
         },
         {
-          "length": 4.042871875452039,
+          "length": 4.035149975252054,
           "clearance": 0.5
         }
       ],
       "gap": null,
       "vias": [
         [
-          4.94539416777876,
-          0.8296491664258757
+          4.987490131938146,
+          0.8563556169534603
         ]
       ]
     },
     "via-pair": {
       "termination": "converged",
-      "iterations": 6,
-      "evaluations": 298,
+      "iterations": 7,
+      "evaluations": 366,
       "chains": [
         {
-          "length": 4.987803438613936,
+          "length": 5.047066031233043,
           "clearance": null
         },
         {
-          "length": 5.012917399079567,
+          "length": 4.953620394339401,
           "clearance": null
         },
         {
-          "length": 4.995574155204717,
+          "length": 5.019786911906914,
           "clearance": null
         },
         {
-          "length": 5.005146081556754,
+          "length": 4.9809561539987985,
           "clearance": null
         }
       ],
       "gap": 0.49999999999999994,
       "vias": [
         [
-          4.987441752063993,
-          -0.05998439839310176
+          5.046726025620553,
+          -0.05858281272672664
         ],
         [
-          4.995213473971149,
-          0.7599710711767591
+          5.01941682164467,
+          0.7609541756681579
         ]
       ]
     },
     "via-over-pinned-N": {
       "termination": "converged",
-      "iterations": 6,
-      "evaluations": 333,
+      "iterations": 9,
+      "evaluations": 451,
       "chains": [
         {
-          "length": 5.0141241910780705,
+          "length": 5.011905544110715,
           "clearance": null
         },
         {
-          "length": 4.985878959754285,
+          "length": 4.988095233283168,
           "clearance": null
         },
         {
@@ -443,22 +442,22 @@
       "gap": null,
       "vias": [
         [
-          5.01412267767555,
-          0.003236116657974463
+          5.011905156261678,
+          0.0019519555177993388
         ]
       ]
     },
     "via-over-pinned-P": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 209,
+      "iterations": 6,
+      "evaluations": 314,
       "chains": [
         {
-          "length": 5.429219491757523,
+          "length": 5.429035172063685,
           "clearance": null
         },
         {
-          "length": 5.432145192528763,
+          "length": 5.432327990826639,
           "clearance": null
         },
         {
@@ -469,15 +468,15 @@
       "gap": null,
       "vias": [
         [
-          4.9984111430259075,
-          2.119506697305742
+          4.9982117748808665,
+          2.119505118688239
         ]
       ]
     },
     "via-over-bowed-N": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 220,
+      "iterations": 5,
+      "evaluations": 249,
       "chains": [
         {
           "length": 5.0,
@@ -488,7 +487,7 @@
           "clearance": null
         },
         {
-          "length": 4.0000000251723,
+          "length": 4.0,
           "clearance": null
         }
       ],
@@ -502,284 +501,284 @@
     },
     "via-over-bowed-P": {
       "termination": "converged",
-      "iterations": 14,
-      "evaluations": 912,
+      "iterations": 12,
+      "evaluations": 829,
       "chains": [
         {
-          "length": 5.067688401040306,
+          "length": 5.033811971863481,
           "clearance": null
         },
         {
-          "length": 4.993521501541057,
+          "length": 5.024735282328768,
           "clearance": null
         },
         {
-          "length": 4.0361127955191325,
+          "length": 4.039412750669892,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.037314377849068,
-          3.5535025830375244
+          5.004551192456427,
+          3.5411564499459662
         ]
       ]
     },
     "via-detour-over": {
       "termination": "converged",
-      "iterations": 7,
-      "evaluations": 371,
+      "iterations": 8,
+      "evaluations": 441,
       "chains": [
         {
-          "length": 5.023168788553581,
+          "length": 4.9697233139593475,
           "clearance": null
         },
         {
-          "length": 4.976831888368063,
+          "length": 5.030277116409534,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.02316844484928,
-          0.0014641869120370526
+          4.969723045913617,
+          0.0008155568865900565
         ]
       ]
     },
-    "via-detour-over-box": {
+    "via-detour-over-track": {
       "termination": "converged",
-      "iterations": 9,
-      "evaluations": 515,
+      "iterations": 17,
+      "evaluations": 1199,
       "chains": [
         {
-          "length": 4.894745796806704,
-          "clearance": 1.9488515735703604
+          "length": 3.9395176427370453,
+          "clearance": 1.7236296768523478
         },
         {
-          "length": 5.105254901717395,
+          "length": 6.060483018366331,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          4.894745450300392,
-          0.0011470440807087564
+          3.939517378570364,
+          0.0013703231476519726
         ]
       ]
     },
     "via-slack": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 197,
+      "iterations": 6,
+      "evaluations": 290,
       "chains": [
         {
-          "length": 5.000241418933942,
+          "length": 4.995626637899417,
           "clearance": null
         },
         {
-          "length": 4.99975863422272,
+          "length": 5.004373580567055,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.000241385640703,
-          0.00014220829313717887
+          4.995626528592441,
+          -0.0010347677385366238
         ]
       ]
     },
     "via-across-chain": {
       "termination": "converged",
-      "iterations": 9,
-      "evaluations": 517,
+      "iterations": 11,
+      "evaluations": 593,
       "chains": [
         {
-          "length": 5.035031402219346,
+          "length": 5.132221018097475,
           "clearance": null
         },
         {
-          "length": 2.9649696394900764,
+          "length": 2.867779102317395,
           "clearance": null
         },
         {
-          "length": 5.6568542637766255,
+          "length": 5.656854249492381,
           "clearance": null
         }
       ],
       "gap": null,
       "vias": [
         [
-          5.035030998700092,
-          0.0018574324019934906
+          5.132220974461205,
+          0.0006566555222130288
         ]
       ]
     },
     "via-grid-3x4": {
       "termination": "converged",
       "iterations": 9,
-      "evaluations": 579,
+      "evaluations": 576,
       "chains": [
         {
-          "length": 5.05221445071237,
+          "length": 5.15965162824593,
           "clearance": null
         },
         {
-          "length": 5.961749381637278,
+          "length": 5.8544814005201635,
           "clearance": null
         },
         {
-          "length": 6.006500489242088,
+          "length": 6.006534643566717,
           "clearance": null
         },
         {
-          "length": 5.005656656117029,
+          "length": 5.00572300447469,
           "clearance": null
         },
         {
-          "length": 5.051420999253504,
+          "length": 5.159512107730886,
           "clearance": null
         },
         {
-          "length": 5.962542896426468,
+          "length": 5.854616955988053,
           "clearance": null
         },
         {
-          "length": 6.006500499631217,
+          "length": 6.006534656447682,
           "clearance": null
         },
         {
-          "length": 5.00565665611703,
+          "length": 5.00572300447469,
           "clearance": null
         },
         {
-          "length": 5.899757438569684,
+          "length": 6.005127068534424,
           "clearance": null
         },
         {
-          "length": 5.1008473382918815,
+          "length": 4.99547797343095,
           "clearance": null
         },
         {
-          "length": 6.000000029389124,
+          "length": 6.0000000000621325,
           "clearance": null
         },
         {
-          "length": 5.000000086174742,
+          "length": 5.000000002337083,
           "clearance": null
         },
         {
-          "length": 5.899717202213397,
+          "length": 6.004941287374563,
           "clearance": null
         },
         {
-          "length": 5.100889660989638,
+          "length": 4.995663423840657,
           "clearance": null
         },
         {
-          "length": 6.000000028944337,
+          "length": 6.000000000063253,
           "clearance": null
         },
         {
-          "length": 5.000000086174673,
+          "length": 5.000000002337083,
           "clearance": null
         },
         {
-          "length": 6.760582706965587,
+          "length": 6.864148185020553,
           "clearance": null
         },
         {
-          "length": 4.253512888634853,
+          "length": 4.149673729896202,
           "clearance": null
         },
         {
-          "length": 6.006530804439336,
+          "length": 6.006534227653558,
           "clearance": null
         },
         {
-          "length": 5.005731058166094,
+          "length": 5.005723275430067,
           "clearance": null
         },
         {
-          "length": 6.762005506937146,
+          "length": 6.863859888742464,
           "clearance": null
         },
         {
-          "length": 4.252087533886951,
+          "length": 4.149966612226822,
           "clearance": null
         },
         {
-          "length": 6.0065307906367265,
+          "length": 6.006534171223397,
           "clearance": null
         },
         {
-          "length": 5.00573105816609,
+          "length": 5.005723275430068,
           "clearance": null
         }
       ],
-      "gap": 0.9999998910462158,
+      "gap": 0.9999998856410552,
       "vias": [
         [
-          5.045306744965335,
-          -0.24685121400399027
+          5.15273254105484,
+          -0.24857518019073283
         ],
         [
-          29.04451046847006,
-          -0.2468615279904296
+          29.152594980194788,
+          -0.2485396098483776
         ],
         [
-          5.89946612956273,
-          1.2003813513024297
+          6.004843787023658,
+          1.1981248674386513
         ],
         [
-          29.89942553258864,
-          1.2003645018009481
+          30.00465802950432,
+          1.1981670696409492
         ],
         [
-          6.7541607310901615,
-          2.6434949274704596
+          6.8578693728934335,
+          2.6393108744250826
         ],
         [
-          30.755583996569946,
-          2.643451459417338
+          30.857578719331713,
+          2.6393566783119673
         ]
       ]
     },
     "pair-over-pad": {
       "termination": "converged",
       "iterations": 5,
-      "evaluations": 485,
+      "evaluations": 696,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            10.34069126399236,
-            10.341577472028579
+            10.340665729633116,
+            10.341587020417474
           ],
-          "clearance": 0.019011787254990975
+          "clearance": 0.01902074183715008
         }
       ]
     },
     "pair-tent": {
       "termination": "converged",
       "iterations": 6,
-      "evaluations": 690,
+      "evaluations": 589,
       "chains": [
         {
-          "length": 2.0000015442315404,
+          "length": 2.000001644760891,
           "clearance": null
         }
       ],
-      "gap": 0.21893308078799495,
+      "gap": 0.2190047558277835,
       "pairs": [
         {
           "lengths": [
-            10.916469444498064,
-            10.362455567004478
+            10.916455475469995,
+            10.362431014051786
           ],
           "clearance": null
         }
@@ -788,14 +787,14 @@
     "pair-corner": {
       "termination": "converged",
       "iterations": 6,
-      "evaluations": 871,
+      "evaluations": 1037,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            2.6057834043066626,
-            3.1726544329594417
+            2.6057394308745154,
+            3.17267820445163
           ],
           "clearance": null
         }
@@ -803,15 +802,15 @@
     },
     "pair-round-corner": {
       "termination": "converged",
-      "iterations": 5,
-      "evaluations": 671,
+      "iterations": 4,
+      "evaluations": 748,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            2.6060284623030836,
-            3.172927653773083
+            2.605653114942604,
+            3.172543752230342
           ],
           "clearance": null
         }
@@ -820,30 +819,30 @@
     "pair-uneven-end": {
       "termination": "converged",
       "iterations": 5,
-      "evaluations": 485,
+      "evaluations": 696,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            10.34069126399236,
-            10.342161603123042
+            10.340665729633116,
+            10.342169896870377
           ],
-          "clearance": 0.019011787254990975
+          "clearance": 0.01902074183715008
         }
       ]
     },
     "pair-chamfered": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 568,
+      "iterations": 5,
+      "evaluations": 610,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            4.378865562805057,
-            3.8254390272114325
+            4.378524002343497,
+            3.8250609520207437
           ],
           "clearance": null
         }
@@ -852,30 +851,30 @@
     "pair-split": {
       "termination": "converged",
       "iterations": 3,
-      "evaluations": 184,
+      "evaluations": 187,
       "chains": [
         {
-          "length": 2.126568299281739,
-          "clearance": 0.018732352714724287
+          "length": 2.1262045106663634,
+          "clearance": 0.018953840820485013
         },
         {
-          "length": 2.303674432263705,
-          "clearance": 0.01876873984310945
+          "length": 2.3034424326613214,
+          "clearance": 0.019005965661610613
         }
       ],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            4.111179113788369,
-            3.905693192004529
+            4.111172423991081,
+            3.905697408658287
           ],
           "clearance": 0.22500000000000042
         },
         {
           "lengths": [
-            4.111179113788368,
-            3.9056931920045304
+            4.11117242399108,
+            3.9056974086582876
           ],
           "clearance": 0.22499999999999998
         }
@@ -883,63 +882,63 @@
     },
     "pair-turning-back-150": {
       "termination": "converged",
-      "iterations": 13,
-      "evaluations": 1560,
+      "iterations": 14,
+      "evaluations": 1661,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            6.21099553606545,
-            7.125916359320801
+            6.210758273629723,
+            7.125690379949726
           ],
-          "clearance": 0.019688537947227802
+          "clearance": 0.01969581970107681
         }
       ]
     },
     "10 tracks between pad rows at 1 mm": {
       "termination": "converged",
       "iterations": 2,
-      "evaluations": 123,
+      "evaluations": 144,
       "chains": [
         {
-          "length": 30.03537371565279,
+          "length": 30.03557439305183,
           "clearance": null
         },
         {
-          "length": 30.03537371586396,
+          "length": 30.03557439304982,
           "clearance": null
         },
         {
-          "length": 30.03537371608362,
+          "length": 30.03557439308334,
           "clearance": null
         },
         {
-          "length": 30.035373715560826,
+          "length": 30.03557439305414,
           "clearance": null
         },
         {
-          "length": 30.035373714904207,
+          "length": 30.03557439304715,
           "clearance": null
         },
         {
-          "length": 30.03537371591949,
+          "length": 30.035574393052777,
           "clearance": null
         },
         {
-          "length": 30.035373716102605,
+          "length": 30.03557439309523,
           "clearance": null
         },
         {
-          "length": 30.03537371547424,
+          "length": 30.035574393035287,
           "clearance": null
         },
         {
-          "length": 30.03537371542813,
+          "length": 30.03557439298714,
           "clearance": null
         },
         {
-          "length": 30.035373717762432,
+          "length": 30.035574393060717,
           "clearance": null
         }
       ]

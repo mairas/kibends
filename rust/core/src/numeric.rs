@@ -6,7 +6,7 @@
 //! numpy leaves the order to its BLAS, whose order no platform shares.
 //!
 //! Keeping these orders keeps the optimizer's results on the recorded
-//! scipy baseline (`tests/test_scipy_baseline.py`) and the same on every
+//! baseline (`tests/test_scipy_baseline.py`) and the same on every
 //! platform. Changing one moves moving-via cases into other local minima,
 //! so re-run the baseline test after changing one.
 
