@@ -380,6 +380,33 @@ pub fn quadratic(curvatures: &[f64], uphill: bool, x: &[f64]) -> (f64, Vec<f64>)
     (value, gradient)
 }
 
+/// A xorshift generator, so that random test input is the same every run.
+pub struct Random(pub u64);
+
+impl Random {
+    /// The next number in [0, 1).
+    pub fn unit(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    pub fn uniform(&mut self, low: f64, high: f64) -> f64 {
+        low + (high - low) * self.unit()
+    }
+
+    /// An index below `count`.
+    pub fn below(&mut self, count: usize) -> usize {
+        ((self.unit() * count as f64) as usize).min(count - 1)
+    }
+
+    /// A point in the square from the origin to (`size`, `size`).
+    pub fn point(&mut self, size: f64) -> V2 {
+        V2::new(self.uniform(0.0, size), self.uniform(0.0, size))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

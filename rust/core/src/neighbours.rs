@@ -278,6 +278,7 @@ mod tests {
     use super::*;
     use crate::field::chain::ChainField;
     use crate::seen::{Pieces, Track, Viewer};
+    use crate::testing::Random;
 
     fn level(first: usize, net: usize) -> Track {
         Track {
@@ -520,26 +521,6 @@ mod tests {
         assert!(got[3].1.iter().all(|&g| g == V2::default()));
     }
 
-    /// A xorshift generator, so that random copper is the same every run.
-    struct Random(u64);
-
-    impl Random {
-        fn next(&mut self) -> f64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            (self.0 >> 11) as f64 / (1u64 << 53) as f64
-        }
-
-        fn uniform(&mut self, low: f64, high: f64) -> f64 {
-            low + (high - low) * self.next()
-        }
-
-        fn below(&mut self, count: usize) -> usize {
-            ((self.next() * count as f64) as usize).min(count - 1)
-        }
-    }
-
     fn disc(c: V2, radius: f64, segments: u32) -> Vec<V2> {
         let corners: Vec<(f64, f64)> = (0..segments)
             .map(|k| {
@@ -609,7 +590,7 @@ mod tests {
         let ends: Vec<V2> = starts
             .iter()
             .map(|&s| {
-                if random.next() > 0.5 {
+                if random.unit() > 0.5 {
                     s + V2::new(random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5))
                 } else {
                     s

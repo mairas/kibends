@@ -406,7 +406,8 @@ impl Seen {
                 pairs.push(p, piece, inflation);
             }
         };
-        near_pairs(&tree, points, owner, radius + ROUND_OFF, visit)
+        let radius = vec![radius + ROUND_OFF; layer.members.len()];
+        near_pairs(&tree, points, points, owner, &radius, visit)
     }
 
     /// The smooth distance at each of `points` of a layer, each of the
@@ -580,7 +581,8 @@ impl Seen {
     /// Per member at `polylines`, whether each of its edges stays out of
     /// the pieces it sees at `flat`, as a chain field of the member's own
     /// pieces with `tolerance` gives it, and what each edge that does not
-    /// enters.
+    /// enters. Each edge is tested against the pieces `edge_pairs` lists
+    /// near it, within its own member's reach.
     pub fn segments_clear(
         &self,
         polylines: &[&[V2]],
@@ -601,16 +603,8 @@ impl Seen {
             let (b, _, _) = gathered(&ends_of, &layer.members);
             let mut crossing = vec![false; a.len()];
             let mut found = EdgesClear::default();
-            let reach = largest(layer.members.iter().map(|&i| self.within[i]), 0.0) - tolerance;
-            if !layer.edges.is_empty() && !a.is_empty() && reach > 0.0 {
-                let longest = largest(a.iter().zip(&b).map(|(&p, &q)| (q - p).hypot()), 0.0);
-                let radius = reach + longest / 2.0;
-                let middles: Vec<V2> = a
-                    .iter()
-                    .zip(&b)
-                    .map(|(&p, &q)| V2::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0))
-                    .collect();
-                let pairs = self.pairs(layer, &middles, &owner, flat, radius, false);
+            let pairs = self.edge_pairs(layer, &a, &b, &owner, flat, tolerance);
+            if !pairs.is_empty() {
                 let (starts, along) = self.shapes(flat, &pairs.piece);
                 let segment_a: Vec<V2> = pairs.point.iter().map(|&s| a[s]).collect();
                 let segment_ab: Vec<V2> = pairs.point.iter().map(|&s| b[s] - a[s]).collect();
@@ -658,12 +652,53 @@ impl Seen {
         answers
     }
 
+    /// (edge, piece) pairs of `layer`, among them every pair whose edge,
+    /// from a[k] to b[k], of the member `owner` gives by its place on the
+    /// layer, may come within the piece's inflation less `tolerance` of a
+    /// piece the member sees, and each pair's inflation; by edge, then by
+    /// the piece's edge as the layer lists them.
+    ///
+    /// Each member's largest inflation bounds every inflation it sees a
+    /// piece with, so its edges are searched whole, by the boxes around
+    /// both their ends, within that less `tolerance`; a member that keeps
+    /// no more than `tolerance` enters nothing and searches nowhere.
+    fn edge_pairs(
+        &self,
+        layer: &SeenLayer,
+        a: &[V2],
+        b: &[V2],
+        owner: &[usize],
+        flat: &[V2],
+        tolerance: f64,
+    ) -> Pairs {
+        let radius: Vec<f64> = layer
+            .members
+            .iter()
+            .map(|&i| match self.within[i] - tolerance {
+                reach if reach > 0.0 => reach + ROUND_OFF,
+                _ => f64::NEG_INFINITY,
+            })
+            .collect();
+        if layer.edges.is_empty() || a.is_empty() || !radius.iter().any(|&r| r > 0.0) {
+            return Pairs::default();
+        }
+        let tree = self.tree(layer, flat);
+        near_pairs(&tree, a, b, owner, &radius, |(), pairs, k, edges| {
+            for &e in edges {
+                self.expand(layer, owner[k], e, |piece, inflation| {
+                    pairs.push(k, piece, inflation);
+                });
+            }
+        })
+    }
+
     /// The (point, piece) pairs of layer n, with its members' quadrature
     /// points `points`, each of the member `owner` gives by its place on
     /// the layer, that `smooth_answers` with `reach` can answer a point
     /// with once the distance from each point to each piece has changed by
     /// at most `slack`, mm (`field::pairs::candidate_pairs`), and each
-    /// pair's inflation, in the order `smooth_answers` takes them.
+    /// pair's inflation, in the order `smooth_answers` takes them. Each
+    /// member's points are searched within its own limit plus `slack`.
     pub(crate) fn candidates(
         &self,
         n: usize,
@@ -675,10 +710,11 @@ impl Seen {
     ) -> Pairs {
         let layer = &self.layers[n];
         let within = self.smooth_limit(layer, reach);
-        let radius = largest(within.iter().copied(), f64::NEG_INFINITY) + slack;
         if layer.edges.is_empty() || points.is_empty() {
             return Pairs::default();
         }
+        // Each member's limit bounds every distance it keeps a pair at.
+        let radius: Vec<f64> = within.iter().map(|&w| w + slack + ROUND_OFF).collect();
         let tree = self.tree(layer, flat);
         // Each point's pieces in reach: piece, inflation, distance.
         let visit =
@@ -714,36 +750,40 @@ impl Seen {
                     pairs.push(p, piece, inflation);
                 }
             };
-        near_pairs(&tree, points, owner, radius + ROUND_OFF, visit)
+        near_pairs(&tree, points, points, owner, &radius, visit)
     }
 }
 
 /// How many consecutive points of a member one tree query answers.
 const RUN: usize = 8;
 
-/// For each of `points` in order, the edges of `tree`, ascending, among
-/// them every one within `radius` of it, and maybe others farther: one
-/// query answers a run of consecutive points of one member, as `owner`
-/// gives them, widened by how far they lie from its first. Callers measure
-/// every edge they get, so the farther ones change no answer; along a
-/// polyline the points of a run lie close together, and the queries are
-/// what a search costs most.
+/// For each query k in order, the segment from starts[k] to ends[k], a
+/// point where the two are one, the edges of `tree`, ascending, among them
+/// every one within its member's radius of it, and maybe others farther.
+/// Each query's member is its place on the layer in `owner`, and its
+/// radius `radius` at that place. One tree query answers a run of
+/// consecutive queries of one member, with the edges whose boxes meet the
+/// box around all of the run's ends grown by the member's radius; none
+/// for a negative radius. Callers measure every edge they get, so the
+/// farther ones change no answer; along a polyline the queries of a run
+/// lie close together, and the tree queries are what a search costs most.
 fn each_near(
     tree: &SegmentTree,
-    points: &[V2],
+    starts: &[V2],
+    ends: &[V2],
     owner: &[usize],
-    radius: f64,
+    radius: &[f64],
     mut visit: impl FnMut(usize, &[usize]),
 ) {
     let mut first = 0;
-    while first < points.len() {
+    while first < starts.len() {
         let last = run_end(owner, first);
-        let centre = points[first];
-        let spread = points[first..last]
-            .iter()
-            .map(|&p| (p - centre).hypot())
-            .fold(0.0, f64::max);
-        let edges = tree.near(centre, radius + spread + ROUND_OFF);
+        let (mut low, mut high) = (starts[first], starts[first]);
+        for &p in starts[first..last].iter().chain(&ends[first..last]) {
+            low = V2::new(low.x.min(p.x), low.y.min(p.y));
+            high = V2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+        let edges = tree.near_box(low, high, radius[owner[first]] + ROUND_OFF);
         for p in first..last {
             visit(p, &edges);
         }
@@ -760,23 +800,24 @@ fn run_end(owner: &[usize], first: usize) -> usize {
     last
 }
 
-/// The pairs `visit` finds for each of `points` from the edges `each_near`
-/// gives it, in the order of the points. The points are searched in
-/// chunks of about CHUNK, each ending where a run ends, so that each finds
-/// the runs a search of all of them would; each chunk keeps its own
-/// scratch `S`.
+/// The pairs `visit` finds for each query, from starts[k] to ends[k], from
+/// the edges `each_near` gives it within its member's `radius`, in the
+/// order of the queries. The queries are searched in chunks of about
+/// CHUNK, each ending where a run ends, so that each finds the runs a
+/// search of all of them would; each chunk keeps its own scratch `S`.
 fn near_pairs<S: Default>(
     tree: &SegmentTree,
-    points: &[V2],
+    starts: &[V2],
+    ends: &[V2],
     owner: &[usize],
-    radius: f64,
+    radius: &[f64],
     visit: impl Fn(&mut S, &mut Pairs, usize, &[usize]) + Sync,
 ) -> Pairs {
     let mut ranges = Vec::new();
     let mut first = 0;
-    while first < points.len() {
+    while first < starts.len() {
         let mut last = first;
-        while last < points.len() && last - first < CHUNK {
+        while last < starts.len() && last - first < CHUNK {
             last = run_end(owner, last);
         }
         ranges.push(first..last);
@@ -789,7 +830,8 @@ fn near_pairs<S: Default>(
             let mut pairs = Pairs::default();
             each_near(
                 tree,
-                &points[r.clone()],
+                &starts[r.clone()],
+                &ends[r.clone()],
                 &owner[r.clone()],
                 radius,
                 |p, edges| visit(&mut scratch, &mut pairs, r.start + p, edges),
@@ -808,6 +850,8 @@ fn python_max(a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::segment_gap;
+    use crate::testing::Random;
 
     /// Two straight tracks on one layer, of nets 0 and 1 and one kind, each
     /// a member seeing the other at `apart`.
@@ -1005,5 +1049,307 @@ mod tests {
         // The member's own net's track is no edge it sees; the via is an
         // obstacle numbered after the one track, by its vertex.
         assert_eq!(seen.obstacle(), &[3, 3]);
+    }
+
+    /// Members on one layer, each showing its segment of `shapes` as one
+    /// track of its net and kind, and seeing the others by `table`; with
+    /// what they show, member i's segment at 2i and 2i + 1.
+    fn showing(table: Vec<Vec<f64>>, shapes: &[([V2; 2], usize, usize)]) -> (Seen, Vec<V2>) {
+        let mut tracks = Vec::new();
+        let mut viewers = Vec::new();
+        let mut flat = Vec::new();
+        for &(segment, net, kind) in shapes {
+            tracks.push(Track {
+                first: flat.len(),
+                vertices: 2,
+                layer: "F".into(),
+                net,
+                kind,
+            });
+            viewers.push(Viewer {
+                layer: "F".into(),
+                net,
+                kind,
+                exempt: vec![],
+            });
+            flat.extend_from_slice(&segment);
+        }
+        let exceptions = vec![Pieces::default(); shapes.len()];
+        (Seen::new(&tracks, &viewers, table, &exceptions), flat)
+    }
+
+    /// Each member's segment in what `showing` made.
+    fn segments_of(flat: &[V2]) -> Vec<&[V2]> {
+        flat.chunks(2).collect()
+    }
+
+    /// The (edge, piece) pairs `segments_clear` searches on the one layer
+    /// of what `showing` made, each edge by its member.
+    fn edge_pairs_of(seen: &Seen, flat: &[V2], tolerance: f64) -> Vec<(usize, usize)> {
+        let layer = &seen.layers[0];
+        let a: Vec<V2> = flat.iter().copied().step_by(2).collect();
+        let b: Vec<V2> = flat.iter().copied().skip(1).step_by(2).collect();
+        let owner: Vec<usize> = (0..a.len()).collect();
+        let pairs = seen.edge_pairs(layer, &a, &b, &owner, flat, tolerance);
+        pairs.point.into_iter().zip(pairs.piece).collect()
+    }
+
+    fn line(a: (f64, f64), b: (f64, f64)) -> [V2; 2] {
+        [V2::new(a.0, a.1), V2::new(b.0, b.1)]
+    }
+
+    /// What `segments_clear` gives one edge that enters one piece.
+    fn entering(vertex: usize, obstacle: usize, depth: f64) -> EdgesClear {
+        EdgesClear {
+            clear: vec![false],
+            edge: vec![0],
+            vertex: vec![vertex],
+            obstacle: vec![obstacle],
+            depth: vec![depth],
+        }
+    }
+
+    #[test]
+    fn a_short_edge_far_from_a_long_one_lists_only_what_is_near_it() {
+        let (seen, flat) = showing(
+            vec![vec![0.3]],
+            &[
+                (line((0.0, 0.0), (30.0, 0.0)), 0, 0),
+                (line((15.0, 10.0), (15.0, 9.0)), 1, 0),
+                (line((14.0, 9.5), (16.0, 9.5)), 2, 0),
+            ],
+        );
+        // The short edge and the piece list each other, and nothing within
+        // the long edge's half length of them.
+        assert_eq!(edge_pairs_of(&seen, &flat, 0.0), vec![(1, 2), (2, 1)]);
+        let clear = seen.segments_clear(&segments_of(&flat), &flat, 0.0);
+        assert_eq!(clear[0].clear, vec![true]);
+        assert!(clear[0].edge.is_empty());
+        assert_eq!(clear[1], entering(4, 2, -0.3));
+        assert_eq!(clear[2], entering(2, 1, -0.3));
+    }
+
+    /// Four members on one layer: two of kind 1, which keep 2 mm from each
+    /// other, one far off and one 1 mm from an edge of kind 0 that another
+    /// of kind 0 crosses; kind 0 keeps 0.2 mm from either kind.
+    fn wide_and_narrow() -> (Seen, Vec<V2>) {
+        showing(
+            vec![vec![0.2, 0.2], vec![0.2, 2.0]],
+            &[
+                (line((0.0, 10.0), (1.0, 10.0)), 0, 1),
+                (line((0.0, 1.0), (1.0, 1.0)), 1, 1),
+                (line((0.0, 0.0), (1.0, 0.0)), 2, 0),
+                (line((0.5, -0.5), (0.5, 0.5)), 3, 0),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_narrow_member_lists_only_what_is_within_its_own_reach() {
+        let (seen, flat) = wide_and_narrow();
+        // The wide member near the narrow ones lists both; the narrow ones
+        // list each other, not the wide one 1 mm away.
+        assert_eq!(
+            edge_pairs_of(&seen, &flat, 0.0),
+            vec![(1, 2), (1, 3), (2, 3), (3, 2)]
+        );
+        let clear = seen.segments_clear(&segments_of(&flat), &flat, 0.0);
+        assert_eq!(clear[0].clear, vec![true]);
+        assert_eq!(clear[1].clear, vec![true]);
+        assert_eq!(clear[2], entering(6, 3, -0.2));
+        assert_eq!(clear[3], entering(4, 2, -0.2));
+    }
+
+    #[test]
+    fn a_narrow_member_gets_the_candidates_of_its_own_limit() {
+        let (seen, flat) = wide_and_narrow();
+        // Within its limit, 0.35 mm, the narrow member's point sees only the
+        // edge crossing its own; the wide one 1 mm away is no candidate.
+        let pairs = seen.candidates(0, &[V2::new(0.2, 0.0)], &[2], &flat, 0.1, 0.0);
+        assert_eq!(
+            pairs,
+            Pairs {
+                point: vec![0],
+                piece: vec![3],
+                inflation: vec![0.2],
+            }
+        );
+    }
+
+    #[test]
+    fn a_member_that_keeps_no_more_than_the_tolerance_searches_nothing() {
+        let (seen, flat) = wide_and_narrow();
+        // The narrow members keep 0.2 mm and the tolerance is 0.25 mm: they
+        // cross each other, yet neither lists anything, and all are clear.
+        assert_eq!(edge_pairs_of(&seen, &flat, 0.25), vec![(1, 2), (1, 3)]);
+        let clear = seen.segments_clear(&segments_of(&flat), &flat, 0.25);
+        assert!(clear.iter().all(|c| c.clear == [true] && c.edge.is_empty()));
+    }
+
+    #[test]
+    fn a_long_edge_reports_what_it_crosses_near_its_middle_and_its_end() {
+        let (seen, flat) = showing(
+            vec![vec![0.3]],
+            &[
+                (line((0.0, 0.0), (30.0, 0.0)), 0, 0),
+                (line((15.0, -0.5), (15.0, 0.5)), 1, 0),
+                (line((29.5, -0.5), (29.5, 0.5)), 2, 0),
+            ],
+        );
+        assert_eq!(
+            edge_pairs_of(&seen, &flat, 0.0),
+            vec![(0, 1), (0, 2), (1, 0), (2, 0)]
+        );
+        let clear = seen.segments_clear(&segments_of(&flat), &flat, 0.0);
+        assert_eq!(
+            clear[0],
+            EdgesClear {
+                clear: vec![false],
+                edge: vec![0, 0],
+                vertex: vec![2, 4],
+                obstacle: vec![1, 2],
+                depth: vec![-0.3, -0.3],
+            }
+        );
+        assert_eq!(clear[1], entering(0, 0, -0.3));
+        assert_eq!(clear[2], entering(0, 0, -0.3));
+    }
+
+    /// What `each_near` gives each of `points`, all of one member.
+    fn near_each(tree: &SegmentTree, points: &[V2], radius: f64) -> Vec<Vec<usize>> {
+        let owner = vec![0; points.len()];
+        let mut found = vec![Vec::new(); points.len()];
+        each_near(tree, points, points, &owner, &[radius], |p, edges| {
+            found[p] = edges.to_vec();
+        });
+        found
+    }
+
+    #[test]
+    fn each_member_is_searched_within_its_own_radius() {
+        let at = V2::new(0.5, 0.0);
+        let tree = SegmentTree::new(&[V2::new(0.0, 1.0)], &[V2::new(1.0, 1.0)]);
+        let mut found = Vec::new();
+        each_near(
+            &tree,
+            &[at, at],
+            &[at, at],
+            &[0, 1],
+            &[0.2, 2.0],
+            |p, edges| {
+                found.push((p, edges.to_vec()));
+            },
+        );
+        assert_eq!(found, vec![(0, vec![]), (1, vec![0])]);
+    }
+
+    #[test]
+    fn each_member_is_searched_within_its_own_radius_over_many_chunks() {
+        // Member 0's queries fill three chunks of runs; member 1's one query
+        // comes after them. The edge lies 1 mm from every query.
+        let many = 2 * CHUNK + RUN;
+        let at = V2::new(0.5, 0.0);
+        let points = vec![at; many + 1];
+        let mut owner = vec![0; many];
+        owner.push(1);
+        let tree = SegmentTree::new(&[V2::new(0.0, 1.0)], &[V2::new(1.0, 1.0)]);
+        let found = near_pairs(
+            &tree,
+            &points,
+            &points,
+            &owner,
+            &[2.0, 0.2],
+            |_: &mut (), pairs, p, edges| {
+                for &edge in edges {
+                    pairs.push(p, edge, 0.0);
+                }
+            },
+        );
+        assert_eq!(found.point, (0..many).collect::<Vec<_>>());
+        assert_eq!(found.piece, vec![0; many]);
+    }
+
+    #[test]
+    fn each_near_lists_every_edge_within_the_radius_ascending_on_random_runs() {
+        let mut random = Random(0x2545_f491_4f6c_dd1d);
+        let tree_starts: Vec<V2> = (0..300).map(|_| random.point(20.0)).collect();
+        let tree_ends: Vec<V2> = tree_starts
+            .iter()
+            .map(|&a| {
+                let length = random.uniform(0.0, 1.0);
+                a + length * length * length * V2::new(random.uniform(-15.0, 15.0), 0.0)
+                    + V2::new(random.uniform(-1.0, 1.0), random.uniform(-3.0, 3.0))
+            })
+            .collect();
+        let tree = SegmentTree::new(&tree_starts, &tree_ends);
+        // Each member is a random walk of slanted segments, one after another.
+        let members = 30;
+        let radius: Vec<f64> = (0..members).map(|_| random.uniform(0.0, 2.0)).collect();
+        let (mut starts, mut ends, mut owner) = (Vec::new(), Vec::new(), Vec::new());
+        for member in 0..members {
+            let mut at = random.point(20.0);
+            for _ in 0..random.uniform(1.0, 20.0) as usize {
+                let next = at + V2::new(random.uniform(-2.0, 2.0), random.uniform(-2.0, 2.0));
+                starts.push(at);
+                ends.push(next);
+                owner.push(member);
+                at = next;
+            }
+        }
+        let mut found = vec![Vec::new(); starts.len()];
+        each_near(&tree, &starts, &ends, &owner, &radius, |p, edges| {
+            found[p] = edges.to_vec();
+        });
+        for (p, edges) in found.iter().enumerate() {
+            assert!(edges.windows(2).all(|w| w[0] < w[1]));
+            for k in 0..tree_starts.len() {
+                let gap = segment_gap(
+                    starts[p],
+                    ends[p] - starts[p],
+                    tree_starts[k],
+                    tree_ends[k] - tree_starts[k],
+                );
+                if gap <= radius[owner[p]] {
+                    assert!(edges.contains(&k), "edge {k} missing at query {p}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_of_segments_gets_every_edge_near_either_end() {
+        // The run's queries end 10 mm from where they start, by an edge.
+        let starts = [V2::new(0.0, 0.0), V2::new(0.0, 1.0)];
+        let ends = [V2::new(10.0, 0.0), V2::new(10.0, 1.0)];
+        let tree = SegmentTree::new(&[V2::new(10.5, 0.5)], &[V2::new(11.0, 0.5)]);
+        let mut found = Vec::new();
+        each_near(&tree, &starts, &ends, &[0, 0], &[0.6], |p, edges| {
+            found.push((p, edges.to_vec()));
+        });
+        assert_eq!(found, vec![(0, vec![0]), (1, vec![0])]);
+    }
+
+    #[test]
+    fn a_run_spread_along_a_line_gets_every_edge_near_any_of_its_points() {
+        let points: Vec<V2> = (0..8).map(|k| V2::new(f64::from(k), 0.0)).collect();
+        let tree = SegmentTree::new(
+            &[V2::new(-0.5, -0.5), V2::new(7.0, 0.5), V2::new(3.0, 5.0)],
+            &[V2::new(-0.5, 0.5), V2::new(7.5, 0.5), V2::new(4.0, 5.0)],
+        );
+        for edges in near_each(&tree, &points, 0.6) {
+            assert_eq!(edges, vec![0, 1]);
+        }
+    }
+
+    #[test]
+    fn a_long_edge_far_from_a_run_is_not_near_it() {
+        let points: Vec<V2> = (0..4).map(|k| V2::new(14.0 + f64::from(k), 10.0)).collect();
+        let tree = SegmentTree::new(
+            &[V2::new(0.0, 0.0), V2::new(14.0, 9.0)],
+            &[V2::new(30.0, 0.0), V2::new(16.0, 9.0)],
+        );
+        for edges in near_each(&tree, &points, 1.5) {
+            assert_eq!(edges, vec![1]);
+        }
     }
 }

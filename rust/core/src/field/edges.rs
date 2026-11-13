@@ -18,10 +18,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use rstar::primitives::{GeomWithData, Rectangle};
-use rstar::{AABB, RTree};
-
-use super::pairs::PointTree;
+use super::pairs::{BoxTree, PointTree};
 use super::smooth::SMOOTH_REACH;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, MAX_EDGE_LENGTH, TOUCH_TOLERANCE};
@@ -118,8 +115,6 @@ struct Pieces {
     half_piece: f64,
 }
 
-type Boxed = GeomWithData<Rectangle<[f64; 2]>, usize>;
-
 pub struct StaticEdges {
     shapes: Vec<Shape>,
     kinds: Vec<Kind>,
@@ -128,7 +123,7 @@ pub struct StaticEdges {
     obstacle_count: usize,
     /// The largest inflation of the items but the `Outside` ones.
     inflation: f64,
-    tree: RTree<Boxed>,
+    tree: BoxTree,
     outside: Vec<usize>,
     first: Vec<usize>,
     count: Vec<usize>,
@@ -166,14 +161,13 @@ impl StaticEdges {
             }
         }
         let bounds: Vec<Option<[f64; 4]>> = shapes.iter().map(Shape::bounds).collect();
-        let boxed = (0..shapes.len())
-            .filter(|&k| kinds[k] != Kind::Outside)
-            .filter_map(|k| {
-                bounds[k].map(|[x0, y0, x1, y1]| {
-                    GeomWithData::new(Rectangle::from_corners([x0, y0], [x1, y1]), k)
-                })
-            })
-            .collect();
+        let tree = BoxTree::new(
+            (0..shapes.len())
+                .filter(|&k| kinds[k] != Kind::Outside)
+                .filter_map(|k| {
+                    bounds[k].map(|[x0, y0, x1, y1]| (k, V2::new(x0, y0), V2::new(x1, y1)))
+                }),
+        );
         let inflation = (0..shapes.len())
             .filter(|&k| kinds[k] != Kind::Outside)
             .map(|k| inflations[k])
@@ -184,7 +178,7 @@ impl StaticEdges {
                 .collect(),
             obstacle_count: obstacles.iter().max().map_or(0, |&m| m + 1),
             pieces: (0..shapes.len()).map(|_| OnceLock::new()).collect(),
-            tree: RTree::bulk_load(boxed),
+            tree,
             shapes,
             kinds,
             inflations,
@@ -281,9 +275,7 @@ impl StaticEdges {
             // Two pieces overlap within both their extents; the box reaches
             // as far as the widest piece could.
             let r = copper.extent[a] + widest + TOUCH_TOLERANCE;
-            let envelope = AABB::from_corners([x0 - r, y0 - r], [x1 + r, y1 + r]);
-            for found in self.tree.locate_in_envelope_intersecting(envelope) {
-                let b = found.data;
+            for b in self.tree.meeting(V2::new(x0, y0), V2::new(x1, y1), r) {
                 if b <= a
                     || !is_copper(b)
                     || copper.net[a] != copper.net[b]
@@ -441,13 +433,12 @@ impl StaticEdges {
     /// the widest search around the point.
     pub fn nearest_item(&self, p: V2) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
-        for (found, d2) in self.tree.nearest_neighbor_iter_with_distance_2(p.array()) {
+        for (item, d2) in self.tree.nearest_first(p) {
             if let Some((_, least)) = best
                 && d2 > least * least
             {
                 break;
             }
-            let item = found.data;
             let d = self.item_distance(item, p);
             let nearer = best.is_none_or(|(other, least)| {
                 d < least || d == least && self.inflations[item] < self.inflations[other]
@@ -460,34 +451,20 @@ impl StaticEdges {
     }
 
     /// The items of the tree whose bounding boxes lie within `radius` of
-    /// `p`, ascending.
+    /// `p`, ascending; none for a NaN or negative radius.
     pub fn items_within(&self, p: V2, radius: f64) -> Vec<usize> {
-        if radius.is_nan() || radius < 0.0 {
-            return Vec::new();
-        }
-        let mut found: Vec<usize> = self
-            .tree
-            .locate_within_distance(p.array(), radius * radius)
-            .map(|g| g.data)
-            .collect();
-        found.sort_unstable();
-        found
+        self.tree.within(p, radius)
     }
 
     /// The items of the tree whose bounding boxes come within `radius` of
-    /// the segment from `a` to `b`'s bounding box, ascending.
+    /// the segment from `a` to `b`'s bounding box, ascending; none for a
+    /// NaN or negative radius.
     pub fn items_near_segment(&self, a: V2, b: V2, radius: f64) -> Vec<usize> {
-        let envelope = AABB::from_corners(
-            [a.x.min(b.x) - radius, a.y.min(b.y) - radius],
-            [a.x.max(b.x) + radius, a.y.max(b.y) + radius],
-        );
-        let mut found: Vec<usize> = self
-            .tree
-            .locate_in_envelope_intersecting(envelope)
-            .map(|g| g.data)
-            .collect();
-        found.sort_unstable();
-        found
+        self.tree.meeting(
+            V2::new(a.x.min(b.x), a.y.min(b.y)),
+            V2::new(a.x.max(b.x), a.y.max(b.y)),
+            radius,
+        )
     }
 
     /// The items that can come within `reach` of `p` once inflated and once
