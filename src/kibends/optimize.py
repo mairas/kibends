@@ -67,9 +67,6 @@ MAX_ABNORMAL_BURSTS = _core.MAX_ABNORMAL_BURSTS
 """After this many abnormal L-BFGS ends in a row a problem counts as
 settled and keeps what its bursts reached."""
 
-PRESSED_DEPTH = _core.PRESSED_DEPTH
-"""How deep inside the other members' and vias' clearance, mm, a vertex
-lies when resampling keeps it where it is."""
 
 # A run logs its progress at INFO at most this often, seconds, and not at all
 # if it ends sooner; DEBUG gets every outer iteration.
@@ -856,8 +853,8 @@ class _Problem:
 
     @property
     def allowed(self) -> list[int]:
-        """Per member, the violations of its resampled start, which the
-        guard holds it to."""
+        """Per member, the violations of its inputs, which the guard holds
+        it to."""
         return self.state.allowed
 
     def length(self) -> float:
@@ -906,17 +903,6 @@ class _Problem:
         return self.state.violations(
             list(polylines), list(masks), positions_array(positions), seen
         )
-
-    def pressed(
-        self,
-        polylines: Sequence[FloatArray],
-        positions: Sequence[FloatArray],
-        seen: Seen,
-    ) -> list[BoolArray]:
-        """Per member, its vertices at `polylines` more than PRESSED_DEPTH
-        inside the clearance of the other members and vias at `positions`,
-        which resampling keeps where they are."""
-        return self.state.pressed(list(polylines), positions_array(positions), seen)
 
     def via_distances(
         self,

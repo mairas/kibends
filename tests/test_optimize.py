@@ -108,10 +108,12 @@ WRAP_SETTINGS = replace(
     SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
 )
 # A rerun at the defaults on the wrap's own output settles within these.
-# It runs the coarse levels again, whose chords cut into the repulsion, and
-# pushing them out rejects edge moves. Measured: 5 iterations, 1 rejected
-# edge move, 4.4 µm moved, the length 0.5 µm longer.
-RERUN_ITERATIONS = 6
+# It runs the coarse levels again from its own vertices, simplified: their
+# chords cut into the repulsion, each coarse burst pushes them out and has
+# edge moves rejected, and the levels end on the stall rule. Measured: 10
+# iterations, 9 rejected edge moves, 0.8 µm moved, the length 7 nm
+# shorter.
+RERUN_ITERATIONS = 10
 RERUN_DRIFT = 0.015
 RERUN_LENGTH_SLACK = 1e-3
 
@@ -516,10 +518,12 @@ def test_settings_reject_nonpositive_spacing() -> None:
 def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
     scenario = scenarios.wrap()
 
-    result = run(scenario, replace(SETTINGS, max_iterations=2))
+    # The first two bursts, at 1.6 mm, cut the corner into the box and have
+    # it moved back, longer than drawn; the third wraps the box.
+    result = run(scenario, replace(SETTINGS, max_iterations=3))
 
     assert result.termination is Termination.ITERATION_CAP
-    assert result.iterations == 2
+    assert result.iterations == 3
     assert all_edges_clear(result.polyline, scenario.field)
     assert result.after.length < result.before.length
 

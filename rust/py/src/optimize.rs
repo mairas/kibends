@@ -271,8 +271,8 @@ impl ProblemState {
         Seen::shared(self.inner.seen.clone())
     }
 
-    /// Per member, the violations its resampled start has, which the guard
-    /// holds it to.
+    /// Per member, the violations its inputs have, which the guard holds
+    /// it to.
     #[getter]
     fn allowed(&self) -> Vec<usize> {
         self.inner.allowed.clone()
@@ -317,7 +317,7 @@ impl ProblemState {
         self.inner.best_energy
     }
 
-    /// Its energy at its inputs, resampled.
+    /// Its energy at its inputs, laid out at the final spacing.
     #[getter]
     fn input_energy(&self) -> f64 {
         self.inner.input_energy
@@ -410,25 +410,6 @@ impl ProblemState {
             .inner
             .shared()
             .violations(&polylines, &masks, &positions, &seen.inner))
-    }
-
-    /// Per member, its vertices at `polylines` deeper than PRESSED_DEPTH
-    /// inside the clearance of the other members and the vias at
-    /// `positions`, which resampling keeps where they are.
-    fn pressed<'py>(
-        &self,
-        py: Python<'py>,
-        polylines: Vec<Polyline<'_>>,
-        positions: Polyline<'_>,
-        seen: PyRef<'_, Seen>,
-    ) -> PyResult<Vec<Flags<'py>>> {
-        let (polylines, positions) = self.state(&polylines, &positions)?;
-        Ok(self
-            .inner
-            .pressed(&polylines, &positions, &seen.inner)
-            .iter()
-            .map(|p| flags(py, p))
-            .collect())
     }
 
     /// Each moving via's free distance below `below` to each obstacle of
@@ -991,9 +972,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;
     m.add("MAX_ABNORMAL_BURSTS", core::MAX_ABNORMAL_BURSTS)?;
-    m.add("PRESSED_DEPTH", core::PRESSED_DEPTH)?;
     m.add("INSIDE_TOLERANCE", core::INSIDE_TOLERANCE)?;
     m.add("MAX_COARSE_LEVELS", core::MAX_COARSE_LEVELS)?;
+    m.add("MERGE_EDGE", core::state::MERGE_EDGE)?;
     Ok(())
 }
 
@@ -1003,7 +984,6 @@ pyo3_stub_gen::module_variable!(
     u32,
     core::MAX_ABNORMAL_BURSTS
 );
-pyo3_stub_gen::module_variable!("kibends._core", "PRESSED_DEPTH", f64, core::PRESSED_DEPTH);
 pyo3_stub_gen::module_variable!(
     "kibends._core",
     "INSIDE_TOLERANCE",
@@ -1016,3 +996,4 @@ pyo3_stub_gen::module_variable!(
     usize,
     core::MAX_COARSE_LEVELS
 );
+pyo3_stub_gen::module_variable!("kibends._core", "MERGE_EDGE", f64, core::state::MERGE_EDGE);

@@ -342,7 +342,7 @@ def _routed(given: PairInput) -> PairInput:
 
 
 def _has_room(given: PairInput, start: _Start, spacing: float) -> bool:
-    """Whether resampling at `spacing` leaves the centreline a vertex that
+    """Whether laying the centreline out at `spacing` leaves it a vertex that
     may move, some stretch between its fixed vertices, its ends and their
     direction pins, longer than a spacing, and each track is longer than a
     spacing. Pins close to each other, or to its ends, may leave no room."""

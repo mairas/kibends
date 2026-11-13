@@ -36,4 +36,4 @@ class ChainInput:
     leaves it outside. A fixed vertex keeps its contact by staying."""
     held: bool = False
     """It stays as drawn: every vertex is fixed, and none is added between
-    them, as resampling a chain does."""
+    them, as laying a chain out does."""

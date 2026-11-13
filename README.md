@@ -208,7 +208,7 @@ barely changes it or its energy stops improving. Each evaluation of a
 burst spreads over every logical CPU; set the environment variable
 `RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
-Each problem runs through a schedule of spacings, the distances between a
+Each problem runs through a schedule of spacings, the longest edges between a
 chain's vertices: by default 1.6, 0.4 and 0.1 mm (`--spacing`). Its chains
 run at each coarser spacing in turn, coarsest first, each handing over to the
 next when the problem settles at it, and end at the final spacing. A long
@@ -222,6 +222,21 @@ is always at the final spacing. With so few vertices, a chain may pass
 another moving chain in one burst and settle on its far side, where the
 shorter route is clear, and a loop round a pad may pass across the pad and
 shrink.
+
+The coarsest level starts from the tracks as drawn: each chain keeps every
+vertex it is drawn with, and each edge longer than the level's spacing is
+split evenly, so no chord cuts a drawn corner and a re-run starts from the
+shape the last run committed. Each finer level starts from the best shape of
+the level before it, its long edges split the same way, and what would break
+clearance there starts from the drawn tracks instead. Between bursts, each
+chain is simplified within half `--settled-change`, as the result is before it
+is committed, its vertices across edges shorter than 0.02 mm are merged where
+that keeps clearance, moving vias included, and its long edges are split
+again. Edges shorter than a tenth of the final spacing are pushed apart, so
+with a final spacing above 0.2 mm a chain that shrinks to a few hundredths of
+a millimetre can end with a small crumple. A coupled section is laid out
+evenly at the final spacing between its pins, since its tracks are its
+centreline's offsets.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
@@ -475,7 +490,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, never stop sooner. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
 | `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
-| `--burst-iterations N` | 50 | L-BFGS iterations per burst. Each burst resamples the tracks and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |
+| `--burst-iterations N` | 50 | L-BFGS iterations per burst. Each burst lays the tracks out again and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS ends a burst early when the largest gradient component falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |

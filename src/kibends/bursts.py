@@ -35,14 +35,15 @@ FALLBACK_WARNING = (
 
 INSIDE_TOLERANCE = _core.INSIDE_TOLERANCE
 """Depth inside the clearance, mm, that the violation guard ignores as float
-noise: a track routed at exactly the clearance resamples to vertices about
+noise: a track routed at exactly the clearance splits into vertices about
 1e-15 mm inside. Far below KiCad's 1 nm coordinate step."""
 
 MAX_COARSE_LEVELS = _core.MAX_COARSE_LEVELS
 """The most coarse spacings a schedule may hold before its final spacing."""
 
-# Edges shorter than this fraction of the spacing meet the short-edge barrier.
-# Resampling leaves every edge at a free vertex at least half the spacing.
+# Edges shorter than this fraction of the final spacing meet the short-edge
+# barrier, at every level. Drawn edges shorter than that keep their vertices
+# until the first burst slides them apart.
 SHORT_EDGE_FRACTION = 0.1
 
 # The chain's length term is ill-conditioned (tension spreads one vertex per
@@ -64,7 +65,7 @@ strayed visibly from the optimised curve."""
 @dataclass(frozen=True)
 class OptimizerSettings:
     spacing: float = 0.1
-    """Target distance between resampled vertices at the final level, mm."""
+    """The longest edge between a chain's vertices at the final level, mm."""
     coarse_spacings: tuple[float, ...] = (1.6, 0.4)
     """The spacings a problem runs at before `spacing`, mm, coarsest first:
     each above the next and the last above `spacing`, at most
@@ -97,7 +98,7 @@ class OptimizerSettings:
     energy creeps down by far less."""
     stall_window: int = 3
     burst_maxiter: int = 50
-    """L-BFGS iterations per burst of a problem. Shorter bursts resample
+    """L-BFGS iterations per burst of a problem. Shorter bursts lay out
     and check the shapes more often, which on a large problem reaches a
     given length in fewer energy evaluations.
 

@@ -65,7 +65,6 @@ from kibends.obstacles import (
     via_via_inflation,
     zones_on,
 )
-from kibends.optimize import PRESSED_DEPTH
 from kibends.pair_blocks import PairBlock, pair_block
 from kibends.pairs import complementary_net
 from kibends.seen import SKIN_LEAST
@@ -821,13 +820,12 @@ def _reference_entered(
 def test_the_checks_are_those_each_members_own_field_gives(
     make: Callable[[], Scenario],
 ) -> None:
-    """What the guard, resampling and the edge checks judge, searched for
+    """What the guard and the edge checks judge, searched for
     every member at once, is what a field of each member's own pieces
     gives, with copper of one net and the tracks of a diff pair's other net
     left out: the distance from each member's points and from points around
     them, whether its edges stay clear, its violations with its static
-    copper, its pressed vertices and its edges across the others, at the
-    start and moved."""
+    copper and its edges across the others, at the start and moved."""
     scenario = make()
     rng = np.random.default_rng(0)
     problems = _problems(scenario, scenario.params)
@@ -874,15 +872,6 @@ def test_the_checks_are_those_each_members_own_field_gives(
                     problem.bodies, polylines, masks, fields, strict=True
                 )
             ]
-            for got, field, points in zip(
-                problem.pressed(polylines, positions, seen),
-                fields,
-                polylines,
-                strict=True,
-            ):
-                np.testing.assert_array_equal(
-                    got, field.signed_distance(points)[0] < -PRESSED_DEPTH
-                )
 
 
 ZONE_CLEARANCE = 0.4

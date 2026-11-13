@@ -11,13 +11,11 @@
 //! checks take exact distances. Without moving vias the layers do not
 //! interact, so each layer is a problem of its own, and an outer iteration
 //! (`advance`) gives every problem that has not settled one burst
-//! (`state::State::step`): resample each chain, at the spacing of the
-//! level it runs at (`state`), between its
-//! fixed vertices and those pressed into the others' clearance, which
-//! resampling keeps where they are (`state::State::pressed`), run L-BFGS
-//! over every free vertex without bounds (`Bursts`, `burst`), scaled by
-//! each variable's stiffness (`layout`), and move back what the checks
-//! reject (`checks`).
+//! (`state::State::step`): lay each chain out again at the spacing of the
+//! level it runs at, simplified and its long edges split, and each section
+//! resampled at the final spacing (`state`), run L-BFGS over every free
+//! vertex without bounds (`Bursts`, `burst`), scaled by each variable's
+//! stiffness (`layout`), and move back what the checks reject (`checks`).
 //!
 //! Copper of one net does not interact: a chain sees nothing of the chains,
 //! tracks and vias of its net (`members::Members::seen`), and its static
@@ -39,7 +37,7 @@
 //! (`pair_blocks::PairOffset::offset_pullback`). Besides the edge check, a
 //! burst moves back what `polylines::SelfCheck` finds: a centreline newly
 //! bent below its limit. A held member, such as a held section, is fully
-//! pinned and not resampled. A section the run would end bent too tightly
+//! pinned and never laid out again. A section the run would end bent too tightly
 //! is held so within the run: its problem is built again with the section
 //! as drawn and goes on from its best state, with what would come too close
 //! to the section put back where it started (`state::State::go_on_from`).
@@ -92,14 +90,8 @@ pub const MAX_ABNORMAL_BURSTS: u32 = 3;
 /// mm, has nothing to do, however its stop rules are set.
 pub const NOTHING_MOVED: f64 = 1e-6;
 
-/// How deep inside the other members' and vias' clearance, mm, a vertex
-/// lies when resampling keeps it where it is (`state::State::pressed`), so
-/// that one that only grazes a neighbour's clearance resamples as any
-/// other.
-pub const PRESSED_DEPTH: f64 = 0.02;
-
 /// Depth inside the clearance, mm, that the violation guard ignores as
-/// float noise: a track routed at exactly the clearance resamples to
+/// float noise: a track routed at exactly the clearance splits into
 /// vertices about 1e-15 mm inside. Far below KiCad's 1 nm coordinate step.
 pub const INSIDE_TOLERANCE: f64 = 1e-7;
 
@@ -162,7 +154,7 @@ impl CoarseSpacings {
 /// settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
-    /// Target distance between resampled vertices at the final level, mm.
+    /// The longest edge between a chain's vertices at the final level, mm.
     pub spacing: f64,
     /// The levels a problem runs at before the final spacing.
     pub coarse: CoarseSpacings,
@@ -223,8 +215,8 @@ pub struct BurstReport {
     pub evaluations: u64,
     /// Seconds the evaluations took.
     pub evaluating: f64,
-    /// Seconds the rest of the step took: L-BFGS's own work, resampling and
-    /// the checks.
+    /// Seconds the rest of the step took: L-BFGS's own work, laying the
+    /// shapes out and the checks.
     pub rest: f64,
     /// What L-BFGS says ended it; empty for a burst that did not run it.
     pub message: String,

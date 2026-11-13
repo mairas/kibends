@@ -64,14 +64,43 @@ pub fn simplify_chains(
     optimised: &[Optimised<'_>],
     tolerance: f64,
 ) -> Vec<Vec<V2>> {
+    let none = vec![None; members.len()];
+    simplified_vertices(members, optimised, &none, tolerance, 0.0)
+        .iter()
+        .zip(optimised)
+        .map(|(kept, given)| kept.iter().map(|&k| given.polyline[k]).collect())
+        .collect()
+}
+
+/// `simplify_chains`, as the vertices of each member's polyline that
+/// merging keeps, in order, with the edges shorter than `shortest` then
+/// merged across too (`merge_short_edges`), each member also kept clear of
+/// its `extra` obstacles, if any, as of its static field.
+///
+/// Panics unless `extra` holds one entry per member, besides as
+/// `simplify_chains`.
+pub fn simplified_vertices(
+    members: &[Member],
+    optimised: &[Optimised<'_>],
+    extra: &[Option<Arc<dyn Field>>],
+    tolerance: f64,
+    shortest: f64,
+) -> Vec<Vec<usize>> {
     assert_eq!(
         members.len(),
         optimised.len(),
         "one optimised shape per member"
     );
-    let mut seen = Neighbours::new(members, optimised);
+    assert_eq!(members.len(), extra.len(), "one extra field per member");
+    let mut seen = Neighbours::new(members, optimised, extra);
+    let mut vertices = Vec::with_capacity(optimised.len());
     for (i, given) in optimised.iter().enumerate() {
         let polyline = given.polyline;
+        // Nothing of a member fixed throughout merges.
+        if given.fixed.iter().all(|&f| f) {
+            vertices.push((0..polyline.len()).collect());
+            continue;
+        }
         // Each merged edge joins two of these vertices, so it stays in their box.
         let field = seen.field(i, polyline);
         let allowed: Vec<f64> = polyline
@@ -95,9 +124,11 @@ pub fn simplify_chains(
                 *f |= l;
             }
         };
+        let kept = merge_short_edges(polyline, &kept, &fixed, field.as_ref(), shortest);
         seen.relocate(i, kept.iter().map(|&k| polyline[k]).collect());
+        vertices.push(kept);
     }
-    seen.current
+    vertices
 }
 
 /// The smallest and largest coordinates of `points`, NaN where one is.
@@ -115,6 +146,8 @@ fn bounds<'p>(points: impl IntoIterator<Item = &'p V2>) -> (V2, V2) {
 /// latest shape.
 struct Neighbours<'a> {
     members: &'a [Member],
+    /// Per member, its static field with its extra obstacles.
+    statics: Vec<Arc<dyn Field>>,
     optimised: &'a [Optimised<'a>],
     current: Vec<Vec<V2>>,
     /// Per member, what the others see of it now.
@@ -130,7 +163,11 @@ struct Neighbours<'a> {
 }
 
 impl<'a> Neighbours<'a> {
-    fn new(members: &'a [Member], optimised: &'a [Optimised<'a>]) -> Self {
+    fn new(
+        members: &'a [Member],
+        optimised: &'a [Optimised<'a>],
+        extra: &[Option<Arc<dyn Field>>],
+    ) -> Self {
         let mut layers: Vec<(&str, Vec<usize>)> = Vec::new();
         for (j, member) in members.iter().enumerate() {
             match layers.iter_mut().find(|(layer, _)| *layer == member.layer) {
@@ -162,8 +199,20 @@ impl<'a> Neighbours<'a> {
                     .fold(f64::NEG_INFINITY, f64::max)
             })
             .collect();
+        let statics = members
+            .iter()
+            .zip(extra)
+            .map(|(member, extra)| match extra {
+                Some(extra) => Arc::new(CompositeField::new(vec![
+                    Arc::clone(&member.field),
+                    Arc::clone(extra),
+                ])) as Arc<dyn Field>,
+                None => Arc::clone(&member.field),
+            })
+            .collect();
         let mut seen = Self {
             members,
+            statics,
             optimised,
             current: optimised.iter().map(|o| o.polyline.to_vec()).collect(),
             shown: Vec::with_capacity(members.len()),
@@ -223,10 +272,10 @@ impl<'a> Neighbours<'a> {
             }
         }
         if parts.is_empty() {
-            return Arc::clone(&member.field);
+            return Arc::clone(&self.statics[i]);
         }
         Arc::new(CompositeField::new(vec![
-            Arc::clone(&member.field),
+            Arc::clone(&self.statics[i]),
             Arc::new(ChainField::from_polylines(parts)),
         ]))
     }
@@ -288,6 +337,42 @@ pub fn kept_vertices(
         }
         kept.push(end);
         start = end;
+    }
+    kept
+}
+
+/// `kept`, the vertices of `polyline` kept in order, without a free vertex
+/// at each edge between them shorter than `shortest`, where the chord that
+/// replaces its two edges is clear in `field`: the later end, else the
+/// earlier. Vertices in `fixed`, and the polyline's ends, stay.
+pub fn merge_short_edges(
+    polyline: &[V2],
+    kept: &[usize],
+    fixed: &[bool],
+    field: &dyn Field,
+    shortest: f64,
+) -> Vec<usize> {
+    let mut kept = kept.to_vec();
+    let last = polyline.len() - 1;
+    let free = |k: usize| !fixed[k] && k != 0 && k != last;
+    let mut e = 0;
+    while e + 1 < kept.len() {
+        let (a, b) = (kept[e], kept[e + 1]);
+        if (polyline[b] - polyline[a]).norm() >= shortest {
+            e += 1;
+            continue;
+        }
+        let clear = |before: usize, after: usize| {
+            field.segments_clear(&[polyline[before]], &[polyline[after]], 0.0)[0]
+        };
+        if free(b) && e + 2 < kept.len() && clear(a, kept[e + 2]) {
+            kept.remove(e + 1);
+        } else if free(a) && e > 0 && clear(kept[e - 1], b) {
+            kept.remove(e);
+            e -= 1;
+        } else {
+            e += 1;
+        }
     }
     kept
 }
@@ -366,6 +451,42 @@ mod tests {
             },
         ];
         simplify_chains(&members, &optimised, TOLERANCE)
+    }
+
+    #[test]
+    fn a_free_vertex_across_a_short_edge_merges_where_the_chord_is_clear() {
+        // A zigzag whose middle edges are 0.02 mm, far beyond the tolerance
+        // across but shorter than the 0.05 mm asked for.
+        let points = [
+            V2::new(0.0, 0.0),
+            V2::new(1.0, 0.0),
+            V2::new(1.01, 0.02),
+            V2::new(1.02, 0.0),
+            V2::new(2.0, 0.0),
+        ];
+        let all = [0, 1, 2, 3, 4];
+        let ends = [true, false, false, false, true];
+        assert_eq!(
+            merge_short_edges(&points, &all, &ends, &FreeSpace, 0.05),
+            vec![0, 1, 4]
+        );
+        // A fixed vertex stays.
+        let middle = [true, false, true, false, true];
+        assert_eq!(
+            merge_short_edges(&points, &all, &middle, &FreeSpace, 0.05),
+            vec![0, 2, 4]
+        );
+        // So does one whose chord would cut a disc under it; its neighbour
+        // goes instead.
+        let disc = Disc {
+            cx: 1.01,
+            cy: -0.005,
+            radius: 0.006,
+        };
+        assert_eq!(
+            merge_short_edges(&points, &all, &ends, &disc, 0.05),
+            vec![0, 2, 4]
+        );
     }
 
     #[test]

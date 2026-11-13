@@ -56,7 +56,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 import kibends.optimize as optimize_module
-from kibends import cli, plot
+from kibends import _core, cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
@@ -160,7 +160,7 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 COARSE_LEVELS = (1.2, 0.6)
 """Coarse spacings above COARSE's final 0.3 mm."""
-L_COARSE_BURSTS = 6
+L_COARSE_BURSTS = 13
 """Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
 reaches the final spacing."""
 
@@ -3028,6 +3028,12 @@ inside its 0.2 mm clearance."""
 PAD_SETTLED = 0.05
 """How near touching a pad of its net that stops it a via settles under
 COARSE, mm."""
+SHRUNK_SEGMENTS = 2
+"""The most segments a fan-out track that shrank to its pad ends with; it
+ends with one, and crumpled it ended with six."""
+MERGED_BELOW = _core.MERGE_EDGE
+"""The edge length below which laying out between bursts merges a free
+vertex, mm."""
 
 
 def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
@@ -3628,9 +3634,29 @@ class TestMovingVias:
         else:
             assert pad.distance(centre) >= via.diameter / 2e6 - NM_ROUNDING
 
-    @pytest.mark.parametrize("in_pad", [False, True])
+    @pytest.mark.parametrize(
+        ("in_pad", "spacing"),
+        [
+            (False, COARSE.spacing),
+            (True, DEFAULT_SETTINGS.spacing),
+            pytest.param(
+                True,
+                COARSE.spacing,
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="at 0.3 mm the short-edge barrier starts above "
+                    "MERGE_EDGE and holds the shrunk track's vertices apart "
+                    "(https://github.com/mairas/kibends/issues/206)",
+                ),
+            ),
+        ],
+    )
     def test_a_fan_out_via_moves_to_its_pad_and_stops_there_unless_allowed(
-        self, connect: Connector, in_pad: bool
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        in_pad: bool,
+        spacing: float,
     ) -> None:
         # One track from a pad of its net down to the via, and a plane of
         # its net on the inner layer.
@@ -3649,18 +3675,28 @@ class TestMovingVias:
             ],
         )
         connect.to(board)
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, spacing=spacing))
+        )
 
         run(*(["--allow-via-in-pad"] if in_pad else []))
 
         assert sorted(board.deleted) == ["a", "b", "v"]
         (moved,) = created_vias(board)
         centre = Point(moved.position.x / 1e6, moved.position.y / 1e6)
-        length = sum(segment(t).length for t in created_on(board, BL.BL_F_Cu))
+        tracks = [segment(t) for t in created_on(board, BL.BL_F_Cu)]
+        length = sum(t.length for t in tracks)
         assert length < centre.distance(Point(0, 0)) + STRAIGHT_TOLERANCE
         h = PAD_HALF_SIZE
         pad = box(-h, -h, h, h)
         if in_pad:
             assert pad.contains(centre)
+            # The track shrinks from 8 mm to micrometres without crumpling:
+            # laying out between bursts merges its vertices across short
+            # edges, so only a track that is its whole chain is shorter.
+            assert len(tracks) <= SHRUNK_SEGMENTS
+            if len(tracks) > 1:
+                assert min(t.length for t in tracks) >= MERGED_BELOW - NM_ROUNDING
         else:
             assert pad.distance(centre) >= moved.diameter / 2e6 - NM_ROUNDING
             assert pad.distance(centre) < moved.diameter / 2e6 + PAD_SETTLED
