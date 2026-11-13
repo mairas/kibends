@@ -447,8 +447,9 @@ pub fn near_segments(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::testing::Random;
 
     #[test]
     fn the_nearest_segment_answers_with_its_inflation_taken_off() {
@@ -583,22 +584,6 @@ pub(crate) mod tests {
         for reach in [f64::NAN, -1.0] {
             assert!(tree.within(V2::new(0.5, 0.5), reach).is_empty());
             assert!(tree.meeting(low, high, reach).is_empty());
-        }
-    }
-
-    /// A xorshift generator, so that random segments are the same every run.
-    pub(crate) struct Random(pub(crate) u64);
-
-    impl Random {
-        pub(crate) fn uniform(&mut self, low: f64, high: f64) -> f64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            low + (high - low) * ((self.0 >> 11) as f64 / (1u64 << 53) as f64)
-        }
-
-        pub(crate) fn point(&mut self, size: f64) -> V2 {
-            V2::new(self.uniform(0.0, size), self.uniform(0.0, size))
         }
     }
 

@@ -850,8 +850,8 @@ fn python_max(a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::pairs::tests::Random;
     use crate::geometry::segment_gap;
+    use crate::testing::Random;
 
     /// Two straight tracks on one layer, of nets 0 and 1 and one kind, each
     /// a member seeing the other at `apart`.
