@@ -786,6 +786,63 @@ def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
     assert_held_as_drawn(result, scenario)
 
 
+def test_a_hold_after_a_stop_starts_no_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = two_tents()
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        COARSE,
+        pairs=scenario.pairs,
+        clock=clock,
+        stop=lambda: clock.bursts >= 1,
+        to_hold=hold_first,
+    )
+
+    assert result.termination is Termination.STOPPED
+    assert clock.bursts == 1
+    assert_held_as_drawn(result, scenario)
+
+
+SETTLES_AT_ONCE = 100.0
+"""A settle threshold, mm, beyond any change of `two_tents`: its first
+burst settles it."""
+
+
+@pytest.mark.parametrize(
+    ("time_limit", "stop_after", "termination"),
+    [(None, 1, Termination.STOPPED), (1, None, Termination.TIME_LIMIT)],
+)
+def test_a_hold_after_converging_as_the_run_ends_starts_no_burst(
+    monkeypatch: pytest.MonkeyPatch,
+    time_limit: float | None,
+    stop_after: int | None,
+    termination: Termination,
+) -> None:
+    # The burst that converges the run is the one after which it ends; the
+    # hold then undoes the convergence, so the run ends on what ended it.
+    scenario = two_tents()
+    clock = BurstClock(monkeypatch)
+    settings = replace(COARSE, settled_change=SETTLES_AT_ONCE, time_limit=time_limit)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        settings,
+        pairs=scenario.pairs,
+        clock=clock,
+        stop=None if stop_after is None else lambda: clock.bursts >= stop_after,
+        to_hold=hold_first,
+    )
+
+    assert result.termination is termination
+    assert clock.bursts == 1
+    assert_held_as_drawn(result, scenario)
+
+
 def test_a_second_hold_in_one_problem_goes_on_from_the_first() -> None:
     scenario = two_tents()
     asked: list[list[int]] = []

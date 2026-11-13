@@ -5,8 +5,9 @@ The changed chains' tracks and the moved vias are re-read in one request,
 and the run refuses if any changed since it read them; a selected arc,
 which the run smoothed as straight segments, is compared as the arc it was
 read as. Every created track is straight. After the push, the created
-items are added to the editor's selection (`_select`); KiCad deselects the
-deleted ones. The selection is outside the undo history, so the run stays
+items are added to the editor's selection (`_select`), unless the run read
+the whole board, which adds nothing to it; KiCad deselects the deleted
+ones. The selection is outside the undo history, so the run stays
 one undo step, and since the commit has landed by then, a failure to
 select is logged at debug and the run reports committed. A dry run, or one
 with nothing to commit, never gets here and leaves the selection alone.
@@ -95,9 +96,11 @@ def commit_chains(
     selected: Sequence[Segment],
     arcs: Sequence[Arc],
     vias: Sequence[ViaMove] = (),
+    *,
+    select: bool = True,
 ) -> None:
     """Replace each chain's tracks with straight tracks along its polyline
-    (mm), and move each of `vias`.
+    (mm), and move each of `vias`, then select what it created if `select`.
 
     All chains and vias go into one KiCad commit, so the run is one undo
     step, and each IPC step is one request for all of them. A via moves as
@@ -133,7 +136,8 @@ def commit_chains(
 
     # Outside the try above: once pushed, the commit can't be dropped.
     push_checked(board, commit, label)
-    _select(board, created)
+    if select:
+        _select(board, created)
     parts: list[str] = []
     if track_ids:
         parts.append(

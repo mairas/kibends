@@ -522,6 +522,23 @@ class TestSelection:
         assert board.selected_ids() == ["c", *board.assigned_ids]
         assert len(board.assigned_ids) == len(NEW_PATH) - 1
 
+    def test_adds_nothing_to_the_selection_when_told_not_to(self) -> None:
+        tracks = [*l_tracks(), kipy_track("c", "SIG", (5, 5), (8, 5), locked=True)]
+        tracks[2].width = nm(WIDTH)
+        board = CommitBoard(selection=list(tracks), tracks=list(tracks))
+        selected = [segment_from_track(t) for t in tracks]
+
+        commit.commit_chains(
+            cast(kipy.board.Board, board),
+            [(one_chain(selected, frame=BOARD_FRAME), NEW_PATH)],
+            selected,
+            (),
+            select=False,
+        )
+
+        assert board.calls == [c for c in COMMIT_CALLS if c != "select"]
+        assert board.selected_ids() == ["c"]
+
     def test_selects_the_moved_via(self) -> None:
         board, chains, selected, vias = via_route()
 

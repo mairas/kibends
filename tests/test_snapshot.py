@@ -67,6 +67,7 @@ from kibends.snapshot import (
     arc_points,
     edge_paths_closed,
     outline_from_edge_paths,
+    read_board,
     read_selection,
     read_user_frame,
 )
@@ -270,6 +271,126 @@ class TestReadSelection:
     def test_empty_selection_is_an_error(self) -> None:
         with pytest.raises(SelectionError, match="no tracks or vias"):
             read_selection(board(FakeBoard()))
+
+    def test_is_not_the_whole_board(self) -> None:
+        fake = FakeBoard(selection=[kipy_track("a", "SIG", (0, 0), (1, 0))])
+
+        assert not read_selection(board(fake)).whole_board
+
+
+def whole_board_fake(selection: Sequence[kbt.BoardItem] = ()) -> FakeBoard:
+    """Two tracks and a via, none in a group, with `selection` selected."""
+    a = kipy_track("a", "SIG", (0, 0), (1, 0))
+    b = kipy_track("b", "SIG", (1, 0), (2, 0), locked=True)
+    return FakeBoard(
+        selection=list(selection),
+        tracks=[a, b],
+        vias=[kipy_via("v", "SIG", 2, 0)],
+    )
+
+
+class TestReadBoard:
+    def test_reads_every_track_and_via_none_held(self) -> None:
+        fake = whole_board_fake()
+
+        selection = read_board(board(fake))
+
+        assert [(s.id, s.held, s.locked) for s in selection.segments] == [
+            ("a", False, False),
+            ("b", False, True),
+        ]
+        assert [(v.id, v.locked) for v in selection.vias] == [("v", False)]
+        assert selection.nets == {"SIG"}
+        assert selection.whole_board
+        assert fake.reads["get_selection"] == 0
+
+    def test_ignores_the_selection(self) -> None:
+        fake = whole_board_fake([kipy_track("x", "SIG", (5, 5), (6, 5))])
+
+        assert [s.id for s in read_board(board(fake)).segments] == ["a", "b"]
+
+    def test_group_members_are_read_once_held_at_any_depth(self) -> None:
+        straight = kipy_track("straight", "SIG", (1, 0), (2, 0))
+        bump = kipy_arc("bump", "SIG", (2, 0), (2.5, 0.5), (3, 0))
+        via = kipy_via("v", "SIG", 3, 0)
+        loose = kipy_track("loose", "SIG", (0, 0), (1, 0))
+        pattern = kipy_group("Tuning Pattern", [straight, bump])
+        middle = kipy_group("middle", [pattern, via])
+        outer = kipy_group("outer", [middle])
+        fake = FakeBoard(
+            tracks=[loose, straight, bump],
+            vias=[via],
+            groups=[outer, middle, pattern],
+        )
+
+        selection = read_board(board(fake))
+
+        held = {s.id: s.held for s in selection.segments}
+        assert held == {"loose": False, "straight": True, "bump": True}
+        assert len(selection.segments) == 1 + 1 + len(arc_from_kipy(bump).segments())
+        assert [(a.id, a.held) for a in selection.arcs] == [("bump", True)]
+        assert [(v.id, v.locked) for v in selection.vias] == [("v", True)]
+
+    def test_a_tuning_pattern_is_held_as_when_selected(self) -> None:
+        meander = kipy_track("meander", "SIG", (1, 0), (2, 0))
+        bump = kipy_arc("bump", "SIG", (2, 0), (2.5, 0.5), (3, 0))
+        loose = kipy_track("loose", "SIG", (0, 0), (1, 0))
+        fake = FakeBoard(
+            tracks=[loose, meander, bump],
+            patterns=[kipy_group("Tuning Pattern", [meander, bump])],
+        )
+
+        selection = read_board(board(fake))
+
+        held = {s.id: s.held for s in selection.segments}
+        assert held == {"loose": False, "meander": True, "bump": True}
+        assert [(a.id, a.held) for a in selection.arcs] == [("bump", True)]
+
+    def test_a_nested_group_found_only_through_its_parent_holds_its_members(
+        self,
+    ) -> None:
+        inner_track = kipy_track("inner", "SIG", (0, 0), (1, 0))
+        inner = kipy_group("inner", [inner_track])
+        outer = kipy_group("outer", [inner])
+        fake = FakeBoard(tracks=[inner_track], groups=[inner])
+        # get_groups gives only the outer group; the inner one is found by id.
+        fake.top_groups = [outer]
+
+        (segment,) = read_board(board(fake)).segments
+
+        assert segment.held
+
+    def test_an_empty_board_is_an_error(self) -> None:
+        fake = FakeBoard(
+            selection=[kipy_track("x", "SIG", (0, 0), (1, 0))],
+            pads=[kipy_pad("p", "SIG", 0, 0)],
+        )
+
+        with pytest.raises(SelectionError, match="board has no tracks or vias"):
+            read_board(board(fake))
+
+
+class TestReadSelectionElseBoard:
+    def test_an_empty_selection_reads_the_whole_board(self) -> None:
+        selection = read_selection(board(whole_board_fake()), else_board=True)
+
+        assert [s.id for s in selection.segments] == ["a", "b"]
+        assert selection.whole_board
+
+    def test_a_selection_reads_only_the_selection(self) -> None:
+        fake = whole_board_fake([kipy_track("x", "SIG", (5, 5), (6, 5))])
+
+        selection = read_selection(board(fake), else_board=True)
+
+        assert [s.id for s in selection.segments] == ["x"]
+        assert not selection.whole_board
+        assert fake.reads["get_tracks"] == 0
+
+    def test_a_selection_without_copper_is_an_error(self) -> None:
+        fake = whole_board_fake([kipy_footprint("fp")])
+
+        with pytest.raises(SelectionError, match="selection has no tracks or vias"):
+            read_selection(board(fake), else_board=True)
 
 
 def test_user_frame_is_at_the_grid_origin() -> None:

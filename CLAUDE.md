@@ -38,12 +38,12 @@ The design reference is the module docs in both languages: the Python module doc
 - One run is one undo step in KiCad.
 - kibends never refills zones and never runs KiCad's DRC. The user refills the zones, or lets the DRC do it, and runs the DRC for everything the optimizer does not model (custom rules, board minimums, thermal reliefs, island removal, hatched fills, minimum-width necks).
 - A moved via stays where the zones of its net that reached its ring connect it, taken together, on each layer where one did, and keeps the zone's clearance and margin from other-net copper there, so that the refill reconnects it.
-- Locked tracks, the tracks, arcs and vias of a selected group (at any depth), other nets' copper, unselected or fixed vias and pads are never modified.
+- Locked tracks, the tracks, arcs and vias of a selected group, or of any group in a whole-board run (at any depth), other nets' copper, unselected or fixed vias and pads are never modified.
 - Pinned points stay where they are, except chain ends at a moving via, which keep their offset from its centre.
 - A vertex that keeps a pad or a staying via may move but stays inside it, shrunk by `CONTACT_MARGIN`; the chain keeps touching every pad and via it touched. A vertex on a pad's anchor or a staying via's centre stays there, since KiCad's drag carries only the track ends there.
 - The loose ends of a junction's branches move together and stay one point.
 - Pinning uses both tracks' half widths: KiCad connects two tracks when their copper overlaps, not only when an end lies on the other's centreline.
-- Any failure before the push, in any chain, drops the whole commit, and an interrupt ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
+- Any failure before the push, in any chain, drops the whole commit. The CLI's first interrupt while reading, building obstacles or optimizing stops the run: a stop before optimizing commits nothing, one while optimizing commits the best result so far; a second interrupt, or one after optimizing, ends the run with "nothing committed". A connection loss or an interrupt during the push is reported as "may have landed", never as success.
 - Selected arcs are segmented before smoothing; output is always straight tracks.
 - Each energy evaluation spreads over rayon's default pool (`parallel`) and gives the same bits whatever the thread count; `./run test` and `test-all` run one rayon thread per xdist worker.
 
@@ -53,7 +53,7 @@ Segment endpoints and widths from KiCad are integer nanometres, so endpoint matc
 
 ## KiCad API limits
 
-- kicad-python 0.8.0 cannot read board design rules: no minimum clearance, no custom rules, no edge or hole clearance. The optimizer uses netclass clearances plus `--edge-clearance` and `--hole-clearance`; the user's KiCad DRC checks everything else. Recheck newer kicad-python releases for a rules getter.
+- kicad-python 0.8.0 cannot read board design rules: no minimum clearance, no custom rules, no edge, hole or hole-to-hole clearance. The optimizer uses netclass clearances plus the edge, hole and hole-to-hole clearance it reads from the project file (`.kicad_pro`, `rules`), which `--edge-clearance`, `--hole-clearance` and `--hole-to-hole` override; the user's KiCad DRC checks everything else. Recheck newer kicad-python releases for a rules getter.
 - An intermittent "KiCad is busy" error (`AS_BUSY`) means the user has a tool or dialog open in the PCB editor. It is not a code regression.
 - Every IPC failure ends the run with one log line through `cli._exit_on_failure`, except a copper-text render KiCad refuses for another reason, which only warns and leaves the text to KiCad's DRC, and the selection after a push (`commit._select`), which is logged at debug since the commit has landed.
 

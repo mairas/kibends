@@ -4,7 +4,11 @@
 iteration cap or time limit) and, at debug, the abnormal bursts, all from
 `run_smooth`'s `on_optimized` callback, and raises the returned report's
 refusal. The per-chain, per-pair and per-via figures stay in the reports
-and are not printed. Every IPC failure ends the
+and are not printed. The first Ctrl-C while reading, building the
+obstacles or optimizing is the run's `stop`, so the run commits the best
+result so far; a second, or one from simplifying on, raises
+`KeyboardInterrupt`, which ends the run with nothing committed, or, during
+the push, as one that may have landed. Every IPC failure ends the
 run with one log line (`_exit_on_failure`), except a copper-text render
 KiCad refuses for another reason, which only warns, and the selection
 after the push (`commit._select`), logged at debug since the commit has
@@ -17,12 +21,14 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 import argparse
 import math
 import os
+import signal
 import sys
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
+from types import FrameType
 from typing import NoReturn, assert_never, cast
 
 from kipy.errors import ApiError
@@ -43,14 +49,16 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
-from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE
+from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.results import Termination
 from kibends.run import (
     KICAD_TIMEOUT_MS,
     NoBoardError,
     OptimizerReport,
     PlotUnavailableError,
+    ScopeOption,
     SmoothOptions,
+    Stage,
     run_smooth,
 )
 from kibends.snapshot import SelectionError
@@ -83,6 +91,18 @@ DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
 )
+
+CLEARANCE_FLAGS = {
+    "edge": "--edge-clearance",
+    "hole": "--hole-clearance",
+    "hole_to_hole": "--hole-to-hole",
+}
+"""The options that override the project's clearance rules, by
+`rules.Clearances` field."""
+STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
+# Until simplifying, a stop keeps the best result so far; from then on
+# nothing is left to stop.
+STOPPABLE_STAGES = frozenset({Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING})
 
 DEFAULT_LOG_LEVEL = "INFO"
 VERBOSE_LOG_LEVEL = "DEBUG"
@@ -137,9 +157,49 @@ def _exit_on_failure() -> Generator[None]:
         )
 
 
+@contextmanager
+def _first_interrupt_stops() -> Generator[
+    tuple[Callable[[], bool], Callable[[Stage], None]]
+]:
+    """A run's `stop` and `on_stage`, with a SIGINT handler under which the
+    first Ctrl-C makes `stop` answer true and a second raises
+    `KeyboardInterrupt`. From the first stage outside `STOPPABLE_STAGES`
+    on, and always on leaving, the previous handler is back.
+
+    The handler sets a flag and writes its notice straight to stderr's file
+    descriptor, so the notice shows at once, while `stop` may not be asked
+    for seconds. It runs wherever the main thread is, the burst's signal
+    check included, and logging from there could re-enter the logger.
+    """
+    previous = signal.getsignal(signal.SIGINT)
+    interrupted = False
+
+    def handle(_signum: int, _frame: FrameType | None) -> None:
+        nonlocal interrupted
+        if interrupted:
+            raise KeyboardInterrupt
+        interrupted = True
+        os.write(sys.stderr.fileno(), f"{STOPPING_MESSAGE}\n".encode())
+
+    def stop() -> bool:
+        return interrupted
+
+    def on_stage(stage: Stage) -> None:
+        if stage not in STOPPABLE_STAGES:
+            signal.signal(signal.SIGINT, previous)
+
+    signal.signal(signal.SIGINT, handle)
+    try:
+        yield stop, on_stage
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def smooth(options: SmoothOptions) -> None:
     """Smooth the chains selected in KiCad, print the optimizer's outcome
-    and, unless dry-running, commit them."""
+    and, unless dry-running, commit them. The first Ctrl-C while reading,
+    building the obstacles or optimizing stops the run, which commits the
+    best result so far (`_first_interrupt_stops`)."""
 
     def show(optimized: OptimizerReport) -> None:
         print(format_outcome(optimized))
@@ -151,11 +211,16 @@ def smooth(options: SmoothOptions) -> None:
                 f"{description} abnormally; the run judged each like any other"
             )
 
-    report = run_smooth(options, show)
+    with _first_interrupt_stops() as (stop, on_stage):
+        report = run_smooth(options, show, stop=stop, on_stage=on_stage)
     if report.refusal is not None:
         raise RunRefusedError(report.refusal)
     if not report.changes:
-        logger.info("Nothing to do: the optimizer leaves the selection as it is")
+        logger.info(
+            "Stopped before anything changed: nothing committed"
+            if report.termination is Termination.STOPPED
+            else "Nothing to do: the optimizer leaves the selection as it is"
+        )
     elif options.dry_run:
         logger.info("Dry run: nothing committed")
 
@@ -176,7 +241,8 @@ def format_outcome(report: OptimizerReport) -> str:
 
 def report_warnings(report: OptimizerReport) -> list[str]:
     """An iteration cap or time limit, one line each, saying whether the
-    run stopped before its final spacing."""
+    run stopped before its final spacing; a stop, only when it came before
+    the final spacing, since the user asked for it."""
     unfinished = (
         "before reaching the final spacing"
         if report.before_final_spacing
@@ -192,6 +258,10 @@ def report_warnings(report: OptimizerReport) -> list[str]:
         warnings.append(
             f"The optimizer stopped at its time limit {unfinished}; "
             "using the best result found"
+        )
+    if report.termination is Termination.STOPPED and report.before_final_spacing:
+        warnings.append(
+            "Stopped before reaching the final spacing; using the best result found"
         )
     return warnings
 
@@ -307,20 +377,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         f"(default: {DEFAULT_ATTRACTION_RANGE:g})",
     )
     smooth_parser.add_argument(
-        "--edge-clearance",
+        CLEARANCE_FLAGS["edge"],
         type=_non_negative,
-        default=EDGE_CLEARANCE,
         metavar="MM",
-        help="Clearance to the board edge; KiCad's API does not expose the "
-        f"board's own (default: {EDGE_CLEARANCE:g})",
+        help="Clearance to the board edge (default: the minimum copper to edge "
+        "clearance in the project's Board Setup, as last saved, else "
+        f"{EDGE_CLEARANCE:g})",
     )
     smooth_parser.add_argument(
-        "--hole-clearance",
+        CLEARANCE_FLAGS["hole"],
         type=_non_negative,
-        default=HOLE_CLEARANCE,
         metavar="MM",
-        help="Clearance to drilled holes; KiCad's API does not expose the "
-        f"board's own (default: {HOLE_CLEARANCE:g})",
+        help="Clearance to drilled holes (default: the minimum hole clearance "
+        "in the project's Board Setup, as last saved, else "
+        f"{HOLE_CLEARANCE:g})",
+    )
+    smooth_parser.add_argument(
+        CLEARANCE_FLAGS["hole_to_hole"],
+        type=_non_negative,
+        metavar="MM",
+        help="Clearance between a moving via's hole and other holes (default: "
+        "the minimum hole to hole in the project's Board Setup, as last saved, "
+        f"else {HOLE_TO_HOLE:g})",
     )
     smooth_parser.add_argument(
         "--chord-tolerance",
@@ -413,6 +491,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "found so far (default: no limit)",
     )
     smooth_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Smooth every track and via on the board, whatever is selected, "
+        "shown or filtered in KiCad; group members stay as drawn",
+    )
+    smooth_parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
@@ -465,11 +549,14 @@ def smooth_options(args: argparse.Namespace) -> SmoothOptions:
         ),
         edge_clearance=args.edge_clearance,
         hole_clearance=args.hole_clearance,
+        hole_to_hole=args.hole_to_hole,
+        override_names=CLEARANCE_FLAGS,
         chord_tolerance=args.chord_tolerance,
         dry_run=args.dry_run,
         plot=args.plot,
         allow_via_in_pad=args.allow_via_in_pad,
         ground_nets=tuple(args.ground_nets),
+        scope=ScopeOption.BOARD if args.all else ScopeOption.SELECTION,
         settings=replace(
             DEFAULT_SETTINGS,
             spacing=args.spacing[-1],

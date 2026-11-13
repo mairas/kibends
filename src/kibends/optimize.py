@@ -17,6 +17,7 @@ that keep a vertex on its contact) and `results` (what a run returns).
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import cast
 
 import numpy as np
 from loguru import logger
@@ -73,6 +74,17 @@ lies when resampling keeps it where it is."""
 # A run logs its progress at INFO at most this often, seconds, and not at all
 # if it ends sooner; DEBUG gets every outer iteration.
 PROGRESS_INTERVAL = 5.0
+
+
+@dataclass(frozen=True)
+class Progress:
+    """Where a run stands after an outer iteration."""
+
+    elapsed: float
+    """Seconds by the run's clock since it started."""
+    iteration: int
+    energy: float
+    """Every problem's energy, summed."""
 
 
 def optimize(
@@ -144,6 +156,8 @@ def optimize_chains(
     started: float | None = None,
     static_vias: Sequence[StaticVia] = (),
     to_hold: Callable[[Sequence[PairResult]], Sequence[int]] | None = None,
+    stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[Progress], None] | None = None,
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -183,7 +197,10 @@ def optimize_chains(
     time limit in `settings`, the run stops once `clock` reads the limit or
     more past `started`, by default when the run starts: the running burst
     ends at its next L-BFGS iteration, and its state goes through the
-    checks and the guard as any burst's. A run stopped, by either, while
+    checks and the guard as any burst's. `stop`, asked whenever the time
+    limit is, ends the run the same way; the run then ends
+    `Termination.STOPPED` if `stop` answered true before the time limit
+    passed, else `Termination.TIME_LIMIT`. A run stopped, by either, while
     some problem runs at a coarse level ends each such problem at the final
     spacing (`ProblemState.finish`) and says so
     (`RunResult.before_final_spacing`).
@@ -194,8 +211,9 @@ def optimize_chains(
     its best state (`_Problem.go_on_from`), with the members and vias that
     would come too close to the section, or to what was put back, put back
     where they started; the others keep their progress. The iteration cap
-    counts again from the hold. A run that would end at the time limit
-    runs no further burst: it asks `to_hold` again after each hold, since
+    counts again from the hold. A run that would end at the time limit or
+    on `stop`, even in the iteration it converged, runs no further burst
+    and ends on whichever ended it: it asks `to_hold` again after each hold, since
     what a hold put back may be bent too tightly, until it names no
     section that is not held.
 
@@ -204,8 +222,9 @@ def optimize_chains(
     level of a schedule with coarse levels its spacing (`_stage`), and at
     each hold what it put back. Each outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
-    passed since `started` or the last INFO line. Each burst logs what it
-    cost at DEBUG only (`_burst_done`).
+    passed since `started` or the last INFO line, and goes to `on_progress`
+    as a `Progress`. Each burst logs what it cost at DEBUG only
+    (`_burst_done`).
     """
     logger.info("Setting up the optimizer")
     set_up = clock()
@@ -264,11 +283,23 @@ def optimize_chains(
     origin = begun if started is None else started
     deadline = None if settings.time_limit is None else origin + settings.time_limit
 
-    def ended() -> bool:
-        return deadline is not None and clock() >= deadline
+    # Which of `stop` and the time limit answered true first, once one has.
+    # Cast, as the checker would otherwise take it as None where `ended`
+    # has set it.
+    first_end = cast(Termination | None, None)
 
-    expired = None if deadline is None else ended
-    report = _Report(moving, clock, origin, begun)
+    def ended() -> bool:
+        nonlocal first_end
+        if stop is not None and stop():
+            first_end = first_end or Termination.STOPPED
+            return True
+        if deadline is not None and clock() >= deadline:
+            first_end = first_end or Termination.TIME_LIMIT
+            return True
+        return False
+
+    expired = None if deadline is None and stop is None else ended
+    report = _Report(moving, clock, origin, begun, on_progress)
 
     def burst(
         objective: _core.Objective,
@@ -337,6 +368,14 @@ def optimize_chains(
         moving = [p for p in problems if p.moving]
         report.problems = moving
         cap = iteration + settings.max_iterations
+        # A stop or the time limit in the iteration that converged still
+        # ends the run, as the hold has undone the convergence.
+        if first_end is not None:
+            termination = Termination.TIME_LIMIT
+    # Within the loop a stop counts as the time limit, so that a hold after
+    # it starts no burst.
+    if termination is Termination.TIME_LIMIT and first_end is Termination.STOPPED:
+        termination = Termination.STOPPED
     # A run stopped at a coarse level still ends at the final spacing.
     before_final = any(p.state.level < len(settings.coarse_spacings) for p in moving)
     for p in moving:
@@ -366,9 +405,9 @@ class _Report:
     `FALLBACK_WARNING`, an abnormal burst and each burst's cost at DEBUG
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
-    `shown`, the last INFO line. A problem entering a level is logged at
-    INFO (`_stage`). The
-    notices name `problems` by their place; the elapsed seconds count from
+    `shown`, the last INFO line, and handed to `on_progress`. A problem
+    entering a level is logged at INFO (`_stage`). The notices name
+    `problems` by their place; the elapsed seconds count from
     `origin`."""
 
     def __init__(
@@ -377,11 +416,13 @@ class _Report:
         clock: Callable[[], float],
         origin: float,
         shown: float,
+        on_progress: Callable[[Progress], None] | None = None,
     ) -> None:
         self.problems = problems
         self.clock = clock
         self.origin = origin
         self.shown = shown
+        self.on_progress = on_progress
 
     def __call__(self, notice: _Notice) -> None:
         if isinstance(notice, _core.FallbackNotice):
@@ -398,12 +439,17 @@ class _Report:
             logger.info(_stage(self.problems[notice.problem], notice.level))
         else:
             now = self.clock()
-            message = _progress(notice, now - self.origin)
+            elapsed = now - self.origin
+            message = _progress(notice, elapsed)
             if now - self.shown >= PROGRESS_INTERVAL:
                 logger.info(message)
                 self.shown = now
             else:
                 logger.debug(message)
+            if self.on_progress is not None:
+                self.on_progress(
+                    Progress(elapsed, notice.iteration, sum(notice.energies))
+                )
 
 
 def _level_spacing(settings: OptimizerSettings, level: int) -> float:

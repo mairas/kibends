@@ -21,6 +21,9 @@ class Termination(Enum):
     NOTHING_TO_DO = "nothing to do"
     ITERATION_CAP = "iteration cap reached"
     TIME_LIMIT = "time limit reached"
+    STOPPED = "stopped"
+    """The caller's stop answered true before the time limit passed; the
+    run keeps its best state as at a time limit."""
     GAVE_UP = "stopped on abnormal bursts"
     """Every problem settled, some of them only after
     `optimize.MAX_ABNORMAL_BURSTS` abnormal bursts in a row, before or
@@ -129,8 +132,8 @@ class RunResult:
     and how many there were. A burst moves every chain, section and via of
     its problem, so it is counted once, for the problem."""
     before_final_spacing: bool = False
-    """Whether the run stopped, at its iteration cap or time limit, while
-    some problem ran at a coarse level: its result is that level's best
-    state subdivided to the final spacing, or, where that costs more or no
-    coarse burst ended normally, the best state of its first burst at the
-    final spacing, or its input."""
+    """Whether the run stopped, at its iteration cap, its time limit or the
+    caller's stop, while some problem ran at a coarse level: its result is
+    that level's best state subdivided to the final spacing, or, where that
+    costs more or no coarse burst ended normally, the best state of its
+    first burst at the final spacing, or its input."""

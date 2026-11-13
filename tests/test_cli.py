@@ -1,11 +1,12 @@
 import ctypes
 import itertools
+import json
 import math
 import re
 import signal
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -73,13 +74,20 @@ from kibends.energy import (
     FloatArray,
 )
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, Obstacles
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
+from kibends.obstacles import (
+    EDGE_CLEARANCE,
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
+    ChainCentreline,
+    Obstacles,
+)
+from kibends.optimize import MAX_ABNORMAL_BURSTS, Progress, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.polylines import measure
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
 from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
+from kibends.via_moves import MovingVias
 from kibends.vias import StaticVia, ViaInput
 
 WIDTH = 0.25
@@ -258,8 +266,11 @@ def reports(monkeypatch: pytest.MonkeyPatch) -> list[pipeline.RunReport]:
     def spy(
         options: pipeline.SmoothOptions,
         on_optimized: Callable[[pipeline.OptimizerReport], None],
+        *,
+        stop: Callable[[], bool] | None = None,
+        on_stage: Callable[[pipeline.Stage], None] = lambda _stage: None,
     ) -> pipeline.RunReport:
-        report = real(options, on_optimized)
+        report = real(options, on_optimized, stop=stop, on_stage=on_stage)
         captured.append(report)
         return report
 
@@ -1024,6 +1035,443 @@ class TestSmooth:
         assert options.settings.settled_change == 0.003
 
 
+class TestProjectClearances:
+    """Edge, hole and hole-to-hole clearance from the project file (`rules`),
+    or the flags."""
+
+    @staticmethod
+    def seen(
+        connect: Connector, monkeypatch: pytest.MonkeyPatch, *args: str
+    ) -> dict[str, object]:
+        """The clearances the obstacle fields and the optimizer get in a run
+        of `straight_board` whose project file gives 0.5, 0.2 and 0.4 mm."""
+        seen: dict[str, object] = {}
+        real_build: Callable[..., Obstacles] = pipeline.build_obstacles
+
+        def build_spy(*a: object, **kwargs: object) -> Obstacles:
+            seen.update(kwargs)
+            return real_build(*a, **kwargs)
+
+        def optimize_spy(*_a: object, **kwargs: object) -> NoReturn:
+            seen["optimizer"] = kwargs["hole_clearance"]
+            seen["hole_to_hole"] = kwargs["hole_to_hole"]
+            raise SystemExit(0)
+
+        monkeypatch.setattr(pipeline, "build_obstacles", build_spy)
+        monkeypatch.setattr(pipeline, "optimize_chains", optimize_spy)
+        with pytest.raises(SystemExit):
+            run(*args)
+        return {
+            k: seen[k]
+            for k in ("edge_clearance", "hole_clearance", "optimizer", "hole_to_hole")
+        }
+
+    @pytest.fixture
+    def project(self, connect: Connector, tmp_path: Path) -> CommitBoard:
+        rules = {
+            "min_copper_edge_clearance": 0.5,
+            "min_hole_clearance": 0.2,
+            "min_hole_to_hole": 0.4,
+        }
+        settings = {"board": {"design_settings": {"rules": rules}}}
+        (tmp_path / "boat.kicad_pro").write_text(json.dumps(settings))
+        board = straight_board()
+        board.project_path, board.project_name = str(tmp_path), "boat"
+        return connect.to(board)
+
+    @pytest.mark.usefixtures("project")
+    def test_come_from_the_project_file(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        assert self.seen(connect, monkeypatch) == {
+            "edge_clearance": 0.5,
+            "hole_clearance": 0.2,
+            "optimizer": 0.2,
+            "hole_to_hole": 0.4,
+        }
+        assert sum("from boat.kicad_pro" in line for line in log) == 1
+
+    @pytest.mark.usefixtures("project")
+    def test_flags_win_over_the_project_file(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self.seen(
+            connect,
+            monkeypatch,
+            "--edge-clearance=0.1",
+            "--hole-clearance=0.3",
+            "--hole-to-hole=0.6",
+        ) == {
+            "edge_clearance": 0.1,
+            "hole_clearance": 0.3,
+            "optimizer": 0.3,
+            "hole_to_hole": 0.6,
+        }
+
+    def test_without_a_project_are_the_defaults(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(straight_board())
+
+        assert self.seen(connect, monkeypatch) == {
+            "edge_clearance": EDGE_CLEARANCE,
+            "hole_clearance": HOLE_CLEARANCE,
+            "optimizer": HOLE_CLEARANCE,
+            "hole_to_hole": HOLE_TO_HOLE,
+        }
+
+    def test_a_rule_below_the_default_warns_naming_its_flag(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        log: list[str],
+    ) -> None:
+        settings = {"board": {"design_settings": {"rules": {"min_hole_to_hole": 0}}}}
+        (tmp_path / "boat.kicad_pro").write_text(json.dumps(settings))
+        board = straight_board()
+        board.project_path, board.project_name = str(tmp_path), "boat"
+        connect.to(board)
+
+        self.seen(connect, monkeypatch)
+
+        (warning,) = [m for m in log if "min_hole_to_hole" in m]
+        assert warning.startswith("WARNING")
+        assert warning.rstrip().endswith("give --hole-to-hole to override it")
+
+    def test_flags_default_to_the_project(self) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+
+        assert (
+            options.edge_clearance,
+            options.hole_clearance,
+            options.hole_to_hole,
+        ) == (None, None, None)
+
+
+def stopping(monkeypatch: pytest.MonkeyPatch, given: Callable[[], bool]) -> None:
+    """Make the command's run ask `given` in place of its Ctrl-C stop, as the
+    panel's runs do."""
+    real = cli.run_smooth
+
+    def asking(
+        options: pipeline.SmoothOptions,
+        on_optimized: Callable[[pipeline.OptimizerReport], None],
+        *,
+        stop: Callable[[], bool] | None = None,
+        on_stage: Callable[[pipeline.Stage], None] = lambda _stage: None,
+    ) -> pipeline.RunReport:
+        return real(options, on_optimized, stop=given, on_stage=on_stage)
+
+    monkeypatch.setattr(cli, "run_smooth", asking)
+
+
+class TestStop:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_stop_while_optimizing_commits_the_best_state(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        clock = BurstClock(monkeypatch)
+        stopping(monkeypatch, lambda: clock.bursts >= 1)
+
+        run()
+
+        (report,) = reports
+        assert report.termination is Termination.STOPPED
+        assert report.iterations == 1
+        assert report.committed
+        assert "push_commit" in board.calls
+        assert capsys.readouterr().out.startswith("Optimizer: stopped after 1 ")
+
+    @pytest.mark.parametrize(
+        "stage", [pipeline.Stage.READING, pipeline.Stage.OBSTACLES]
+    )
+    def test_a_stop_before_optimizing_ends_the_run_with_nothing_changed(
+        self,
+        stage: pipeline.Stage,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        board = connect.to(l_board())
+
+        def optimizing(*args: object, **kwargs: object) -> NoReturn:
+            raise AssertionError("optimized after a stop")
+
+        monkeypatch.setattr(pipeline, "optimize_chains", optimizing)
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+        stages: list[pipeline.Stage] = []
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(
+            options,
+            optimized.append,
+            stop=lambda: stage in stages,
+            on_stage=stages.append,
+        )
+
+        assert stages[-1] is stage
+        assert report.termination is Termination.STOPPED
+        assert not report.changes and not report.committed
+        assert report.refusal is None
+        assert report.scope.tracks == 2
+        assert optimized == []
+        assert "begin_commit" not in board.calls
+
+    def test_a_stop_before_anything_changed_says_so(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        stopping(monkeypatch, lambda: True)
+
+        run()
+
+        assert capsys.readouterr().out == ""
+        assert any(line.startswith("INFO Stopped") for line in log)
+        assert not any("Nothing to do" in line for line in log)
+        assert "begin_commit" not in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_stop_on_a_run_that_gave_up_without_improving_commits_nothing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        board = connect.to(l_board())
+        real: Callable[..., RunResult] = pipeline.optimize_chains
+        stops: list[object] = []
+
+        def abnormal(*args: object, **kwargs: object) -> RunResult:
+            stops.append(kwargs["stop"])
+            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
+
+        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
+        clock = BurstClock(monkeypatch)
+        stopping(monkeypatch, lambda: clock.bursts >= 1)
+
+        assert "abnormally" in exit_message(log)
+        assert clock.bursts == 1
+        assert len(stops) == 1 and stops[0] is not None
+        assert board.calls == []
+
+
+class TestStages:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize(
+        ("board", "args", "committing"),
+        [
+            (l_board, [], True),
+            (l_board, ["-n"], False),
+            (straight_board, [], False),
+        ],
+        ids=["commit", "dry-run", "unchanged"],
+    )
+    def test_are_reported_in_order_committing_only_with_a_commit(
+        self,
+        board: Callable[[], CommitBoard],
+        args: list[str],
+        committing: bool,
+        connect: Connector,
+    ) -> None:
+        connect.to(board())
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+        stages: list[pipeline.Stage] = []
+
+        report = pipeline.run_smooth(options, on_stage=stages.append)
+
+        Stage = pipeline.Stage
+        expected = [Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING]
+        expected += [Stage.SIMPLIFYING, *([Stage.COMMITTING] if committing else [])]
+        assert stages == expected
+        assert report.committed is committing
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_the_report_counts_the_tracks_arcs_and_vias_read(
+        self, connect: Connector
+    ) -> None:
+        tracks = l_chain()
+        arc = quarter_arc("ARC", down=-10.0)
+        via = kipy_via("v", "GND", 20, 20, locked=True)
+        group = kipy_group("Tuning Pattern", tracks[:1])
+        connect.to(
+            CommitBoard(
+                selection=[group, tracks[1], arc, via],
+                tracks=[*tracks, arc],
+                vias=[via],
+                pads=[kipy_pad("pad", "GND", *PAD)],
+            )
+        )
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
+
+        report = pipeline.run_smooth(options)
+
+        assert report.scope == pipeline.Scope(
+            pipeline.ScopeKind.SELECTION, tracks=3, vias=1
+        )
+
+
+def board_with_more() -> CommitBoard:
+    """`l_board`, its L selected, with a far track and a locked via not."""
+    board = l_board()
+    far = kipy_track("far", "OTHER", (20, 0), (30, 0), width=WIDTH)
+    board.tracks = [*board.tracks, far]
+    board.vias = [kipy_via("v", "GND", 20, 20, locked=True)]
+    return board
+
+
+class TestScope:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_all_reads_the_whole_board_whatever_is_selected(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        connect.to(board_with_more())
+
+        run("--all", "-n")
+
+        (report,) = reports
+        assert report.scope == pipeline.Scope(
+            pipeline.ScopeKind.BOARD, tracks=3, vias=1
+        )
+        assert {c.net for c in report.chains} == {"SIG", "OTHER"}
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_whole_board_run_commits_and_adds_nothing_to_the_selection(
+        self, connect: Connector, reports: list[pipeline.RunReport]
+    ) -> None:
+        board = connect.to(board_with_more())
+        board.selection = list(board.vias)
+
+        run("--all")
+
+        (report,) = reports
+        assert report.committed
+        assert board.calls == [c for c in COMMIT_CALLS if c != "select"]
+        assert board.selected_ids() == ["v"]
+
+    @pytest.mark.parametrize("call", ["get_groups", "get_items_by_id", "get_as_string"])
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (ApiError("busy", code=ApiStatusCode.AS_BUSY), "KiCad is busy"),
+            (KiCadConnectionError("timed out"), "Cannot reach KiCad"),
+        ],
+    )
+    def test_a_failure_reading_the_groups_ends_the_run(
+        self,
+        connect: Connector,
+        log: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        call: str,
+        error: Exception,
+        expected: str,
+    ) -> None:
+        board = connect.to(board_with_more())
+        board.groups = [kipy_group("Tuning Pattern", board.tracks[:1])]
+
+        def fail(*_args: object) -> NoReturn:
+            raise error
+
+        monkeypatch.setattr(board, call, fail)
+
+        assert expected in exit_message(log, "--all")
+        assert "begin_commit" not in board.calls
+
+    def test_all_on_a_board_without_tracks_or_vias_fails(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        connect.to(CommitBoard(pads=[kipy_pad("pad", "GND", *PAD)]))
+
+        assert "board has no tracks or vias" in exit_message(log, "--all")
+
+    def test_without_all_an_empty_selection_still_fails(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        board = board_with_more()
+        board.selection = []
+        connect.to(board)
+
+        assert "selection has no tracks or vias" in exit_message(log)
+
+    @pytest.mark.parametrize(
+        ("args", "scope"),
+        [
+            ((), pipeline.ScopeOption.SELECTION),
+            (("--all",), pipeline.ScopeOption.BOARD),
+        ],
+    )
+    def test_all_sets_the_option(
+        self, args: tuple[str, ...], scope: pipeline.ScopeOption
+    ) -> None:
+        options = cli.smooth_options(cli.parse_args(["smooth", *args]))
+
+        assert options.scope is scope
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    @pytest.mark.parametrize(
+        ("selected", "scope"),
+        [
+            (False, pipeline.Scope(pipeline.ScopeKind.BOARD, tracks=3, vias=1)),
+            (True, pipeline.Scope(pipeline.ScopeKind.SELECTION, tracks=2, vias=0)),
+        ],
+        ids=["nothing-selected", "selection"],
+    )
+    def test_selection_else_board_reads_the_board_only_without_a_selection(
+        self, connect: Connector, selected: bool, scope: pipeline.Scope
+    ) -> None:
+        board = connect.to(board_with_more())
+        if not selected:
+            board.selection = []
+        options = replace(
+            cli.smooth_options(cli.parse_args(["smooth", "-n"])),
+            scope=pipeline.ScopeOption.SELECTION_ELSE_BOARD,
+        )
+
+        assert pipeline.run_smooth(options).scope == scope
+
+
+class TestProgress:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_comes_after_every_iteration_with_the_optimize_stages_clock(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(l_board())
+        monkeypatch.setattr(pipeline, "monotonic", Ticking())
+        options = cli.smooth_options(cli.parse_args(["smooth", "-n"]))
+        records: list[Progress] = []
+
+        report = pipeline.run_smooth(options, on_progress=records.append)
+
+        assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
+        elapsed = [r.elapsed for r in records]
+        assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
+
+    def test_a_run_with_nothing_to_do_reports_at_most_once(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+    ) -> None:
+        connect.to(straight_board())
+        records: list[Progress] = []
+        monkeypatch.setattr(
+            cli, "run_smooth", partial(cli.run_smooth, on_progress=records.append)
+        )
+
+        run()
+
+        assert len(records) <= 1
+        assert any(line.startswith("INFO Nothing to do") for line in log)
+
+
 class TestPlot:
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_writes_the_figure(self, connect: Connector, tmp_path: Path) -> None:
@@ -1166,28 +1614,6 @@ class TestErrors:
         assert board.calls == []
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_sigint_in_a_burst_ends_it_and_commits_nothing(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = connect.to(l_board())
-        real = cast(Callable[..., Burst], optimize_module.run_burst)
-        libc_raise = getattr(ctypes.CDLL(None), "raise")
-        libc_raise.argtypes = [ctypes.c_int]
-        # Asked after the first iteration, the stop sends SIGINT from C, so
-        # no Python runs its handler: the signal is pending while the next
-        # evaluation runs detached. Asked again, it would end the burst.
-        answers = itertools.chain(map(libc_raise, [signal.SIGINT]), [True])
-
-        def sending(*args: object) -> Burst:
-            return real(*args[:4], answers.__next__)
-
-        monkeypatch.setattr(optimize_module, "run_burst", sending)
-
-        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
-        assert "push_commit" not in board.calls
-        assert list(answers) == [True], "the burst ran on past the signal"
-
-    @pytest.mark.usefixtures("coarse_optimizer")
     def test_vanished_track_exits_before_any_change(
         self,
         connect: Connector,
@@ -1199,6 +1625,223 @@ class TestErrors:
 
         assert "changed in KiCad" in exit_message(log)
         assert board.calls == []
+
+
+@pytest.fixture
+def sigint_handler() -> Iterator[None]:
+    """Put back the SIGINT handler a test or a failed run leaves."""
+    previous = signal.getsignal(signal.SIGINT)
+    yield
+    signal.signal(signal.SIGINT, previous)
+
+
+def interrupting[**P, R](
+    times: int, real: Callable[P, R], then: Callable[[], None] = lambda: None
+) -> Callable[P, R]:
+    """`real`, its first call after Ctrl-C pressed `times` times and `then`."""
+    pressed = False
+
+    def interrupted(*args: P.args, **kwargs: P.kwargs) -> R:
+        nonlocal pressed
+        if not pressed:
+            pressed = True
+            for _ in range(times):
+                signal.raise_signal(signal.SIGINT)
+            then()
+        return real(*args, **kwargs)
+
+    return interrupted
+
+
+NOTICE = f"{cli.STOPPING_MESSAGE}\n"
+
+
+def noting_handler[**P, R](seen: list[object], real: Callable[P, R]) -> Callable[P, R]:
+    """`real`, noting in `seen` the SIGINT handler it runs under."""
+
+    def noting(*args: P.args, **kwargs: P.kwargs) -> R:
+        seen.append(signal.getsignal(signal.SIGINT))
+        return real(*args, **kwargs)
+
+    return noting
+
+
+@pytest.mark.usefixtures("sigint_handler")
+class TestCtrlC:
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_the_first_in_a_burst_stops_it_and_commits_the_best_state(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        real = cast(Callable[..., Burst], optimize_module.run_burst)
+        libc_raise = getattr(ctypes.CDLL(None), "raise")
+        libc_raise.argtypes = [ctypes.c_int]
+        answers: list[bool] = []
+
+        def sending(*args: object) -> Burst:
+            stop = cast(Callable[[], bool], args[4])
+
+            def asked() -> bool:
+                # Asked first, it sends SIGINT from C and answers no; the
+                # burst's next ask runs the handler, then the run's stop.
+                sent = not answers and libc_raise(signal.SIGINT) == 0
+                answers.append(False if sent else stop())
+                return answers[-1]
+
+            return real(*args[:4], asked)
+
+        monkeypatch.setattr(optimize_module, "run_burst", sending)
+
+        run()
+
+        assert answers[:2] == [False, True], "the burst ran on past the signal"
+        (report,) = reports
+        assert report.termination is Termination.STOPPED
+        assert report.committed
+        assert "push_commit" in board.calls
+        out, err = capfd.readouterr()
+        assert out.startswith("Optimizer: stopped after ")
+        assert err.count(NOTICE) == 1
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_second_ends_the_run_with_nothing_committed(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        monkeypatch.setattr(
+            optimize_module,
+            "run_burst",
+            interrupting(2, cast(Callable[..., Burst], optimize_module.run_burst)),
+        )
+
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
+        assert "begin_commit" not in board.calls
+
+    def test_the_first_while_reading_stops_before_anything_changed(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        at_once: list[str] = []
+        monkeypatch.setattr(
+            pipeline,
+            "read_clearances",
+            interrupting(
+                1,
+                pipeline.read_clearances,
+                lambda: at_once.append(capfd.readouterr().err),
+            ),
+        )
+
+        run()
+
+        assert at_once == [NOTICE], "the notice waited for the run to ask"
+        assert NOTICE not in capfd.readouterr().err
+        assert any(line.startswith("INFO Stopped before") for line in log)
+        assert "begin_commit" not in board.calls
+
+    def test_the_first_while_building_obstacles_stops_before_optimizing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        reports: list[pipeline.RunReport],
+        log: list[str],
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+        monkeypatch.setattr(
+            pipeline, "build_obstacles", interrupting(1, pipeline.build_obstacles)
+        )
+
+        run()
+
+        (report,) = reports
+        assert report.termination is Termination.STOPPED
+        assert report.iterations == 0
+        assert not report.committed
+        assert "Optimizer:" not in capfd.readouterr().out
+        assert any(line.startswith("INFO Stopped before") for line in log)
+        assert "begin_commit" not in board.calls
+
+    @pytest.mark.parametrize("stage", ["read_clearances", "build_obstacles"])
+    def test_a_second_before_optimizing_ends_the_run_with_nothing_committed(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        stage: str,
+    ) -> None:
+        board = connect.to(l_board())
+        real = cast(Callable[..., object], getattr(pipeline, stage))
+        monkeypatch.setattr(pipeline, stage, interrupting(2, real))
+
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
+        assert "begin_commit" not in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_one_while_simplifying_commits_nothing(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        monkeypatch.setattr(
+            pipeline, "simplify_chains", interrupting(1, pipeline.simplify_chains)
+        )
+
+        assert exit_message(log) == "ERROR Interrupted: nothing committed\n"
+        assert "begin_commit" not in board.calls
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_one_during_the_push_may_have_landed(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        monkeypatch.setattr(board, "push_commit", interrupting(1, board.push_commit))
+
+        message = exit_message(log)
+
+        assert "Interrupted" in message and "may have landed" in message
+        assert "drop_commit" not in board.calls
+
+    @staticmethod
+    def handlers_while_reading(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        """The SIGINT handler each read of the clearances runs under."""
+        seen: list[object] = []
+        monkeypatch.setattr(
+            pipeline, "read_clearances", noting_handler(seen, pipeline.read_clearances)
+        )
+        return seen
+
+    @pytest.mark.usefixtures("coarse_optimizer")
+    def test_the_previous_handler_is_back_after_a_run(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connect.to(l_board())
+        seen = self.handlers_while_reading(monkeypatch)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        run()
+
+        assert seen and seen[0] is not signal.SIG_IGN
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+
+    def test_the_previous_handler_is_back_after_a_failure(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        board = connect.to(l_board())
+        seen = self.handlers_while_reading(monkeypatch)
+        board.get_items_by_id = lambda ids: []
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        assert "changed in KiCad" in exit_message(log)
+        assert seen and seen[0] is not signal.SIG_IGN
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
@@ -2442,6 +3085,44 @@ class TestMovingVias:
         assert moved in ends(created_on(board, BL.BL_F_Cu))
         assert moved in ends(created_on(board, BL.BL_B_Cu))
 
+    def test_hole_to_hole_reaches_the_via_s_field_stops_and_neighbours(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Each takes the default when not given one, so a dropped argument
+        # would pass unnoticed.
+        apart = HOLE_TO_HOLE + 0.35
+        connect.to(moving_via_board())
+        seen: dict[str, list[object]] = {"field": [], "stops": [], "moving": []}
+        real_split = cast(Callable[..., object], pipeline.split_via_obstacles)
+        real_stops = cast(Callable[..., object], pipeline.own_net_stops)
+
+        def split_spy(*a: object, **kwargs: object) -> object:
+            seen["field"].append(kwargs["hole_to_hole"])
+            return real_split(*a, **kwargs)
+
+        def stops_spy(*a: object, **kwargs: object) -> object:
+            seen["stops"].append(kwargs["hole_to_hole"])
+            return real_stops(*a, **kwargs)
+
+        class MovingSpy(MovingVias):
+            def __init__(
+                self,
+                chains: Sequence[ChainInput],
+                vias: Sequence[ViaInput],
+                hole_clearance: float,
+                hole_to_hole: float,
+            ) -> None:
+                seen["moving"].append(hole_to_hole)
+                super().__init__(chains, vias, hole_clearance, hole_to_hole)
+
+        monkeypatch.setattr(pipeline, "split_via_obstacles", split_spy)
+        monkeypatch.setattr(pipeline, "own_net_stops", stops_spy)
+        monkeypatch.setattr(pipeline, "MovingVias", MovingSpy)
+
+        run(f"--hole-to-hole={apart}")
+
+        assert seen == {"field": [apart], "stops": [apart], "moving": [apart]}
+
     def test_a_via_a_group_track_ends_at_stays_and_the_run_commits(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -3573,6 +4254,35 @@ def test_outcome_counts_a_pair_s_rejected_moves_and_warns_of_nothing() -> None:
     )
     # Abnormal bursts are logged at debug only.
     assert cli.report_warnings(report) == []
+
+
+@pytest.mark.parametrize(
+    ("before_final_spacing", "warnings"),
+    [
+        (
+            True,
+            ["Stopped before reaching the final spacing; using the best result found"],
+        ),
+        (False, []),
+    ],
+    ids=["at a coarse level", "at the final level"],
+)
+def test_a_stop_says_only_when_it_came_before_the_final_spacing(
+    before_final_spacing: bool, warnings: list[str]
+) -> None:
+    report = pipeline.OptimizerReport(
+        (),
+        (),
+        (),
+        Termination.STOPPED,
+        3,
+        before_final_spacing,
+        0.5,
+        (),
+        UserFrame((0.0, 0.0)),
+    )
+
+    assert cli.report_warnings(report) == warnings
 
 
 def test_says_what_it_optimizes(connect: Connector, log: list[str]) -> None:

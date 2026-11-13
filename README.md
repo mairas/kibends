@@ -152,7 +152,8 @@ uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
    A box selection catches tracks on every visible layer, and all of them
    are smoothed. Check what a run would change with `--dry-run` first, or
    set non-active layers to Dim or Hide (Ctrl+H), which limits selection to
-   the active layer.
+   the active layer. `--all` smooths the whole board instead, whatever is
+   selected.
 3. Run:
 
 ```sh
@@ -235,6 +236,13 @@ after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS terminated abnormally" and commits nothing.
+Ctrl-C while the run reads the board, builds the obstacles or optimizes
+stops it as the time limit would: it prints "Stopping; press Ctrl-C again
+to abort" at once, the optimizer ends the running burst, and the run simplifies and
+commits the best result found. Stopped before optimizing, it commits
+nothing. A second Ctrl-C, or one after optimizing, ends the run with
+"nothing committed"; one while KiCad applies the commit may leave it
+landed, and the run says to check KiCad's undo history.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
@@ -262,8 +270,10 @@ changed chains are replaced and the moved vias moved in one commit, which
 one undo in KiCad reverts; if any chain or via fails, nothing is committed.
 After the commit, the new tracks and moved vias are added to the selection,
 so it covers the same copper as before the run and a second run needs no
-new selection; selected items the run left unchanged stay selected. A dry
-run, or a run that commits nothing, leaves the selection as it was.
+new selection; selected items the run left unchanged stay selected. A run
+with `--all` adds nothing to the selection: what was selected and left
+unchanged stays selected. A dry run, or a run that commits nothing, leaves
+the selection as it was.
 A track or via edited in KiCad since the run read it stops the commit.
 kibends does not refill zones and does not run KiCad's DRC: refill the
 zones yourself (B), or run the DRC, which refills them and checks the result
@@ -456,8 +466,9 @@ ground net leave each other alone, as vias of any other net do.
 | `--attraction WEIGHT` | 1.15 | Weight of ground vias and regular vias pulling each other, relative to length (see [Return vias](#return-vias)). More weight moves the vias farther toward each other against the copper and tracks around them. 0 turns the pull and the push between vias of one ground net off, and `--ground-nets` is then ignored. |
 | `--attraction-range MM` | 3.0 | Centre distance at which the pull between a ground via and a regular via fades to zero. |
 | `--ground-nets NET ...` | detected | The ground nets, instead of the nets with copper zones on at least two inner layers, or `GND`. |
-| `--edge-clearance MM` | 0.3 | Clearance to the board edge. |
-| `--hole-clearance MM` | 0.25 | Clearance between drilled holes and other nets' copper. A moving via's hole also keeps 0.25 mm from every other hole. |
+| `--edge-clearance MM` | project, else 0.3 | Clearance to the board edge. Without it, the minimum copper to edge clearance in the project's Board Setup (see [Clearances](#clearances)). |
+| `--hole-clearance MM` | project, else 0.25 | Clearance between drilled holes and other nets' copper. Without it, the minimum hole clearance in the project's Board Setup. |
+| `--hole-to-hole MM` | project, else 0.25 | Clearance between a moving via's hole and every other hole. Without it, the minimum hole to hole in the project's Board Setup. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
 | `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so it runs over by about one L-BFGS iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
 | `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
@@ -469,6 +480,7 @@ ground net leave each other alone, as vias of any other net do.
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS ends a burst early when the largest gradient component falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
 | `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. Without it a moving via may touch a pad of its net but never overlaps one; the pad stops it without pushing it. KiCad's DRC does not check via-in-pad, so this option is the only guard: use it only where the fabricator fills and caps vias in pads. Holes keep their clearances either way. |
+| `--all` | | Smooth every track, arc and via on the board instead of the selection, whatever is selected, visible or filtered in KiCad. Members of groups, such as tuning patterns, stay as drawn, as in a selected group. Every unlocked via may move, stitching vias included (see [Usage](#usage)). The run adds nothing to KiCad's selection. |
 | `--dry-run`, `-n` | | Optimize and print the outcome without changing the board. |
 | `--plot FILE` | | Draw each original and smoothed chain over the area its centreline must avoid, one subplot per chain, with the start and end of each moving via it joins; the format follows the extension. Works with or without `--dry-run`. |
 | `--verbose`, `-v` | | Log at DEBUG: progress after every iteration and the debug lines, such as why a selected via stays where it is. Overrides the level the `LOGURU_LEVEL` environment variable sets; without either, kibends logs at INFO. |
@@ -485,8 +497,9 @@ such as the end of a differential pair's coupled section, at a corner.
 
 kibends keeps only the clearances its optimizer models: the board's
 netclass clearances, including pad and footprint clearance overrides; the
-edge and hole clearances of `--edge-clearance` and `--hole-clearance`,
-since KiCad's API does not expose the board's own; rule areas that keep
+minimum copper to edge clearance, minimum hole clearance and minimum hole
+to hole of the project's Board Setup, unless `--edge-clearance`,
+`--hole-clearance` or `--hole-to-hole` gives them; rule areas that keep
 out tracks or vias, which moving vias stay out of as well; and, for a
 moving via, the outlines and clearances of the zones it connects to. Rule
 areas' other keepouts, of pads, copper pours and footprints, are not seen.
@@ -497,6 +510,15 @@ which reflow after an edit, beyond what holds a moving via. A custom rule
 stricter than the netclass clearances (a larger clearance for vias, say)
 can therefore be violated by the smoothed tracks. Those are left to
 KiCad's DRC: run it after smoothing.
+
+KiCad's API does not expose the design rules, so kibends reads the three
+Board Setup constraints from the project file (`.kicad_pro`), as KiCad
+last saved it: save the board after changing them. Without a project
+file, or without a value in it, the defaults of the table above apply. Each
+run logs where its edge, hole and hole-to-hole clearances came from. A
+project value below its default is used, as KiCad's DRC uses it too, with a
+warning naming the option that overrides it: many project files hold 0 for
+a rule nobody set.
 
 ### Editing a smoothed track
 
