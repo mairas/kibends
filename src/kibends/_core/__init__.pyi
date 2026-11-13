@@ -805,6 +805,12 @@ class ProblemState:
         The level of the schedule it runs at: its coarse spacings, then the
         final one.
         """
+    @property
+    def before_final(self) -> builtins.bool:
+        r"""
+        Whether it has not reached the final level
+        (`kibends_core::optimize::state::State::before_final`).
+        """
     def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its
@@ -886,9 +892,8 @@ class ProblemState:
         r"""
         End a run stopped at a coarse level at the final spacing: its best
         state subdivided there if some coarse burst ended normally, that
-        passes the guard and its energy is no higher than that of the
-        probe's best, or of the inputs if the probe moved nothing; else that
-        state. Does nothing at the final level. Raises ValueError if the
+        passes the guard and its energy is no higher than the inputs'; else
+        the inputs. Does nothing at the final level. Raises ValueError if the
         energy there is not finite.
         """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
@@ -1018,9 +1023,9 @@ class SmoothAnswer:
 @typing.final
 class StageNotice:
     r"""
-    A problem enters a level of a schedule with coarse levels: each coarse
-    level, and the final one after a coarser one hands over; not the probe
-    at the final spacing that runs before them.
+    A problem enters a level of a schedule with coarse levels: the coarsest
+    before its first burst, each finer one, and the final one, as a coarser
+    one hands over.
     """
     @property
     def problem(self) -> builtins.int:

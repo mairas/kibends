@@ -160,7 +160,7 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 COARSE_LEVELS = (1.2, 0.6)
 """Coarse spacings above COARSE's final 0.3 mm."""
-L_COARSE_BURSTS = 8
+L_COARSE_BURSTS = 6
 """Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
 reaches the final spacing."""
 
@@ -828,8 +828,8 @@ class TestSmooth:
 
     @pytest.mark.parametrize(
         ("limit", "warning"),
-        # Of the L's run: the probe, then bursts at 1.2 mm until the level
-        # settles at L_COARSE_BURSTS.
+        # Of the L's run: bursts at the coarse levels, coarsest first, until
+        # it reaches the final spacing after L_COARSE_BURSTS.
         [
             (1.5, "time limit before reaching the final spacing"),
             (L_COARSE_BURSTS + 0.5, "time limit without converging"),
@@ -1454,7 +1454,7 @@ class TestProgress:
         elapsed = [r.elapsed for r in records]
         assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
 
-    def test_a_run_with_nothing_to_do_reports_at_most_once(
+    def test_a_run_with_nothing_to_do_reports_at_most_once_per_level(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
@@ -1468,7 +1468,8 @@ class TestProgress:
 
         run()
 
-        assert len(records) <= 1
+        # One burst at each level, none moving anything.
+        assert len(records) <= len(cli.DEFAULT_SCHEDULE)
         assert any(line.startswith("INFO Nothing to do") for line in log)
 
 
@@ -2497,9 +2498,9 @@ class TestLoopsAndDots:
         assert at in path.coords[:]
         assert_round_the_pad(path, loop)
 
-    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
-        self, connect: Connector, log: list[str]
-    ) -> None:
+    def via_loop_run(self, connect: Connector) -> tuple[CommitBoard, LineString]:
+        """Runs on `triangle_loop` through a selected via, round a pad; the
+        board, and the committed path, which passes through the moved via."""
         loop = triangle_loop()
         via = kipy_via("v", "SIG", 9, 0)
         board = connect.to(
@@ -2520,9 +2521,33 @@ class TestLoopsAndDots:
         path = created_path(board)
         assert path.is_closed
         assert (at[0] / NM_PER_MM, at[1] / NM_PER_MM) in path.coords[:]
-        assert_round_the_pad(path, loop)
+        return board, path
+
+    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        # At one spacing: from the loop as drawn, the default schedule's
+        # first burst, at 1.6 mm, steps it across the pad (below).
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=()))
+        )
+
+        _, path = self.via_loop_run(connect)
+
+        assert_round_the_pad(path, triangle_loop())
         # The first extraction already cuts the loop at the via.
         assert not any("Leaving out" in line for line in log)
+
+    def test_a_coarse_burst_may_step_a_loop_through_a_via_across_a_pad(
+        self, connect: Connector
+    ) -> None:
+        # The checks judge where a burst leaves the loop, not the way there,
+        # so a coarse burst's long steps can take it across the pad, where
+        # it shrinks to the via; the run accepts that, clear of the pad.
+        _, path = self.via_loop_run(connect)
+
+        pad = pad_box(*IN_TRIANGLE)
+        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
 
     def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
         tracks = [
@@ -4053,7 +4078,7 @@ class TestViaClasses:
     def test_a_return_via_settles_at_the_neutral_distance_and_nearer_by_default(
         self,
         connect: Connector,
-        coarse_optimizer: None,
+        monkeypatch: pytest.MonkeyPatch,
         reports: list[pipeline.RunReport],
         ground: tuple[float, float],
         stitching: bool,
@@ -4061,7 +4086,13 @@ class TestViaClasses:
         # An unselected GND via 1.5 mm across the route from the via or
         # diagonally beside it, or a stitching via 2.5 mm across it, which
         # moves too. The default pulls the vias nearer than the balance,
-        # trading some chain length for it.
+        # trading some chain length for it. At one spacing: the chain's
+        # length outweighs the vias' terms so far that, with coarse levels,
+        # the first burst's relative-reduction stop leaves the via about
+        # 0.04 mm short of the balance, and each finer level settles at once.
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=()))
+        )
         lengths: list[float] = []
         distances: list[float] = []
         for args in ((BALANCED,), ("--attraction=0",), ()):

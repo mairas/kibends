@@ -209,10 +209,8 @@ burst spreads over every logical CPU; set the environment variable
 `RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
 Each problem runs through a schedule of spacings, the distances between a
-chain's vertices: by default 1.6, 0.4 and 0.1 mm (`--spacing`). Its first
-burst runs at the final spacing, and a problem that burst settles is
-done. Otherwise its chains run at
-each coarser spacing in turn, coarsest first, each handing over to the
+chain's vertices: by default 1.6, 0.4 and 0.1 mm (`--spacing`). Its chains
+run at each coarser spacing in turn, coarsest first, each handing over to the
 next when the problem settles at it, and end at the final spacing. A long
 track bowed across its whole span barely moves per burst at 0.1 mm among
 many other tracks, but with few vertices it straightens in a few bursts;
@@ -222,7 +220,8 @@ burst leaves it in more clearance violations than it started with goes
 back to its last good shape while the others keep theirs, and the result
 is always at the final spacing. With so few vertices, a chain may pass
 another moving chain in one burst and settle on its far side, where the
-shorter route is clear.
+shorter route is clear, and a loop round a pad may pass across the pad and
+shrink.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
@@ -251,9 +250,7 @@ iteration how long setup took, how many problems it split the selection into
 their starting summed length and energy. With coarse spacings, it says
 when each problem starts at each of them ("Optimizing the chains on F.Cu
 coarsely, at 1.6 mm spacing") and at the final spacing ("Refining the chains
-on F.Cu at 0.1 mm spacing"); a problem that settles in its first burst,
-which runs at the final spacing, skips the coarse spacings and logs
-neither. When it holds a differential
+on F.Cu at 0.1 mm spacing"). When it holds a differential
 pair's section, it says how many chains and vias it put back.
 While a run lasts longer than a few seconds, it reports its progress every
 few seconds: the iteration, the time so far, the selected tracks' summed
@@ -433,7 +430,9 @@ ending about 1.37 mm from it, and the route grows by a few micrometres. A
 pair with nothing else near settles about 0.02 mm beyond its clearance,
 since the default pull is the stronger at every distance past it; a lower
 `--attraction`, such as 0.25, balances the two farther out, two 0.6 mm
-vias with 0.2 mm clearance about 1.6 mm apart, centre to centre.
+vias with 0.2 mm clearance about 1.6 mm apart, centre to centre. With the
+default coarse spacings a pull that weak can leave a via a few hundredths
+of a millimetre short of that balance.
 
 Ground vias of one net push each other apart within `--range` beyond their
 rings and the clearance, so that stitching vias drawn toward a signal via

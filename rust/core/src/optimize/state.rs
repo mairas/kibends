@@ -33,10 +33,11 @@
 //!
 //! Coarse levels
 //! -------------
-//! With coarse spacings (`Settings::coarse`), a problem's first burst runs
-//! at the final spacing, and a problem it settles is done; otherwise the
-//! chains run at each coarse spacing in turn, coarsest first, then at the
-//! final one, a level handing over when it settles. A section stays at the
+//! With coarse spacings (`Settings::coarse`), the chains run at each coarse
+//! spacing in turn, coarsest first, then at the final one, a level handing
+//! over when it settles. A problem is built at its inputs at the final
+//! spacing, and its first step enters the coarsest level before its burst
+//! (`State::unstarted`). A section stays at the
 //! final spacing throughout. A 45 mm track at 0.1 mm has about 450
 //! vertices, and its bow across the whole span is about N² softer than one
 //! vertex, so a few coarse vertices straighten it in a few bursts where the
@@ -52,13 +53,11 @@
 //! there starts from the inputs instead, unit by unit (`layout::units`).
 //! The energy and the stall history start over there.
 //!
-//! The problem also keeps a state at the final spacing, with its energy
-//! there: the inputs, or the probe's best if the probe moved anything
-//! (`State::probed`). Entering the final level takes the coarse levels'
-//! best state, subdivided, only if some coarse burst ended normally, it
-//! passes the guard and its energy is no higher than that kept state's;
-//! else it takes the kept state (`State::final_state`). So the coarse
-//! levels never leave more energy than the probe did, and a run none of
+//! Entering the final level takes the coarse levels' best state,
+//! subdivided, only if some coarse burst ended normally, it passes the
+//! guard and its energy at the final spacing is no higher than the
+//! inputs'; else it takes the inputs (`State::final_state`). So the coarse
+//! levels never leave more energy than the inputs had, and a run none of
 //! whose coarse bursts ended normally does not end at a resample of its
 //! inputs that no burst reached.
 //!
@@ -70,17 +69,16 @@
 //! the level, and the change that settles the level is that of what it
 //! kept. The final level keeps the whole-problem rule. A run stopped at a
 //! coarse level ends at the final spacing by the same rule as entering the
-//! final level (`State::finish`), so one stopped right after the probe
-//! keeps the probe's best.
+//! final level (`State::finish`).
 //!
 //! The checks judge where a burst leaves the shapes, not the way there, so
 //! at a coarse level, where few vertices take long steps, a chain may pass
 //! through another moving member in one burst and settle on its far side
 //! where that route is shorter and keeps clearance, as the arch of the
-//! drape scenario (`tests/scenarios.py`) does under its bar. A re-run on
-//! converged output whose first burst moves it by `settled_change` or more,
-//! as resampling it can, runs the coarse levels again, and keeps what they
-//! reach only if it costs no more than the probe's best.
+//! tent scenario (`tests/scenarios.py`) does past its bar, or a loop across
+//! a pad it went round. A re-run on
+//! converged output runs the coarse levels again, and keeps what they
+//! reach only if it costs no more than its inputs.
 //!
 //! The first burst at a level a coarser one handed over to settles it if
 //! it moves nothing, even if L-BFGS ended it abnormally, provided the
@@ -499,9 +497,11 @@ pub struct State {
     pub input_energy: f64,
     /// The level of the schedule it runs at (`Shared::spacing_at`).
     pub level: usize,
-    /// Whether its next burst is the one at the final spacing that runs
-    /// before the coarse levels, and decides whether they run.
-    pub probing: bool,
+    /// Whether it has coarse levels and has taken no step: it is still at
+    /// its inputs at the final spacing, which its starting energy and
+    /// length and a problem built again (`State::go_on_from`) take, and its
+    /// first step enters level 0.
+    unstarted: bool,
     /// Whether its next burst is the first at a level a coarser one that
     /// descended handed over to.
     handed_over: bool,
@@ -512,10 +512,6 @@ pub struct State {
     /// the coarse levels' best state is only a resample of what they
     /// started from.
     coarse_descended: bool,
-    /// The probe's best state and its energy, at the final spacing, if the
-    /// probe moved anything; else the inputs are the state the run keeps
-    /// at that spacing (`State::final_state`).
-    probed: Option<(Shape, f64)>,
     /// Per member, whether it is held at its best shape for the rest of
     /// the coarse level it runs at (`State::step`).
     held: Vec<bool>,
@@ -688,11 +684,10 @@ impl State {
             best_energy: energy,
             input_energy: energy,
             level,
-            probing: moving && level > 0,
+            unstarted: moving && level > 0,
             handed_over: false,
             descended: false,
             coarse_descended: false,
-            probed: None,
             held: vec![false; count],
             allowed,
             inside,
@@ -724,6 +719,12 @@ impl State {
     /// Whether it runs at a coarse level.
     pub fn coarse(&self) -> bool {
         self.level < self.shared.final_level()
+    }
+
+    /// Whether it has not reached the final level: it runs at a coarse
+    /// one, or has taken no step, which leaves `level` at the final one.
+    pub fn before_final(&self) -> bool {
+        self.unstarted || self.coarse()
     }
 
     /// The spacing member `i` is laid out at with the chains at `spacing`:
@@ -855,25 +856,19 @@ impl State {
 
     /// Start `level`. A coarse level starts from the best state brought to
     /// its spacing (`bring`), each unit that fails the guard there from the
-    /// inputs (`merge`); entering one from the final spacing, as after the
-    /// probe, first keeps the best state there as `probed` if the probe
-    /// moved anything. The final level starts from `final_state`. The best
-    /// state, the energies and the stall history start there, so that no
-    /// energy is compared across spacings, and the abnormal streak starts
-    /// over.
+    /// inputs (`merge`). The final level starts from `final_state`. The
+    /// best state, the energies and the stall history start there, so that
+    /// no energy is compared across spacings, and the abnormal streak
+    /// starts over.
     ///
     /// Of the schedule it sets `level`, `handed_over` (whether a coarser
     /// level that descended hands over), `descended` (not yet), `held`
     /// (none) and `from_input` (what came from the inputs), and clears
-    /// `settled`; `probing`, `coarse_descended` and, but for that one
-    /// entry, `probed` carry. `laid_out` comes with the state it starts
-    /// from.
+    /// `settled` and `unstarted`; `coarse_descended` carries. `laid_out`
+    /// comes with the state it starts from.
     pub fn enter(&mut self, level: usize) -> Result<(), NotFinite> {
         let from = self.level_spacing();
         let (now, seen, from_input) = if level < self.shared.final_level() {
-            if !self.coarse() && self.moved {
-                self.probed = Some((self.best.clone(), self.best_energy));
-            }
             self.level = level;
             let candidate = self.bring(&self.best, from, self.level_spacing());
             self.merge_guarded(&candidate, &self.input)
@@ -882,8 +877,8 @@ impl State {
             (now, seen, from_input)
         };
         self.settled = false;
-        // Level 0 comes after the probe, at the final spacing.
-        self.handed_over = level > 0 && self.descended;
+        self.unstarted = false;
+        self.handed_over = self.descended;
         self.descended = false;
         self.held.fill(false);
         self.reseed(now, seen, from_input)
@@ -895,30 +890,29 @@ impl State {
     /// energy at the final spacing and per member whether it is the inputs:
     /// the coarse best state subdivided (`bring`) if some coarse burst ended
     /// normally (`coarse_descended`), it passes the guard and its energy is
-    /// no higher than that of the state the run keeps at the final spacing;
-    /// else that state, `probed` or the inputs. So the coarse levels never
-    /// leave more energy than the probe did, nor a state only resampling
-    /// produced.
+    /// no higher than the inputs'; else the inputs. So the coarse levels
+    /// never leave more energy than the inputs had, nor a state only
+    /// resampling produced.
     fn final_state(&mut self, from: f64) -> Result<(Shape, Seen, f64, Vec<bool>), NotFinite> {
         self.level = self.shared.final_level();
         let count = self.shared.count();
-        let kept_energy = self.probed.as_ref().map_or(self.input_energy, |(_, e)| *e);
         if self.coarse_descended {
             let candidate = self.bring(&self.best, from, self.level_spacing());
             let seen = self.shared.seeing(&candidate.points);
             if self.guards(&candidate, &seen) {
                 let energy = self.energy_at(&candidate, &seen)?;
-                if energy <= kept_energy {
+                if energy <= self.input_energy {
                     return Ok((candidate, seen, energy, vec![false; count]));
                 }
             }
         }
-        let kept = self
-            .probed
-            .as_ref()
-            .map_or_else(|| self.input.clone(), |(shape, _)| shape.clone());
-        let seen = self.shared.seeing(&kept.points);
-        Ok((kept, seen, kept_energy, vec![self.probed.is_none(); count]))
+        let seen = self.shared.seeing(&self.input.points);
+        Ok((
+            self.input.clone(),
+            seen,
+            self.input_energy,
+            vec![true; count],
+        ))
     }
 
     /// Take `now` as the current and best state, its change counting from
@@ -1120,16 +1114,24 @@ impl State {
         stiffness
     }
 
-    /// One burst of every member and via together; returns its largest
-    /// change of a shape or a via's centre. A burst `expired` cut short
-    /// does not settle the problem. `n` is the problem's place among those
-    /// the run advances, by which `report` hears what the burst cost.
+    /// One burst of every member and via together, after entering level 0
+    /// if `unstarted`; returns its largest change of a shape or a via's
+    /// centre. A burst `expired` cut short does not settle the problem.
+    /// `n` is the problem's place among those the run advances, by which
+    /// `report` hears what the burst cost and each level it enters.
     pub fn step<E: From<NotFinite>>(
         &mut self,
         n: usize,
         bursts: &mut dyn Bursts<E>,
         report: &mut dyn FnMut(Notice) -> Result<(), E>,
     ) -> Result<f64, E> {
+        if self.unstarted {
+            self.enter(0)?;
+            report(Notice::Stage {
+                problem: n,
+                level: 0,
+            })?;
+        }
         let began = Instant::now();
         let shared = self.shared.clone();
         let spacing = self.level_spacing();
@@ -1308,18 +1310,8 @@ impl State {
         {
             self.settled = true;
         }
-        let entering = if self.probing {
-            // A problem the first burst at the final spacing settles has
-            // nothing for the coarse levels to do, and they would only
-            // move a converged route.
-            self.probing = false;
-            (!self.settled).then_some(0)
-        } else if self.settled && self.coarse() {
-            Some(self.level + 1)
-        } else {
-            None
-        };
-        if let Some(level) = entering {
+        if self.settled && self.coarse() {
+            let level = self.level + 1;
             self.enter(level)?;
             report(Notice::Stage { problem: n, level })?;
         }
@@ -1397,13 +1389,11 @@ impl State {
     /// spacing (`bring`), each unit that fails the guard there from the
     /// inputs (`merge`).
     ///
-    /// Of the schedule, `level`, `probing`, `handed_over`, `descended`,
+    /// Of the schedule, `level`, `unstarted`, `handed_over`, `descended`,
     /// `coarse_descended` and `moved` carry from `earlier`; `held` starts
     /// over, so a lone chain held at a coarse level is tried again, and
-    /// `from_input` is set for what came from the start. `probed` does not
-    /// carry: its energy was measured with the sections moving, so the
-    /// state this problem keeps at the final spacing is its own inputs.
-    /// `laid_out` comes with each member's shape. Returns how many members
+    /// `from_input` is set for what came from the start. `laid_out` comes
+    /// with each member's shape. Returns how many members
     /// that move and how many vias went back.
     pub fn go_on_from(&mut self, earlier: &State) -> Result<(usize, usize), NotFinite> {
         self.put_back(earlier, State::failing)
@@ -1444,7 +1434,7 @@ impl State {
         let members = self.free.iter().filter(|&&i| ahead[i] && back[i]).count();
         let vias = back[count..].iter().filter(|&&b| b).count();
         self.level = earlier.level;
-        self.probing = earlier.probing;
+        self.unstarted = earlier.unstarted;
         self.handed_over = earlier.handed_over;
         self.descended = earlier.descended;
         self.coarse_descended = earlier.coarse_descended;
@@ -2059,14 +2049,13 @@ mod tests {
 
         assert_eq!(p.level, LEVELS.len());
         let counts: Vec<usize> = bursts.counts.iter().map(|c| c[0]).collect();
-        // The probe at the final spacing, then the levels, coarsest first.
-        assert_eq!(counts[0], fine, "{counts:?}");
-        assert!(counts[1] * 3 < fine, "{counts:?}");
-        assert!(counts[1..].windows(2).all(|w| w[0] <= w[1]), "{counts:?}");
+        // The levels, coarsest first, then the final spacing.
+        assert!(counts[0] * 3 < fine, "{counts:?}");
+        assert!(counts.windows(2).all(|w| w[0] <= w[1]), "{counts:?}");
         assert!(
             counts
                 .iter()
-                .any(|&c| counts[1] < c && c < counts[counts.len() - 1]),
+                .any(|&c| counts[0] < c && c < counts[counts.len() - 1]),
             "{counts:?}"
         );
         assert!(longest_edge(&p.best.points[0]) <= settings().spacing + EDGE_ROUND_OFF);
@@ -2100,25 +2089,48 @@ mod tests {
     }
 
     #[test]
-    fn a_problem_reports_entering_each_level_once_and_not_the_probe() {
+    fn a_problem_reports_entering_each_level_once() {
         let mut p = coarse_problem(Arc::new(FreeSpace), 1.0, &LEVELS);
 
         let (entered, ran) = stages(&mut p, &mut toward(0.5));
 
         assert_eq!(entered, (0..=LEVELS.len()).collect::<Vec<_>>());
-        // The probe at the final level, then each level in turn.
-        assert_eq!(ran[0], LEVELS.len());
-        assert!(ran[1..].windows(2).all(|w| w[0] <= w[1]), "{ran:?}");
-        assert_eq!(ran[1], 0);
+        assert_eq!(ran[0], 0);
+        assert!(ran.windows(2).all(|w| w[0] <= w[1]), "{ran:?}");
     }
 
     #[test]
-    fn a_problem_without_coarse_levels_or_settled_by_the_probe_reports_no_level() {
-        let mut single = coarse_problem(Arc::new(FreeSpace), 1.0, &[]);
-        let mut probed = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
+    fn a_problem_with_coarse_levels_enters_the_coarsest_before_its_first_burst() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), 1.0, &LEVELS);
+        let fine = p.now.points[0].len();
+        assert!(p.unstarted);
+        let mut notices = Vec::new();
+        let mut bursts = toward(0.5);
 
+        p.step(0, &mut bursts, &mut |notice| {
+            notices.push(notice);
+            Ok(())
+        })
+        .expect("finite");
+
+        assert_eq!(
+            notices[0],
+            Notice::Stage {
+                problem: 0,
+                level: 0
+            }
+        );
+        assert!(matches!(&notices[1], Notice::Burst(b) if b.level == 0));
+        assert!(bursts.counts[0][0] * 3 < fine);
+        assert!(!p.unstarted);
+    }
+
+    #[test]
+    fn a_problem_without_coarse_levels_reports_no_level() {
+        let mut single = coarse_problem(Arc::new(FreeSpace), 1.0, &[]);
+
+        assert!(!single.unstarted);
         assert_eq!(stages(&mut single, &mut toward(0.5)).0, Vec::<usize>::new());
-        assert_eq!(stages(&mut probed, &mut toward(0.0)).0, Vec::<usize>::new());
     }
 
     #[test]
@@ -2174,7 +2186,6 @@ mod tests {
             None,
             coarse_settings(&LEVELS),
         );
-        p.probing = false;
         p.enter(0).expect("finite");
         let entered = p.best.clone();
 
@@ -2230,27 +2241,31 @@ mod tests {
     }
 
     #[test]
-    fn a_straight_chain_with_coarse_levels_has_nothing_to_do_after_one_burst() {
+    fn a_straight_chain_with_coarse_levels_has_nothing_to_do_after_a_burst_per_level() {
         let mut p = coarse_problem(Arc::new(FreeSpace), 0.0, &LEVELS);
 
+        let levels = LEVELS.len() as u64 + 1;
         assert_eq!(
             advanced(&mut p, &mut still(0, 0)),
-            (Outcome::NothingToDo, 1)
+            (Outcome::NothingToDo, levels)
         );
         assert_eq!(p.level, LEVELS.len());
+        assert!(p.best_energy <= p.input_energy);
+        assert!(passes(&p, &p.best));
     }
 
-    /// A rise the first burst straightens by less than the settle
-    /// threshold, mm.
+    /// A rise each burst straightens by less than the settle threshold, mm.
     const SETTLED_RISE: f64 = 0.004;
 
     #[test]
-    fn a_problem_the_first_burst_settles_skips_the_coarse_levels() {
+    fn a_problem_each_burst_settles_runs_one_burst_per_level() {
         let mut p = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
         let mut bursts = toward(0.0);
 
-        assert_eq!(advanced(&mut p, &mut bursts), (Outcome::Converged, 1));
+        let levels = LEVELS.len() as u64 + 1;
+        assert_eq!(advanced(&mut p, &mut bursts), (Outcome::Converged, levels));
         assert_eq!(p.level, LEVELS.len());
+        assert!(p.best_energy <= p.input_energy);
     }
 
     /// How much of its height each abnormal burst leaves a vertex: enough
@@ -2268,9 +2283,9 @@ mod tests {
         let (outcome, iterations) = advanced(&mut p, &mut abnormal);
 
         assert_eq!(outcome, Outcome::GaveUp);
-        // The probe, then a streak at each level.
+        // A streak at each level, the coarsest first.
         let levels = LEVELS.len() as u64 + 1;
-        assert_eq!(iterations, 1 + levels * u64::from(MAX_ABNORMAL_BURSTS));
+        assert_eq!(iterations, levels * u64::from(MAX_ABNORMAL_BURSTS));
         assert_eq!(p.level, LEVELS.len());
     }
 
@@ -2289,10 +2304,10 @@ mod tests {
         let (outcome, iterations) = advanced(&mut p, &mut abnormal);
 
         assert_eq!(outcome, Outcome::GaveUp);
-        // The probe, then a streak at each level: a level that gave up
+        // A streak at each level, the coarsest first: a level that gave up
         // hands over a state no burst settled.
         let levels = LEVELS.len() as u64 + 1;
-        assert_eq!(iterations, 1 + levels * u64::from(MAX_ABNORMAL_BURSTS));
+        assert_eq!(iterations, levels * u64::from(MAX_ABNORMAL_BURSTS));
         assert_eq!(p.level, LEVELS.len());
         // No burst descended, so it ends at its inputs, not at their
         // resample at the coarsest spacing; the final level's bursts move
@@ -2301,57 +2316,53 @@ mod tests {
         assert!(shape_change(&p.best.points[0], &p.input.points[0]) < EDGE_ROUND_OFF);
     }
 
-    /// The best state of a problem without coarse levels after one burst
-    /// of `bursts`: what the probe of the same problem with them keeps.
-    fn probed(bursts: &mut dyn Bursts<NotFinite>) -> State {
-        let mut q = coarse_problem(Arc::new(FreeSpace), BOW, &[]);
-        q.step(0, bursts, &mut |_| Ok(())).expect("finite");
-        q
-    }
-
     #[test]
-    fn the_final_level_keeps_the_probes_best_over_a_coarse_best_with_more_energy() {
+    fn the_final_level_keeps_the_inputs_over_a_coarse_best_with_more_energy() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         p.step(0, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         assert_eq!(p.level, 0);
-        p.step(0, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
-            .expect("finite");
-        // A coarse best bowed higher than the probe left it, as the guard
+        // A coarse best bowed twice as high as the inputs, as the guard
         // passes.
         let mut x = layout::start_of(&p.layout(p.best.points.clone()), &p.best.positions);
         for y in x.iter_mut().skip(1).step_by(2) {
-            *y *= 2.0;
+            *y *= 4.0;
         }
         (p.best.points, _) = p.layout(p.best.points.clone()).unflatten(&x);
 
         p.enter(LEVELS.len()).expect("finite");
 
-        let q = probed(&mut toward(0.5));
-        assert_eq!(p.best.points, q.best.points);
-        assert_eq!(p.best_energy, q.best_energy);
-        assert!(p.best_energy < p.input_energy);
+        assert_eq!(p.best, p.input);
+        assert_eq!(p.best_energy, p.input_energy);
     }
 
     #[test]
-    fn a_run_stopped_right_after_the_probe_ends_at_the_probes_best() {
+    fn a_run_stopped_before_its_first_burst_ends_at_its_inputs() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
-            .expect("finite");
-        assert_eq!(p.level, 0);
+        // It reports the final level, yet never ran at it.
+        assert!(p.before_final());
 
         p.finish().expect("finite");
 
-        let q = probed(&mut toward(0.5));
-        assert_eq!(p.best.points, q.best.points);
-        assert_eq!(p.best_energy, q.best_energy);
-        assert!(p.best_energy < p.input_energy);
+        assert!(!p.coarse());
+        assert_eq!(p.best, p.input);
+        assert_eq!(p.best_energy, p.input_energy);
+    }
+
+    #[test]
+    fn only_a_problem_at_the_final_level_is_past_the_coarse_ones() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        p.enter(0).expect("finite");
+        assert!(p.before_final());
+
+        p.enter(LEVELS.len()).expect("finite");
+
+        assert!(!p.before_final());
     }
 
     #[test]
     fn an_abnormal_burst_that_moves_nothing_after_a_descent_settles_its_level() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        p.probing = false;
         p.enter(0).expect("finite");
         // A normal burst descends at the coarsest level, then a streak that
         // moves nothing gives it up, as at a pad's corner.
@@ -2406,7 +2417,6 @@ mod tests {
             (Arc::new(FreeSpace) as Arc<dyn Field>, 2.0),
         ] {
             let mut p = coarse_problem(field, BOW, &LEVELS);
-            p.probing = false;
             p.enter(0).expect("finite");
             let mut x = layout::start_of(&p.layout(p.best.points.clone()), &p.best.positions);
             for y in x.iter_mut().skip(1).step_by(2) {
@@ -2424,7 +2434,6 @@ mod tests {
     #[test]
     fn a_problem_built_again_at_a_coarse_level_goes_on_at_it() {
         let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        earlier.probing = false;
         earlier.enter(0).expect("finite");
         earlier
             .step(0, &mut toward(0.0), &mut |_| Ok(()))
@@ -2440,7 +2449,7 @@ mod tests {
             again.go_on_from(&earlier).expect("finite");
 
             assert_eq!(again.level, 0);
-            assert!(!again.probing);
+            assert!(!again.unstarted);
             assert!(passes(&again, &again.best));
             assert_eq!(again.best_energy, energy_at_level(&again, &again.best));
             assert!(longest_edge(&again.best.points[0]) <= LEVELS[0] + EDGE_ROUND_OFF);
@@ -2452,7 +2461,6 @@ mod tests {
     #[test]
     fn a_problem_built_again_after_a_descent_keeps_it() {
         let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        earlier.probing = false;
         earlier.enter(0).expect("finite");
         earlier
             .step(0, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
