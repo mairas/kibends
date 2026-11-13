@@ -227,8 +227,9 @@ fn shape_energy<'py>(
     Ok((value, vectors(py, &gradient)?))
 }
 
-/// The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
-/// bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+/// The bend-radius hinge at `limit`, each edge weighed by `spacing`
+/// (`kibends_core::energy::polyline::bend_radius_energy`), and its
+/// gradient, zero at `fixed` vertices.
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn bend_radius_energy<'py>(
@@ -236,10 +237,12 @@ fn bend_radius_energy<'py>(
     points: PyReadonlyArray2<'_, f64>,
     fixed: BoolArg<'_>,
     limit: f64,
+    spacing: f64,
     params: Params,
 ) -> PyResult<(f64, Points<'py>)> {
     let (points, fixed) = polyline_of(&points, &fixed)?;
-    let (value, gradient) = polyline::bend_radius_energy(&points, &fixed, limit, &params.0);
+    let (value, gradient) =
+        polyline::bend_radius_energy(&points, &fixed, limit, spacing, &params.0);
     Ok((value, vectors(py, &gradient)?))
 }
 

@@ -325,11 +325,12 @@ def total_energy(
     field: DistanceField,
     params: EnergyParams,
     short_edge: float = 0.0,
-    bend_limit: float | None = None,
+    hinge: tuple[float, float] | None = None,
 ) -> TermValue:
     """One polyline's energy in `field` alone, as the optimizer sums its
-    terms (`members.members_energy`), with the bend-radius hinge at
-    `bend_limit` if given; raises ValueError if it is not finite."""
+    terms (`members.members_energy`), with the bend-radius hinge at the
+    limit of `hinge`, each edge weighed by its spacing, if given; raises
+    ValueError if it is not finite."""
     points = np.asarray(points, dtype=float)
     alone = ChainInput(
         ChainCentreline("alone", "", 0.0, 0.0, points), "", fixed, core_field(field)
@@ -343,9 +344,10 @@ def total_energy(
         seen_parts([alone], [points]),
         (),
     )
-    if bend_limit is not None:
+    if hinge is not None:
+        limit, spacing = hinge
         bend_value, bend_gradient = bend_radius_energy(
-            points, fixed, bend_limit, params
+            points, fixed, limit, spacing, params
         )
         value += bend_value
         gradient = gradient + bend_gradient

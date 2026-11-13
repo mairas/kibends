@@ -427,7 +427,7 @@ def _reference_members(
         gradient = shape_gradient + obstacle_gradient
         if isinstance(member, PairBlock):
             bend, bend_gradient = bend_radius_energy(
-                points, masks[i], member.limit, params
+                points, masks[i], member.limit, member.spacing, params
             )
             value += bend
             gradient += bend_gradient

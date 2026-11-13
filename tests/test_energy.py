@@ -279,10 +279,14 @@ class TestTotal:
 BEND_LIMIT = 1.8
 """Tight enough that the wiggly polylines' edges reach every part of the
 hinge: clear, within the standoff, and inside the limit."""
+BEND_SPACING = 0.1
+"""The spacing each edge's hinge weighs by, mm."""
 
 
 def bend_radius(limit: float = BEND_LIMIT) -> Term:
-    return lambda points, fixed: bend_radius_energy(points, fixed, limit, PARAMS)
+    return lambda points, fixed: bend_radius_energy(
+        points, fixed, limit, BEND_SPACING, PARAMS
+    )
 
 
 def edge_radii(points: FloatArray) -> FloatArray:
@@ -298,16 +302,20 @@ def edge_radii(points: FloatArray) -> FloatArray:
 class TestBendRadius:
     def test_zero_while_every_bend_is_wider_than_the_limit(self) -> None:
         points = arc(1.0, np.pi / 2, 33)
-        value, gradient = bend_radius_energy(points, free(33), 0.5, PARAMS)
+        value, gradient = bend_radius_energy(
+            points, free(33), 0.5, BEND_SPACING, PARAMS
+        )
         assert value == 0.0
         np.testing.assert_array_equal(gradient, 0.0)
 
     def test_straight_edges_cost_nothing_however_short(self) -> None:
         points = np.stack([np.linspace(0.0, 0.01, 11), np.zeros(11)], axis=1)
-        value, _ = bend_radius_energy(points, free(11), BEND_LIMIT, PARAMS)
+        value, _ = bend_radius_energy(
+            points, free(11), BEND_LIMIT, BEND_SPACING, PARAMS
+        )
         assert value == 0.0
 
-    def test_is_the_clearance_hinge_of_the_radii_along_the_length(self) -> None:
+    def test_is_the_clearance_hinge_of_the_radii_by_the_edge(self) -> None:
         points = NEAR_DISC[0]
         radius = edge_radii(points)
         depth = radius - BEND_LIMIT
@@ -317,13 +325,18 @@ class TestBendRadius:
             STANDOFF / 2 - depth,
             (STANDOFF - np.minimum(depth, STANDOFF)) ** 2 / (2 * STANDOFF),
         )
-        lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-        value, _ = bend_radius_energy(points, free(len(points)), BEND_LIMIT, PARAMS)
-        assert value == pytest.approx(PARAMS.clearance_weight * lengths @ hinge)
+        value, _ = bend_radius_energy(
+            points, free(len(points)), BEND_LIMIT, BEND_SPACING, PARAMS
+        )
+        assert value == pytest.approx(
+            PARAMS.clearance_weight * BEND_SPACING * hinge.sum()
+        )
 
     def test_tighter_bend_costs_more(self) -> None:
         values = [
-            bend_radius_energy(arc(radius, np.pi / 2, 33), free(33), 1.0, PARAMS)[0]
+            bend_radius_energy(
+                arc(radius, np.pi / 2, 33), free(33), 1.0, BEND_SPACING, PARAMS
+            )[0]
             for radius in (1.0, 0.8, 0.5)
         ]
         assert 0.0 < values[0] < values[1] < values[2]
@@ -340,9 +353,9 @@ class TestBendRadius:
         points = NEAR_DISC[0]
         fixed = free(len(points))
         plain = total_energy(points, fixed, DISC, PARAMS)
-        bend = bend_radius_energy(points, fixed, BEND_LIMIT, PARAMS)
+        bend = bend_radius_energy(points, fixed, BEND_LIMIT, BEND_SPACING, PARAMS)
         value, gradient = total_energy(
-            points, fixed, DISC, PARAMS, bend_limit=BEND_LIMIT
+            points, fixed, DISC, PARAMS, hinge=(BEND_LIMIT, BEND_SPACING)
         )
         assert value == pytest.approx(plain[0] + bend[0])
         np.testing.assert_allclose(gradient, plain[1] + bend[1])

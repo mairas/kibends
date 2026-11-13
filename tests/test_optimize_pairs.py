@@ -149,12 +149,13 @@ def reference_energy(
         ]
         if isinstance(member, PairBlock):
             near = neighbour_field(member.facing, others, ignored=member.nets)
-            static, limit = member.chain.field, member.limit
+            static = member.chain.field
+            hinge: tuple[float, float] | None = (member.limit, member.spacing)
         else:
             near = neighbour_field(member, others)
-            static, limit = member.field, None
+            static, hinge = member.field, None
         field: ObstacleField = chain_field(static, near)
-        value += total_energy(points, mask, field, params, settings.short_edge, limit)[
+        value += total_energy(points, mask, field, params, settings.short_edge, hinge)[
             0
         ]
     return value

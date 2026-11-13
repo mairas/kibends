@@ -478,14 +478,15 @@ class Member:
     A chain, or a coupled section as its centreline
     (`kibends_core::members::Member`).
     """
-    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None) -> Member:
+    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None, spacing: typing.Optional[builtins.float] = None) -> Member:
         r"""
         On `layer`, keeping clear of the others as the track `viewer`,
         ignoring the tracks of the nets `ignored`, showing the others the
         tracks `shown`, in its static `field`, its contact stops weighed by
         `width` and its contacts' regions `contacts`; a coupled section with
         its `section` offset and the bend-radius `limit` its hinge keeps,
-        none without the hinge.
+        none without the hinge, each edge's hinge weighed by `spacing`, the
+        one the centreline is laid out at.
         """
 
 @typing.final
@@ -1231,10 +1232,11 @@ def bend_radii(centreline: numpy.typing.NDArray[numpy.float64], turning: typing.
     by default (`kibends_core::pairs::bend_radii`).
     """
 
-def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, spacing: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
-    The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
-    bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+    The bend-radius hinge at `limit`, each edge weighed by `spacing`
+    (`kibends_core::energy::polyline::bend_radius_energy`), and its
+    gradient, zero at `fixed` vertices.
     """
 
 def bend_radius_limit(gap: builtins.float, width: builtins.float) -> builtins.float:

@@ -193,10 +193,16 @@ fn turn_gradient(n: usize, edges: &Edges, d_turn: &[f64]) -> Vec<V2> {
     gradient
 }
 
-/// Σ lₑ·c(rₑ - `limit`) over the edges, weighted like the clearance hinge
-/// c and with its standoff, where rₑ is edge e's bend radius: its length
-/// lₑ over |tan(φ/2)| summed over its two ends' turns φ, signed, 0 at the
-/// polyline's ends (`edge_bend_radii`).
+/// Σ `edge`·c(rₑ - `limit`) over the edges, weighted like the clearance
+/// hinge c and with its standoff, where rₑ is edge e's bend radius: its
+/// length lₑ over |tan(φ/2)| summed over its two ends' turns φ, signed, 0
+/// at the polyline's ends (`edge_bend_radii`).
+///
+/// Each edge weighs by the same `spacing`, the one the polyline is laid
+/// out at, not by its own length: a turn on a shorter edge has a smaller
+/// radius, so it costs more, never less, and vertices cannot hide a bend
+/// on an edge too short to weigh anything. Edges laid out at the spacing
+/// are no longer than it, so the weight is about their length.
 ///
 /// That is the radius `pairs.check_bend_radius` measures: below it the
 /// polyline's mitred offset to the inside folds back on itself, so with
@@ -208,6 +214,7 @@ pub fn bend_radius_energy(
     points: &[V2],
     fixed: &[bool],
     limit: f64,
+    spacing: f64,
     params: &EnergyParams,
 ) -> TermValue {
     let n = points.len();
@@ -231,7 +238,7 @@ pub fn bend_radius_energy(
         return (0.0, vec![V2::default(); n]);
     }
     let weight = params.clearance_weight;
-    let mut by_length = Vec::with_capacity(edges.lengths.len());
+    let mut by_edge = Vec::with_capacity(edges.lengths.len());
     let mut d_length = Vec::with_capacity(edges.lengths.len());
     let mut d_half_turn = Vec::with_capacity(edges.lengths.len());
     for e in 0..edges.lengths.len() {
@@ -242,17 +249,16 @@ pub fn bend_radius_energy(
             (1.0, f64::INFINITY)
         };
         let (hinge_value, hinge_slope) = hinge(params.standoff, radius - limit);
-        by_length.push(length * hinge_value);
-        d_length.push(weight * (hinge_value + length * hinge_slope / safe_size));
+        by_edge.push(spacing * hinge_value);
+        d_length.push(weight * spacing * hinge_slope / safe_size);
         let d_size = if active[e] {
-            let ratio = length / safe_size;
-            -weight * (ratio * ratio) * hinge_slope
+            -weight * spacing * length / (safe_size * safe_size) * hinge_slope
         } else {
             0.0
         };
         d_half_turn.push(numpy_sign(spread[e]) * d_size);
     }
-    let value = weight * exact_sum(by_length);
+    let value = weight * exact_sum(by_edge);
     let d_turn: Vec<f64> = d_half_turn
         .windows(2)
         .zip(&curvature_slope)
@@ -341,7 +347,10 @@ mod tests {
     fn the_bend_radius_s_gradient_matches_finite_differences() {
         for seed in 0..4 {
             let points = wiggly(seed);
-            assert_gradient_matches(|p, f| bend_radius_energy(p, f, 1.8, &params()), &points);
+            assert_gradient_matches(
+                |p, f| bend_radius_energy(p, f, 1.8, 0.1, &params()),
+                &points,
+            );
         }
     }
 
@@ -353,13 +362,16 @@ mod tests {
             V2::new(0.1, 0.05),
             V2::new(0.0, 1.0),
         ];
-        assert_gradient_matches(|p, f| bend_radius_energy(p, f, 1.8, &params()), &hairpin);
+        assert_gradient_matches(
+            |p, f| bend_radius_energy(p, f, 1.8, 0.1, &params()),
+            &hairpin,
+        );
     }
 
     #[test]
     fn a_full_reversal_is_finite() {
         let reversal = [V2::new(0.0, 0.0), V2::new(1.0, 0.0), V2::new(0.0, 0.0)];
-        let (value, gradient) = bend_radius_energy(&reversal, &free(3), 1.8, &params());
+        let (value, gradient) = bend_radius_energy(&reversal, &free(3), 1.8, 0.1, &params());
         assert!(value.is_finite() && value > 0.0);
         assert!(gradient.iter().all(|g| g.x.is_finite() && g.y.is_finite()));
     }
@@ -374,7 +386,7 @@ mod tests {
         ];
         for (value, gradient) in [
             shape_energy(&points, &free(4), 0.1),
-            bend_radius_energy(&points, &free(4), 1.8, &params()),
+            bend_radius_energy(&points, &free(4), 1.8, 0.1, &params()),
         ] {
             assert!(value.is_finite());
             assert!(gradient.iter().all(|g| g.x.is_finite() && g.y.is_finite()));
@@ -383,12 +395,13 @@ mod tests {
 
     #[test]
     fn wide_bends_and_straight_edges_cost_nothing() {
-        let (value, gradient) = bend_radius_energy(&arc(1.0, 1.5, 33), &free(33), 0.5, &params());
+        let (value, gradient) =
+            bend_radius_energy(&arc(1.0, 1.5, 33), &free(33), 0.5, 0.1, &params());
         assert_eq!(value, 0.0);
         assert!(gradient.iter().all(|&g| g == V2::default()));
         let straight: Vec<V2> = (0..11).map(|k| V2::new(k as f64 * 1e-3, 0.0)).collect();
         assert_eq!(
-            bend_radius_energy(&straight, &free(11), 1.8, &params()).0,
+            bend_radius_energy(&straight, &free(11), 1.8, 0.1, &params()).0,
             0.0
         );
     }
@@ -397,7 +410,25 @@ mod tests {
     fn a_tighter_bend_costs_more() {
         let values: Vec<f64> = [1.0, 0.8, 0.5]
             .into_iter()
-            .map(|r| bend_radius_energy(&arc(r, 1.5, 33), &free(33), 1.0, &params()).0)
+            .map(|r| bend_radius_energy(&arc(r, 1.5, 33), &free(33), 1.0, 0.1, &params()).0)
+            .collect();
+        assert!(0.0 < values[0] && values[0] < values[1] && values[1] < values[2]);
+    }
+
+    #[test]
+    fn a_turn_on_a_shorter_edge_costs_more() {
+        let turn = 0.8_f64;
+        let values: Vec<f64> = [0.1, 0.01, 0.001]
+            .into_iter()
+            .map(|l| {
+                let points = [
+                    V2::new(-1.0, 0.0),
+                    V2::new(0.0, 0.0),
+                    V2::new(l, 0.0),
+                    V2::new(l + libm::cos(turn), libm::sin(turn)),
+                ];
+                bend_radius_energy(&points, &free(4), 0.3, 0.1, &params()).0
+            })
             .collect();
         assert!(0.0 < values[0] && values[0] < values[1] && values[1] < values[2]);
     }
@@ -408,7 +439,7 @@ mod tests {
         let mut fixed = free(points.len());
         fixed[0] = true;
         fixed[4] = true;
-        let (_, gradient) = bend_radius_energy(&points, &fixed, 1.8, &params());
+        let (_, gradient) = bend_radius_energy(&points, &fixed, 1.8, 0.1, &params());
         assert_eq!(gradient[4], V2::default());
         let (_, gradient) = shape_energy(&points, &fixed, 0.0);
         assert_eq!(gradient[0], V2::default());

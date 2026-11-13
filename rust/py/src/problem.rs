@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use numpy::{IntoPyArray, PyReadonlyArray1};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
@@ -173,9 +174,10 @@ impl Member {
     /// tracks `shown`, in its static `field`, its contact stops weighed by
     /// `width` and its contacts' regions `contacts`; a coupled section with
     /// its `section` offset and the bend-radius `limit` its hinge keeps,
-    /// none without the hinge.
+    /// none without the hinge, each edge's hinge weighed by `spacing`, the
+    /// one the centreline is laid out at.
     #[new]
-    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None))]
+    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None, spacing = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         layer: String,
@@ -187,9 +189,19 @@ impl Member {
         contacts: Vec<FieldArg>,
         section: Option<PyRef<'_, PairOffset>>,
         limit: Option<f64>,
+        spacing: Option<f64>,
     ) -> PyResult<Self> {
         let parts = if section.is_some() { 2 } else { 1 };
         check_count("shown tracks", shown.len(), parts)?;
+        let hinge = match (limit, spacing) {
+            (Some(limit), Some(spacing)) => Some(members::Hinge { limit, spacing }),
+            (None, _) => None,
+            (Some(_), None) => {
+                return Err(PyValueError::new_err(
+                    "a bend-radius limit needs its spacing",
+                ));
+            }
+        };
         Ok(Self {
             inner: members::Member {
                 layer,
@@ -201,7 +213,7 @@ impl Member {
                 contacts: contacts.into_iter().map(|f| f.0).collect(),
                 section: section.map(|s| members::Section {
                     offset: s.inner.clone(),
-                    limit,
+                    hinge,
                 }),
             },
         })

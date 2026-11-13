@@ -53,12 +53,23 @@ pub struct Trace {
     pub clearance: f64,
 }
 
-/// A coupled section's offset and the smallest bend radius its centreline
-/// keeps, mm, through the bend-radius hinge; None leaves the hinge out.
+/// A coupled section's offset and its bend-radius hinge; None leaves the
+/// hinge out.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub offset: PairOffset,
-    pub limit: Option<f64>,
+    pub hinge: Option<Hinge>,
+}
+
+/// What a section's bend-radius hinge keeps
+/// (`energy::polyline::bend_radius_energy`).
+#[derive(Clone, Copy, Debug)]
+pub struct Hinge {
+    /// The smallest bend radius its centreline keeps, mm.
+    pub limit: f64,
+    /// The spacing the centreline is laid out at, which each edge's hinge
+    /// weighs by, mm.
+    pub spacing: f64,
 }
 
 /// A chain, or a coupled section as its centreline.
@@ -409,8 +420,9 @@ impl Members {
                     .zip(&obstacle_gradient)
                     .map(|(&s, &o)| s + o)
                     .collect();
-                let bend = member.section.as_ref().and_then(|s| s.limit).map(|limit| {
-                    let (bend, bend_gradient) = bend_radius_energy(points, masks[i], limit, params);
+                let bend = member.section.as_ref().and_then(|s| s.hinge).map(|h| {
+                    let (bend, bend_gradient) =
+                        bend_radius_energy(points, masks[i], h.limit, h.spacing, params);
                     add_to(&mut gradient, &bend_gradient);
                     bend
                 });

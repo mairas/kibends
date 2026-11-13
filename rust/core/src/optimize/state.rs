@@ -2527,7 +2527,7 @@ mod tests {
                     a: line(9.8, HELD_A),
                     b: line(10.2, HELD_B),
                 },
-                limit: None,
+                hinge: None,
             }),
         };
         let setup = |original: Vec<V2>, held: bool| MemberSetup {
