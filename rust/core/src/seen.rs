@@ -850,6 +850,8 @@ fn python_max(a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field::pairs::tests::Random;
+    use crate::geometry::segment_gap;
 
     /// Two straight tracks on one layer, of nets 0 and 1 and one kind, each
     /// a member seeing the other at `apart`.
@@ -1239,6 +1241,79 @@ mod tests {
             },
         );
         assert_eq!(found, vec![(0, vec![]), (1, vec![0])]);
+    }
+
+    #[test]
+    fn each_member_is_searched_within_its_own_radius_over_many_chunks() {
+        // Member 0's queries fill three chunks of runs; member 1's one query
+        // comes after them. The edge lies 1 mm from every query.
+        let many = 2 * CHUNK + RUN;
+        let at = V2::new(0.5, 0.0);
+        let points = vec![at; many + 1];
+        let mut owner = vec![0; many];
+        owner.push(1);
+        let tree = SegmentTree::new(&[V2::new(0.0, 1.0)], &[V2::new(1.0, 1.0)]);
+        let found = near_pairs(
+            &tree,
+            &points,
+            &points,
+            &owner,
+            &[2.0, 0.2],
+            |_: &mut (), pairs, p, edges| {
+                for &edge in edges {
+                    pairs.push(p, edge, 0.0);
+                }
+            },
+        );
+        assert_eq!(found.point, (0..many).collect::<Vec<_>>());
+        assert_eq!(found.piece, vec![0; many]);
+    }
+
+    #[test]
+    fn each_near_lists_every_edge_within_the_radius_ascending_on_random_runs() {
+        let mut random = Random(0x2545_f491_4f6c_dd1d);
+        let tree_starts: Vec<V2> = (0..300).map(|_| random.point(20.0)).collect();
+        let tree_ends: Vec<V2> = tree_starts
+            .iter()
+            .map(|&a| {
+                let length = random.uniform(0.0, 1.0);
+                a + length * length * length * V2::new(random.uniform(-15.0, 15.0), 0.0)
+                    + V2::new(random.uniform(-1.0, 1.0), random.uniform(-3.0, 3.0))
+            })
+            .collect();
+        let tree = SegmentTree::new(&tree_starts, &tree_ends);
+        // Each member is a random walk of slanted segments, one after another.
+        let members = 30;
+        let radius: Vec<f64> = (0..members).map(|_| random.uniform(0.0, 2.0)).collect();
+        let (mut starts, mut ends, mut owner) = (Vec::new(), Vec::new(), Vec::new());
+        for member in 0..members {
+            let mut at = random.point(20.0);
+            for _ in 0..random.uniform(1.0, 20.0) as usize {
+                let next = at + V2::new(random.uniform(-2.0, 2.0), random.uniform(-2.0, 2.0));
+                starts.push(at);
+                ends.push(next);
+                owner.push(member);
+                at = next;
+            }
+        }
+        let mut found = vec![Vec::new(); starts.len()];
+        each_near(&tree, &starts, &ends, &owner, &radius, |p, edges| {
+            found[p] = edges.to_vec();
+        });
+        for (p, edges) in found.iter().enumerate() {
+            assert!(edges.windows(2).all(|w| w[0] < w[1]));
+            for k in 0..tree_starts.len() {
+                let gap = segment_gap(
+                    starts[p],
+                    ends[p] - starts[p],
+                    tree_starts[k],
+                    tree_ends[k] - tree_starts[k],
+                );
+                if gap <= radius[owner[p]] {
+                    assert!(edges.contains(&k), "edge {k} missing at query {p}");
+                }
+            }
+        }
     }
 
     #[test]

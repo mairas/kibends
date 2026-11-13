@@ -404,7 +404,7 @@ pub fn near_segments(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -532,17 +532,17 @@ mod tests {
     }
 
     /// A xorshift generator, so that random segments are the same every run.
-    struct Random(u64);
+    pub(crate) struct Random(pub(crate) u64);
 
     impl Random {
-        fn uniform(&mut self, low: f64, high: f64) -> f64 {
+        pub(crate) fn uniform(&mut self, low: f64, high: f64) -> f64 {
             self.0 ^= self.0 << 13;
             self.0 ^= self.0 >> 7;
             self.0 ^= self.0 << 17;
             low + (high - low) * ((self.0 >> 11) as f64 / (1u64 << 53) as f64)
         }
 
-        fn point(&mut self, size: f64) -> V2 {
+        pub(crate) fn point(&mut self, size: f64) -> V2 {
             V2::new(self.uniform(0.0, size), self.uniform(0.0, size))
         }
     }
