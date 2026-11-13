@@ -3,8 +3,8 @@
 //! obstacle. A chain field, the members' view of each other and the moving
 //! vias' view search for their pairs and measure them here, all at once.
 
-use rstar::RTree;
-use rstar::primitives::GeomWithData;
+use rstar::primitives::{GeomWithData, Rectangle};
+use rstar::{AABB, RTree};
 
 use super::smooth::{SMOOTH_REACH, smooth_minimum, weighted_sum};
 use super::{DEGENERATE_DISTANCE, ROUND_OFF};
@@ -315,44 +315,73 @@ impl PointTree {
     }
 }
 
-/// A tree over segments' middles, which finds every segment that may come
-/// within a distance of a point.
+type Boxed = GeomWithData<Rectangle<[f64; 2]>, usize>;
+
+/// A tree over segments' bounding boxes, which finds every segment that may
+/// come within a distance of a point or of a box. A segment lies in its
+/// box, so a segment near a query has its box near it too, and a long
+/// segment is found only near its own box.
 pub struct SegmentTree {
-    tree: PointTree,
-    half_length: f64,
+    tree: RTree<Boxed>,
 }
 
 impl SegmentTree {
     /// The segments from starts[k] to ends[k].
     pub fn new(starts: &[V2], ends: &[V2]) -> Self {
-        let half_length = starts
+        let items = starts
             .iter()
             .zip(ends)
-            .map(|(&a, &b)| (b - a).norm())
-            .fold(0.0, f64::max)
-            / 2.0;
-        let middles: Vec<V2> = starts
-            .iter()
-            .zip(ends)
-            .map(|(&a, &b)| 0.5 * (a + b))
+            .enumerate()
+            .map(|(k, (a, b))| GeomWithData::new(Rectangle::from_corners(a.array(), b.array()), k))
             .collect();
         Self {
-            tree: PointTree::new(&middles),
-            half_length,
+            tree: RTree::bulk_load(items),
         }
     }
 
-    /// The segments, by index ascending, among them every one that comes
-    /// within `radius` of `p`.
+    /// The segments, by index ascending, whose boxes lie within `radius`
+    /// and DEGENERATE_DISTANCE of `p`: among them every one that comes
+    /// within `radius` of it. None for a NaN or negative radius.
     pub fn near(&self, p: V2, radius: f64) -> Vec<usize> {
-        self.tree
-            .within(p, radius + self.half_length + DEGENERATE_DISTANCE)
+        if radius.is_nan() || radius < 0.0 {
+            return Vec::new();
+        }
+        let reach = radius + DEGENERATE_DISTANCE;
+        let mut found: Vec<usize> = self
+            .tree
+            .locate_within_distance(p.array(), reach * reach)
+            .map(|g| g.data)
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    /// The segments, by index ascending, whose boxes meet the box from
+    /// `low` to `high` grown by `radius` and DEGENERATE_DISTANCE: among
+    /// them every one that comes within `radius` of a point in it. None
+    /// for a NaN or negative radius.
+    pub fn near_box(&self, low: V2, high: V2, radius: f64) -> Vec<usize> {
+        if radius.is_nan() || radius < 0.0 {
+            return Vec::new();
+        }
+        let reach = radius + DEGENERATE_DISTANCE;
+        let envelope = AABB::from_corners(
+            [low.x - reach, low.y - reach],
+            [high.x + reach, high.y + reach],
+        );
+        let mut found: Vec<usize> = self
+            .tree
+            .locate_in_envelope_intersecting(envelope)
+            .map(|g| g.data)
+            .collect();
+        found.sort_unstable();
+        found
     }
 }
 
 /// (point, segment) index pairs, by point then segment, among them every
 /// pair whose segment from starts[k] to ends[k] comes within `radius` of
-/// points[i], found with one tree over the segments' middles.
+/// points[i], found with one tree over the segments' bounding boxes.
 pub fn near_segments(
     starts: &[V2],
     ends: &[V2],
@@ -443,6 +472,105 @@ mod tests {
         let (point, segment) = near_segments(&starts, &ends, &[V2::new(0.0, 0.5)], 0.6);
         assert_eq!(point, vec![0]);
         assert_eq!(segment, vec![0]);
+    }
+
+    /// A 30 mm segment along y = 0, then short ones along y = 9 and y = 20.
+    fn one_long_and_short_segments() -> SegmentTree {
+        SegmentTree::new(
+            &[V2::new(0.0, 0.0), V2::new(14.0, 9.0), V2::new(20.0, 20.0)],
+            &[V2::new(30.0, 0.0), V2::new(16.0, 9.0), V2::new(21.0, 20.0)],
+        )
+    }
+
+    #[test]
+    fn a_long_segment_far_from_the_point_is_not_near() {
+        let tree = one_long_and_short_segments();
+        assert_eq!(tree.near(V2::new(15.0, 10.0), 1.5), vec![1]);
+    }
+
+    #[test]
+    fn a_long_segment_passing_close_is_near_though_its_middle_is_far() {
+        let tree = SegmentTree::new(&[V2::new(0.0, 0.5)], &[V2::new(24.0, 0.5)]);
+        assert_eq!(tree.near(V2::new(0.0, 0.0), 1.0), vec![0]);
+    }
+
+    #[test]
+    fn a_segment_of_no_length_is_near_within_the_radius_only() {
+        let tree = SegmentTree::new(&[V2::new(2.0, 0.0)], &[V2::new(2.0, 0.0)]);
+        assert_eq!(tree.near(V2::default(), 2.0), vec![0]);
+        assert!(tree.near(V2::default(), 1.99).is_empty());
+    }
+
+    #[test]
+    fn the_box_query_lists_the_boxes_that_meet_the_grown_box_ascending() {
+        let tree = SegmentTree::new(
+            &[
+                V2::new(0.0, 0.0),
+                V2::new(3.0, 12.5),
+                V2::new(0.0, 12.0),
+                V2::new(20.0, 20.0),
+            ],
+            &[
+                V2::new(30.0, 0.0),
+                V2::new(3.0, 13.0),
+                V2::new(1.0, 12.0),
+                V2::new(21.0, 20.0),
+            ],
+        );
+        let found = tree.near_box(V2::new(0.5, 11.0), V2::new(2.5, 11.5), 1.0);
+        assert_eq!(found, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_nan_or_negative_radius_finds_nothing() {
+        let tree = one_long_and_short_segments();
+        let (low, high) = (V2::new(14.0, 8.0), V2::new(16.0, 10.0));
+        assert!(tree.near(V2::new(15.0, 9.0), f64::NAN).is_empty());
+        assert!(tree.near(V2::new(15.0, 9.0), -1.0).is_empty());
+        assert!(tree.near_box(low, high, f64::NAN).is_empty());
+        assert!(tree.near_box(low, high, -1.0).is_empty());
+    }
+
+    /// A xorshift generator, so that random segments are the same every run.
+    struct Random(u64);
+
+    impl Random {
+        fn uniform(&mut self, low: f64, high: f64) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            low + (high - low) * ((self.0 >> 11) as f64 / (1u64 << 53) as f64)
+        }
+
+        fn point(&mut self, size: f64) -> V2 {
+            V2::new(self.uniform(0.0, size), self.uniform(0.0, size))
+        }
+    }
+
+    #[test]
+    fn near_lists_every_segment_within_the_radius_ascending_on_random_segments() {
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        let starts: Vec<V2> = (0..200).map(|_| random.point(20.0)).collect();
+        let ends: Vec<V2> = starts
+            .iter()
+            .map(|&a| {
+                let length = random.uniform(0.0, 1.0);
+                a + length * length * length * V2::new(random.uniform(-15.0, 15.0), 0.0)
+                    + V2::new(0.0, random.uniform(-3.0, 3.0))
+            })
+            .collect();
+        let tree = SegmentTree::new(&starts, &ends);
+        for _ in 0..200 {
+            let p = random.point(20.0);
+            let radius = random.uniform(0.0, 2.0);
+            let found = tree.near(p, radius);
+            assert!(found.windows(2).all(|w| w[0] < w[1]));
+            for k in 0..starts.len() {
+                if segment_gap(p, V2::default(), starts[k], ends[k] - starts[k]) <= radius {
+                    assert!(found.contains(&k), "segment {k} missing at {p:?}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -724,10 +724,10 @@ const RUN: usize = 8;
 /// For each of `points` in order, the edges of `tree`, ascending, among
 /// them every one within `radius` of it, and maybe others farther: one
 /// query answers a run of consecutive points of one member, as `owner`
-/// gives them, widened by how far they lie from its first. Callers measure
-/// every edge they get, so the farther ones change no answer; along a
-/// polyline the points of a run lie close together, and the queries are
-/// what a search costs most.
+/// gives them, with the edges whose boxes meet the box around all of the
+/// run's points grown by `radius`. Callers measure every edge they get, so
+/// the farther ones change no answer; along a polyline the points of a run
+/// lie close together, and the queries are what a search costs most.
 fn each_near(
     tree: &SegmentTree,
     points: &[V2],
@@ -738,12 +738,12 @@ fn each_near(
     let mut first = 0;
     while first < points.len() {
         let last = run_end(owner, first);
-        let centre = points[first];
-        let spread = points[first..last]
-            .iter()
-            .map(|&p| (p - centre).hypot())
-            .fold(0.0, f64::max);
-        let edges = tree.near(centre, radius + spread + ROUND_OFF);
+        let (mut low, mut high) = (points[first], points[first]);
+        for &p in &points[first + 1..last] {
+            low = V2::new(low.x.min(p.x), low.y.min(p.y));
+            high = V2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+        let edges = tree.near_box(low, high, radius + ROUND_OFF);
         for p in first..last {
             visit(p, &edges);
         }
@@ -1005,5 +1005,38 @@ mod tests {
         // The member's own net's track is no edge it sees; the via is an
         // obstacle numbered after the one track, by its vertex.
         assert_eq!(seen.obstacle(), &[3, 3]);
+    }
+
+    /// What `each_near` gives each of `points`, all of one member.
+    fn near_each(tree: &SegmentTree, points: &[V2], radius: f64) -> Vec<Vec<usize>> {
+        let mut found = vec![Vec::new(); points.len()];
+        each_near(tree, points, &vec![0; points.len()], radius, |p, edges| {
+            found[p] = edges.to_vec();
+        });
+        found
+    }
+
+    #[test]
+    fn a_run_spread_along_a_line_gets_every_edge_near_any_of_its_points() {
+        let points: Vec<V2> = (0..8).map(|k| V2::new(f64::from(k), 0.0)).collect();
+        let tree = SegmentTree::new(
+            &[V2::new(-0.5, -0.5), V2::new(7.0, 0.5), V2::new(3.0, 5.0)],
+            &[V2::new(-0.5, 0.5), V2::new(7.5, 0.5), V2::new(4.0, 5.0)],
+        );
+        for edges in near_each(&tree, &points, 0.6) {
+            assert_eq!(edges, vec![0, 1]);
+        }
+    }
+
+    #[test]
+    fn a_long_edge_far_from_a_run_is_not_near_it() {
+        let points: Vec<V2> = (0..4).map(|k| V2::new(14.0 + f64::from(k), 10.0)).collect();
+        let tree = SegmentTree::new(
+            &[V2::new(0.0, 0.0), V2::new(14.0, 9.0)],
+            &[V2::new(30.0, 0.0), V2::new(16.0, 9.0)],
+        );
+        for edges in near_each(&tree, &points, 1.5) {
+            assert_eq!(edges, vec![1]);
+        }
     }
 }
