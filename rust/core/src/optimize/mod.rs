@@ -15,7 +15,11 @@
 //! level it runs at, simplified and its long edges split, and each section
 //! so at the final spacing (`state`), run L-BFGS over every free
 //! vertex without bounds (`Bursts`, `burst`), scaled by each variable's
-//! stiffness (`layout`), and move back what the checks reject (`checks`).
+//! stiffness (`layout`), its line searches taking no trial that enters a
+//! clearance anew or deeper (`checks::Check::clearance_entered`), so that every state
+//! a burst takes keeps the clearance its start keeps, and move back what
+//! the checks reject after it, a vertex outside its contact or a section
+//! bent too tightly (`checks`).
 //!
 //! Copper of one net does not interact: a chain sees nothing of the chains,
 //! tracks and vias of its net (`members::Members::seen`), and its static

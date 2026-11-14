@@ -1283,6 +1283,15 @@ pub struct Statistics {
     /// Searches of a layer's neighbour list for its pairs.
     #[pyo3(get)]
     list_searches: u64,
+    /// Bursts L-BFGS ended abnormally.
+    #[pyo3(get)]
+    abnormal: u64,
+    /// Line searches of the bursts that failed.
+    #[pyo3(get)]
+    failed_searches: u64,
+    /// Line-search trials the bursts' checks rejected.
+    #[pyo3(get)]
+    rejected: u64,
 }
 
 /// The energy's statistics so far.
@@ -1293,6 +1302,9 @@ fn statistics() -> Statistics {
     Statistics {
         evaluations: counted.evaluations,
         list_searches: counted.list_searches,
+        abnormal: counted.abnormal,
+        failed_searches: counted.failed_searches,
+        rejected: counted.rejected,
     }
 }
 

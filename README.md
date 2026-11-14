@@ -335,6 +335,11 @@ and the clearance pushes it out where there is room, another selected
 chain moving aside too if it must. Where there is none, as in a channel
 narrower than the track's clearance asks, the result has no more clearance
 violations than the selection had, and KiCad's DRC reports what remains.
+No step of the optimizer takes copper newly inside a clearance, nor deeper
+inside another selected chain's or moving via's than the step started with:
+such a trial step is not taken, and the step stops short of it. A stretch
+that starts inside may still move to where it is inside another clearance:
+the steps count stretches inside, not which clearance each is inside.
 
 ### Differential pairs
 
