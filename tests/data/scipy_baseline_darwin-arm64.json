@@ -749,36 +749,36 @@
     },
     "pair-over-pad": {
       "termination": "converged",
-      "iterations": 5,
-      "evaluations": 696,
+      "iterations": 6,
+      "evaluations": 410,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            10.340665729633116,
-            10.341587020417474
+            10.340561941755563,
+            10.341527315971007
           ],
-          "clearance": 0.01902074183715008
+          "clearance": 0.01914197997849465
         }
       ]
     },
     "pair-tent": {
       "termination": "converged",
       "iterations": 6,
-      "evaluations": 589,
+      "evaluations": 403,
       "chains": [
         {
-          "length": 2.000001644760891,
+          "length": 2.0000017162412997,
           "clearance": null
         }
       ],
-      "gap": 0.019004755827783493,
+      "gap": 0.019018630286187277,
       "pairs": [
         {
           "lengths": [
-            10.916455475469995,
-            10.362431014051786
+            10.916282176906822,
+            10.362342283414645
           ],
           "clearance": null
         }
@@ -786,15 +786,15 @@
     },
     "pair-corner": {
       "termination": "converged",
-      "iterations": 6,
-      "evaluations": 1037,
+      "iterations": 2,
+      "evaluations": 206,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            2.6057394308745154,
-            3.17267820445163
+            2.6055924416525986,
+            3.172514456609461
           ],
           "clearance": null
         }
@@ -802,15 +802,15 @@
     },
     "pair-round-corner": {
       "termination": "converged",
-      "iterations": 4,
-      "evaluations": 748,
+      "iterations": 3,
+      "evaluations": 373,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            2.605653114942604,
-            3.172543752230342
+            2.6056353538080357,
+            3.172539836158445
           ],
           "clearance": null
         }
@@ -818,31 +818,31 @@
     },
     "pair-uneven-end": {
       "termination": "converged",
-      "iterations": 5,
-      "evaluations": 696,
+      "iterations": 6,
+      "evaluations": 410,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            10.340665729633116,
-            10.342169896870377
+            10.340561941755563,
+            10.342110365947843
           ],
-          "clearance": 0.01902074183715008
+          "clearance": 0.01914197997849465
         }
       ]
     },
     "pair-chamfered": {
       "termination": "converged",
       "iterations": 5,
-      "evaluations": 610,
+      "evaluations": 389,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            4.378524002343497,
-            3.8250609520207437
+            4.375937551860798,
+            3.8225865799220187
           ],
           "clearance": null
         }
@@ -851,30 +851,30 @@
     "pair-split": {
       "termination": "converged",
       "iterations": 3,
-      "evaluations": 187,
+      "evaluations": 184,
       "chains": [
         {
-          "length": 2.1262045106663634,
-          "clearance": 0.018953840820485013
+          "length": 2.126203296635887,
+          "clearance": 0.018943392681363025
         },
         {
-          "length": 2.3034424326613214,
-          "clearance": 0.019005965661610613
+          "length": 2.3034447007417382,
+          "clearance": 0.019004116552062134
         }
       ],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            4.111172423991081,
-            3.905697408658287
+            4.111174861546866,
+            3.9056956734479424
           ],
           "clearance": 0.22500000000000042
         },
         {
           "lengths": [
-            4.11117242399108,
-            3.9056974086582876
+            4.111174861546865,
+            3.9056956734479433
           ],
           "clearance": 0.22499999999999998
         }
@@ -882,17 +882,17 @@
     },
     "pair-turning-back-150": {
       "termination": "converged",
-      "iterations": 14,
-      "evaluations": 1661,
+      "iterations": 3,
+      "evaluations": 187,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            6.210758273629723,
-            7.125690379949726
+            6.21029377270784,
+            7.125032779192335
           ],
-          "clearance": 0.01969581970107681
+          "clearance": 0.019687124006800616
         }
       ]
     },
