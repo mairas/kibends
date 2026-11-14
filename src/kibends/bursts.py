@@ -115,11 +115,11 @@ class OptimizerSettings:
     lbfgs_gtol: float = LBFGSB_GTOL
     """The gradient's largest component at or below which a burst ends."""
     time_limit: float | None = None
-    """Seconds each level of the schedule may run, after which the run ends
-    the running burst at its next L-BFGS iteration. Every problem then at a
-    coarse level goes on at the next, the limit counted again, as it is
-    once for a level a problem has run no burst at; with neither, the run
-    keeps its best state, as at the iteration cap
+    """Seconds each level of the schedule may run, after which, once no
+    problem owes a burst at a level a handover took it to, the run ends the
+    running burst at its next L-BFGS iteration. Every problem then at a
+    coarse level goes on at the next and the limit counts again; with none
+    there, the run keeps its best state, as at the iteration cap
     (`optimize.optimize_chains`). None for no limit."""
 
     def __post_init__(self) -> None:

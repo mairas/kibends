@@ -190,18 +190,23 @@ def optimize_chains(
     and whose best states sum to no less energy than its inputs ends
     `Termination.ABNORMAL`, whatever stopped it. With a
     time limit in `settings`, the limit runs out once `clock` reads it or
-    more past `started`, by default when the run starts: the running burst
-    ends at its next L-BFGS iteration, and its state goes through the
-    checks and the guard as any burst's. Each problem then still before the
-    final level goes on at its next level as if it had settled where it
-    runs, one that has taken no step leaving level 0, the others go on as
-    they were, and the limit counts again from then. It also counts again,
-    once for each level of each problem, for a problem that has not settled
-    and has run no burst at its level, as one that settled into it in the
-    burst the limit ran out in (`_count_again`). Otherwise the run ends
-    `Termination.TIME_LIMIT`. So every level runs a burst unless the
-    bursts of other problems take its time, and with the default schedule
-    the limit counts at most three times.
+    more past `started`, by default when the run starts, and no problem owes
+    a burst at its level (`ProblemState.owes_burst`): one that has not
+    settled and has run none at a level a handover took it to. So an owed
+    burst runs past the limit, as a long one does, and the problems after
+    it in the outer iteration step too. Once the limit has run out, the
+    running burst ends at its next L-BFGS iteration, and its state goes
+    through the checks and the guard as any burst's. Each problem then
+    still before the final level goes on at its next level as if it had
+    settled where it runs, one that has taken no step leaving level 0, and
+    the limit counts again from then (`_hand_over`); the rest go on as they
+    were. With none before the final level the run ends
+    `Termination.TIME_LIMIT`. So every level a problem reaches above level
+    0 runs a burst, and the limit counts at most once for each level,
+    besides the overrun of the bursts running when it runs out, owed ones
+    included, and the holds. Should it run out in the outer iteration that
+    reaches the iteration cap with some problem before the final level,
+    the cap ends the run.
     `stop`, asked whenever the time limit is, ends the running burst the
     same way and the run at once, `Termination.STOPPED`, if it answered
     true before the limit ran out. A run that `stop` or the iteration cap
@@ -225,8 +230,8 @@ def optimize_chains(
     It logs at INFO when setup begins, once the problems are built, the
     setup time and the starting length and energy, as each problem enters a
     level of a schedule with coarse levels its spacing (`_stage`), each
-    time the time limit ends a coarse level, or counts again for a level
-    that ran no burst, its spacing and those problems (`_count_again`),
+    time the time limit ends a coarse level its spacing and the problems
+    that left it (`_hand_over`),
     and at each hold what it put back. Each
     outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
@@ -302,7 +307,8 @@ def optimize_chains(
         if stop is not None and stop():
             first_end = first_end or Termination.STOPPED
             return True
-        if deadline is not None and clock() >= deadline:
+        # A burst owed at a level runs past the limit, as a long one does.
+        if deadline is not None and clock() >= deadline and not report.owing:
             first_end = first_end or Termination.TIME_LIMIT
             return True
         return False
@@ -320,13 +326,10 @@ def optimize_chains(
             ScaledObjective(objective, scale), start, revert, settings, expired
         )
 
-    # The problems' levels, by description, that the limit counted again
-    # for, so that it does so once for each.
-    granted: set[tuple[str, int]] = set()
-
     def advance(iteration: int, cap: int) -> tuple[Termination, int]:
         """`_core.advance` from `iteration` until `cap`, the time limit
-        counted again whenever `_count_again` says so."""
+        counted again whenever it ends a coarse level (`_hand_over`),
+        unless at `cap`, which then ends the run."""
         nonlocal deadline, first_end
         while True:
             outcome, iteration = _core.advance(
@@ -343,9 +346,12 @@ def optimize_chains(
                 termination is not Termination.TIME_LIMIT
                 or first_end is not Termination.TIME_LIMIT
                 or limit is None
-                or not _count_again(moving, granted)
+                or not any(p.state.before_final for p in moving)
             ):
                 return termination, iteration
+            if iteration >= cap:
+                return Termination.ITERATION_CAP, iteration
+            _hand_over(moving)
             deadline = clock() + limit
             first_end = None
 
@@ -425,6 +431,7 @@ _Notice = (
     | _core.AbnormalNotice
     | _core.BurstNotice
     | _core.StageNotice
+    | _core.OwingNotice
     | _core.ProgressNotice
 )
 
@@ -435,9 +442,10 @@ class _Report:
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
     `shown`, the last INFO line, and handed to `on_progress`. A problem
-    entering a level is logged at INFO (`_stage`). The notices name
-    `problems` by their place; the elapsed seconds count from
-    `origin`."""
+    entering a level is logged at INFO (`_stage`), and `owing` keeps
+    whether some problem owes a burst at its level, as the last
+    `OwingNotice` said. The notices name `problems` by their place; the
+    elapsed seconds count from `origin`."""
 
     def __init__(
         self,
@@ -452,6 +460,7 @@ class _Report:
         self.origin = origin
         self.shown = shown
         self.on_progress = on_progress
+        self.owing = False
 
     def __call__(self, notice: _Notice) -> None:
         if isinstance(notice, _core.FallbackNotice):
@@ -464,6 +473,8 @@ class _Report:
             )
         elif isinstance(notice, _core.BurstNotice):
             _burst_done(self.problems[notice.problem], notice)
+        elif isinstance(notice, _core.OwingNotice):
+            self.owing = notice.owing
         elif isinstance(notice, _core.StageNotice):
             logger.info(_stage(self.problems[notice.problem], notice.level))
         else:
@@ -497,50 +508,23 @@ def _stage(problem: _Problem, level: int) -> str:
     return f"Refining {problem.description} at {spacing:g} mm spacing"
 
 
-def _count_again(problems: Sequence[_Problem], granted: set[tuple[str, int]]) -> bool:
-    """Whether the time limit, run out, counts again for `problems`: each
-    before the final level goes on at the next, as if it had settled where
-    it runs (`ProblemState.hand_over`), and one that has not settled and
-    has run no burst at a level a handover took it to gets the limit once
-    more for that level,
-    unless `granted`, by description and level, already has it, which then
-    holds every such problem. So the limit counts at most once more for
-    each level of each problem, and every level it reaches runs a burst
-    unless the bursts of others take that time. Logs at INFO, for each
-    level left, its spacing, the next level's and the problems that left
-    it, and for each level given the limit again, its spacing and those
-    problems."""
-    settings = problems[0].settings
+def _hand_over(problems: Sequence[_Problem]) -> None:
+    """Each of `problems` before the final level goes on at the next, as if
+    it had settled where it runs (`ProblemState.hand_over`). Logs at INFO,
+    for each level they left, its spacing, the next level's and the
+    problems that left it."""
     left: dict[int, list[str]] = {}
     for problem in problems:
         level = problem.state.hand_over()
         if level is not None:
             left.setdefault(level, []).append(problem.description)
-            granted.add((problem.description, level + 1))
-    owed: dict[int, list[str]] = {}
-    for problem in problems:
-        state = problem.state
-        key = (problem.description, state.level)
-        # Level 0 is the only one not reached by a handover: the coarsest,
-        # whose first step bursts, or the one spacing, from the inputs.
-        handed = state.level > 0
-        fresh = not state.settled and not state.ran_at_level
-        if handed and fresh and key not in granted:
-            owed.setdefault(state.level, []).append(problem.description)
-            granted.add(key)
     for level, names in sorted(left.items()):
+        settings = problems[0].settings
         logger.info(
             f"Time limit reached at {_level_spacing(settings, level):g} mm spacing; "
             f"going on at {_level_spacing(settings, level + 1):g} mm spacing "
             f"with {_listed(names)}"
         )
-    for level, names in sorted(owed.items()):
-        logger.info(
-            "Time limit reached before a burst at "
-            f"{_level_spacing(settings, level):g} mm spacing; counting it again "
-            f"for {_listed(names)}"
-        )
-    return bool(left or owed)
 
 
 def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
