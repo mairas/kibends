@@ -2350,9 +2350,8 @@ def z_bus_board() -> CommitBoard:
 
 Z_BUS_SPACING = 5.0
 """Vertex spacing for the bus, mm: coarse, so that the run converges
-within a second, and still several vertices to each of its edges, which
-the nearest neighbour alone left on the tie: there every problem gave
-up."""
+within a second, with still several vertices to each of its edges, each
+at the tie between the tracks either side of it."""
 
 
 def test_an_equally_spaced_bus_converges(
@@ -4187,8 +4186,8 @@ def plane_board() -> CommitBoard:
 
 
 PLANE_BURSTS = 25
-"""Outer iterations for `plane_board`: the via reaches its region's top in
-about 16, then creeps along it to the iteration cap
+"""Outer iterations for `plane_board`, a cap that keeps its run short: once
+the via reaches its region's top it only creeps along it
 (https://github.com/mairas/kibends/issues/21)."""
 
 
