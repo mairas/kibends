@@ -14,8 +14,8 @@ and the clearances the scenario defines: each chain's and section's
 smallest signed distance from its static field along its centreline, None
 in free space, and the smallest copper gap between tracks, chains' and
 sections', of different nets on one layer, other than the two nets of a
-differential pair. The pad-row case records the lengths of the simplified
-tracks and no clearances.
+differential pair, less the larger of their clearances. The pad-row case
+records the lengths of the simplified tracks and no clearances.
 """
 
 import itertools
@@ -58,6 +58,7 @@ class Track(NamedTuple):
     layer: str
     net: str
     width: float
+    clearance: float
     points: FloatArray
 
 
@@ -66,9 +67,12 @@ def smallest_gap(
 ) -> float | None:
     """The smallest copper gap between tracks of different nets on one
     layer, but between the two nets of a differential pair, whose nets
-    `pair_of` gives, mm; None if there are no such tracks."""
+    `pair_of` gives, less the larger of the two tracks' clearances, mm:
+    negative inside clearance; None if there are no such tracks."""
     gaps = [
-        LineString(a.points).distance(LineString(b.points)) - (a.width + b.width) / 2
+        LineString(a.points).distance(LineString(b.points))
+        - (a.width + b.width) / 2
+        - max(a.clearance, b.clearance)
         for a, b in itertools.combinations(tracks, 2)
         if a.layer == b.layer and a.net != b.net and b.net not in pair_of.get(a.net, ())
     ]
@@ -108,10 +112,10 @@ def scenario_run(
         for net in (given.a.net, given.b.net)
     }
     tracks = [
-        Track(c.layer, c.centreline.net, c.centreline.width, p)
+        Track(c.layer, c.centreline.net, c.centreline.width, c.centreline.clearance, p)
         for c, p in zip(s.chains, polylines, strict=True)
     ] + [
-        Track(given.layer, track.net, track.width, points)
+        Track(given.layer, track.net, track.width, track.clearance, points)
         for p, given in zip(result.pairs, pairs, strict=True)
         for track, points in zip((given.a, given.b), p.kept(), strict=True)
     ]
