@@ -42,6 +42,7 @@ __all__ = [
     "Objective",
     "ObstacleDistances",
     "Obstacles",
+    "OwingNotice",
     "PairIntegrand",
     "PairOffset",
     "Problem",
@@ -631,6 +632,16 @@ class Obstacles:
         """
 
 @typing.final
+class OwingNotice:
+    r"""
+    Whether some problem owes a burst at its level
+    (`kibends_core::optimize::state::State::owes_burst`): at the start of
+    `advance` and after each step that changes it.
+    """
+    @property
+    def owing(self) -> builtins.bool: ...
+
+@typing.final
 class PairIntegrand:
     r"""
     A function of two vias' centre distance and their limit distance:
@@ -1207,7 +1218,7 @@ class Zone:
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
     Outer iterations of `problems` from `iteration` until `cap`, each giving
     every problem that has not settled one burst, until every problem has

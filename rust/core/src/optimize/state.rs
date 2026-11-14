@@ -655,6 +655,11 @@ pub struct State {
     /// the coarse levels' best state is only a layout of what they started
     /// from.
     coarse_descended: bool,
+    /// Whether it has run a burst at the level it runs at: not before its
+    /// first step, nor since it last entered a level, by settling or
+    /// `hand_over`. A problem built again (`go_on_from`) keeps its
+    /// earlier one's.
+    ran: bool,
     /// Per member, whether it is held at its best shape for the rest of
     /// the coarse level it runs at (`State::step`).
     held: Vec<bool>,
@@ -778,6 +783,7 @@ impl State {
             handed_over: false,
             descended: false,
             coarse_descended: false,
+            ran: false,
             held: vec![false; count],
             allowed,
             inside,
@@ -814,6 +820,14 @@ impl State {
     /// one, or has taken no step, which leaves `level` at the final one.
     pub fn before_final(&self) -> bool {
         self.unstarted || self.coarse()
+    }
+
+    /// Whether it owes a burst at its level, which a time limit waits for:
+    /// it has not settled and has run none at a level a handover took it to.
+    /// Level 0 is never one: the coarsest is entered at a first step, which
+    /// bursts, and a single spacing starts from the inputs.
+    pub fn owes_burst(&self) -> bool {
+        self.moving && !self.unstarted && self.level > 0 && !self.settled && !self.ran
     }
 
     /// `shape` with each free member that is not held simplified within
@@ -975,9 +989,9 @@ impl State {
     /// starts over.
     ///
     /// Of the schedule it sets `level`, `handed_over` (whether a coarser
-    /// level that descended hands over), `descended` (not yet) and `held`
-    /// (none), and clears `settled` and `unstarted`; `coarse_descended`
-    /// carries.
+    /// level that descended hands over), `descended` and `ran` (not yet)
+    /// and `held` (none), and clears `settled` and `unstarted`;
+    /// `coarse_descended` carries.
     pub fn enter(&mut self, level: usize) -> Result<(), NotFinite> {
         let (now, seen) = if level < self.shared.final_level() {
             self.level = level;
@@ -998,6 +1012,7 @@ impl State {
         self.unstarted = false;
         self.handed_over = self.descended;
         self.descended = false;
+        self.ran = false;
         self.held.fill(false);
         self.reseed(now, seen)
     }
@@ -1254,6 +1269,7 @@ impl State {
             }
         }
         let burst = self.burst(starts, &burst_masks, bursts)?;
+        self.ran = true;
         let positions = std::mem::replace(&mut self.now.positions, burst.positions);
         self.now.points = burst.polylines;
         self.seen = Arc::new(shared.seeing(&self.now.points));
@@ -1460,9 +1476,9 @@ impl State {
     /// inputs (`merge`).
     ///
     /// Of the schedule, `level`, `unstarted`, `handed_over`, `descended`,
-    /// `coarse_descended` and `moved` carry from `earlier`; `held` starts
-    /// over, so a lone chain held at a coarse level is tried again. Returns
-    /// how many members that move and how many vias went back.
+    /// `coarse_descended`, `ran` and `moved` carry from `earlier`; `held`
+    /// starts over, so a lone chain held at a coarse level is tried again.
+    /// Returns how many members that move and how many vias went back.
     pub fn go_on_from(&mut self, earlier: &State) -> Result<(usize, usize), NotFinite> {
         self.put_back(earlier, State::failing)
     }
@@ -1506,6 +1522,7 @@ impl State {
         self.handed_over = earlier.handed_over;
         self.descended = earlier.descended;
         self.coarse_descended = earlier.coarse_descended;
+        self.ran = earlier.ran;
         self.moved = earlier.moved;
         self.rejected_edges = earlier.rejected_edges.clone();
         self.via_rejected = earlier.via_rejected.clone();
@@ -2595,6 +2612,71 @@ mod tests {
     }
 
     #[test]
+    fn a_problem_has_run_at_its_level_from_its_first_burst_there() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        assert!(!p.ran);
+        p.enter(0).expect("finite");
+        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        assert_eq!(p.level, 0);
+        assert!(p.ran);
+
+        // A burst that settles its level hands over to one it has not run at.
+        p.step(0, &mut still(0, 0), &mut |_| Ok(()))
+            .expect("finite");
+        assert_eq!(p.level, 1);
+        assert!(!p.ran);
+        p.hand_over().expect("finite");
+        assert!(!p.ran);
+    }
+
+    #[test]
+    fn a_run_reports_whether_some_problem_owes_a_burst_as_that_changes() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
+        let mut owing = Vec::new();
+        let mut iteration = 0;
+
+        advance(
+            &mut [&mut p],
+            &mut iteration,
+            100,
+            false,
+            None,
+            &mut toward(0.0),
+            &mut |notice| {
+                if let Notice::Owing { owing: o } = notice {
+                    owing.push(o);
+                }
+                Ok(())
+            },
+        )
+        .expect("finite");
+
+        // Each burst settles its level: the problem owes one at each level
+        // it is handed to, until it settles at the final one.
+        assert_eq!(owing, vec![false, true, false]);
+    }
+
+    #[test]
+    fn a_problem_owes_a_burst_only_at_a_level_a_handover_took_it_to() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        // Not started, it has no level of its own yet.
+        assert!(!p.owes_burst());
+        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        assert!(!p.owes_burst());
+
+        p.hand_over().expect("finite");
+        assert!(p.owes_burst());
+        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        assert!(!p.owes_burst());
+
+        let single = coarse_problem(Arc::new(FreeSpace), BOW, &[]);
+        assert!(!single.owes_burst());
+    }
+
+    #[test]
     fn the_time_limit_at_the_final_level_hands_nothing_over() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         p.enter(LEVELS.len()).expect("finite");
@@ -2631,6 +2713,28 @@ mod tests {
             assert_eq!(again.best_energy, energy_of_shape(&again, &again.best));
             assert!(longest_edge(&again.best.points[0]) <= LEVELS[0] + EDGE_ROUND_OFF);
             assert_eq!(again.best.points == earlier.best.points, !back);
+        }
+    }
+
+    #[test]
+    fn a_problem_built_again_owes_the_burst_its_earlier_one_owed() {
+        let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        earlier
+            .step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        earlier.hand_over().expect("finite");
+        for burst in [false, true] {
+            if burst {
+                earlier
+                    .step(0, &mut toward(0.5), &mut |_| Ok(()))
+                    .expect("finite");
+            }
+            let mut again = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+
+            again.go_on_from(&earlier).expect("finite");
+
+            assert_eq!(again.level, 1);
+            assert_eq!(again.owes_burst(), !burst);
         }
     }
 
