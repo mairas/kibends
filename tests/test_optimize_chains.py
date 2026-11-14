@@ -692,6 +692,47 @@ def test_a_stop_after_a_problem_gave_up_without_improving_is_abnormal(
     assert result.termination is Termination.ABNORMAL
 
 
+STALL_APART = 0.5
+"""mm between `test_far_apart_copies_of_a_problem_take_as_long_as_it`'s
+pinned chains: inside each other's falloff, so that they push apart."""
+FAR_APART = 100.0
+"""mm between copies of a problem: beyond any falloff, so that no copy sees
+another."""
+COPIES = 8
+
+
+def far_copy(chain: ChainInput, k: int) -> ChainInput:
+    """`chain` moved `k` times FAR_APART up, on a net of its own."""
+    centreline = replace(
+        chain.centreline,
+        points=chain.centreline.points + np.array([0.0, k * FAR_APART]),
+        net=f"{chain.centreline.net}{k}",
+    )
+    return replace(chain, centreline=centreline)
+
+
+def test_far_apart_copies_of_a_problem_take_as_long_as_it() -> None:
+    """Selecting unrelated chains with a problem does not keep it running:
+    far-apart copies settle within one stall window of the problem alone.
+    The chains push apart while their length barely changes, so the energy
+    side of the stall rule settles them, and only the stall rule: nothing
+    counts as unchanged."""
+    params = replace(scenarios.PARAMS, repulsion=1.0, falloff_range=1.0)
+    chains = tuple(
+        selected(net, net, FreeSpace(), (0.0, y), (5.0, y), (10.0, y))
+        for net, y in (("A", 0.0), ("B", STALL_APART))
+    )
+    settings = replace(ONE_SPACING, settled_change=0.0)
+    copies = [*chains, *(far_copy(c, k) for k in range(1, COPIES) for c in chains)]
+
+    alone = optimize_chains(chains, params, settings)
+    together = optimize_chains(copies, params, settings)
+
+    assert alone.termination is Termination.CONVERGED
+    assert together.termination is Termination.CONVERGED
+    assert together.iterations <= alone.iterations + settings.stall_window
+
+
 def test_iteration_cap_ends_the_run() -> None:
     result = run(scenarios.hooks(), replace(COARSE, max_iterations=1))
 
