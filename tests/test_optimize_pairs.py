@@ -713,6 +713,8 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = scenarios.pair_tent_under_roof()
+    # Stopped at a coarse level, the roof would go back to its coarse
+    # layout, not to its drawn shape.
     limited = replace(ONE_SPACING, time_limit=HOLD_BUDGET)
     plain = optimize_chains(
         scenario.chains,
