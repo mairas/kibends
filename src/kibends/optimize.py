@@ -189,16 +189,21 @@ def optimize_chains(
     problem settled on abnormal bursts. A run that gave up on some problem
     and whose best states sum to no less energy than its inputs ends
     `Termination.ABNORMAL`, whatever stopped it. With a
-    time limit in `settings`, the run stops once `clock` reads the limit or
+    time limit in `settings`, the limit runs out once `clock` reads it or
     more past `started`, by default when the run starts: the running burst
     ends at its next L-BFGS iteration, and its state goes through the
-    checks and the guard as any burst's. `stop`, asked whenever the time
-    limit is, ends the run the same way; the run then ends
-    `Termination.STOPPED` if `stop` answered true before the time limit
-    passed, else `Termination.TIME_LIMIT`. A run stopped, by either, while
-    some problem runs at a coarse level ends each such problem at the final
-    spacing (`ProblemState.finish`), and one that has taken no step at its
-    inputs; either way it says so (`RunResult.before_final_spacing`).
+    checks and the guard as any burst's. Each problem then still before the
+    final level goes on at its next level as if it had settled where it
+    runs, one that has taken no step leaving level 0 (`_hand_over`), the
+    others go on as they were, and the limit counts again from then; with
+    none before the final level, the run ends `Termination.TIME_LIMIT`.
+    `stop`, asked whenever the time limit is, ends the running burst the
+    same way and the run at once, `Termination.STOPPED`, if it answered
+    true before the limit ran out. A run that `stop` or the iteration cap
+    ends while some problem runs at a coarse level ends each such problem
+    at the final spacing (`ProblemState.finish`), and one that has taken no
+    step at its inputs; either way it says so
+    (`RunResult.before_final_spacing`).
 
     Whenever the run would end, `to_hold` is given each section's best
     state and names the sections to hold (`Hold.CROWDING`). Each problem
@@ -214,8 +219,10 @@ def optimize_chains(
 
     It logs at INFO when setup begins, once the problems are built, the
     setup time and the starting length and energy, as each problem enters a
-    level of a schedule with coarse levels its spacing (`_stage`), and at
-    each hold what it put back. Each outer iteration
+    level of a schedule with coarse levels its spacing (`_stage`), each
+    time the time limit ends a coarse level its spacing and the problems
+    that left it (`_hand_over`), and at each hold what it put back. Each
+    outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since `started` or the last INFO line, and goes to `on_progress`
     as a `Progress`. Each burst logs what it cost at DEBUG only
@@ -276,7 +283,8 @@ def optimize_chains(
     begun = clock()
     logger.info(_starting(moving, begun - set_up))
     origin = begun if started is None else started
-    deadline = None if settings.time_limit is None else origin + settings.time_limit
+    limit = settings.time_limit
+    deadline = None if limit is None else origin + limit
 
     # Which of `stop` and the time limit answered true first, once one has.
     # Cast, as the checker would otherwise take it as None where `ended`
@@ -306,13 +314,11 @@ def optimize_chains(
             ScaledObjective(objective, scale), start, revert, settings, expired
         )
 
-    iteration = 0
-    cap = settings.max_iterations
-    termination = Termination.ITERATION_CAP
-    while True:
-        # Past the time limit, what a hold puts back is judged again, with
-        # no burst, until it leaves no section to hold.
-        if termination is not Termination.TIME_LIMIT:
+    def advance(iteration: int, cap: int) -> tuple[Termination, int]:
+        """`_core.advance` from `iteration` until `cap`, the time limit
+        counted again each time it ends a coarse level (`_hand_over`)."""
+        nonlocal deadline, first_end
+        while True:
             outcome, iteration = _core.advance(
                 [p.state for p in moving],
                 iteration,
@@ -323,6 +329,24 @@ def optimize_chains(
                 report,
             )
             termination = Termination(outcome)
+            if (
+                termination is not Termination.TIME_LIMIT
+                or first_end is not Termination.TIME_LIMIT
+                or limit is None
+                or not _hand_over(moving)
+            ):
+                return termination, iteration
+            deadline = clock() + limit
+            first_end = None
+
+    iteration = 0
+    cap = settings.max_iterations
+    termination = Termination.ITERATION_CAP
+    while True:
+        # Past the time limit, what a hold puts back is judged again, with
+        # no burst, until it leaves no section to hold.
+        if termination is not Termination.TIME_LIMIT:
+            termination, iteration = advance(iteration, cap)
             if termination is Termination.NOTHING_TO_DO:
                 return result(Termination.NOTHING_TO_DO, iteration, best=False)
         named: Sequence[int] = () if to_hold is None else to_hold(sections(best=True))
@@ -461,6 +485,26 @@ def _stage(problem: _Problem, level: int) -> str:
     if level < len(problem.settings.coarse_spacings):
         return f"Optimizing {problem.description} coarsely, at {spacing:g} mm spacing"
     return f"Refining {problem.description} at {spacing:g} mm spacing"
+
+
+def _hand_over(problems: Sequence[_Problem]) -> bool:
+    """Each of `problems` before the final level goes on at the next, as
+    if it had settled where it runs (`ProblemState.hand_over`); whether
+    any did. Logs at INFO, for each level they left, its spacing, the next
+    level's and the problems that left it."""
+    left: dict[int, list[str]] = {}
+    for problem in problems:
+        level = problem.state.hand_over()
+        if level is not None:
+            left.setdefault(level, []).append(problem.description)
+    for level, names in sorted(left.items()):
+        settings = problems[0].settings
+        logger.info(
+            f"Time limit reached at {_level_spacing(settings, level):g} mm spacing; "
+            f"going on at {_level_spacing(settings, level + 1):g} mm spacing "
+            f"with {_listed(names)}"
+        )
+    return bool(left)
 
 
 def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
@@ -658,12 +702,15 @@ def _one_net(via: _Via, other: _Via) -> bool:
     return via.given.via.net == other.given.via.net
 
 
+def _listed(names: Sequence[str]) -> str:
+    """`names` as a list in a sentence: "a", "a and b", "a, b and c"."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def _description(layers: Sequence[str], vias: bool) -> str:
     """How log lines and results name a problem of `layers`, with moving
     `vias` or without."""
-    named = (
-        layers[0] if len(layers) == 1 else f"{', '.join(layers[:-1])} and {layers[-1]}"
-    )
+    named = _listed(layers)
     return f"the chains and vias on {named}" if vias else f"the chains on {named}"
 
 
