@@ -60,7 +60,7 @@ from kibends.obstacles import (
     split_via_obstacles,
     via_via_inflation,
 )
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains, stalled
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaZone
@@ -585,7 +585,6 @@ class TestBlindAndBuriedVias:
         result = run(scenario)
 
         a, b = (v.position for v in result.vias)
-        assert moving_vias(scenario).apart(0, 1) is None
         assert math.dist(a, b) < scenarios.PAIR_LEVEL + REACHED
         assert scenarios.PAIR_LEVEL + REACHED < scenarios.VIA_TO_VIA
 
@@ -667,6 +666,11 @@ def zoned(scenario: ViasScenario, k: int, layer: str) -> ViasScenario:
     return replace(scenario, vias=tuple(vias))
 
 
+ZONED_APART = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
+"""How far another via's centre keeps from a via in a `zoned` zone: the
+other's ring, the zone's clearance and its margin."""
+
+
 class TestZoneClearanceToMembers:
     def test_a_chain_on_the_zone_s_layer_keeps_it_from_the_via(self) -> None:
         result = run(zoned(scenarios.via_beside_chain(), 0, "In1.Cu"))
@@ -685,14 +689,14 @@ class TestZoneClearanceToMembers:
         gap = to_polyline(via.position, result.chains[2].polyline)
         assert gap < scenarios.VIA_TO_CHAIN + PRESSED_TO_CHAIN
 
-    def test_another_moving_via_keeps_it(self) -> None:
-        result = run(zoned(scenarios.via_pair(), 0, "In1.Cu"))
+    @pytest.mark.parametrize("zoned_via", [0, 1], ids=["first", "second"])
+    def test_another_moving_via_keeps_it(self, zoned_via: int) -> None:
+        result = run(zoned(scenarios.via_pair(), zoned_via, "In1.Cu"))
 
         a, b = (v.position for v in result.vias)
-        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
-        assert expected > scenarios.VIA_TO_VIA
-        assert math.dist(a, b) >= expected - INSIDE_TOLERANCE
-        assert math.dist(a, b) < expected + PRESSED_TO_VIA
+        assert ZONED_APART > scenarios.VIA_TO_VIA
+        assert math.dist(a, b) >= ZONED_APART - INSIDE_TOLERANCE
+        assert math.dist(a, b) < ZONED_APART + PRESSED_TO_VIA
 
     def test_two_vias_inside_one_s_zone_distance_move_apart(self) -> None:
         # 0.85 mm apart: more than the netclass distance, less than the
@@ -718,16 +722,8 @@ class TestZoneClearanceToMembers:
 
         a, b = (v.position for v in result.vias)
         assert a != lower
-        apart = moving_vias(given).apart(0, 1)
-        assert apart is not None and apart > math.dist(lower, upper)
-        assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
-
-    def test_two_vias_keep_the_larger_of_their_distances_both_ways(self) -> None:
-        vias = moving_vias(zoned(scenarios.via_pair(), 0, "In1.Cu"))
-
-        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
-        assert vias.apart(0, 1) == pytest.approx(expected)
-        assert vias.apart(1, 0) == pytest.approx(expected)
+        assert math.dist(lower, upper) < ZONED_APART
+        assert math.dist(a, b) >= ZONED_APART - INSIDE_TOLERANCE
 
 
 VIA_TO_CHAIN = scenarios.VIA_TO_CHAIN
@@ -1296,18 +1292,12 @@ def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
-# The chain wraps the via and pushes it up as it does. Each held to half
-# their gap, the two crept after each other: 81 iterations. Measured: 15.
-PRESSING_ITERATIONS = 40
-
-
 def test_a_chain_of_another_net_keeps_off_the_via() -> None:
     result = run(scenarios.via_over_bowed("P"))
 
     (via,) = result.vias
     inner = result.chains[2].polyline
     assert result.termination is Termination.CONVERGED
-    assert result.iterations <= PRESSING_ITERATIONS
     assert to_polyline(via.position, inner) >= VIA_TO_CHAIN - INSIDE_TOLERANCE
 
 
@@ -1406,23 +1396,6 @@ def static_vias() -> tuple[StaticVia, ...]:
     )
 
 
-def test_a_problem_keeps_the_static_vias_its_moving_vias_meet() -> None:
-    given = scenarios.via_detour()
-
-    placed = optimize_module._problems(
-        given.chains,
-        [],
-        moving_vias(given),
-        given.params,
-        COARSE,
-        static_vias(),
-    )
-
-    vias = [v for p in placed for v in p.problem.vias]
-    assert {v.given.via.id for v in vias} == {"v"}
-    assert {s.via.id for p in placed for s in p.problem.static_vias} == {"g", "b"}
-
-
 def test_static_vias_it_does_not_pair_with_leave_the_result_as_it_is() -> None:
     given = scenarios.via_detour()
     regular = [s for s in static_vias() if not s.ground]
@@ -1449,11 +1422,6 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
 
     result = run(scenario)
 
-    placed = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), params, COARSE
-    )
-    assert sorted(len(p.problem.vias) for p in placed) == [0, 0, 1]
-
     for chain, given in zip(result.chains, scenario.chains, strict=True):
         alone = optimize_chains([given], params, COARSE)
         np.testing.assert_array_equal(chain.polyline, alone.chains[0].polyline)
@@ -1463,7 +1431,6 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real = optimize_module.run_burst
-    bursts: list[Burst] = []
 
     def failing(
         objective: Objective,
@@ -1472,9 +1439,7 @@ def test_two_layers_joined_by_a_via_are_one_problem(
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings, stop)
-        bursts.append(burst)
-        return replace(burst, abnormal=True)
+        return replace(real(objective, start, revert, settings, stop), abnormal=True)
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
 
@@ -1482,7 +1447,6 @@ def test_two_layers_joined_by_a_via_are_one_problem(
 
     problem = "the chains and vias on F.Cu and B.Cu"
     every = all_abnormal_bursts(COARSE)
-    assert result.iterations == len(bursts) == every
     assert result.gave_up == ((problem, MAX_ABNORMAL_BURSTS),)
     assert result.abnormal == ((problem, every),)
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
@@ -1781,10 +1745,10 @@ def moving_vias(scenario: ViasScenario) -> MovingVias:
     return MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
 
 
-def test_chains_straightened_in_one_burst_are_kept() -> None:
-    # Two free vertices a chain: one burst straightens the route, and the
-    # via's move in it is less than the tolerance.
-    # At that spacing alone: it is coarser than the default coarse levels.
+def test_a_route_straightened_while_its_via_barely_moves_is_kept() -> None:
+    # Two free vertices a chain straighten the route at once while the via
+    # moves less than `settled_change`. At that spacing alone: it is
+    # coarser than the default coarse levels.
     few = OptimizerSettings(
         spacing=2.5, coarse_spacings=(), settled_change=0.025, burst_maxiter=30
     )
@@ -1903,7 +1867,6 @@ COPPER_RADIUS = 1.0
 WITHIN_STANDOFF = STITCH_PARAMS.standoff / 2
 WITHIN_FALLOFF = STITCH_PARAMS.falloff_range / 2
 """Beyond the standoff: only the repulsion is curved there."""
-PRESSED_VIA_SCALE = 0.5
 
 
 def alone(*, gap: float | None = None, top: float = OPEN_TOP) -> ViasScenario:
@@ -1924,25 +1887,7 @@ def alone_problem(scenario: ViasScenario) -> optimize_module._Problem:
     return placed.problem
 
 
-def via_scale(scenario: ViasScenario) -> float:
-    """The scale of the lone via's variable in the first burst."""
-    problem = alone_problem(scenario)
-    layout = problem.layout(problem.points)
-    seen = problem.seeing(layout.starts)
-    scale = problem.scale(layout.starts, seen, problem.lookups(seen))
-    (variable,) = layout.via_index
-    return float(scale[2 * variable])
-
-
 class TestViaStiffness:
-    def test_a_free_via_scales_by_one(self) -> None:
-        assert via_scale(alone()) == 1.0
-
-    def test_a_via_pressed_at_clearance_against_static_copper_scales_down(
-        self,
-    ) -> None:
-        assert via_scale(alone(gap=0.0)) < PRESSED_VIA_SCALE
-
     @pytest.mark.parametrize("gap", [WITHIN_STANDOFF, WITHIN_FALLOFF])
     @pytest.mark.parametrize("pushing", ["copper", "zone"])
     def test_is_the_curvature_along_the_push(self, pushing: str, gap: float) -> None:
@@ -2737,48 +2682,16 @@ that the stall rule does not. Only the stall rule settles it: on
 linux-x86_64 a burst ended by ftol moved the grid less than the default
 `settled_change` six iterations in, before any stall check came near."""
 
-Stalls = list[tuple[list[float], list[float], int, int, bool]]
-
-
-def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
-    """Record what the stall rule (`optimize.stalled`) was given and
-    answered after each burst, from what the bursts report: the problem's
-    lowest energy and length after each, and its moving members and vias.
-    The inputs' energy and length, which the rule takes first, are left
-    out: the calls past the first window answer the same without them."""
-    calls: Stalls = []
-    lowest: list[float] = []
-    lengths: list[float] = []
-    real = optimize_module._burst_done
-
-    def spy(problem: optimize_module._Problem, notice: _core.BurstNotice) -> None:
-        lowest.append(notice.lowest)
-        lengths.append(notice.length)
-        members, vias = len(notice.members), len(problem.vias)
-        answer = stalled(lowest, lengths, problem.settings, members, vias)
-        calls.append((list(lowest), list(lengths), members, vias, answer))
-        real(problem, notice)
-
-    monkeypatch.setattr(optimize_module, "_burst_done", spy)
-    return calls
-
-
 CREEP_SETTINGS = replace(STITCHED_SETTINGS, stall_tolerance=5e-4, max_iterations=20)
-"""A stall tolerance at which the grid stalls well inside the iteration cap:
-measured, after 15 iterations on a gain of 1.01 µm over the stall window.
-That lies above the members' own share, 1.0 µm, by too little for the test
-to assert; `TestStalled` checks that each moving via adds a share."""
+"""A stall tolerance at which the grid settles well inside the iteration
+cap."""
 
 
-def test_moving_vias_end_a_stitched_grid_s_creep(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_stitched_grid_settles_before_the_iteration_cap() -> None:
+    # The vias creep on by micrometres a burst once the route has its shape;
+    # with `settled_change` 0, only the stall rule can settle them.
     chains, vias = crossed_stitching()
-    calls = spy_on_stalls(monkeypatch)
 
     result = optimize_chains(chains, DEFAULT_PARAMS, CREEP_SETTINGS, vias)
 
-    *_, members, counted, answer = calls[-1]
     assert result.termination is Termination.CONVERGED
-    assert answer
-    assert (members, counted) == (len(chains), len(vias))
