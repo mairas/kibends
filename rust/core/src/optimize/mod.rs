@@ -13,7 +13,7 @@
 //! (`advance`) gives every problem that has not settled one burst
 //! (`state::State::step`): lay each chain out again at the spacing of the
 //! level it runs at, simplified and its long edges split, and each section
-//! resampled at the final spacing (`state`), run L-BFGS over every free
+//! so at the final spacing (`state`), run L-BFGS over every free
 //! vertex without bounds (`Bursts`, `burst`), scaled by each variable's
 //! stiffness (`layout`), and move back what the checks reject (`checks`).
 //!

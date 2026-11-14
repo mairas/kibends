@@ -173,10 +173,11 @@ impl Member {
     /// ignoring the tracks of the nets `ignored`, showing the others the
     /// tracks `shown`, in its static `field`, its contact stops weighed by
     /// `width` and its contacts' regions `contacts`; a coupled section with
-    /// its `section` offset, its bend-radius `limit`, none for none, which
-    /// its bursts may not newly bend it below, and `spacing`, the one the
-    /// centreline is laid out at, and with `hinged` its energy's
-    /// bend-radius hinge at the limit, each edge weighed by the spacing.
+    /// its `section` offset, its bend-radius `limit`, none for none, and
+    /// `spacing`, the one the centreline is laid out at, which set its fold
+    /// length (`kibends_core::members::Section::layout_limits`), and with
+    /// `hinged` its energy's bend-radius hinge at the limit, each edge
+    /// weighed by the spacing.
     #[new]
     #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None, spacing = None, hinged = true))]
     #[allow(clippy::too_many_arguments)]

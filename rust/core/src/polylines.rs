@@ -3,10 +3,9 @@
 //! operations (`numeric`), the same on every platform.
 //!
 //! `subdivide` splits a polyline's long edges, keeping every vertex, which
-//! is how a chain is laid out at each level's start and each burst's.
+//! is how a member is laid out at each level's start and each burst's.
 //! `resample` lays each span between fixed vertices out at uniform
-//! arc-length spacing, as a coupled section is between bursts.
-//! `count_violations` counts
+//! arc-length spacing. `count_violations` counts
 //! where a polyline enters its clearance away from its anchors, which the
 //! best state may not add to. `shape_change` is how far a burst moved a
 //! shape, not counting vertices sliding along it, which settles a problem.
@@ -51,7 +50,8 @@ pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bo
     resample_spans(points, fixed, |_, total| edges_at(total, spacing))
 }
 
-/// What laying a coupled section's centreline out keeps.
+/// What laying a coupled section's centreline out keeps
+/// (`members::Section::layout_limits`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutLimits {
     /// The shortest edge a split leaves, mm: its fold length.
@@ -346,7 +346,9 @@ impl SelfCheck {
     }
 }
 
-fn tight(points: &[V2], limit: f64) -> Vec<bool> {
+/// Whether each edge of `points` bends below `limit`, as `SelfCheck`
+/// judges it.
+pub fn tight(points: &[V2], limit: f64) -> Vec<bool> {
     bend_radii(points, None)
         .into_iter()
         .map(|r| too_tight(r, limit))

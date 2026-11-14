@@ -43,6 +43,15 @@ fn bend_radius_limit(gap: f64, width: f64) -> f64 {
     pairs::bend_radius_limit(gap, width)
 }
 
+/// The shortest edge a section's centreline keeps, mm, at half the pitch
+/// `half_pitch`, bend-radius `limit` and layout `spacing`, below which its
+/// inner track would fold at the turns the limit allows.
+#[gen_stub_pyfunction]
+#[pyfunction]
+fn fold_edge(half_pitch: f64, limit: f64, spacing: f64) -> f64 {
+    pairs::fold_edge(half_pitch, limit, spacing)
+}
+
 fn turning_of(centreline: usize, turning: Option<&BoolArg<'_>>) -> PyResult<Option<Vec<bool>>> {
     turning
         .map(|t| {
@@ -214,6 +223,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(complementary_net, m)?)?;
     m.add_function(wrap_pyfunction!(diff_pair_nets, m)?)?;
     m.add_function(wrap_pyfunction!(bend_radius_limit, m)?)?;
+    m.add_function(wrap_pyfunction!(fold_edge, m)?)?;
     m.add_function(wrap_pyfunction!(bend_radii, m)?)?;
     m.add_function(wrap_pyfunction!(too_tight, m)?)?;
     m.add_function(wrap_pyfunction!(check_bend_radius, m)?)?;

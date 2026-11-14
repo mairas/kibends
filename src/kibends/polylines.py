@@ -2,11 +2,13 @@
 (`optimize`) applies to every member, independent of the problem.
 
 `resample` lays each span between fixed vertices out at uniform arc-length
-spacing, as a coupled section's centreline is between bursts, and, with
-every vertex fixed, splits each edge longer than the spacing, as a chain's
-drawn vertices are laid out. `measure` gives a polyline's length and
-bend statistics (`results.PolylineStats`), and `count_violations`
-counts where it enters its clearance away from its anchors, which the best
+spacing, and, with every vertex fixed, splits each edge longer than the
+spacing, as a chain's drawn vertices are laid out; a coupled section's
+split also stops short of its fold length and of bending below its limit
+(`kibends_core::polylines::subdivide`). `measure` gives a polyline's
+length and bend statistics (`results.PolylineStats`), and
+`count_violations` counts where it enters its clearance away from its
+anchors, which the best
 state may not add to. `shape_change` is how far a burst moved a
 shape, not counting vertices sliding along it, which settles a problem.
 `SelfCheck` is what a burst may not do to a coupled section's centreline:

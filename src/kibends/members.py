@@ -58,8 +58,8 @@ def core_member(member: Member, *, hinged: bool = True) -> _core.Member:
     """`member` as the Rust energy takes it: what it keeps clear of the
     others as and the nets it ignores (`viewer_of`), the tracks it shows
     (`shown`), its body's field, width and contacts (`body_of`), and a
-    section's offset, its bend-radius limit and spacing, and, `hinged`, its
-    bend-radius hinge."""
+    section's offset, its bend-radius limit and spacing, which set its fold
+    length, and, `hinged`, its bend-radius hinge."""
     own, ignored = viewer_of(member)
     body = body_of(member)
     contacts = [core_field(field) for _, field in body.contacts]
@@ -128,8 +128,9 @@ def members_energy(
     `polylines` as `seen` shows them, with vias at `positions` among them,
     a section with its bend-radius hinge; its gradient at every vertex of
     every chain and centreline, with the rows of `masks` zeroed; and the
-    gradient at each via's centre. Raises ValueError if it is not finite
-    (`kibends_core::members::Members::energy`)."""
+    gradient at each via's centre. A chain's short-edge barrier starts at
+    `short_edge`, a section's at its fold length. Raises ValueError if it
+    is not finite (`kibends_core::members::Members::energy`)."""
     return core_members(members).energy(
         _points(polylines),
         [np.asarray(mask, dtype=bool) for mask in masks],

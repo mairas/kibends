@@ -41,7 +41,7 @@ of any era, scipy's or Rust's. With `--plot`, TREE's plots go to DIR's
 Setup ends when the optimizer logs that its problems are built; in a run
 through a fake KiCad it holds reading the board and building the obstacle
 fields too. The seconds outside L-BFGS are the rest of the run but
-L-BFGS and the energy evaluations it makes: resampling, the checks
+L-BFGS and the energy evaluations it makes: laying the shapes out, the checks
 around each burst, the guard and, through a fake KiCad, simplifying.
 
 - grid: two-layer GND planes whose stitching vias are all selected, among

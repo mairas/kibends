@@ -85,6 +85,7 @@ __all__ = [
     "edge_curvature",
     "edge_integral",
     "field_queries",
+    "fold_edge",
     "free_distances",
     "hinge_curvature",
     "hinge_integrand",
@@ -484,10 +485,11 @@ class Member:
         ignoring the tracks of the nets `ignored`, showing the others the
         tracks `shown`, in its static `field`, its contact stops weighed by
         `width` and its contacts' regions `contacts`; a coupled section with
-        its `section` offset, its bend-radius `limit`, none for none, which
-        its bursts may not newly bend it below, and `spacing`, the one the
-        centreline is laid out at, and with `hinged` its energy's
-        bend-radius hinge at the limit, each edge weighed by the spacing.
+        its `section` offset, its bend-radius `limit`, none for none, and
+        `spacing`, the one the centreline is laid out at, which set its fold
+        length (`kibends_core::members::Section::layout_limits`), and with
+        `hinged` its energy's bend-radius hinge at the limit, each edge
+        weighed by the spacing.
         """
 
 @typing.final
@@ -1333,6 +1335,13 @@ def field_queries(field: Obstacles  |  ChainField  |  CompositeField  |  testing
     r"""
     The points the energy asked `field` about since the last
     `reset_statistics`.
+    """
+
+def fold_edge(half_pitch: builtins.float, limit: builtins.float, spacing: builtins.float) -> builtins.float:
+    r"""
+    The shortest edge a section's centreline keeps, mm, at half the pitch
+    `half_pitch`, bend-radius `limit` and layout `spacing`, below which its
+    inner track would fold at the turns the limit allows.
     """
 
 def free_distances(statics: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], sight: ViaSight, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:

@@ -751,6 +751,12 @@ bend_radius_limit = _core.bend_radius_limit
 """The smallest centreline bend radius at which the inner track's inner
 edge still has a radius of at least zero."""
 
+fold_edge = _core.fold_edge
+"""The shortest edge a section's centreline keeps, mm, at half the pitch,
+the bend-radius limit and the layout spacing: below it the inner track
+would fold at the turns the limit allows
+(`kibends_core::pairs::fold_edge`)."""
+
 
 class BendCheck(NamedTuple):
     radius: float
