@@ -515,6 +515,13 @@ impl ProblemState {
         self.inner.before_final()
     }
 
+    /// Whether a time limit run out now owes it a burst at its level
+    /// (`kibends_core::optimize::state::State::owes_burst`).
+    #[getter]
+    fn owes_burst(&self) -> bool {
+        self.inner.owes_burst()
+    }
+
     /// End a run stopped at a coarse level at the final spacing: its best
     /// state subdivided there if some coarse burst ended normally, that
     /// passes the guard and its energy is no higher than the inputs'; else
@@ -522,6 +529,15 @@ impl ProblemState {
     /// energy there is not finite.
     fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
         self.inner.finish().map_err(|e| not_finite(py, e.0))
+    }
+
+    /// End the level it runs at for the run's time limit: before the final
+    /// level it goes on at the next as if it had settled where it runs
+    /// (`kibends_core::optimize::state::State::hand_over`). Returns the
+    /// level it left, None at the final level. Raises ValueError if the
+    /// energy there is not finite.
+    fn hand_over(&mut self, py: Python<'_>) -> PyResult<Option<usize>> {
+        self.inner.hand_over().map_err(|e| not_finite(py, e.0))
     }
 
     /// Take `earlier`'s best state, keeping the sections held only here as
@@ -743,6 +759,16 @@ pub struct StageNotice {
     level: usize,
 }
 
+/// Whether some problem owes a burst at its level
+/// (`kibends_core::optimize::state::State::owes_burst`): at the start of
+/// `advance` and after each step that changes it.
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct OwingNotice {
+    #[pyo3(get)]
+    owing: bool,
+}
+
 /// After an outer iteration: its number, its largest change, and each
 /// problem's length and energy.
 #[gen_stub_pyclass]
@@ -782,6 +808,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
         )?
         .into_any(),
         Notice::Stage { problem, level } => Py::new(py, StageNotice { problem, level })?.into_any(),
+        Notice::Owing { owing } => Py::new(py, OwingNotice { owing })?.into_any(),
         Notice::Progress {
             iteration,
             change,
@@ -884,7 +911,7 @@ fn advance(
     ))]
     burst: Bound<'_, PyAny>,
     #[gen_stub(override_type(
-        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]",
+        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]",
         imports = ("collections.abc",)
     ))]
     report: Py<PyAny>,
@@ -968,6 +995,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AbnormalNotice>()?;
     m.add_class::<BurstNotice>()?;
     m.add_class::<StageNotice>()?;
+    m.add_class::<OwingNotice>()?;
     m.add_class::<ProgressNotice>()?;
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;

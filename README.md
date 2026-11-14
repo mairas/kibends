@@ -241,9 +241,11 @@ centreline's offsets.
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had
 nothing to do, or stopped at its iteration cap or the time limit, each
-keeping the best result found; the warning of a run that stopped while some
-problem was still at a coarse spacing says it stopped before reaching the
-final spacing. It stopped on abnormal bursts when L-BFGS
+keeping the best result found. The time limit counts again at each spacing
+(`--time-limit`), so it stops a run only at the final spacing; the warning
+of a run its iteration cap or Ctrl-C stopped while some problem was still at
+a coarse spacing says it stopped before reaching the final spacing. It
+stopped on abnormal bursts when L-BFGS
 ended three bursts of some problem in a row abnormally at the final
 spacing (at a coarse spacing, such a streak hands over to the next one)
 after the run had
@@ -251,7 +253,7 @@ improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS terminated abnormally" and commits nothing.
 Ctrl-C while the run reads the board, builds the obstacles or optimizes
-stops it as the time limit would: it prints "Stopping; press Ctrl-C again
+stops it at once, at whatever spacing each problem runs: it prints "Stopping; press Ctrl-C again
 to abort" at once, the optimizer ends the running burst, and the run simplifies and
 commits the best result found. Stopped before optimizing, it commits
 nothing. A second Ctrl-C, or one after optimizing, ends the run with
@@ -348,10 +350,11 @@ to its tracks and the run goes on with it held, so that the other chains
 keep clear of its tracks. Every other chain and via goes on from where the
 run had taken it, except those that had moved into the section's clearance,
 or into a chain or via that had to go back, which go back to where they
-started; with time left, the run then smooths them again. `--time-limit`
-still covers the whole run: if the time is up when the section is held, the
-run ends there, once it has also held any section that going back left bent
-too tightly.
+started; with time left, the run then smooths them again. When
+`--time-limit` runs out at a coarse spacing, that spacing hands over and no
+section is held; if the time is up at the final spacing when the section is
+held, the run ends there, once it has also held any section that going back
+left bent too tightly.
 
 A coupled section is simplified as its centreline, within the chord
 tolerance, and both tracks follow the simplified centreline as they
@@ -484,8 +487,8 @@ ground net leave each other alone, as vias of any other net do.
 | `--hole-clearance MM` | project, else 0.25 | Clearance between drilled holes and other nets' copper. Without it, the minimum hole clearance in the project's Board Setup. |
 | `--hole-to-hole MM` | project, else 0.25 | Clearance between a moving via's hole and every other hole. Without it, the minimum hole to hole in the project's Board Setup. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | Stop optimizing after this long and go on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so it runs over by about one L-BFGS iteration and the checks after the burst, and by the hold of a differential pair's section if one falls due when the time is up. |
-| `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
+| `--time-limit SECONDS` | none | How long each spacing may optimize. The time is up only once no problem still owes a first burst at a spacing a handover took it to: such a burst runs past the limit, as a long burst does. When the time is up, every problem still at a coarse spacing goes on at the next one and the time starts again; problems already at a finer spacing go on as they were. Once the time is up with every problem still running at the final spacing, optimizing stops and goes on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. So every spacing a problem reaches after the first optimizes, and a run optimizes for at most the limit once per spacing, three times with the default spacings, besides its overrun. The optimizer checks the limit after each L-BFGS iteration and ends the running burst there, so each time it runs over by about one L-BFGS iteration and the checks after the burst, by the bursts owed when it is up, and at the final spacing by the hold of a differential pair's section if one falls due when the time is up. |
+| `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles or `--time-limit` runs out. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, or settle a burst sooner and end within micrometres of it. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |

@@ -64,7 +64,8 @@ from kibends.simplify import simplify_chains
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 ONE_SPACING = replace(COARSE, coarse_spacings=())
 """COARSE at its final spacing alone, for a premise that counts the bursts of
-one abnormal streak: a coarse level hands its streak over."""
+one abnormal streak or of one time limit: a coarse level hands its streak
+over, and the time limit counts again at each level."""
 
 
 EQUAL_PITCH = 0.6
@@ -490,7 +491,7 @@ def test_time_limit_stops_in_the_burst_that_passes_it() -> None:
         selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)), "B.Cu"
     )
     chains = (*scenario.chains, back)
-    limited = replace(COARSE, time_limit=0.5)
+    limited = replace(ONE_SPACING, time_limit=0.5)
 
     result = optimize_chains(chains, scenario.params, limited, clock=Ticking())
 
@@ -536,7 +537,7 @@ def test_time_limit_ends_the_burst_at_the_iteration_past_it(
 ) -> None:
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
-    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
+    limited = replace(ONE_SPACING, time_limit=TIMED_ITERATIONS + 0.5)
 
     result = optimize_chains(
         scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
@@ -553,7 +554,7 @@ def test_time_limit_ends_the_burst_at_the_iteration_past_it(
 
 def test_time_limit_counts_from_when_the_stage_started() -> None:
     scenario = bumps()
-    limited = replace(COARSE, time_limit=5.0)
+    limited = replace(ONE_SPACING, time_limit=5.0)
 
     result = optimize_chains(
         scenario.chains,
@@ -629,7 +630,7 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     stop_at: int, first: Termination
 ) -> None:
     scenario = bumps()
-    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
+    limited = replace(ONE_SPACING, time_limit=TIMED_ITERATIONS + 0.5)
     clock = Ticking()
 
     result = optimize_chains(

@@ -240,9 +240,10 @@ def format_outcome(report: OptimizerReport) -> str:
 
 
 def report_warnings(report: OptimizerReport) -> list[str]:
-    """An iteration cap or time limit, one line each, saying whether the
-    run stopped before its final spacing; a stop, only when it came before
-    the final spacing, since the user asked for it."""
+    """An iteration cap, saying whether the run stopped before its final
+    spacing, or a time limit, which runs out only at the final spacing, one
+    line each; a stop, only when it came before the final spacing, since
+    the user asked for it."""
     unfinished = (
         "before reaching the final spacing"
         if report.before_final_spacing
@@ -256,7 +257,7 @@ def report_warnings(report: OptimizerReport) -> list[str]:
         )
     if report.termination is Termination.TIME_LIMIT:
         warnings.append(
-            f"The optimizer stopped at its time limit {unfinished}; "
+            "The optimizer stopped at its time limit without converging; "
             "using the best result found"
         )
     if report.termination is Termination.STOPPED and report.before_final_spacing:
@@ -418,7 +419,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="MM",
         help="Distances between a chain's vertices that each problem runs at, "
         "coarsest first, each handing over to the next as the problem "
-        "settles; the last, at most "
+        "settles or --time-limit runs out; the last, at most "
         f"{MAX_SPACING:g}, is the final spacing, and one value runs at it alone "
         f"(default: {_listed(DEFAULT_SCHEDULE)})",
     )
@@ -487,8 +488,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--time-limit",
         type=_positive,
         metavar="SECONDS",
-        help="Stop optimizing after this long and go on with the best result "
-        "found so far (default: no limit)",
+        help="How long each spacing may optimize, past which a problem's first "
+        "burst at a spacing it was handed to still runs: when the time is up, "
+        "the problems at a coarse spacing go on at the next and the time starts "
+        "again, and once every problem still running is at the final spacing, "
+        "optimizing stops and goes on with the best result found so far; so "
+        "it takes the time at most once per spacing, besides its overrun "
+        "(default: no limit)",
     )
     smooth_parser.add_argument(
         "--all",

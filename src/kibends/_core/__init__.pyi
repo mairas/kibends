@@ -42,6 +42,7 @@ __all__ = [
     "Objective",
     "ObstacleDistances",
     "Obstacles",
+    "OwingNotice",
     "PairIntegrand",
     "PairOffset",
     "Problem",
@@ -628,6 +629,16 @@ class Obstacles:
         """
 
 @typing.final
+class OwingNotice:
+    r"""
+    Whether some problem owes a burst at its level
+    (`kibends_core::optimize::state::State::owes_burst`): at the start of
+    `advance` and after each step that changes it.
+    """
+    @property
+    def owing(self) -> builtins.bool: ...
+
+@typing.final
 class PairIntegrand:
     r"""
     A function of two vias' centre distance and their limit distance:
@@ -812,6 +823,12 @@ class ProblemState:
         Whether it has not reached the final level
         (`kibends_core::optimize::state::State::before_final`).
         """
+    @property
+    def owes_burst(self) -> builtins.bool:
+        r"""
+        Whether a time limit run out now owes it a burst at its level
+        (`kibends_core::optimize::state::State::owes_burst`).
+        """
     def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its
@@ -889,6 +906,14 @@ class ProblemState:
         state subdivided there if some coarse burst ended normally, that
         passes the guard and its energy is no higher than the inputs'; else
         the inputs. Does nothing at the final level. Raises ValueError if the
+        energy there is not finite.
+        """
+    def hand_over(self) -> typing.Optional[builtins.int]:
+        r"""
+        End the level it runs at for the run's time limit: before the final
+        level it goes on at the next as if it had settled where it runs
+        (`kibends_core::optimize::state::State::hand_over`). Returns the
+        level it left, None at the final level. Raises ValueError if the
         energy there is not finite.
         """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
@@ -1196,7 +1221,7 @@ class Zone:
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
+def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
     Outer iterations of `problems` from `iteration` until `cap`, each giving
     every problem that has not settled one burst, until every problem has

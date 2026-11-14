@@ -801,12 +801,14 @@ class TestSmooth:
         log: list[str],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        # At one spacing, as each coarse level would count the limit again.
+        one_spacing = replace(COARSE, coarse_spacings=())
         capped = connect.to(l_board())
         monkeypatch.setattr(
-            pipeline, "optimize_chains", at(replace(COARSE, max_iterations=1))
+            pipeline, "optimize_chains", at(replace(one_spacing, max_iterations=1))
         )
         run()
-        monkeypatch.setattr(pipeline, "optimize_chains", at(COARSE))
+        monkeypatch.setattr(pipeline, "optimize_chains", at(one_spacing))
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
         capsys.readouterr()
         board = connect.to(l_board())
@@ -827,22 +829,19 @@ class TestSmooth:
         ]
 
     @pytest.mark.parametrize(
-        ("limit", "warning"),
+        "limit",
         # Of the L's run: bursts at the coarse levels, coarsest first, until
-        # it reaches the final spacing after L_COARSE_BURSTS.
-        [
-            (1.5, "time limit before reaching the final spacing"),
-            (L_COARSE_BURSTS + 0.5, "time limit without converging"),
-        ],
-        ids=["at a coarse level", "at the final level"],
+        # it reaches the final spacing after L_COARSE_BURSTS; the second
+        # limit runs out after a burst there.
+        [1.5, L_COARSE_BURSTS + 1.5],
+        ids=["out at a coarse level", "out at the final level"],
     )
-    def test_a_time_limit_warns_whether_it_stopped_before_the_final_spacing(
+    def test_a_time_limit_warns_that_it_stopped_without_converging(
         self,
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
         limit: float,
-        warning: str,
     ) -> None:
         connect.to(l_board())
         monkeypatch.setattr(
@@ -859,7 +858,7 @@ class TestSmooth:
             for line in log
             if line.startswith("WARNING The optimizer stopped at its time limit")
         ]
-        assert warning in stopped
+        assert "time limit without converging" in stopped
 
     def test_reports_the_optimize_stages_wall_time(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -5339,7 +5338,18 @@ class TestPairs:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         asked = self.too_tight_once(monkeypatch)
-        real: Callable[..., RunResult] = pipeline.optimize_chains
+        clock = BurstClock(monkeypatch)
+        too_tight = pipeline._bent_too_tightly  # pyright: ignore[reportPrivateUsage]
+        asked_after: list[int] = []
+
+        def counted(results: Sequence[PairResult]) -> list[int]:
+            asked_after.append(clock.bursts)
+            return too_tight(results)
+
+        monkeypatch.setattr(pipeline, "_bent_too_tightly", counted)
+        # At one spacing: with coarse levels the run converges in the final
+        # level's first burst, before its time is up.
+        real = at(replace(COARSE, coarse_spacings=()))
         runs: list[RunResult] = []
 
         def spy(*args: object, **kwargs: object) -> RunResult:
@@ -5348,19 +5358,19 @@ class TestPairs:
             return result
 
         monkeypatch.setattr(pipeline, "optimize_chains", spy)
-        clock = BurstClock(monkeypatch)
         monkeypatch.setattr(pipeline, "monotonic", clock)
         connect.to(pair_board())
 
-        run("--dry-run", f"--time-limit={HELD_AT_BURST - 0.5}")
+        run("--dry-run", f"--time-limit={LEVEL_BURSTS - 0.5}")
 
         (result,) = runs
         # Asked again once held, past the limit, it names nothing more.
         assert asked == [[None], [Hold.CROWDING]]
         assert result.termination is Termination.TIME_LIMIT
-        # The section was held when the limit had passed, and no burst ran
-        # after it.
-        assert clock.bursts == HELD_AT_BURST
+        # The section was held when the limit had passed at the final
+        # spacing, and no burst ran after it.
+        assert not result.before_final_spacing
+        assert asked_after == [clock.bursts, clock.bursts]
         assert result.pairs[0].block.hold is Hold.CROWDING
         out = capsys.readouterr().out
         assert f"after {result.iterations} iterations" in out
@@ -5400,9 +5410,9 @@ class TestPairs:
         assert board.calls == []
 
 
-HELD_AT_BURST = 2
-"""The burst of `pair_board`'s one problem after which a time limit holds
-its section."""
+LEVEL_BURSTS = 2
+"""The bursts of `pair_board`'s one problem at each level that a time limit
+allows, which counts it again at each."""
 
 
 FOLDED = [("USB_D+", 2.3), ("USB_D-", 2.7), ("USB_D+", 3.4)]
