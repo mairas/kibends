@@ -8,7 +8,7 @@ finite differences."""
 import itertools
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -775,15 +775,11 @@ def test_straight_chains_have_nothing_to_do(coarse: tuple[float, ...]) -> None:
         np.testing.assert_array_equal(chain.polyline, given.centreline.points)
 
 
-@pytest.mark.parametrize(
-    "make", [scenarios.drape, scenarios.tent], ids=["drape", "tent"]
-)
-def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input(
-    make: Callable[[], ChainsScenario],
-) -> None:
+def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input() -> None:
     # A rerun on converged output runs the coarse levels again, which must
-    # not leave it worse.
-    scenario = make()
+    # not leave it worse. The drape's rerun still lowers its energy, so
+    # that the levels have something to leave worse.
+    scenario = scenarios.drape()
     settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
     first = run(scenario, settings)
     again = tuple(
@@ -803,7 +799,8 @@ def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input(
     def energy(of: RunResult) -> float:
         return committed_energy(again, of, scenario.params, settings)
 
-    assert energy(second) <= energy(unchanged)
+    assert second.termination is Termination.CONVERGED
+    assert energy(second) < energy(unchanged)
 
 
 BURST_BUDGET = 4
