@@ -831,6 +831,14 @@ impl State {
         self.ran
     }
 
+    /// Whether it owes a burst at its level, which a time limit waits for:
+    /// it has not settled and has run none at a level a handover took it to.
+    /// Level 0 is never one: the coarsest is entered at a first step, which
+    /// bursts, and a single spacing starts from the inputs.
+    pub fn owes_burst(&self) -> bool {
+        self.moving && !self.unstarted && self.level > 0 && !self.settled && !self.ran
+    }
+
     /// Whether member `i` is a coupled section.
     fn section(&self, i: usize) -> bool {
         self.shared.setup.energy.members.members[i]
@@ -2666,6 +2674,52 @@ mod tests {
         assert!(!p.ran_at_level());
         p.hand_over().expect("finite");
         assert!(!p.ran_at_level());
+    }
+
+    #[test]
+    fn a_run_reports_whether_some_problem_owes_a_burst_as_that_changes() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
+        let mut owing = Vec::new();
+        let mut iteration = 0;
+
+        advance(
+            &mut [&mut p],
+            &mut iteration,
+            100,
+            false,
+            None,
+            &mut toward(0.0),
+            &mut |notice| {
+                if let Notice::Owing { owing: o } = notice {
+                    owing.push(o);
+                }
+                Ok(())
+            },
+        )
+        .expect("finite");
+
+        // Each burst settles its level: the problem owes one at each level
+        // it is handed to, until it settles at the final one.
+        assert_eq!(owing, vec![false, true, false]);
+    }
+
+    #[test]
+    fn a_problem_owes_a_burst_only_at_a_level_a_handover_took_it_to() {
+        let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+        // Not started, it has no level of its own yet.
+        assert!(!p.owes_burst());
+        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        assert!(!p.owes_burst());
+
+        p.hand_over().expect("finite");
+        assert!(p.owes_burst());
+        p.step(0, &mut toward(0.5), &mut |_| Ok(()))
+            .expect("finite");
+        assert!(!p.owes_burst());
+
+        let single = coarse_problem(Arc::new(FreeSpace), BOW, &[]);
+        assert!(!single.owes_burst());
     }
 
     #[test]

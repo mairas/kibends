@@ -67,12 +67,14 @@
 //! none of them on abnormal bursts, and otherwise stops at the iteration
 //! cap or at the time limit, which ends the running burst at its next
 //! L-BFGS iteration; that burst's state goes through the checks and the
-//! guard as any, and it settles nothing. At the time limit the caller may
-//! hand every problem still before the final level over to its next level,
-//! as if it had settled there (`state::State::hand_over`), and advance
-//! again, so that a time limit counts for each level, and count it again
-//! for a problem that has not run at its level yet
-//! (`state::State::ran_at_level`). Each problem keeps
+//! guard as any, and it settles nothing. The run reports whether some
+//! problem owes a burst at its level (`Notice::Owing`,
+//! `state::State::owes_burst`), so that the caller's time limit waits for
+//! those bursts. At the time limit the caller may hand every problem still
+//! before the final level over to its next level, as if it had settled
+//! there (`state::State::hand_over`), and advance again, so that a time
+//! limit counts once for each level and every level a problem is handed
+//! to runs a burst. Each problem keeps
 //! its best state either way. A run where every problem settled without
 //! moving anything had nothing to do.
 
@@ -255,6 +257,13 @@ pub enum Notice {
         problem: usize,
         level: usize,
     },
+    /// Whether some problem owes a burst at its level
+    /// (`state::State::owes_burst`): at the start of `advance` and after
+    /// each step that changes it, so that the caller's time limit waits for
+    /// the bursts owed.
+    Owing {
+        owing: bool,
+    },
     /// After an outer iteration: its number, its largest change, and each
     /// problem's length and energy.
     Progress {
@@ -323,15 +332,22 @@ pub fn advance<E: From<NotFinite>>(
     bursts: &mut dyn Bursts<E>,
     report: &mut dyn FnMut(Notice) -> Result<(), E>,
 ) -> Result<Outcome, E> {
+    let owing_of = |problems: &[&mut State]| problems.iter().any(|p| p.owes_burst());
+    let mut owing = owing_of(problems);
+    report(Notice::Owing { owing })?;
     while *iteration < cap {
         *iteration += 1;
         let mut out_of_time = false;
         let mut change = 0.0;
-        for (n, problem) in problems.iter_mut().enumerate() {
-            if problem.settled {
+        for n in 0..problems.len() {
+            if problems[n].settled {
                 continue;
             }
-            change = python_max(change, problem.step(n, bursts, report)?);
+            change = python_max(change, problems[n].step(n, bursts, report)?);
+            if owing_of(problems) != owing {
+                owing = !owing;
+                report(Notice::Owing { owing })?;
+            }
             if let Some(expired) = expired.as_mut()
                 && expired()?
             {

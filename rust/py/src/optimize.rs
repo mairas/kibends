@@ -515,11 +515,11 @@ impl ProblemState {
         self.inner.before_final()
     }
 
-    /// Whether it has run a burst at the level it runs at
-    /// (`kibends_core::optimize::state::State::ran_at_level`).
+    /// Whether a time limit run out now owes it a burst at its level
+    /// (`kibends_core::optimize::state::State::owes_burst`).
     #[getter]
-    fn ran_at_level(&self) -> bool {
-        self.inner.ran_at_level()
+    fn owes_burst(&self) -> bool {
+        self.inner.owes_burst()
     }
 
     /// End a run stopped at a coarse level at the final spacing: its best
@@ -759,6 +759,16 @@ pub struct StageNotice {
     level: usize,
 }
 
+/// Whether some problem owes a burst at its level
+/// (`kibends_core::optimize::state::State::owes_burst`): at the start of
+/// `advance` and after each step that changes it.
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct OwingNotice {
+    #[pyo3(get)]
+    owing: bool,
+}
+
 /// After an outer iteration: its number, its largest change, and each
 /// problem's length and energy.
 #[gen_stub_pyclass]
@@ -798,6 +808,7 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
         )?
         .into_any(),
         Notice::Stage { problem, level } => Py::new(py, StageNotice { problem, level })?.into_any(),
+        Notice::Owing { owing } => Py::new(py, OwingNotice { owing })?.into_any(),
         Notice::Progress {
             iteration,
             change,
@@ -900,7 +911,7 @@ fn advance(
     ))]
     burst: Bound<'_, PyAny>,
     #[gen_stub(override_type(
-        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | ProgressNotice], object]",
+        type_repr = "collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]",
         imports = ("collections.abc",)
     ))]
     report: Py<PyAny>,
@@ -984,6 +995,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AbnormalNotice>()?;
     m.add_class::<BurstNotice>()?;
     m.add_class::<StageNotice>()?;
+    m.add_class::<OwingNotice>()?;
     m.add_class::<ProgressNotice>()?;
     m.add_function(wrap_pyfunction!(advance, m)?)?;
     m.add_function(wrap_pyfunction!(stalled, m)?)?;
