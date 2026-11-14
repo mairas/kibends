@@ -2457,9 +2457,19 @@ class TestLoopsAndDots:
         assert at in path.coords[:]
         assert_round_the_pad(path, loop)
 
-    def via_loop_run(self, connect: Connector) -> LineString:
-        """Runs on `triangle_loop` through a selected via, round a pad; the
-        committed path, which passes through the moved via."""
+    @pytest.mark.parametrize(
+        "coarse", [COARSE.coarse_spacings, ()], ids=["schedule", "one spacing"]
+    )
+    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        coarse: tuple[float, ...],
+    ) -> None:
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
+        )
+
         loop = triangle_loop()
         via = kipy_via("v", "SIG", 9, 0)
         board = connect.to(
@@ -2475,29 +2485,12 @@ class TestLoopsAndDots:
 
         assert sorted(board.deleted) == ["a", "b", "c", "v"]
         (moved,) = created_vias(board)
-        at = (moved.position.x, moved.position.y)
-        assert at != (nm(9), nm(0))
+        centre = (moved.position.x, moved.position.y)
+        assert centre != (nm(9), nm(0))
         path = created_path(board)
         assert path.is_closed
-        assert (at[0] / NM_PER_MM, at[1] / NM_PER_MM) in path.coords[:]
-        return path
-
-    @pytest.mark.parametrize(
-        "coarse", [COARSE.coarse_spacings, ()], ids=["schedule", "one spacing"]
-    )
-    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        coarse: tuple[float, ...],
-    ) -> None:
-        monkeypatch.setattr(
-            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
-        )
-
-        path = self.via_loop_run(connect)
-
-        assert_round_the_pad(path, triangle_loop())
+        assert (centre[0] / NM_PER_MM, centre[1] / NM_PER_MM) in path.coords[:]
+        assert_round_the_pad(path, loop)
 
     def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
         tracks = [
