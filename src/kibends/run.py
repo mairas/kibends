@@ -184,7 +184,9 @@ class SmoothOptions:
     """Let a moving via settle inside a pad of its net, which KiCad's DRC
     cannot flag."""
     settings: OptimizerSettings = DEFAULT_SETTINGS
-    """Its time limit covers the whole optimize stage, holds included.
+    """Its time limit counts from the start of the optimize stage, and
+    again each time it ends a coarse level; the final level's covers the
+    holds.
     Its settle threshold should be half `chord_tolerance` at most, as
     `cli.smooth_options` sets it; the default suits the default tolerance."""
     ground_nets: tuple[str, ...] = ()
@@ -293,8 +295,8 @@ class OptimizerReport:
     """Outer iterations, each giving every problem that has not settled
     one burst, holds included."""
     before_final_spacing: bool
-    """Whether the run stopped at its iteration cap, its time limit or the
-    caller's stop while some problem ran at a coarse spacing."""
+    """Whether the run stopped at its iteration cap or the caller's stop
+    while some problem ran at a coarse spacing."""
     elapsed: float
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]

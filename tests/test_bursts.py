@@ -159,7 +159,9 @@ def test_a_scaled_objective_answers_as_its_objective() -> None:
 
 @pytest.mark.fallback
 def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None:
-    report = optimize_module._Report([], Ticking(), 0.0, 0.0)  # pyright: ignore[reportPrivateUsage]
+    report = optimize_module._Report(  # pyright: ignore[reportPrivateUsage]
+        [], Ticking(), 0.0, 0.0, lambda _owing: None
+    )
 
     report(_core.FallbackNotice())
 

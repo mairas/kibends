@@ -132,8 +132,8 @@ class RunResult:
     and how many there were. A burst moves every chain, section and via of
     its problem, so it is counted once, for the problem."""
     before_final_spacing: bool = False
-    """Whether the run stopped, at its iteration cap, its time limit or the
-    caller's stop, while some problem ran at a coarse level or had taken no
+    """Whether the run stopped, at its iteration cap or the caller's stop,
+    while some problem ran at a coarse level or had taken no
     step: its result is that level's best state subdivided to the final
     spacing, or, where that costs more than its input, no coarse burst
     ended normally or it took no step, its input."""
