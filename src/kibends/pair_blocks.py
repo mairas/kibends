@@ -158,6 +158,9 @@ class PairBlock:
     section is held, since no result could be checked against it."""
     limit: float
     """The centreline's smallest bend radius, mm."""
+    spacing: float
+    """The spacing its centreline is laid out at, which each of its edges'
+    bend-radius hinge weighs by, mm."""
     uneven: FloatArray
     """The direction pins bounding an end edge whose own gap differs from
     the section's, so that track b's end edge, from the end to the pin,
@@ -267,6 +270,7 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
         hold=hold,
         tight_start=tight_start,
         limit=limit,
+        spacing=spacing,
         uneven=line[[1, -2]][directions[[1, -2]] & _uneven_ends(given)],
         core=core,
     )
@@ -338,7 +342,7 @@ def _routed(given: PairInput) -> PairInput:
 
 
 def _has_room(given: PairInput, start: _Start, spacing: float) -> bool:
-    """Whether resampling at `spacing` leaves the centreline a vertex that
+    """Whether laying the centreline out at `spacing` leaves it a vertex that
     may move, some stretch between its fixed vertices, its ends and their
     direction pins, longer than a spacing, and each track is longer than a
     spacing. Pins close to each other, or to its ends, may leave no room."""

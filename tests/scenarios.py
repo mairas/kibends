@@ -500,9 +500,10 @@ def via_detour_over(top: ObstacleField) -> ViasScenario:
     )
 
 
-HEMMING_TRACK = Box(5.0, 1.5, 3.0, 0.1)
-"""A track on an inner layer, inflated for the via, across its way down: thin
-enough to jump, too long to slide around."""
+HEMMING_TRACK = Box(5.0, 1.5, 3.0, 0.275)
+"""A track on an inner layer across the via's way down, a 0.15 mm track and
+its 0.2 mm clearance each side, too long to slide around: at one spacing the
+via stops above it; a burst at a coarse spacing steps it across."""
 
 
 def via_hemmed(params: EnergyParams = PARAMS) -> ViasScenario:

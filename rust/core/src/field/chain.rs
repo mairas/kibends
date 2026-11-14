@@ -279,7 +279,7 @@ fn gather<T: Copy>(values: &[T], at: &[usize]) -> Vec<T> {
 
 /// The polyline's edges, each split evenly into parts of at most
 /// MAX_EDGE_LENGTH, so that a point near an edge is also near a part's
-/// middle, where the tree finds it. Chains resampled at the final spacing,
+/// middle, where the tree finds it. Chains laid out at the final spacing,
 /// at most 0.1 mm, are never split; at a coarse level, edges longer than
 /// MAX_EDGE_LENGTH are.
 pub fn split_edges(vertices: &[V2]) -> (Vec<V2>, Vec<V2>) {

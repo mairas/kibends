@@ -4,27 +4,49 @@
 //! problem has settled. The chains come first, then the sections, as their
 //! centrelines.
 //!
-//! A burst starts from the members resampled at its level's spacing (see
-//! Coarse levels); the shapes as the burst left them are what the energy,
-//! the guard and the best state see. Resampling
-//! can lay a chord across an obstacle corner, and a burst only rejects
-//! crossings its own moves create (`checks`), so the best state is limited
-//! to no more violations per member than the resampled start
-//! (`polylines::count_violations`), and to no via newly or deeper inside
-//! its clearance of any obstacle, or its stops, than it started
+//! Layout
+//! ------
+//! A problem is built at its inputs (`Shared::inputs`): each member's drawn
+//! vertices, every one kept where it is, with each edge longer than the
+//! final spacing split evenly (`polylines::subdivide`). Entering the
+//! coarsest level lays the drawn vertices out the same way at its spacing,
+//! each span between anchors keeping MIN_COARSE_FREE free vertices. So the
+//! coarsest level, and each unit a level starts from the inputs instead
+//! (`State::enter`), starts from the drawn geometry: no chord cuts a drawn
+//! corner, and a re-run starts from the shape the last run committed. A
+//! finer level starts from the coarser one's best state subdivided
+//! (`State::bring`), which keeps its geometry.
+//!
+//! Each burst starts from the shapes laid out again (`State::simplified`,
+//! `State::resampled`, then `State::bring`): a chain is simplified within
+//! SIMPLIFY_FRACTION of the settled change, as the run's last
+//! simplification merges, and across its edges shorter than MERGE_EDGE,
+//! each merge clear of what it sees and of the moving vias' rings where they
+//! are, then its edges longer than the level's spacing are split evenly. So
+//! the vertices the bursts bunched or left on a straight go, and a chain
+//! that shortens loses vertices rather than crumpling against the
+//! short-edge barrier. The simplification moves a shape by no more than its
+//! tolerance, a merge across a short edge by up to that edge, and a split
+//! not at all; a burst's change counts from the shapes so laid out, so that
+//! laying out alone never keeps a problem from settling. A coupled section
+//! a burst has moved is resampled evenly at the final spacing between its
+//! fixed vertices instead: its tracks are its centreline's mitred offsets,
+//! whose inner side folds early at an edge shorter than its neighbours in a
+//! bend.
+//! The shapes as a burst leaves them are what the energy, the guard and the
+//! best state see.
+//!
+//! The best state is limited to no more violations per member than the
+//! inputs (`polylines::count_violations`), and to no via newly or deeper
+//! inside its clearance of any obstacle, or its stops, than it started
 //! (`vias::free::newly_inside`), each obstacle judged apart. Each problem
 //! keeps its best state, taken only from a burst that does not raise its
-//! energy and passes that guard, at a coarse level unit by unit.
-//! Resampling renumbers the edges, so the guard compares counts, not
-//! edges.
+//! energy and passes that guard, at a coarse level unit by unit. Laying
+//! out renumbers the edges, so the guard compares counts, not edges.
 //!
 //! A vertex or via that starts inside its clearance moves like any other:
 //! the clearance hinge pushes it out, and the check after a burst moves
-//! back only what was clear at the burst's start. Resampling keeps a vertex
-//! more than PRESSED_DEPTH inside the others' clearance where it is, as a
-//! free vertex (`State::pressed`): spread along a shape that the free
-//! vertices beside them bend, such vertices would creep out of the
-//! clearance a little every burst, and the run would settle later.
+//! back only what was clear at the burst's start.
 //!
 //! A section held within the run (`State::go_on_from`) builds its problem
 //! again, which measures its guard, its energy and its inputs' energy with
@@ -41,16 +63,17 @@
 //! final spacing throughout. A 45 mm track at 0.1 mm has about 450
 //! vertices, and its bow across the whole span is about N² softer than one
 //! vertex, so a few coarse vertices straighten it in a few bursts where the
-//! final spacing needs a hundred. Each level's short-edge barrier and
-//! stiffness reference take its spacing.
+//! final spacing needs a hundred. Each level's stiffness reference takes
+//! its spacing; the short-edge barrier starts at the final spacing's at
+//! every level, so that a coarse level does not push apart the drawn
+//! vertices it keeps.
 //!
 //! The best state is always one that passes the guard at the current
 //! level's spacing, and energies are compared only within a level
-//! (`State::enter`). Entering a coarse level brings the best state there
-//! (`State::bring`): subdivided, keeping every vertex, when the level is
-//! finer, so the geometry does not change; resampled when it is coarser,
-//! each span keeping MIN_COARSE_FREE free vertices. What fails the guard
-//! there starts from the inputs instead, unit by unit (`layout::units`).
+//! (`State::enter`). Entering the next, finer level brings the best state
+//! there (`State::bring`): subdivided, keeping every vertex, so the
+//! geometry does not change. What fails the guard there starts from the
+//! inputs laid out at the level instead, unit by unit (`layout::units`).
 //! The energy and the stall history start over there.
 //!
 //! Entering the final level takes the coarse levels' best state,
@@ -58,7 +81,7 @@
 //! guard and its energy at the final spacing is no higher than the
 //! inputs'; else it takes the inputs (`State::final_state`). So the coarse
 //! levels never leave more energy than the inputs had, and a run none of
-//! whose coarse bursts ended normally does not end at a resample of its
+//! whose coarse bursts ended normally does not end at a layout of its
 //! inputs that no burst reached.
 //!
 //! At a coarse level each unit is kept apart: after a burst, a unit that
@@ -74,11 +97,11 @@
 //! The checks judge where a burst leaves the shapes, not the way there, so
 //! at a coarse level, where few vertices take long steps, a chain may pass
 //! through another moving member in one burst and settle on its far side
-//! where that route is shorter and keeps clearance, as the arch of the
-//! tent scenario (`tests/scenarios.py`) does past its bar, or a loop across
-//! a pad it went round. A re-run on
-//! converged output runs the coarse levels again, and keeps what they
-//! reach only if it costs no more than its inputs.
+//! where that route is shorter and keeps clearance, as the long arch of the
+//! drape scenario (`tests/scenarios.py`) does past the short one under it,
+//! or a loop across a pad it went round. A re-run on converged output runs
+//! the coarse levels again, and keeps what they reach only if it costs no
+//! more than its inputs.
 //!
 //! The first burst at a level a coarser one handed over to settles it if
 //! it moves nothing, even if L-BFGS ended it abnormally, provided the
@@ -100,14 +123,16 @@ use super::layout::{self, units};
 use super::problem::{Layout, Lookups, Objective, Problem};
 use super::{
     BurstReport, Bursts, DEEPER_ROUND_OFF, End, INSIDE_TOLERANCE, MAX_ABNORMAL_BURSTS,
-    NOTHING_MOVED, NotFinite, Notice, PRESSED_DEPTH, Settings, stalled,
+    NOTHING_MOVED, NotFinite, Notice, Settings, stalled,
 };
 use crate::contacts::contacts_left;
 use crate::field::Field;
+use crate::field::chain::ChainField;
 use crate::geometry::V2;
 use crate::numeric::{python_max, python_min, python_sum};
-use crate::polylines::{self, count_violations, resample, resample_coarse, shape_change};
+use crate::polylines::{self, count_violations, resample, shape_change, subdivide};
 use crate::seen::Seen;
+use crate::simplify::{Optimised, simplified_vertices};
 use crate::vias::free::{FreeDistances, free_distances, newly_inside};
 use crate::vias::sight::ViaSight;
 
@@ -121,7 +146,7 @@ pub struct MemberSetup {
     pub anchors: Vec<bool>,
     /// Per contact it keeps, the vertex that keeps it.
     pub contacts: Vec<usize>,
-    /// Whether it is pinned throughout and not resampled.
+    /// Whether it is pinned throughout and never laid out again.
     pub held: bool,
     /// A section's bend-radius limit, which its bursts may not newly bend
     /// it below (`polylines::SelfCheck`).
@@ -174,11 +199,6 @@ pub struct Shape {
     pub masks: Vec<Vec<bool>>,
     /// Per member, each vertex's contact among its member's, None for none.
     pub contact_of: Vec<Vec<Option<usize>>>,
-    /// Per member, the spacing it was laid out at, by resampling or
-    /// subdividing, if no burst has moved it since: a burst starts from it
-    /// as it is at that spacing, since resampled again it would cut corners
-    /// deeper still.
-    pub laid_out: Vec<Option<f64>>,
     pub positions: Vec<V2>,
 }
 
@@ -188,7 +208,6 @@ impl Shape {
         self.points[i] = other.points[i].clone();
         self.masks[i] = other.masks[i].clone();
         self.contact_of[i] = other.contact_of[i].clone();
-        self.laid_out[i] = other.laid_out[i];
     }
 }
 
@@ -335,18 +354,92 @@ impl Shared {
         self.settings().coarse.as_slice().len()
     }
 
-    /// Per member, where its short-edge barrier starts with the chains at
-    /// `spacing`.
-    pub fn short_edges(&self, spacing: f64) -> Vec<f64> {
-        self.setup
-            .energy
-            .short_edges(spacing / self.settings().spacing)
+    /// The spacing member `i` is laid out at with the chains at `spacing`:
+    /// a section's is always the final spacing, since its bend-radius limit
+    /// and direction pins are laid out at it.
+    fn member_spacing(&self, i: usize, spacing: f64) -> f64 {
+        if self.setup.energy.members.members[i].section.is_some() {
+            self.settings().spacing
+        } else {
+            spacing
+        }
+    }
+
+    /// The inputs with the chains laid out at `spacing`: each member's
+    /// drawn vertices, all kept, its long edges subdivided at its spacing
+    /// (`lay_out_member`), and the vias at their starts. A member pinned
+    /// throughout stays as given.
+    pub fn inputs(&self, spacing: f64) -> Shape {
+        let count = self.count();
+        let finest = self.settings().spacing;
+        let mut points = Vec::with_capacity(count);
+        let mut masks = Vec::with_capacity(count);
+        let mut contact_of = Vec::with_capacity(count);
+        for (i, (m, given)) in self
+            .setup
+            .members
+            .iter()
+            .zip(&self.given_contact_of)
+            .enumerate()
+        {
+            let here = self.member_spacing(i, spacing);
+            let (p, mask, c) = lay_out_member(
+                &m.original,
+                &m.anchors,
+                given,
+                &self.loose[i],
+                here,
+                MIN_COARSE_FREE,
+                finest,
+            );
+            // Subdividing would put free vertices between a held member's
+            // pins.
+            if m.held || mask.iter().all(|&f| f) {
+                points.push(m.original.clone());
+                masks.push(m.anchors.clone());
+                contact_of.push(given.clone());
+            } else {
+                points.push(p);
+                masks.push(mask);
+                contact_of.push(c);
+            }
+        }
+        Shape {
+            points,
+            masks,
+            contact_of,
+            positions: self.setup.vias.iter().map(|v| v.start).collect(),
+        }
+    }
+
+    /// Per member, the rings of the moving vias at `positions` that it
+    /// keeps its centreline out of (`problem::Problem::rings`), None for
+    /// none.
+    fn via_rings(&self, positions: &[V2]) -> Vec<Option<Arc<dyn Field>>> {
+        let mut centres = vec![Vec::new(); self.count()];
+        let mut rings = vec![Vec::new(); self.count()];
+        for (&at, near) in positions.iter().zip(&self.setup.energy.rings) {
+            for &(i, ring) in near {
+                centres[i].push(at);
+                rings[i].push(ring);
+            }
+        }
+        centres
+            .iter()
+            .zip(rings)
+            .map(|(centres, rings)| {
+                // Zero-length edges, each via an obstacle of its own.
+                (!centres.is_empty()).then(|| {
+                    let obstacles = (0..centres.len()).collect();
+                    Arc::new(ChainField::new(centres, centres, rings, obstacles)) as Arc<dyn Field>
+                })
+            })
+            .collect()
     }
 
     /// The problem's energy at `shape`, with what the members see of each
-    /// other at its points given as `seen` and the chains' short-edge
-    /// barrier at `spacing`.
-    pub fn energy_of(&self, shape: &Shape, seen: &Seen, spacing: f64) -> Result<f64, NotFinite> {
+    /// other at its points given as `seen`.
+    pub fn energy_of(&self, shape: &Shape, seen: &Seen) -> Result<f64, NotFinite> {
         let masks = self.energy_masks(&shape.masks);
         self.setup
             .energy
@@ -359,7 +452,6 @@ impl Shared {
                     .iter()
                     .map(Vec::as_slice)
                     .collect::<Vec<_>>(),
-                &self.short_edges(spacing),
                 seen,
                 None,
             )
@@ -486,14 +578,14 @@ pub struct State {
     pub seen: Arc<Seen>,
     /// The best state that passes the guard at the current level.
     pub best: Shape,
-    /// The inputs, resampled at the final spacing: what the guard was
-    /// measured on, so it always passes it.
+    /// The inputs laid out at the final spacing (`Shared::inputs`): what
+    /// the guard was measured on, so it always passes it.
     pub input: Shape,
-    /// The energy of `now` and of `best`, with the chains' short-edge
-    /// barrier at the current level's spacing.
+    /// The energy of `now` and of `best`, laid out at the current level's
+    /// spacing, compared only within it.
     pub energy: f64,
     pub best_energy: f64,
-    /// The energy of the inputs, resampled, at the final spacing.
+    /// The energy of the inputs, laid out at the final spacing.
     pub input_energy: f64,
     /// The level of the schedule it runs at (`Shared::spacing_at`).
     pub level: usize,
@@ -509,14 +601,14 @@ pub struct State {
     /// normally, or its first burst settled it after a handover.
     descended: bool,
     /// Whether some burst at a coarse level ended normally, without which
-    /// the coarse levels' best state is only a resample of what they
-    /// started from.
+    /// the coarse levels' best state is only a layout of what they started
+    /// from.
     coarse_descended: bool,
     /// Per member, whether it is held at its best shape for the rest of
     /// the coarse level it runs at (`State::step`).
     held: Vec<bool>,
-    /// Per member, the violations the resampled start has, which the guard
-    /// holds it to.
+    /// Per member, the violations its inputs have, which the guard holds
+    /// it to.
     pub allowed: Vec<usize>,
     inside: FreeDistances,
     stopped: FreeDistances,
@@ -526,9 +618,8 @@ pub struct State {
     pub moving: bool,
     /// Whether some burst changed a shape by more than NOTHING_MOVED.
     pub moved: bool,
-    /// Per member, whether its next burst's change counts from its shape
-    /// as given rather than from `now`, so that resampling the inputs does
-    /// not count as moving them.
+    /// Per member, whether it is still at its inputs: a section there
+    /// starts its burst from their layout rather than a resample.
     from_input: Vec<bool>,
     lowest: Vec<f64>,
     lengths: Vec<f64>,
@@ -541,23 +632,23 @@ pub struct State {
 
 /// At a coarse level, the fewest free vertices a span between anchors
 /// keeps, so that a short kinked chain between pins never collapses to a
-/// chord (`polylines::resample_coarse`).
+/// chord (`polylines::subdivide`).
 pub const MIN_COARSE_FREE: usize = 4;
 
-/// `polylines::resample` at `spacing`, keeping the `loose` ends, the
-/// vertices that keep a contact (`contact_of`) and the `kept` vertices
-/// where they are, as free vertices, and where each contact went. Above
-/// the `finest` spacing each span keeps MIN_COARSE_FREE free vertices.
-#[allow(clippy::too_many_arguments)]
-fn resample_member(
-    points: &[V2],
-    mask: &[bool],
-    contact_of: &[Option<usize>],
-    loose: &[End],
-    spacing: f64,
-    finest: f64,
-    kept: Option<&[bool]>,
-) -> (Vec<V2>, Vec<bool>, Vec<Option<usize>>) {
+/// The tolerance a burst's start is simplified within, as a fraction of
+/// `Settings::settled_change`: below it, so that the next burst moving the
+/// vertices back does not keep the problem from settling.
+pub const SIMPLIFY_FRACTION: f64 = 0.5;
+
+/// The shortest edge a burst's start keeps between free vertices, mm:
+/// across a shorter one a vertex is merged
+/// (`simplify::merge_short_edges`), so that a chain that shortens loses
+/// vertices rather than crumpling them.
+pub const MERGE_EDGE: f64 = 0.02;
+
+/// A member's pinned vertices, its `loose` ends and the vertices that keep
+/// a contact (`contact_of`): what laying it out keeps where it is.
+fn anchors(mask: &[bool], contact_of: &[Option<usize>], loose: &[End]) -> Vec<bool> {
     let mut anchors: Vec<bool> = mask
         .iter()
         .zip(contact_of)
@@ -567,32 +658,59 @@ fn resample_member(
         let at = end.of(anchors.len());
         anchors[at] = true;
     }
-    if let Some(kept) = kept {
-        for (a, &k) in anchors.iter_mut().zip(kept) {
-            *a |= k;
-        }
-    }
-    let (points, mut fixed) = if spacing > finest {
-        resample_coarse(points, &anchors, spacing, MIN_COARSE_FREE, finest)
-    } else {
-        resample(points, &anchors, spacing)
-    };
-    // Resampling keeps the anchors, in order.
-    let at: Vec<usize> = (0..fixed.len()).filter(|&k| fixed[k]).collect();
-    let anchored = (0..anchors.len()).filter(|&k| anchors[k]);
+    anchors
+}
+
+/// `polylines::resample` at `spacing` between a section's pinned vertices,
+/// its `loose` ends and the vertices that keep a contact (`contact_of`),
+/// and the new mask and contacts.
+fn resample_section(
+    points: &[V2],
+    mask: &[bool],
+    contact_of: &[Option<usize>],
+    loose: &[End],
+    spacing: f64,
+) -> (Vec<V2>, Vec<bool>, Vec<Option<usize>>) {
+    let anchors = anchors(mask, contact_of, loose);
+    let (points, kept) = resample(points, &anchors, spacing);
+    let at = (0..anchors.len()).filter(|&k| anchors[k]);
+    let slots: Vec<usize> = (0..kept.len()).filter(|&k| kept[k]).collect();
+    let mut fixed = vec![false; points.len()];
     let mut moved = vec![None; points.len()];
-    for (&slot, original) in at.iter().zip(anchored) {
-        if !mask[original] {
-            fixed[slot] = false;
-        }
+    // Resampling keeps the anchors, in order.
+    for (&slot, original) in slots.iter().zip(at) {
+        fixed[slot] = mask[original];
         moved[slot] = contact_of[original];
     }
     (points, fixed, moved)
 }
 
+/// `polylines::subdivide` at `spacing`, its spans between the pinned
+/// vertices, the `loose` ends and the vertices that keep a contact
+/// (`contact_of`), each with at least `minimum_free` free vertices above
+/// the `finest` spacing; and the new mask and contacts.
+fn lay_out_member(
+    points: &[V2],
+    mask: &[bool],
+    contact_of: &[Option<usize>],
+    loose: &[End],
+    spacing: f64,
+    minimum_free: usize,
+    finest: f64,
+) -> (Vec<V2>, Vec<bool>, Vec<Option<usize>>) {
+    let anchors = anchors(mask, contact_of, loose);
+    let (points, source) = subdivide(points, &anchors, spacing, minimum_free, finest);
+    let fixed = source.iter().map(|s| s.is_some_and(|k| mask[k])).collect();
+    let moved = source
+        .iter()
+        .map(|s| s.and_then(|k| contact_of[k]))
+        .collect();
+    (points, fixed, moved)
+}
+
 impl State {
-    /// The problem `setup` makes, at its members resampled; Err if its
-    /// energy there is not finite.
+    /// The problem `setup` makes, at its inputs (`Shared::inputs`); Err if
+    /// its energy there is not finite.
     pub fn new(setup: Setup) -> Result<Self, NotFinite> {
         let count = setup.members.len();
         let mut loose = vec![Vec::new(); count];
@@ -625,32 +743,6 @@ impl State {
             .collect();
         let carried = setup.vias.iter().map(|v| v.carried.clone()).collect();
         let spacing = setup.settings.spacing;
-        let mut points = Vec::with_capacity(count);
-        let mut masks = Vec::with_capacity(count);
-        let mut contact_of = Vec::with_capacity(count);
-        for ((m, given), ends) in setup.members.iter().zip(&given_contact_of).zip(&loose) {
-            let (p, mask, c) = if m.held {
-                (m.original.clone(), m.anchors.clone(), given.clone())
-            } else {
-                resample_member(&m.original, &m.anchors, given, ends, spacing, spacing, None)
-            };
-            // Resampling would put free vertices between a held member's
-            // pins.
-            if mask.iter().all(|&f| f) {
-                points.push(m.original.clone());
-                masks.push(m.anchors.clone());
-                contact_of.push(given.clone());
-            } else {
-                points.push(p);
-                masks.push(mask);
-                contact_of.push(c);
-            }
-        }
-        let positions: Vec<V2> = setup.vias.iter().map(|v| v.start).collect();
-        let free: Vec<usize> = (0..count)
-            .filter(|&i| !masks[i].iter().all(|&f| f) || !carried_by[i].is_empty())
-            .collect();
-        let moving = !free.is_empty() || !setup.vias.is_empty();
         let shared = Arc::new(Shared {
             setup,
             loose,
@@ -658,20 +750,17 @@ impl State {
             given_contact_of,
             carried,
         });
-        let now = Shape {
-            points,
-            masks,
-            contact_of,
-            // The first burst starts from the shapes `allowed` was
-            // measured on.
-            laid_out: vec![Some(spacing); count],
-            positions,
-        };
+        // The first burst starts from the shapes `allowed` is measured on.
+        let now = shared.inputs(spacing);
+        let free: Vec<usize> = (0..count)
+            .filter(|&i| !now.masks[i].iter().all(|&f| f) || !shared.carried_by[i].is_empty())
+            .collect();
+        let moving = !free.is_empty() || !shared.setup.vias.is_empty();
         let seen = shared.seeing(&now.points);
         let allowed = shared.violations(&now.points, &now.masks, &now.positions, &seen);
         let inside = shared.via_distances(&now.points, &now.positions, -INSIDE_TOLERANCE);
         let stopped = shared.stop_distances(&now.points, &now.positions, -INSIDE_TOLERANCE);
-        let energy = shared.energy_of(&now, &seen, spacing)?;
+        let energy = shared.energy_of(&now, &seen)?;
         let length = shared.length(&now.points);
         let vias = shared.setup.vias.len();
         let level = shared.final_level();
@@ -727,64 +816,105 @@ impl State {
         self.unstarted || self.coarse()
     }
 
-    /// The spacing member `i` is laid out at with the chains at `spacing`:
-    /// a section's is always the final spacing, since its bend-radius limit
-    /// and direction pins are laid out at it.
-    fn member_spacing(&self, i: usize, spacing: f64) -> f64 {
-        if self.shared.setup.energy.members.members[i]
+    /// Whether member `i` is a coupled section.
+    fn section(&self, i: usize) -> bool {
+        self.shared.setup.energy.members.members[i]
             .section
             .is_some()
-        {
-            self.shared.settings().spacing
-        } else {
-            spacing
-        }
     }
 
-    /// The energy at `shape`, `seen` what the members see there, at the
-    /// current level.
-    fn energy_at(&self, shape: &Shape, seen: &Seen) -> Result<f64, NotFinite> {
-        self.shared.energy_of(shape, seen, self.level_spacing())
-    }
-
-    /// `shape`, its burst-moved members taken as laid out at `from`, with
-    /// each free member brought to `to`'s spacing for it: subdivided where
-    /// that is finer, every vertex kept, so that the geometry does not
-    /// change and no new edge is shorter than half the spacing; resampled
-    /// where it is coarser, keeping the vertices pressed into the others'
-    /// clearance (`pressed`).
-    fn bring(&self, shape: &Shape, from: f64, to: f64) -> Shape {
+    /// `shape` with each free chain that is not held simplified within
+    /// SIMPLIFY_FRACTION of the settled change, keeping its pinned
+    /// vertices, loose ends and the vertices that keep a contact, as the
+    /// run's last simplification merges them (`simplify`), and merged
+    /// across its edges shorter than MERGE_EDGE, so that the vertices the
+    /// bursts bunched or left on a straight go. Each merged edge keeps clear of what its chain sees and
+    /// of the rings of the moving vias at `shape`'s positions.
+    fn simplified(&self, shape: &Shape) -> Shape {
         let shared = &self.shared;
-        let finest = shared.settings().spacing;
-        let seen = shared.seeing(&shape.points);
-        let pressed = self.pressed(&shape.points, &shape.positions, &seen);
+        let count = shared.count();
+        let fixed: Vec<Vec<bool>> = (0..count)
+            .map(|i| {
+                if self.free.contains(&i) && !self.held[i] && !self.section(i) {
+                    anchors(&shape.masks[i], &shape.contact_of[i], &shared.loose[i])
+                } else {
+                    vec![true; shape.points[i].len()]
+                }
+            })
+            .collect();
+        let optimised: Vec<Optimised<'_>> = shape
+            .points
+            .iter()
+            .zip(&fixed)
+            .map(|(points, fixed)| Optimised {
+                polyline: points,
+                fixed,
+                directions: &[],
+            })
+            .collect();
+        let tolerance = SIMPLIFY_FRACTION * shared.settings().settled_change;
+        let kept = simplified_vertices(
+            &shared.setup.energy.members.members,
+            &optimised,
+            &shared.via_rings(&shape.positions),
+            tolerance,
+            MERGE_EDGE,
+        );
+        let mut simplified = shape.clone();
+        for (i, kept) in kept.iter().enumerate() {
+            simplified.points[i] = kept.iter().map(|&k| shape.points[i][k]).collect();
+            simplified.masks[i] = kept.iter().map(|&k| shape.masks[i][k]).collect();
+            simplified.contact_of[i] = kept.iter().map(|&k| shape.contact_of[i][k]).collect();
+        }
+        simplified
+    }
+
+    /// `shape` with each free section that is not held and has left its
+    /// inputs resampled at the final spacing between its fixed vertices
+    /// (`resample_section`): its tracks are the mitred offsets of its
+    /// centreline, and an edge shorter than its neighbours in a bend folds
+    /// the inner track's offset sooner than the bend does.
+    fn resampled(&self, shape: &Shape) -> Shape {
+        let shared = &self.shared;
+        let spacing = shared.settings().spacing;
+        let mut resampled = shape.clone();
+        for &i in &self.free {
+            if self.section(i) && !self.held[i] && !self.from_input[i] {
+                let (p, m, c) = resample_section(
+                    &shape.points[i],
+                    &shape.masks[i],
+                    &shape.contact_of[i],
+                    &shared.loose[i],
+                    spacing,
+                );
+                resampled.points[i] = p;
+                resampled.masks[i] = m;
+                resampled.contact_of[i] = c;
+            }
+        }
+        resampled
+    }
+
+    /// `shape` with each free member's edges longer than `spacing` for it
+    /// split evenly, every vertex kept, so that the geometry does not
+    /// change and no new edge is shorter than half the spacing.
+    fn bring(&self, shape: &Shape, spacing: f64) -> Shape {
+        let shared = &self.shared;
         let mut brought = shape.clone();
         for &i in &self.free {
-            let target = self.member_spacing(i, to);
-            let at = shape.laid_out[i].unwrap_or_else(|| self.member_spacing(i, from));
-            if target == at {
-                continue;
-            }
-            // Subdividing keeps every vertex, so each edge is a span of its
-            // own, and no span keeps a minimum of free vertices.
-            let (kept, finest) = if target < at {
-                (vec![true; shape.points[i].len()], target)
-            } else {
-                (pressed[i].clone(), finest)
-            };
-            let (p, m, c) = resample_member(
+            let here = shared.member_spacing(i, spacing);
+            let (p, m, c) = lay_out_member(
                 &shape.points[i],
                 &shape.masks[i],
                 &shape.contact_of[i],
                 &shared.loose[i],
-                target,
-                finest,
-                Some(&kept),
+                here,
+                0,
+                here,
             );
             brought.points[i] = p;
             brought.masks[i] = m;
             brought.contact_of[i] = c;
-            brought.laid_out[i] = Some(target);
         }
         brought
     }
@@ -856,7 +986,9 @@ impl State {
 
     /// Start `level`. A coarse level starts from the best state brought to
     /// its spacing (`bring`), each unit that fails the guard there from the
-    /// inputs (`merge`). The final level starts from `final_state`. The
+    /// inputs laid out at it (`merge`, `Shared::inputs`); the first, entered
+    /// before any burst, from the inputs laid out at it. The final level
+    /// starts from `final_state`. The
     /// best state, the energies and the stall history start there, so that
     /// no energy is compared across spacings, and the abnormal streak
     /// starts over.
@@ -864,16 +996,21 @@ impl State {
     /// Of the schedule it sets `level`, `handed_over` (whether a coarser
     /// level that descended hands over), `descended` (not yet), `held`
     /// (none) and `from_input` (what came from the inputs), and clears
-    /// `settled` and `unstarted`; `coarse_descended` carries. `laid_out`
-    /// comes with the state it starts from.
+    /// `settled` and `unstarted`; `coarse_descended` carries.
     pub fn enter(&mut self, level: usize) -> Result<(), NotFinite> {
-        let from = self.level_spacing();
         let (now, seen, from_input) = if level < self.shared.final_level() {
             self.level = level;
-            let candidate = self.bring(&self.best, from, self.level_spacing());
-            self.merge_guarded(&candidate, &self.input)
+            let inputs = self.shared.inputs(self.level_spacing());
+            if self.unstarted {
+                let seen = self.shared.seeing(&inputs.points);
+                let from_input = vec![true; self.shared.count()];
+                (inputs, seen, from_input)
+            } else {
+                let candidate = self.bring(&self.best, self.level_spacing());
+                self.merge_guarded(&candidate, &inputs)
+            }
         } else {
-            let (now, seen, _, from_input) = self.final_state(from)?;
+            let (now, seen, _, from_input) = self.final_state()?;
             (now, seen, from_input)
         };
         self.settled = false;
@@ -891,16 +1028,16 @@ impl State {
     /// the coarse best state subdivided (`bring`) if some coarse burst ended
     /// normally (`coarse_descended`), it passes the guard and its energy is
     /// no higher than the inputs'; else the inputs. So the coarse levels
-    /// never leave more energy than the inputs had, nor a state only
-    /// resampling produced.
-    fn final_state(&mut self, from: f64) -> Result<(Shape, Seen, f64, Vec<bool>), NotFinite> {
+    /// never leave more energy than the inputs had, nor a state only laying
+    /// out produced.
+    fn final_state(&mut self) -> Result<(Shape, Seen, f64, Vec<bool>), NotFinite> {
         self.level = self.shared.final_level();
         let count = self.shared.count();
         if self.coarse_descended {
-            let candidate = self.bring(&self.best, from, self.level_spacing());
+            let candidate = self.bring(&self.best, self.level_spacing());
             let seen = self.shared.seeing(&candidate.points);
             if self.guards(&candidate, &seen) {
-                let energy = self.energy_at(&candidate, &seen)?;
+                let energy = self.shared.energy_of(&candidate, &seen)?;
                 if energy <= self.input_energy {
                     return Ok((candidate, seen, energy, vec![false; count]));
                 }
@@ -915,16 +1052,15 @@ impl State {
         ))
     }
 
-    /// Take `now` as the current and best state, its change counting from
-    /// the inputs for the members `from_input` names (members first, any
-    /// more entries ignored), and start the stall history and the abnormal
-    /// streak over.
+    /// Take `now` as the current and best state, the members `from_input`
+    /// names still at the inputs (members first, any more entries
+    /// ignored), and start the stall history and the abnormal streak over.
     fn reseed(&mut self, now: Shape, seen: Seen, from_input: Vec<bool>) -> Result<(), NotFinite> {
         let count = self.shared.count();
         self.now = now;
         self.seen = Arc::new(seen);
         self.from_input = from_input[..count].to_vec();
-        self.energy = self.energy_at(&self.now, &self.seen)?;
+        self.energy = self.shared.energy_of(&self.now, &self.seen)?;
         self.keep();
         self.lowest = vec![self.energy];
         self.lengths = vec![self.length()];
@@ -940,8 +1076,7 @@ impl State {
         if !self.coarse() {
             return Ok(());
         }
-        let from = self.level_spacing();
-        let (best, seen, energy, _) = self.final_state(from)?;
+        let (best, seen, energy, _) = self.final_state()?;
         self.best = best;
         self.best_energy = energy;
         self.now = self.best.clone();
@@ -1059,21 +1194,6 @@ impl State {
         self.guard(&shape.points, &shape.masks, &shape.positions, seen)
     }
 
-    /// Per member, its vertices at `polylines` more than PRESSED_DEPTH
-    /// inside the clearance of the other members and vias at `positions`,
-    /// which resampling keeps where they are, as free vertices that the
-    /// next burst moves. Vertices deep inside static copper are left to
-    /// resampling, which lays them there where a chord cuts a corner and
-    /// moves them out again. `seen` is what the members see at
-    /// `polylines`.
-    pub fn pressed(&self, polylines: &[Vec<V2>], positions: &[V2], seen: &Seen) -> Vec<Vec<bool>> {
-        let flat = self.shared.flat(polylines, positions);
-        seen.distances(&refs(polylines), &flat, -PRESSED_DEPTH)
-            .into_iter()
-            .map(|d| d.into_iter().map(|d| d < -PRESSED_DEPTH).collect())
-            .collect()
-    }
-
     /// The variables of a burst from `starts` and the current centres.
     pub fn layout(&self, starts: Vec<Vec<V2>>) -> Layout {
         layout::layout(
@@ -1135,55 +1255,19 @@ impl State {
         let began = Instant::now();
         let shared = self.shared.clone();
         let spacing = self.level_spacing();
-        let finest = shared.settings().spacing;
-        let before: Vec<Vec<V2>> = (0..shared.count())
-            .map(|i| {
-                if self.from_input[i] {
-                    shared.setup.members[i].original.clone()
-                } else {
-                    self.now.points[i].clone()
-                }
-            })
-            .collect();
-        let pressed = self.pressed(&self.now.points, &self.now.positions, &self.seen);
-        let mut starts = Vec::with_capacity(shared.count());
-        let mut masks = Vec::with_capacity(shared.count());
-        let mut contact_of = Vec::with_capacity(shared.count());
-        for (i, kept_here) in pressed.iter().enumerate() {
-            let (points, mask, kept) = (
-                &self.now.points[i],
-                &self.now.masks[i],
-                &self.now.contact_of[i],
-            );
-            let here = self.member_spacing(i, spacing);
-            if self.free.contains(&i) && !self.held[i] && self.now.laid_out[i] != Some(here) {
-                let (p, m, c) = resample_member(
-                    points,
-                    mask,
-                    kept,
-                    &shared.loose[i],
-                    here,
-                    finest,
-                    Some(kept_here),
-                );
-                starts.push(p);
-                masks.push(m);
-                contact_of.push(c);
-            } else {
-                starts.push(points.clone());
-                masks.push(mask.clone());
-                contact_of.push(kept.clone());
-            }
-        }
-        self.now.masks = masks;
-        self.now.contact_of = contact_of;
+        let laid_out = self.bring(&self.resampled(&self.simplified(&self.now)), spacing);
+        self.now.masks = laid_out.masks;
+        self.now.contact_of = laid_out.contact_of;
+        let starts = laid_out.points;
+        // A burst's change counts from where it started, so that laying
+        // the shapes out does not count as moving them.
+        let mut before = starts.clone();
+        let previous = self.now.points.clone();
         self.from_input = vec![false; starts.len()];
         let mut burst_masks = self.now.masks.clone();
         for &i in &self.free {
             if self.held[i] {
                 burst_masks[i].fill(true);
-            } else {
-                self.now.laid_out[i] = None;
             }
         }
         let burst = self.burst(starts, &burst_masks, bursts)?;
@@ -1209,22 +1293,26 @@ impl State {
                 if back[i] && shared.loose[i].is_empty() && shared.carried_by[i].is_empty() {
                     self.held[i] = true;
                 }
+                if back[i] {
+                    before[i] = previous[i].clone();
+                }
             }
             self.now = now;
             self.seen = Arc::new(seen);
-            self.energy = self.energy_at(&self.now, &self.seen)?;
+            self.energy = self.shared.energy_of(&self.now, &self.seen)?;
             if self.energy <= self.best_energy {
                 self.keep();
             }
         } else {
-            self.energy = self.energy_at(&self.now, &self.seen)?;
+            self.energy = self.shared.energy_of(&self.now, &self.seen)?;
             if self.energy <= self.best_energy && self.guards(&self.now, &self.seen) {
                 self.keep();
             }
         }
         // At a coarse level the change is that of what the level kept: a
         // unit put back every burst has not moved, and does not keep the
-        // others from settling.
+        // others from settling, so its change counts from its shape before
+        // the layout.
         let changes: Vec<f64> = self
             .free
             .iter()
@@ -1342,7 +1430,6 @@ impl State {
             layout: layout.clone(),
             masks: shared.energy_masks(masks),
             contact_of: self.now.contact_of.clone(),
-            short_edges: shared.short_edges(self.level_spacing()),
         };
         let check = Check::new(
             self.shared.clone(),
@@ -1392,9 +1479,8 @@ impl State {
     /// Of the schedule, `level`, `unstarted`, `handed_over`, `descended`,
     /// `coarse_descended` and `moved` carry from `earlier`; `held` starts
     /// over, so a lone chain held at a coarse level is tried again, and
-    /// `from_input` is set for what came from the start. `laid_out` comes
-    /// with each member's shape. Returns how many members
-    /// that move and how many vias went back.
+    /// `from_input` is set for what came from the start. Returns how many
+    /// members that move and how many vias went back.
     pub fn go_on_from(&mut self, earlier: &State) -> Result<(usize, usize), NotFinite> {
         self.put_back(earlier, State::failing)
     }
@@ -1443,12 +1529,15 @@ impl State {
         self.via_rejected = earlier.via_rejected.clone();
         self.abnormal_bursts = earlier.abnormal_bursts;
         let (now, seen, from_input) = if self.coarse() {
-            // What went back is laid out at the final spacing (`laid_out`)
-            // and what a burst moved is at the level's: all brought to the
-            // level's, unit by unit where that passes the guard.
-            let spacing = self.level_spacing();
-            let brought = self.bring(&now, spacing, spacing);
-            let (now, seen, back) = self.merge_guarded(&brought, &self.input);
+            // What went back is laid out at the final spacing and what a
+            // burst moved is at the level's: what went back is laid out at
+            // the level's too, all kept where that passes the guard.
+            let inputs = self.shared.inputs(self.level_spacing());
+            let mut laid_out = now;
+            for i in (0..count).filter(|&i| from_input[i]) {
+                laid_out.take_member(i, &inputs);
+            }
+            let (now, seen, back) = self.merge_guarded(&laid_out, &inputs);
             let from_input = from_input
                 .iter()
                 .zip(&back)
@@ -1581,7 +1670,6 @@ mod tests {
         rings: Vec<Vec<(usize, f64)>>,
         settings: Settings,
     ) -> State {
-        let count = members.len();
         let vias: Vec<ViaSetup> = vias
             .into_iter()
             .map(|(start, copper)| ViaSetup {
@@ -1591,6 +1679,20 @@ mod tests {
                 stop_parts: vec![None, None],
             })
             .collect();
+        joined(members, setups, vias, rings, vec![], settings)
+    }
+
+    /// `state`, its vias set up as `vias` and the loose ends of `groups`
+    /// joined.
+    fn joined(
+        members: Vec<Member>,
+        setups: Vec<MemberSetup>,
+        vias: Vec<ViaSetup>,
+        rings: Vec<Vec<(usize, f64)>>,
+        groups: Vec<Vec<(usize, End)>>,
+        settings: Settings,
+    ) -> State {
+        let count = members.len();
         let none: Vec<Vec<(usize, f64)>> = vias.iter().map(|_| vec![]).collect();
         let energy = Problem {
             members: Members::new(members),
@@ -1613,7 +1715,7 @@ mod tests {
             energy: Arc::new(energy),
             members: setups,
             vias,
-            groups: vec![],
+            groups,
             sight: ViaSight::new(&none, &none, count),
             settings,
         })
@@ -2032,11 +2134,9 @@ mod tests {
         p.guards(shape, &p.shared.seeing(&shape.points))
     }
 
-    fn energy_at_level(p: &State, shape: &Shape) -> f64 {
+    fn energy_of_shape(p: &State, shape: &Shape) -> f64 {
         let seen = p.shared.seeing(&shape.points);
-        p.shared
-            .energy_of(shape, &seen, p.level_spacing())
-            .expect("finite")
+        p.shared.energy_of(shape, &seen).expect("finite")
     }
 
     #[test]
@@ -2140,7 +2240,7 @@ mod tests {
             p.enter(level).expect("finite");
 
             assert!(passes(&p, &p.best));
-            assert_eq!(p.best_energy, energy_at_level(&p, &p.best));
+            assert_eq!(p.best_energy, energy_of_shape(&p, &p.best));
             assert_eq!(p.now, p.best);
             assert_eq!(p.lowest, vec![p.best_energy]);
             assert!(longest_edge(&p.best.points[0]) <= p.level_spacing() + EDGE_ROUND_OFF);
@@ -2159,7 +2259,6 @@ mod tests {
         assert!(fine.len() > coarse.len());
         assert!(coarse.iter().all(|v| fine.contains(v)));
         assert!(shape_change(&coarse, fine) < EDGE_ROUND_OFF);
-        assert_eq!(p.best.laid_out[0], Some(LEVELS[1]));
     }
 
     #[test]
@@ -2212,6 +2311,40 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_put_back_after_a_merge_counts_no_change() {
+        // A bow over the post with a notch 10 µm deep of 0.014 mm edges at
+        // its apex, which laying out merges before each burst; straight
+        // across the post fails the guard, so the chain goes back to its
+        // notched best shape.
+        let (mut member, setup) = own_chain(
+            0,
+            vec![
+                V2::new(0.0, 0.0),
+                V2::new(4.99, BOW),
+                V2::new(5.0, BOW + 0.01),
+                V2::new(5.01, BOW),
+                V2::new(10.0, 0.0),
+            ],
+        );
+        member.field = post();
+        let mut p = state(
+            vec![member],
+            vec![setup],
+            vec![],
+            vec![],
+            coarse_settings(&LEVELS),
+        );
+        p.enter(0).expect("finite");
+
+        let change = p
+            .step(0, &mut toward(0.0), &mut |_| Ok(()))
+            .expect("finite");
+
+        assert!(p.best.points[0].contains(&V2::new(5.0, BOW + 0.01)));
+        assert!(change < settings().settled_change, "{change}");
+    }
+
+    #[test]
     fn a_chain_shorter_than_the_coarse_spacing_keeps_the_fewest_free_vertices() {
         let mut p = chains(
             &[(Arc::new(FreeSpace) as Arc<dyn Field>, 0.5, 3.0)],
@@ -2221,8 +2354,15 @@ mod tests {
 
         p.enter(0).expect("finite");
 
+        // Each of its two drawn edges splits into as many edges, so the
+        // fewest free vertices above the minimum is one more, the drawn
+        // middle vertex among them, on edges longer than the final spacing.
+        let best = &p.best.points[0];
         let free = p.best.masks[0].iter().filter(|&&f| !f).count();
-        assert_eq!(free, MIN_COARSE_FREE);
+        assert_eq!(free, MIN_COARSE_FREE + 1);
+        assert_eq!(best[best.len() / 2], V2::new(1.5, 0.5));
+        let spacing = settings().spacing;
+        assert!(best.windows(2).all(|w| (w[1] - w[0]).norm() > spacing));
     }
 
     fn advanced(p: &mut State, bursts: &mut dyn Bursts<NotFinite>) -> (Outcome, u64) {
@@ -2289,8 +2429,8 @@ mod tests {
         assert_eq!(p.level, LEVELS.len());
     }
 
-    /// A rise whose chain the coarsest level resamples with an odd count of
-    /// edges, cutting the corner at its middle, mm.
+    /// A rise whose chain the coarsest level lays out with fewer vertices
+    /// than its inputs have, mm.
     const CUT_RISE: f64 = 4.0;
 
     #[test]
@@ -2310,8 +2450,8 @@ mod tests {
         assert_eq!(iterations, levels * u64::from(MAX_ABNORMAL_BURSTS));
         assert_eq!(p.level, LEVELS.len());
         // No burst descended, so it ends at its inputs, not at their
-        // resample at the coarsest spacing; the final level's bursts move
-        // them by round-off in the layout's offsets.
+        // layout at the coarsest spacing; the final level's bursts move them
+        // by round-off in the layout's offsets.
         assert_eq!(p.best.points[0].len(), p.input.points[0].len());
         assert!(shape_change(&p.best.points[0], &p.input.points[0]) < EDGE_ROUND_OFF);
     }
@@ -2404,7 +2544,7 @@ mod tests {
         assert!(!p.coarse());
         assert!(longest_edge(&p.best.points[0]) <= settings().spacing + EDGE_ROUND_OFF);
         assert!(passes(&p, &p.best));
-        assert_eq!(p.best_energy, energy_at_level(&p, &p.best));
+        assert_eq!(p.best_energy, energy_of_shape(&p, &p.best));
         assert!(p.best_energy < p.input_energy);
     }
 
@@ -2451,7 +2591,7 @@ mod tests {
             assert_eq!(again.level, 0);
             assert!(!again.unstarted);
             assert!(passes(&again, &again.best));
-            assert_eq!(again.best_energy, energy_at_level(&again, &again.best));
+            assert_eq!(again.best_energy, energy_of_shape(&again, &again.best));
             assert!(longest_edge(&again.best.points[0]) <= LEVELS[0] + EDGE_ROUND_OFF);
             assert_eq!(again.best.points == earlier.best.points, !back);
             assert_eq!(again.from_input[0], back);
@@ -2527,7 +2667,7 @@ mod tests {
                     a: line(9.8, HELD_A),
                     b: line(10.2, HELD_B),
                 },
-                limit: None,
+                hinge: None,
             }),
         };
         let setup = |original: Vec<V2>, held: bool| MemberSetup {
@@ -2672,5 +2812,250 @@ mod tests {
         let seen = p.shared().seeing(points);
         let entered = p.shared().entered(points, &p.now.positions, &seen);
         assert!(entered.contains(&(1, 3)), "{entered:?}");
+    }
+
+    /// How far a moving via's ring keeps the chain of `over_a_via` from its
+    /// centre, mm.
+    const RING: f64 = 0.5;
+    /// The radius the chain of `over_a_via` arcs over the via at, mm.
+    const ARCED_AT: f64 = 0.5002;
+    /// The arc's edges, each about 0.0196 mm, shorter than MERGE_EDGE; a
+    /// chord across two of them passes 0.4998 mm from the via.
+    const ARC_EDGES: u32 = 80;
+
+    /// A chain up from (4.495, -2), over a moving via at (5, 0) on a
+    /// half-circle ARCED_AT from it, and down to (5.505, -2), the via's
+    /// ring keeping it RING off. The via starts at `start`.
+    fn over_a_via(start: V2) -> State {
+        let arc = (0..=ARC_EDGES).map(|k| {
+            let turn = std::f64::consts::PI * (f64::from(k) / f64::from(ARC_EDGES) - 0.5);
+            V2::new(5.0 + ARCED_AT * libm::sin(turn), ARCED_AT * libm::cos(turn))
+        });
+        let original: Vec<V2> = std::iter::once(V2::new(5.0 - ARCED_AT, -2.0))
+            .chain(arc)
+            .chain(std::iter::once(V2::new(5.0 + ARCED_AT, -2.0)))
+            .collect();
+        let (member, setup) = own_chain(0, original);
+        state(
+            vec![member],
+            vec![setup],
+            vec![(start, Arc::new(FreeSpace) as Arc<dyn Field>)],
+            vec![vec![(0, RING)]],
+            settings(),
+        )
+    }
+
+    /// A chain of net `Nk` alone on layer `Lk` through `original`, its ends
+    /// pinned, in free space.
+    fn own_chain(k: usize, original: Vec<V2>) -> (Member, MemberSetup) {
+        let trace = Trace {
+            net: format!("N{k}"),
+            width: 0.2,
+            clearance: 0.2,
+        };
+        let member = Member {
+            layer: format!("L{k}"),
+            viewer: trace.clone(),
+            ignored: vec![trace.net.clone()],
+            shown: vec![trace],
+            field: Arc::new(FreeSpace),
+            width: 0.2,
+            contacts: vec![],
+            section: None,
+        };
+        let setup = MemberSetup {
+            anchors: (0..original.len())
+                .map(|k| k == 0 || k == original.len() - 1)
+                .collect(),
+            original,
+            contacts: vec![],
+            held: false,
+            limit: None,
+        };
+        (member, setup)
+    }
+
+    /// `count` vertices evenly from `from` to `to`.
+    fn straight_line(from: V2, to: V2, count: usize) -> Vec<V2> {
+        (0..count)
+            .map(|k| from + (k as f64 / (count - 1) as f64) * (to - from))
+            .collect()
+    }
+
+    #[test]
+    fn merging_between_bursts_keeps_a_chain_clear_of_a_moving_via_where_it_is() {
+        let via = V2::new(5.0, 0.0);
+        let ring = ChainField::new(&[via], &[via], vec![RING], vec![0]);
+        let clear = |points: &[V2]| {
+            ring.segments_clear(&points[..points.len() - 1], &points[1..], 0.0)
+                .iter()
+                .all(|&c| c)
+        };
+        // Started far off, the via has moved under the arc.
+        let p = over_a_via(V2::new(5.0, -5.0));
+        assert!(clear(&p.now.points[0]));
+        let mut there = p.now.clone();
+        there.positions = vec![via];
+        let kept = p.simplified(&there);
+        assert!(clear(&kept.points[0]), "{:?}", kept.points[0]);
+        // Where the via started, nothing keeps the arc.
+        let away = p.simplified(&p.now);
+        assert!(!clear(&away.points[0]), "{:?}", away.points[0]);
+    }
+
+    #[test]
+    fn a_burst_whose_only_change_is_a_merge_across_short_edges_settles() {
+        // A straight chain with a notch 10 µm deep of 0.014 mm edges, which
+        // the merge between bursts takes out.
+        let (member, setup) = own_chain(
+            0,
+            vec![
+                V2::new(0.0, 0.0),
+                V2::new(4.99, 0.0),
+                V2::new(5.0, 0.01),
+                V2::new(5.01, 0.0),
+                V2::new(10.0, 0.0),
+            ],
+        );
+        let mut p = state(vec![member], vec![setup], vec![], vec![], settings());
+        let drawn = p.now.points[0].clone();
+
+        let change = p
+            .step(0, &mut still(0, 0), &mut |_| Ok(()))
+            .expect("finite");
+
+        assert!(shape_change(&drawn, &p.now.points[0]) > settings().settled_change);
+        assert!(change < settings().settled_change, "{change}");
+        assert!(p.settled);
+    }
+
+    /// The members laying out keeps as they are or in part, each alone on
+    /// its layer, straight but for a section: 0, a chain with a pinned
+    /// vertex 6 and a contact at vertex 14; 1 and 2, chains joined at a
+    /// loose end; 3, a chain whose last end a via carries; 4, a chain
+    /// pinned throughout; 5, a chain to hold; 6, a section drawn with
+    /// uneven edges.
+    fn kept_by_simplifying() -> State {
+        let line = |k: usize, y: f64, from: f64, to: f64| {
+            own_chain(k, straight_line(V2::new(from, y), V2::new(to, y), 21))
+        };
+        let mut members = Vec::new();
+        let mut setups = Vec::new();
+        let (mut m, mut s) = line(0, 0.0, 0.0, 10.0);
+        m.contacts = vec![Arc::new(Disc {
+            cx: 7.0,
+            cy: 0.0,
+            radius: 0.3,
+        })];
+        s.anchors[6] = true;
+        s.contacts = vec![14];
+        members.push(m);
+        setups.push(s);
+        for (k, (from, to)) in [(0.0, 5.0), (5.0, 10.0)].into_iter().enumerate() {
+            let (m, mut s) = line(1 + k, 1.0, from, to);
+            let joined = if k == 0 { s.anchors.len() - 1 } else { 0 };
+            s.anchors[joined] = false;
+            members.push(m);
+            setups.push(s);
+        }
+        let (m, mut s) = line(3, 2.0, 0.0, 10.0);
+        *s.anchors.last_mut().expect("vertices") = false;
+        members.push(m);
+        setups.push(s);
+        let (m, mut s) = line(4, 3.0, 0.0, 10.0);
+        s.held = true;
+        s.anchors.fill(true);
+        members.push(m);
+        setups.push(s);
+        let (m, s) = line(5, 4.0, 0.0, 10.0);
+        members.push(m);
+        setups.push(s);
+        let (mut m, s) = own_chain(
+            6,
+            vec![
+                V2::new(0.0, 5.0),
+                V2::new(1.0, 5.0),
+                V2::new(1.3, 5.0),
+                V2::new(4.0, 5.0),
+                V2::new(10.0, 5.0),
+            ],
+        );
+        m.width = 0.6;
+        let other = Trace {
+            net: "P6".to_string(),
+            ..m.viewer.clone()
+        };
+        m.ignored.push(other.net.clone());
+        m.shown.push(other);
+        m.section = Some(Section {
+            offset: PairOffset {
+                gap: 0.2,
+                width: 0.2,
+                a_on_right: true,
+                held: false,
+                pins: Pins {
+                    a_at: vec![],
+                    a: vec![],
+                    b_at: vec![],
+                    b: vec![],
+                },
+                a: vec![],
+                b: vec![],
+            },
+            hinge: None,
+        });
+        members.push(m);
+        setups.push(s);
+        let carrier = ViaSetup {
+            start: V2::new(10.0, 2.0),
+            carried: vec![(3, End::Last, V2::default())],
+            copper: Arc::new(FreeSpace),
+            stop_parts: vec![None, None],
+        };
+        let rings = vec![vec![]];
+        joined(
+            members,
+            setups,
+            vec![carrier],
+            rings,
+            vec![vec![(1, End::Last), (2, End::First)]],
+            settings(),
+        )
+    }
+
+    #[test]
+    fn laying_out_keeps_pins_contacts_shared_ends_and_what_is_held() {
+        let mut p = kept_by_simplifying();
+        p.held[5] = true;
+        let given = p.now.clone();
+
+        let got = p.simplified(&given);
+
+        let ends = |i: usize| vec![given.points[i][0], given.points[i][20]];
+        let at = |i: usize, k: &[usize]| k.iter().map(|&k| given.points[i][k]).collect::<Vec<_>>();
+        assert_eq!(got.points[0], at(0, &[0, 6, 14, 20]));
+        assert_eq!(got.masks[0], vec![true, true, false, true]);
+        assert_eq!(got.contact_of[0], vec![None, None, Some(0), None]);
+        for i in 1..=3 {
+            assert_eq!(got.points[i], ends(i), "member {i}");
+        }
+        assert_eq!(got.masks[3], vec![true, false]);
+        for i in [4, 5] {
+            assert_eq!(got.points[i], given.points[i], "member {i}");
+        }
+        // A section still at its inputs keeps their layout, uneven edges
+        // and all; one a burst has moved is resampled evenly.
+        assert_eq!(got.points[6], given.points[6]);
+        assert_eq!(p.resampled(&given).points[6], given.points[6]);
+        p.from_input[6] = false;
+        let resampled = p.resampled(&given).points[6].clone();
+        assert_ne!(resampled, given.points[6]);
+        let spacing = settings().spacing;
+        for w in resampled.windows(2) {
+            assert!(
+                ((w[1] - w[0]).norm() - spacing).abs() < 1e-9,
+                "{resampled:?}"
+            );
+        }
     }
 }

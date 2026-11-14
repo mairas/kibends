@@ -105,7 +105,9 @@ COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 # Above the 0.002 mm that COARSE leaves the width change's chains bowed by.
 COARSE_STRAIGHT_TOLERANCE = 0.01
 # At spacing 0.3 the drape's first burst piles vertices up.
-DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002)
+DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002, coarse_spacings=())
+"""At one spacing, where the arch drapes over the bar: at 1.6 mm the first
+burst steps the arch's few vertices past the bar to a straight line."""
 # Wide enough that the drape's arch, simplified alone, cuts into the chain
 # below it.
 DRAPE_TOLERANCE = 0.1

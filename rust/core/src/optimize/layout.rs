@@ -28,8 +28,9 @@ use super::End;
 use super::problem::Layout;
 
 /// A variable with this many edges of the spacing at its vertex, and
-/// nothing else, scales by 1: a vertex inside a resampled chain in free
-/// space.
+/// nothing else, scales by 1: a vertex inside a chain laid out at the
+/// spacing in free space. One beside a shorter edge, which laying out
+/// leaves where a chain bends, is stiffer and scales below 1.
 pub const REFERENCE_EDGES: f64 = 2.0;
 
 /// Per member, each vertex's variable, None where it is fixed, with the

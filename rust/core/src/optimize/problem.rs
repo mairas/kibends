@@ -84,7 +84,9 @@ pub struct Problem {
     /// one without ground vias term for term.
     pub pairs: Option<Arc<ViaPairs>>,
     pub params: EnergyParams,
-    /// Where the short-edge barrier starts at the final spacing, mm.
+    /// Where the short-edge barrier starts, mm: the final spacing's at
+    /// every level, so that a coarse level does not push apart drawn
+    /// vertices closer than its own spacing, which it keeps.
     pub short_edge: f64,
 }
 
@@ -93,23 +95,6 @@ fn refs(polylines: &[Vec<V2>]) -> Vec<&[V2]> {
 }
 
 impl Problem {
-    /// Per member, where its short-edge barrier starts with the chains laid
-    /// out at `chain_spacing` times the final spacing: a chain's scales with
-    /// it, a section's, always at the final spacing, does not.
-    pub fn short_edges(&self, chain_spacing: f64) -> Vec<f64> {
-        self.members
-            .members
-            .iter()
-            .map(|m| {
-                if m.section.is_some() {
-                    self.short_edge
-                } else {
-                    self.short_edge * chain_spacing
-                }
-            })
-            .collect()
-    }
-
     /// What each member sees of the others and of the vias with the members
     /// at `polylines`.
     pub fn seen(&self, polylines: &[&[V2]]) -> Seen {
@@ -159,8 +144,8 @@ impl Problem {
     /// and its gradient at every vertex and every via's centre: the members'
     /// terms with the vertices of `masks` zeroed, then the vias' own terms,
     /// the pairwise term and each vertex's contact stop by `contact_of`,
-    /// its index among its member's contacts. Each member's short-edge
-    /// barrier starts at its own of `short_edges` (`Problem::short_edges`).
+    /// its index among its member's contacts. The short-edge barrier
+    /// starts at `short_edge`.
     /// With `lookups`, made for `seen`, the searches come from them, by
     /// default each its own. Err with the members' value if it is not
     /// finite.
@@ -171,7 +156,6 @@ impl Problem {
         positions: &[V2],
         masks: &[&[bool]],
         contact_of: &[&[Option<usize>]],
-        short_edges: &[f64],
         seen: &Seen,
         lookups: Option<&mut Lookups>,
     ) -> Result<Energy, f64> {
@@ -191,7 +175,7 @@ impl Problem {
             polylines,
             masks,
             &self.params,
-            short_edges,
+            self.short_edge,
             seen,
             positions,
             neighbours,
@@ -484,8 +468,6 @@ pub struct Objective {
     pub layout: Layout,
     pub masks: Vec<Vec<bool>>,
     pub contact_of: Vec<Vec<Option<usize>>>,
-    /// Per member, where its short-edge barrier starts.
-    pub short_edges: Vec<f64>,
 }
 
 impl Objective {
@@ -505,7 +487,6 @@ impl Objective {
             &positions,
             &masks,
             &contact_of,
-            &self.short_edges,
             &self.seen,
             lookups,
         )?;

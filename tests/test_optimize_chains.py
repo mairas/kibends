@@ -350,18 +350,20 @@ def test_moves_into_another_chains_clearance_are_undone_and_counted() -> None:
     assert all(chain.rejected_edges > 0 for chain in result.chains)
 
 
-PRESSED_SETTINGS = replace(COARSE, spacing=0.1, max_iterations=4)
+PRESSED_SETTINGS = replace(COARSE, spacing=0.1, max_iterations=4, coarse_spacings=())
 """Fine enough that the arches' vertices near their pins lie deep inside
-each other's clearance."""
+each other's clearance. At one spacing: a coarse level lays the drawn arches
+out with no vertex near enough to a pin to stay inside."""
 
 
-def test_resampling_keeps_vertices_pressed_into_another_chains_clearance(
+def test_laying_out_keeps_vertices_pressed_into_another_chains_clearance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Two arches of different nets 0.2 mm apart, half their inflation, are
     # pinned at both ends: near the pins their vertices stay deep inside
-    # each other's clearance however the middles move apart, and resampling
-    # keeps those where the burst before left them (`_Problem.pressed`).
+    # each other's clearance however the middles move apart. A merge across
+    # one would cut deeper, so laying out between bursts keeps them where
+    # the burst before left them.
     real = optimize_module.run_burst
     bursts: list[tuple[FloatArray, FloatArray]] = []
 
@@ -373,25 +375,40 @@ def test_resampling_keeps_vertices_pressed_into_another_chains_clearance(
         stop: Stop | None = None,
     ) -> Burst:
         burst = real(objective, start, revert, settings, stop)
-        bursts.append((start.reshape(-1, 2).copy(), burst.points.reshape(-1, 2)))
+        bursts.append((start.reshape(-1, 2).copy(), burst.points.reshape(-1, 2).copy()))
         return burst
 
     monkeypatch.setattr(optimize_module, "run_burst", capturing)
     free = FreeSpace()
+    pins = [((0.0, 0.0), (10.0, 0.0)), ((0.0, 0.2), (10.0, 0.2))]
     chains = [
-        selected("A", "A", free, (0.0, 0.0), (5.0, 1.0), (10.0, 0.0)),
-        selected("B", "B", free, (0.0, 0.2), (5.0, 1.2), (10.0, 0.2)),
+        selected(net, net, free, first, (5.0, y + 1.0), last)
+        for net, (first, last), y in zip("AB", pins, (0.0, 0.2), strict=True)
     ]
 
     optimize_chains(chains, scenarios.PARAMS, PRESSED_SETTINGS)
 
-    kept = [
-        point
-        for (_, end), (start, _) in itertools.pairwise(bursts)
-        for point in end
-        if np.any(np.all(start == point, axis=1))
-    ]
-    assert kept
+    def arches(points: FloatArray) -> list[FloatArray]:
+        """Each arch's polyline from a burst's variables, arch A's free
+        vertices first, left to right, then B's from the left again."""
+        split = 1 + int(np.argmin(np.diff(points[:, 0])))
+        return [
+            np.vstack([first, free, last])
+            for (first, last), free in zip(
+                pins, (points[:split], points[split:]), strict=True
+            )
+        ]
+
+    pressed = 0
+    for (_, end), (start, _) in itertools.pairwise(bursts):
+        a, b = arches(end)
+        for own, other in ((a, b), (b, a)):
+            line = LineString(other)
+            for point in own[1:-1]:
+                if line.distance(Point(point)) < scenarios.PAIR_INFLATION:
+                    pressed += 1
+                    assert np.any(np.all(start == point, axis=1)), point
+    assert pressed > 0
 
 
 def test_a_chain_wrapped_around_an_obstacle_stays_on_its_side() -> None:
@@ -440,8 +457,9 @@ def test_vertices_inside_a_neighbours_clearance_move_out() -> None:
 
     result = run(scenario)
 
-    a, b = result.chains
-    assert kept_vertices(a.polyline, np.array([scenarios.CROWDED_VERTEX])) == 0
+    # B's dip moves out of A's clearance; A, straight, may keep its vertex,
+    # which B's leaves clear.
+    _, b = result.chains
     assert (
         kept_vertices(b.polyline, np.array([scenarios.CROWDED_NEIGHBOUR_VERTEX])) == 0
     )
@@ -517,10 +535,12 @@ def test_time_limit_stops_in_the_burst_that_passes_it() -> None:
     front = result.chains[:2]
     for chain in front:
         assert length(chain.polyline) < chain.before.length
-    # Only the front layer had its burst; the back one keeps its start.
+    # Only the front layer had its burst; the back one keeps its start, its
+    # drawn vertices with the edges between them split at the spacing.
+    points = back.centreline.points
     np.testing.assert_array_equal(
         result.chains[2].polyline,
-        resample(back.centreline.points, back.fixed, COARSE.spacing)[0],
+        resample(points, np.ones(len(points), dtype=bool), COARSE.spacing)[0],
     )
 
 
@@ -550,20 +570,12 @@ a reading, from 0, passes a limit half a second beyond: the run reads it
 when setup begins and ends, then after each iteration."""
 
 
-EVERY_CHANGE = 100.0
-"""A settle threshold, mm, beyond any change of the scenarios here."""
-
-
 def test_time_limit_ends_the_burst_at_the_iteration_past_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
-    # Any burst would settle by its change, so only being cut keeps the run
-    # from converging.
-    limited = replace(
-        COARSE, time_limit=TIMED_ITERATIONS + 0.5, settled_change=EVERY_CHANGE
-    )
+    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
 
     result = optimize_chains(
         scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
@@ -631,12 +643,8 @@ def test_a_stop_ends_the_burst_at_the_iteration_it_is_set(
 ) -> None:
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
-    # Any burst would settle by its change, so only the stop keeps the run
-    # from converging.
-    settings = replace(COARSE, settled_change=EVERY_CHANGE)
-
     result = optimize_chains(
-        scenario.chains, scenario.params, settings, stop=Countdown(2)
+        scenario.chains, scenario.params, COARSE, stop=Countdown(2)
     )
 
     (burst,) = bursts
@@ -660,9 +668,7 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     stop_at: int, first: Termination
 ) -> None:
     scenario = bumps()
-    limited = replace(
-        COARSE, time_limit=TIMED_ITERATIONS + 0.5, settled_change=EVERY_CHANGE
-    )
+    limited = replace(COARSE, time_limit=TIMED_ITERATIONS + 0.5)
     clock = Ticking()
 
     result = optimize_chains(
@@ -893,8 +899,9 @@ def test_a_run_stopped_at_a_coarse_level_ends_at_the_final_spacing() -> None:
 
 
 def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> None:
-    # The bus's coarse chords cut its corner into the next track's
-    # clearance; the free track keeps its progress all the same.
+    # A coarse burst's long steps may leave the bus's corner in the next
+    # track's clearance, and the guard then puts the bus back; the free
+    # track keeps its progress all the same.
     scenario = scenarios.bowed_beside_bus()
 
     result = run(scenario, OptimizerSettings(coarse_spacings=LEVELS))
@@ -907,10 +914,9 @@ def test_a_free_track_beside_a_pressed_bus_goes_taut_with_coarse_levels() -> Non
 
 
 # A rerun on the squeeze's own output settles within these. It runs the
-# coarse levels again, from their resample of the output. Measured with the
-# default coarse levels: 17 iterations and 7 µm moved, and 9 iterations and
-# 1.5 µm at the default final spacing. At one spacing it took 4 iterations
-# and 10 µm.
+# coarse levels again, from the output's own vertices. Measured: 9
+# iterations and no visible move under COARSE, 7 iterations and 8.6 µm at
+# the defaults, and 3 iterations and no visible move at one spacing.
 REPEAT_ITERATIONS = 20
 REPEAT_DRIFT = 0.06
 
@@ -1164,8 +1170,8 @@ def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
         return Burst(start.copy(), abnormal=True)
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
-    # Legs of 5 mm, which LAID_OUT_SPACING resamples onto themselves and the
-    # coarse levels' chords cut across the apex.
+    # Legs of 5 mm, which LAID_OUT_SPACING splits evenly; every level keeps
+    # the apex.
     chain = selected("V", "A", FreeSpace(), (0.0, 0.0), (4.0, 3.0), (8.0, 0.0))
     settings = replace(COARSE, spacing=LAID_OUT_SPACING)
 

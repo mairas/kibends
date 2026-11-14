@@ -84,8 +84,8 @@ CLEARANCE_WEIGHT = 50.0
 STANDOFF = 0.02
 POINTS_PER_EDGE = 3
 MAX_SPACING = 0.1
-"""The coarsest final spacing --spacing takes, mm: STANDOFF, the optimizer's
-PRESSED_DEPTH and the obstacle fields' MAX_EDGE_LENGTH are tuned to it."""
+"""The coarsest final spacing --spacing takes, mm: STANDOFF and the obstacle
+fields' MAX_EDGE_LENGTH are tuned to it."""
 DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
 
 BUSY_MESSAGE = (

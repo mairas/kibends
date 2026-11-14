@@ -750,7 +750,7 @@ def _log_gave_up(gave_up: Sequence[tuple[str, int]]) -> None:
 def _bent_too_tightly(results: Sequence[PairResult]) -> list[int]:
     """The sections the run moved but could not keep within the bend-radius
     limit, by index: the copper around them kept them from rounding a
-    corner that resampling cut too tightly. Each logged at debug."""
+    corner too tightly. Each logged at debug."""
     held: list[int] = []
     for k, result in enumerate(results):
         bend = result.bend

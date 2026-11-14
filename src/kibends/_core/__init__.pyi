@@ -33,6 +33,7 @@ __all__ = [
     "MAX_ABNORMAL_BURSTS",
     "MAX_COARSE_LEVELS",
     "MAX_SMOOTH_TURN",
+    "MERGE_EDGE",
     "Member",
     "Members",
     "MovingVias",
@@ -41,7 +42,6 @@ __all__ = [
     "Objective",
     "ObstacleDistances",
     "Obstacles",
-    "PRESSED_DEPTH",
     "PairIntegrand",
     "PairOffset",
     "Problem",
@@ -135,8 +135,8 @@ LINE: builtins.int = 0
 MAX_ABNORMAL_BURSTS: builtins.int = 3
 MAX_COARSE_LEVELS: builtins.int = 7
 MAX_SMOOTH_TURN: builtins.float = 2.9845130209103035
+MERGE_EDGE: builtins.float = 0.02
 OUTSIDE: builtins.int = 2
-PRESSED_DEPTH: builtins.float = 0.02
 SKIN_LEAST: builtins.float = 0.05
 SKIN_MOST: builtins.float = 0.15
 SMOOTH_REACH: builtins.float = 0.05
@@ -478,14 +478,15 @@ class Member:
     A chain, or a coupled section as its centreline
     (`kibends_core::members::Member`).
     """
-    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None) -> Member:
+    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None, spacing: typing.Optional[builtins.float] = None) -> Member:
         r"""
         On `layer`, keeping clear of the others as the track `viewer`,
         ignoring the tracks of the nets `ignored`, showing the others the
         tracks `shown`, in its static `field`, its contact stops weighed by
         `width` and its contacts' regions `contacts`; a coupled section with
         its `section` offset and the bend-radius `limit` its hinge keeps,
-        none without the hinge.
+        none without the hinge, each edge's hinge weighed by `spacing`, the
+        one the centreline is laid out at.
         """
 
 @typing.final
@@ -755,8 +756,8 @@ class ProblemState:
     @property
     def allowed(self) -> builtins.list[builtins.int]:
         r"""
-        Per member, the violations its resampled start has, which the guard
-        holds it to.
+        Per member, the violations its inputs have, which the guard holds
+        it to.
         """
     @property
     def free(self) -> builtins.list[builtins.int]:
@@ -787,7 +788,7 @@ class ProblemState:
     @property
     def input_energy(self) -> builtins.float:
         r"""
-        Its energy at its inputs, resampled.
+        Its energy at its inputs, laid out at the final spacing.
         """
     @property
     def abnormal_bursts(self) -> builtins.int:
@@ -854,12 +855,6 @@ class ProblemState:
         Per member at `polylines`, its violations of its static copper, the
         other members and the vias at `positions` together, as `seen` shows
         them.
-        """
-    def pressed(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], seen: Seen) -> builtins.list[numpy.typing.NDArray[numpy.bool_]]:
-        r"""
-        Per member, its vertices at `polylines` deeper than PRESSED_DEPTH
-        inside the clearance of the other members and the vias at
-        `positions`, which resampling keeps where they are.
         """
     def via_distances(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:
         r"""
@@ -1231,10 +1226,11 @@ def bend_radii(centreline: numpy.typing.NDArray[numpy.float64], turning: typing.
     by default (`kibends_core::pairs::bend_radii`).
     """
 
-def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+def bend_radius_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], limit: builtins.float, spacing: builtins.float, params: energy.EnergyParams) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
-    The bend-radius hinge at `limit` (`kibends_core::energy::polyline::
-    bend_radius_energy`), and its gradient, zero at `fixed` vertices.
+    The bend-radius hinge at `limit`, each edge weighed by `spacing`
+    (`kibends_core::energy::polyline::bend_radius_energy`), and its
+    gradient, zero at `fixed` vertices.
     """
 
 def bend_radius_limit(gap: builtins.float, width: builtins.float) -> builtins.float:

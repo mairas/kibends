@@ -1,10 +1,12 @@
 //! Measures and checks on a single polyline that the optimizer applies to
 //! every member, independent of the problem, in numpy's order of
-//! operations (`numeric`), which keeps the optimizer on the recorded scipy
-//! baseline and the same on every platform.
+//! operations (`numeric`), the same on every platform.
 //!
+//! `subdivide` splits a polyline's long edges, keeping every vertex, which
+//! is how a chain is laid out at each level's start and each burst's.
 //! `resample` lays each span between fixed vertices out at uniform
-//! arc-length spacing, as every burst starts. `count_violations` counts
+//! arc-length spacing, as a coupled section is between bursts.
+//! `count_violations` counts
 //! where a polyline enters its clearance away from its anchors, which the
 //! best state may not add to. `shape_change` is how far a burst moved a
 //! shape, not counting vertices sliding along it, which settles a problem.
@@ -49,19 +51,50 @@ pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bo
     resample_spans(points, fixed, |total| edges_at(total, spacing))
 }
 
-/// `resample` at a coarse `spacing`, but each span too short for
-/// `minimum_free` free vertices at it gets that many, at the coarsest
-/// spacing that gives them and never finer than `finest`.
-pub fn resample_coarse(
+/// Each edge split evenly into edges no longer than its span's spacing,
+/// every vertex kept where it is, as `resample` with every vertex fixed;
+/// and per vertex of the result the vertex of `points` it is, None for one
+/// a split added. A span runs between consecutive `anchors`, or the
+/// polyline's ends. It takes `spacing`, unless that leaves it fewer than
+/// `minimum_free` vertices between its ends: then a spacing that does, its
+/// length over one more than `minimum_free`, but never finer than
+/// `finest`.
+pub fn subdivide(
     points: &[V2],
-    fixed: &[bool],
+    anchors: &[bool],
     spacing: f64,
     minimum_free: usize,
     finest: f64,
-) -> (Vec<V2>, Vec<bool>) {
-    resample_spans(points, fixed, |total| {
-        edges_at(total, spacing).max((minimum_free + 1).min(edges_at(total, finest)))
-    })
+) -> (Vec<V2>, Vec<Option<usize>>) {
+    let last = points.len() - 1;
+    let mut out = vec![points[0]];
+    let mut source = vec![Some(0)];
+    let mut start = 0;
+    while start < last {
+        let end = (start + 1..=last)
+            .find(|&k| anchors[k] || k == last)
+            .unwrap_or(last);
+        let span = &points[start..=end];
+        let lengths: Vec<f64> = span.windows(2).map(|w| (w[1] - w[0]).norm()).collect();
+        let edges = |s: f64| -> usize { lengths.iter().map(|&l| edges_at(l, s)).sum() };
+        let wanted = (minimum_free + 1).min(edges(finest));
+        let here = if edges(spacing) >= wanted {
+            spacing
+        } else {
+            maximum(numpy_sum(&lengths) / wanted as f64, finest)
+        };
+        let (points, kept) = resample(span, &vec![true; span.len()], here);
+        let mut at = start;
+        for (p, k) in points.into_iter().zip(kept).skip(1) {
+            out.push(p);
+            source.push(k.then(|| {
+                at += 1;
+                at
+            }));
+        }
+        start = end;
+    }
+    (out, source)
 }
 
 /// How many edges a span `total` long gets at `spacing`.
@@ -168,10 +201,10 @@ fn tightest_bend_radius(points: &[V2]) -> f64 {
 
 /// Local symmetric distance between two polylines, mm.
 ///
-/// Vertices sliding along an unchanged shape do not count: resampling to
-/// uniform spacing and the energy's indifference to where along the track
-/// a vertex sits would otherwise keep moving vertices forever without
-/// changing the track.
+/// Vertices sliding along an unchanged shape do not count: laying the
+/// shapes out again between bursts and the energy's indifference to where
+/// along the track a vertex sits would otherwise keep moving vertices
+/// forever without changing the track.
 pub fn shape_change(before: &[V2], after: &[V2]) -> f64 {
     maximum(local_distance(after, before), local_distance(before, after))
 }
@@ -281,23 +314,48 @@ mod tests {
     }
 
     #[test]
+    fn subdividing_keeps_every_vertex_and_splits_only_long_edges() {
+        // A 90° corner with a sub-micrometre jog before it.
+        let points = line(&[(0.0, 0.0), (0.25, 0.0), (0.25, 5e-4), (0.25, 0.1)]);
+        let (out, source) = subdivide(&points, &[true, false, false, true], 0.1, 0, 0.1);
+        let kept: Vec<V2> = out
+            .iter()
+            .zip(&source)
+            .filter_map(|(&p, s)| s.map(|_| p))
+            .collect();
+        assert_eq!(kept, points);
+        let sources: Vec<usize> = source.iter().flatten().copied().collect();
+        assert_eq!(sources, vec![0, 1, 2, 3]);
+        // The 0.25 mm edge splits in three, the others not at all.
+        assert_eq!(out.len(), 6);
+        assert_eq!(out[1], V2::new(0.25 / 3.0, 0.0));
+        // As `resample` with every vertex fixed.
+        assert_eq!(out, resample(&points, &[true; 4], 0.1).0);
+    }
+
+    #[test]
     fn a_coarse_span_too_short_keeps_the_minimum_free_vertices() {
         let points = line(&[(0.0, 0.0), (1.0, 0.0)]);
         // At 1.6 the span would be one chord; at 0.2 it keeps four free
         // vertices.
-        let (out, fixed) = resample_coarse(&points, &[true, true], 1.6, 4, 0.1);
-        assert_eq!(fixed, vec![true, false, false, false, false, true]);
+        let (out, source) = subdivide(&points, &[true, true], 1.6, 4, 0.1);
+        assert_eq!(source, vec![Some(0), None, None, None, None, Some(1)]);
         assert!((out[1].x - 0.2).abs() < 1e-15);
         // Never finer than the finest spacing.
         let short = line(&[(0.0, 0.0), (0.25, 0.0)]);
-        let (out, _) = resample_coarse(&short, &[true, true], 1.6, 4, 0.1);
-        assert_eq!(out.len(), 4);
-        // A span long enough at the coarse spacing resamples as `resample`.
+        assert_eq!(subdivide(&short, &[true, true], 1.6, 4, 0.1).0.len(), 4);
+        // A span long enough at the coarse spacing takes it.
         let long = line(&[(0.0, 0.0), (10.0, 0.0)]);
         assert_eq!(
-            resample_coarse(&long, &[true, true], 1.6, 4, 0.1),
-            resample(&long, &[true, true], 1.6)
+            subdivide(&long, &[true, true], 1.6, 4, 0.1).0,
+            resample(&long, &[true, true], 1.6).0
         );
+        // Each span apart: a drawn vertex is free and counts, its two edges
+        // split alike, three each; an anchor splits the polyline, and the
+        // 4 mm span after it takes five edges where 1.6 gives three.
+        let kinked = line(&[(0.0, 0.0), (0.5, 0.5), (1.0, 0.0), (5.0, 0.0)]);
+        let (out, _) = subdivide(&kinked, &[true, false, true, true], 1.6, 4, 0.1);
+        assert_eq!(out.len(), 1 + 6 + 5);
     }
 
     #[test]

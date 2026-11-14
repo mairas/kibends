@@ -28,7 +28,7 @@
 //! its curvature too, which the tests check against central differences.
 //!
 //! The terms keep numpy's order of operations (`numeric`), which keeps the
-//! optimizer's results on the recorded scipy baseline
+//! optimizer's results on the recorded baseline
 //! (`tests/test_scipy_baseline.py`); changing an order moves moving-via
 //! cases into other local minima, so re-run the baseline test after
 //! changing one. Where numpy leaves the order of a sum to its BLAS, which

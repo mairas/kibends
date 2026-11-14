@@ -442,8 +442,9 @@ def first_revert(
 @pytest.mark.parametrize(
     ("scenario", "to"),
     [
-        # Its end edge on F.Cu cuts across the post, both ends clear of it.
-        (scenarios.via_detour_over(Box(4.9, 2.0, 0.05, 0.05)), (5.0, 1.5)),
+        # Its end edge on F.Cu cuts across a track crossing, a 0.15 mm track
+        # and its 0.2 mm clearance each side, both ends clear of it.
+        (scenarios.via_detour_over(Box(4.9, 2.0, 1.0, 0.275)), (5.0, 1.5)),
         # Onto the pinned chain of another net on In1.Cu.
         (scenarios.via_over_pinned("P"), (5.0, scenarios.PINNED_LEVEL)),
     ],
@@ -1533,6 +1534,11 @@ def returned(*ground: ViaInput) -> ViasScenario:
     return replace(scenario, vias=(*scenario.vias, *ground), params=RETURN_PARAMS)
 
 
+OFF_THE_KINK = 1e-3
+"""mm, how far the via grid's gradient check moves each variable off its
+start, at random."""
+
+
 class TestGradient:
     """The energy's gradient by the via's coordinates takes in its carried
     ends, the chains it sees and that see it, and the other vias."""
@@ -1567,7 +1573,7 @@ class TestGradient:
             assert gradient[c] == pytest.approx(numeric, rel=1e-4, abs=1e-6)
 
     def test_with_a_via_at_every_vertex_of_a_grid(self) -> None:
-        """Issue 100's grid, at its start, where a chain's vertex beside a
+        """Issue 100's grid, just off its start, where a chain's vertex beside a
         via can lie as near to the vias on either side of it: the slope
         along random directions is the gradient's, which checks every
         element at once."""
@@ -1579,7 +1585,12 @@ class TestGradient:
         layout = problem.layout(problem.points)
         seen = problem.seeing(layout.starts)
         objective = problem.objective(layout, seen, problem.lookups(seen))
-        x = layout.x0
+        # Just off the start: there, a vertex beside a drawn apex sits where
+        # the repulsion's slope jumps by 7e-4, as main's energy does at the
+        # same shape, so no derivative exists to compare with.
+        x = layout.x0 + np.random.default_rng(1).normal(
+            scale=OFF_THE_KINK, size=len(layout.x0)
+        )
         _, gradient = objective(x)
         step = 1e-7
         for direction in np.random.default_rng(0).normal(size=(3, len(x))):

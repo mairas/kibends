@@ -53,12 +53,23 @@ pub struct Trace {
     pub clearance: f64,
 }
 
-/// A coupled section's offset and the smallest bend radius its centreline
-/// keeps, mm, through the bend-radius hinge; None leaves the hinge out.
+/// A coupled section's offset and its bend-radius hinge; None leaves the
+/// hinge out.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub offset: PairOffset,
-    pub limit: Option<f64>,
+    pub hinge: Option<Hinge>,
+}
+
+/// What a section's bend-radius hinge keeps
+/// (`energy::polyline::bend_radius_energy`).
+#[derive(Clone, Copy, Debug)]
+pub struct Hinge {
+    /// The smallest bend radius its centreline keeps, mm.
+    pub limit: f64,
+    /// The spacing the centreline is laid out at, which each edge's hinge
+    /// weighs by, mm.
+    pub spacing: f64,
 }
 
 /// A chain, or a coupled section as its centreline.
@@ -359,9 +370,9 @@ impl Members {
     /// `polylines` as `seen` shows them, with vias at `positions` among
     /// them, a section with its bend-radius hinge; its gradient at every
     /// vertex of every chain and centreline, with the vertices of `masks`
-    /// zeroed; and the gradient at each via's centre. Each member's
-    /// short-edge barrier starts at its own of `short_edges`. Err with the
-    /// value if it is not finite.
+    /// zeroed; and the gradient at each via's centre. The short-edge
+    /// barrier starts at `short_edge`. Err with the value if it is not
+    /// finite.
     ///
     /// A section's centreline is what it keeps clear as, and its two
     /// tracks, offset from it, are what the others keep clear of: their
@@ -377,7 +388,7 @@ impl Members {
         polylines: &[&[V2]],
         masks: &[&[bool]],
         params: &EnergyParams,
-        short_edges: &[f64],
+        short_edge: f64,
         seen: &Seen,
         positions: &[V2],
         listed: Option<&mut NeighbourList>,
@@ -403,14 +414,15 @@ impl Members {
                     &integrand,
                     k,
                 );
-                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edges[i]);
+                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edge);
                 let mut gradient: Vec<V2> = shape_gradient
                     .iter()
                     .zip(&obstacle_gradient)
                     .map(|(&s, &o)| s + o)
                     .collect();
-                let bend = member.section.as_ref().and_then(|s| s.limit).map(|limit| {
-                    let (bend, bend_gradient) = bend_radius_energy(points, masks[i], limit, params);
+                let bend = member.section.as_ref().and_then(|s| s.hinge).map(|h| {
+                    let (bend, bend_gradient) =
+                        bend_radius_energy(points, masks[i], h.limit, h.spacing, params);
                     add_to(&mut gradient, &bend_gradient);
                     bend
                 });
@@ -655,16 +667,7 @@ mod tests {
         let masks: [&[bool]; 2] = [&mask, &mask];
         let seen = members.seen(&polylines, &[]);
         let energy = members
-            .energy(
-                &polylines,
-                &masks,
-                &params(),
-                &[0.0; 2],
-                &seen,
-                &[],
-                None,
-                None,
-            )
+            .energy(&polylines, &masks, &params(), 0.0, &seen, &[], None, None)
             .expect("finite");
         // A's free vertices are pushed down, away from B, and B's up.
         assert!(energy.gradients[0][2].y > 0.0);
@@ -682,16 +685,7 @@ mod tests {
         let masks: [&[bool]; 2] = [&mask, &mask];
         let seen = members.seen(&polylines, &[]);
         let both = members
-            .energy(
-                &polylines,
-                &masks,
-                &params(),
-                &[0.0; 2],
-                &seen,
-                &[],
-                None,
-                None,
-            )
+            .energy(&polylines, &masks, &params(), 0.0, &seen, &[], None, None)
             .expect("finite");
         let one: [&[V2]; 1] = [&a];
         let own = alone
@@ -699,7 +693,7 @@ mod tests {
                 &one,
                 &masks[..1],
                 &params(),
-                &[0.0],
+                0.0,
                 &alone.seen(&one, &[]),
                 &[],
                 None,
