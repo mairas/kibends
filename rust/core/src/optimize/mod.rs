@@ -70,7 +70,9 @@
 //! guard as any, and it settles nothing. At the time limit the caller may
 //! hand every problem still before the final level over to its next level,
 //! as if it had settled there (`state::State::hand_over`), and advance
-//! again, so that a time limit counts for each level. Each problem keeps
+//! again, so that a time limit counts for each level, and count it again
+//! for a problem that has not run at its level yet
+//! (`state::State::ran_at_level`). Each problem keeps
 //! its best state either way. A run where every problem settled without
 //! moving anything had nothing to do.
 

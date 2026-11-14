@@ -812,6 +812,12 @@ class ProblemState:
         Whether it has not reached the final level
         (`kibends_core::optimize::state::State::before_final`).
         """
+    @property
+    def ran_at_level(self) -> builtins.bool:
+        r"""
+        Whether it has run a burst at the level it runs at
+        (`kibends_core::optimize::state::State::ran_at_level`).
+        """
     def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its

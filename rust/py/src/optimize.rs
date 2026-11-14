@@ -515,6 +515,13 @@ impl ProblemState {
         self.inner.before_final()
     }
 
+    /// Whether it has run a burst at the level it runs at
+    /// (`kibends_core::optimize::state::State::ran_at_level`).
+    #[getter]
+    fn ran_at_level(&self) -> bool {
+        self.inner.ran_at_level()
+    }
+
     /// End a run stopped at a coarse level at the final spacing: its best
     /// state subdivided there if some coarse burst ended normally, that
     /// passes the guard and its energy is no higher than the inputs'; else
