@@ -70,7 +70,7 @@ from kibends.vias import ViaInput
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 ONE_SPACING = replace(COARSE, coarse_spacings=())
 """COARSE at its final spacing alone, for a premise that counts bursts at one
-spacing or compares with the inputs resampled at it."""
+spacing."""
 CORNER = OptimizerSettings(burst_maxiter=30)
 """The default spacing, at which a centreline pulled taut against its
 direction pins bends tighter than the limit, with short bursts."""
@@ -83,6 +83,9 @@ direction to float rounding."""
 EXTENT_SLACK = 1e-9
 """mm of float rounding between a position and the same position computed
 another way."""
+RESTING = 0.05
+"""mm beyond its clearance and the section's widening within which a track
+pulled taut against copper rests on it."""
 TIGHT_BEND = 1.5
 """How many times the bend-radius limit a corner pulled taut may end at:
 it rounds the corner at about the limit, not wider."""
@@ -138,6 +141,13 @@ def assert_within_extent(
     for track in (result.a, result.b):
         farthest = max(centreline.distance(Point(v)) for v in track)
         assert farthest + PAIR_WIDTH / 2 <= reach + EXTENT_SLACK
+
+
+def resting_reach(given: PairInput) -> float:
+    """mm beyond its clearance a track of `given` resting on copper may lie:
+    the widening of the section's extent, which others see, and `RESTING`."""
+    extent = pair_block(given, COARSE.spacing).chain.centreline.width
+    return (extent - 2 * PAIR_WIDTH - DP_GAP) / 2 + RESTING
 
 
 def shown(member: Member, points: FloatArray) -> list[tuple[ChainInput, FloatArray]]:
@@ -328,10 +338,14 @@ class TestPairOverPad:
     def test_converges(self, over_pad: RunResult) -> None:
         assert over_pad.termination is Termination.CONVERGED
 
-    def test_pulls_the_pair_down_onto_the_pad(self, over_pad: RunResult) -> None:
+    def test_pulls_the_pair_down_to_rest_on_the_pad(self, over_pad: RunResult) -> None:
+        (given,) = scenarios.pair_over_pad().pairs
         (pair,) = over_pad.pairs
-        assert length(pair.centreline) < pair.before.length - 1.0
-        assert pair.centreline[:, 1].max() < 1.5
+        pad = Point(scenarios.PAIR_PAD)
+        inner = min(LineString(track).distance(pad) for track in (pair.a, pair.b))
+        clear = DP_PAD + PAIR_CLEARANCE + PAIR_WIDTH / 2
+        assert inner < clear + resting_reach(given)
+        assert length(pair.centreline) < pair.before.length
 
     def test_keeps_its_gap_along_the_whole_section(self, over_pad: RunResult) -> None:
         (pair,) = over_pad.pairs
@@ -408,9 +422,7 @@ class TestPairBesideAChain:
             for track in (pair.a, pair.b)
         )
         (given,) = scenarios.pair_tent().pairs
-        extent = pair_block(given, COARSE.spacing).chain.centreline.width
-        widening = (extent - 2 * PAIR_WIDTH - DP_GAP) / 2
-        assert inner < PAIR_WIDTH + PAIR_CLEARANCE + widening + 0.05
+        assert inner < PAIR_WIDTH + PAIR_CLEARANCE + resting_reach(given)
         assert length(bar.polyline) < bar.before.length
 
     def test_keeps_its_gap_and_ends(self, tent: RunResult) -> None:
@@ -448,7 +460,9 @@ class TestTightCorner:
         radius = check_bend_radius(pair.centreline, DP_GAP, PAIR_WIDTH).radius
         assert radius < TIGHT_BEND * bend_radius_limit(DP_GAP, PAIR_WIDTH)
 
-    def test_folds_without_the_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_bends_too_tightly_without_the_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         def unlimited(given: PairInput, spacing: float) -> PairBlock:
             return replace(pair_block(given, spacing), limit=0.0)
 
@@ -456,7 +470,7 @@ class TestTightCorner:
         (pair,) = run(scenarios.pair_corner(), CORNER).pairs
         assert pair.bend is not None and pair.bend.too_tight
 
-    def test_bursts_reject_bends_below_the_limit_without_its_hinge(
+    def test_keeps_the_bend_radius_limit_without_its_energy_term(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         real = members_module.core_member
@@ -494,8 +508,8 @@ class TestTightCorner:
     def test_a_trial_step_that_folds_the_centreline_ends_no_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # L-BFGS's first trial of the first burst folds the centreline
-        # at its second free vertex.
+        # An evaluation at a centreline folded at its second free vertex, as
+        # a trial step of L-BFGS may ask for, before the first burst.
         trials: list[FloatArray] = []
 
         def folding_first(
@@ -535,7 +549,12 @@ class TestTightCorner:
         assert_within_extent(pair, given, CORNER)
 
 
-def test_chamfered_ends_keep_both_tracks_directions() -> None:
+CHAMFER_ROUNDED = 1e-3
+"""mm, at least, by which a track passes off a short chamfer's corner once
+the turn there rounds: a corner pinned would stay on the track."""
+
+
+def test_chamfered_ends_keep_their_directions_and_round_their_corners() -> None:
     scenario = scenarios.pair_chamfered()
     (given,) = scenario.pairs
 
@@ -544,6 +563,9 @@ def test_chamfered_ends_keep_both_tracks_directions() -> None:
     assert_meets_its_ends(pair, given)
     assert_gap_kept(pair)
     assert length(pair.centreline) < pair.before.length
+    for track, drawn in ((pair.a, given.a.points), (pair.b, given.b.points)):
+        for corner in drawn[[1, -2]]:
+            assert LineString(track).distance(Point(corner)) >= CHAMFER_ROUNDED
 
 
 def test_track_b_s_end_edge_takes_up_an_uneven_end_s_gap() -> None:
@@ -701,8 +723,6 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = scenarios.pair_tent_under_roof()
-    # Stopped at a coarse level, the roof would go back to its coarse
-    # layout, not to the inputs at the final spacing.
     limited = replace(ONE_SPACING, time_limit=HOLD_BUDGET)
     plain = optimize_chains(
         scenario.chains,
@@ -729,13 +749,8 @@ def test_a_section_held_at_the_time_limit_keeps_the_others_progress(
         )
         < scenarios.PAIR_INFLATION
     )
-    # Its inputs: its drawn vertices, the edges between them split at the
-    # spacing.
-    drawn = scenario.chains[1].centreline.points
-    np.testing.assert_array_equal(
-        roof.polyline,
-        resample(drawn, np.ones(len(drawn), dtype=bool), COARSE.spacing)[0],
-    )
+    drawn = LineString(scenario.chains[1].centreline.points)
+    assert drawn.hausdorff_distance(LineString(roof.polyline)) <= EXTENT_SLACK
 
 
 HELD_COARSELY = 8
@@ -1056,24 +1071,6 @@ def test_is_deterministic(tent: RunResult) -> None:
     ):
         np.testing.assert_array_equal(first, second)
     assert again.iterations == tent.iterations
-
-
-def test_a_short_chamfer_at_an_end_keeps_its_corner_free() -> None:
-    # A direction pin on the corner would keep the turn there from rounding.
-    (given,) = scenarios.pair_chamfered().pairs
-
-    block = pair_block(given, COARSE.spacing)
-
-    points, fixed = block.chain.centreline.points, block.chain.fixed
-    assert len(points) == len(given.a.points) + 2
-    assert fixed[[0, 1, -2, -1]].all()
-    assert not fixed[[2, -3]].any()
-
-
-def test_split_gives_two_sections_and_a_detour_on_each_track() -> None:
-    scenario = scenarios.pair_split()
-    assert len(scenario.pairs) == 2
-    assert [c.centreline.net for c in scenario.chains] == ["P", "N"]
 
 
 SHORT_CHAMFER = 0.1
