@@ -203,11 +203,11 @@ def run_burst(
 
     `revert` moves back, in place, the coordinates of edges that newly cross
     an obstacle, and returns how many edges crossed. A `ScaledObjective`'s
-    `clearance_check` judges every line-search trial, which may not cross anything
-    anew.
-    `stop`, asked after each L-BFGS iteration, ends the run there when it
-    answers True, such
-    as when the time limit has passed. With no coordinate to move, the
+    `clearance_check` judges every line-search trial, which may enter no
+    clearance anew nor deeper; contacts and bends are not judged there, and
+    the revert after the burst moves them back. `stop`, asked after each
+    L-BFGS iteration, ends the run there when it answers True, such as when
+    the time limit has passed. With no coordinate to move, the
     burst ends where it is without running L-BFGS. A `ScaledObjective`
     runs L-BFGS over the coordinates divided by its scale. The burst
     carries what L-BFGS reports of its run; one whose iteration failed

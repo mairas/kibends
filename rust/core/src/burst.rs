@@ -72,9 +72,10 @@
 //! at once. Either way the failure is handled as any other below, its
 //! lowest trial admitted, but that a failure without correction pairs
 //! whose last rejected trial would have descended, as one more evaluation
-//! there tells, ends the burst normally where it is (`Ending::Blocked`): a clearance blocks every descent there, and
-//! counting it abnormal would give up on a problem that only rests
-//! against its clearances.
+//! there tells, ends the burst normally where it is (`Ending::Blocked`, a
+//! defensive path no known run reaches): a clearance blocks every descent
+//! there, and counting it abnormal would give up on a problem that only
+//! rests against its clearances.
 //!
 //! The line search's width tolerance is scipy's too, since argmin's default
 //! keeps narrowing an interval that round-off already decides, and so is
@@ -161,10 +162,15 @@ pub enum Ending {
     Stopped,
     /// A line search without correction pairs failed, none of its admitted
     /// trials below the start by the sufficient decrease, and its last
-    /// rejected trial (`ClearanceEntered`) lies below it so: a clearance blocks the
-    /// descent from the last accepted point along the gradient. A search
-    /// whose rejected trials would not have descended either ends
-    /// abnormally.
+    /// rejected trial (`ClearanceEntered`) lies below it so: a clearance
+    /// blocks the descent from the last accepted point along the gradient.
+    /// A search whose rejected trials would not have descended either ends
+    /// abnormally. A defensive path: no run of the test scenarios, of the
+    /// benchmark's cases or from a result resting at its clearances reaches
+    /// it, since copper resting at a clearance with its edges clear has no
+    /// descent that only enters it, and a search that fails after its first
+    /// iteration has correction pairs; this module's tests reach it with
+    /// hand-made objectives.
     Blocked,
     /// An iteration was not accepted, for the reason given.
     Abnormal(String),

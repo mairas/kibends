@@ -666,8 +666,9 @@ impl Revert {
 }
 
 impl Revert {
-    /// None where `x` crosses nothing anew, as the burst's line search
-    /// takes only such points, else the coordinates to move back
+    /// None where `x` enters no clearance anew nor deeper, as the burst's
+    /// line search takes only such points, else the coordinates to move
+    /// back; contacts and bends are not judged here
     /// (`kibends_core::optimize::checks::Check::clearance_entered`).
     pub(crate) fn clearance_entered(&self, x: &[f64]) -> Option<Vec<bool>> {
         self.check.clearance_entered(x)
