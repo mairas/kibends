@@ -58,9 +58,10 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 import kibends.optimize as optimize_module
-from kibends import _core, cli, plot
+from kibends import cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
+    DEFAULT_CHORD_TOLERANCE,
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     Burst,
@@ -163,22 +164,18 @@ SPACING_MEASURED = 1e-3
 """Relative difference between a reported bend radius and the committed
 tracks' own at the same spacing, from their rounding to nanometres; a
 different spacing scales the radius of a corner with it."""
-KEPT = 1e-3
-"""mm a chain's length may rise by between runs, as repulsion trades it."""
-# The runs of `return_via_board` with `BALANCED` here end 0.0005 to
-# 0.004 mm from the neutral distance; the rest is platform slack.
-RETURN_SETTLED = 0.02
-"""How near its neutral distance a SIG via and its return via settle under
-COARSE, mm."""
+RETURN_SETTLED = DEFAULT_CHORD_TOLERANCE
+"""mm from where their push and pull balance within which a via and its
+return via settle: the chord tolerance, below which a committed route counts
+as straight, so no nearer placement would show."""
 BALANCED = "--attraction=0.25"
 """The argument for a weight whose pull stays below the push beyond the
 clearance and standoff of `return_via_board`'s vias, so that they balance
 about 1.58 mm apart; the default pulls harder."""
-# The default's runs of `return_via_board` here end 0.0065 mm shorter to
-# 0.0033 mm longer than without attraction; the rest is platform slack.
 RETURN_TRADED = 0.01
-"""mm the default's pull may lengthen `return_via_board`'s route by, against
-the run without attraction."""
+"""mm the default's pull may lengthen a route by to bring its via nearer a
+return via, against the run without attraction: a length no signal on a
+board can tell apart."""
 
 
 def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
@@ -2976,17 +2973,10 @@ INSIDE_PAD = (4.0, 4.65)
 inside its 0.2 mm clearance."""
 
 
-# The fan-out vias here stop 0.019 mm short of touching their pad; the rest
-# is platform slack.
-PAD_SETTLED = 0.05
-"""How near touching a pad of its net that stops it a via settles under
-COARSE, mm."""
-SHRUNK_SEGMENTS = 2
-"""The most segments a fan-out track that shrank to its pad ends with; it
-ends with one, and crumpled it ended with six."""
-MERGED_BELOW = _core.MERGE_EDGE
-"""The edge length below which laying out between bursts merges a free
-vertex, mm."""
+AGAINST_PAD = 0.05
+"""mm short of touching it within which a via that its route pulls onto a
+pad of its net stops against the pad: a small part of the via's ring, so
+that it sits at the pad rather than short of it."""
 
 
 def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
@@ -3640,21 +3630,17 @@ class TestMovingVias:
         tracks = [segment(t) for t in created_on(board, BL.BL_F_Cu)]
         length = sum(t.length for t in tracks)
         assert length < centre.distance(Point(0, 0)) + STRAIGHT_TOLERANCE
+        # Shrunk from 8 mm, even to micrometres, it commits straight.
+        assert len(tracks) == 1
         h = PAD_HALF_SIZE
         pad = box(-h, -h, h, h)
         if in_pad:
             assert pad.contains(centre)
-            # The track shrinks from 8 mm to micrometres without crumpling:
-            # laying out between bursts merges its vertices across short
-            # edges, so only a track that is its whole chain is shorter.
-            assert len(tracks) <= SHRUNK_SEGMENTS
-            if len(tracks) > 1:
-                assert min(t.length for t in tracks) >= MERGED_BELOW - NM_ROUNDING
         else:
             assert pad.distance(centre) >= moved.diameter / 2e6 - NM_ROUNDING
-            assert pad.distance(centre) < moved.diameter / 2e6 + PAD_SETTLED
+            assert pad.distance(centre) < moved.diameter / 2e6 + AGAINST_PAD
 
-    def test_chains_meeting_at_a_moved_via_on_one_layer_need_no_trim_there(
+    def test_chains_meeting_at_a_moved_via_on_one_layer_both_commit_straight(
         self, connect: Connector
     ) -> None:
         # Two widths, so that the two sides are two chains of one layer.
@@ -4092,7 +4078,8 @@ class TestViaClasses:
             distances.append(math.dist(ends["v"], ends.get("g", ground)))
 
         pulled, alone, defaulted = lengths
-        assert pulled <= alone + KEPT
+        # The balanced pull costs the route no length that the report shows.
+        assert pulled <= alone + REPORTED
         assert defaulted <= alone + RETURN_TRADED
         params = cli.smooth_options(cli.parse_args(["smooth", BALANCED])).params
         neutral = neutral_distance(params, RETURN_VIAS_APART)
