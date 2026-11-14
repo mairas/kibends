@@ -1159,6 +1159,21 @@ class Statistics:
         r"""
         Searches of a layer's neighbour list for its pairs.
         """
+    @property
+    def abnormal(self) -> builtins.int:
+        r"""
+        Bursts L-BFGS ended abnormally.
+        """
+    @property
+    def failed_searches(self) -> builtins.int:
+        r"""
+        Line searches of the bursts that failed.
+        """
+    @property
+    def rejected(self) -> builtins.int:
+        r"""
+        Line-search trials the bursts' checks rejected.
+        """
 
 @typing.final
 class Via:
@@ -1554,14 +1569,15 @@ def reset_statistics() -> None:
     Every statistic back to zero.
     """
 
-def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[collections.abc.Callable[[], builtins.bool]] = None) -> BurstResult:
+def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[collections.abc.Callable[[], builtins.bool]] = None, check: typing.Optional[Revert] = None) -> BurstResult:
     r"""
     Minimises `objective` from `start` with L-BFGS, over y with x =
     `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
     `gtol` ends it (`kibends_core::burst`). After each iteration it checks
     for signals and asks `stop`, if given, which ends the burst by
-    answering true before the cap. An exception raised there or by the
-    objective ends the burst and propagates.
+    answering true before the cap. With a `check`, its line searches take
+    only points that enter no clearance by the check. An exception
+    raised there or by the objective ends the burst and propagates.
     """
 
 def shape_change(before: numpy.typing.NDArray[numpy.float64], after: numpy.typing.NDArray[numpy.float64]) -> builtins.float:

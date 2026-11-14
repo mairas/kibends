@@ -746,6 +746,15 @@ impl Revert {
     }
 }
 
+impl Revert {
+    /// None where `x` crosses nothing anew, as the burst's line search
+    /// takes only such points, else the coordinates to move back
+    /// (`kibends_core::optimize::checks::Check::clearance_entered`).
+    pub(crate) fn clearance_entered(&self, x: &[f64]) -> Option<Vec<bool>> {
+        self.check.clearance_entered(x)
+    }
+}
+
 /// A burst's crossings named nothing more to move back, and the whole
 /// burst moved back.
 #[gen_stub_pyclass]

@@ -364,7 +364,7 @@ def optimize_chains(
         revert: _core.Revert,
     ) -> Burst:
         return run_burst(
-            ScaledObjective(objective, scale), start, revert, settings, expired
+            ScaledObjective(objective, scale, revert), start, revert, settings, expired
         )
 
     def advance(iteration: int, cap: int) -> tuple[Termination, int]:

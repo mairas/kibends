@@ -439,15 +439,16 @@ class TestViaKeepout:
         )
 
 
-def test_a_move_cutting_an_edge_across_a_corner_is_undone() -> None:
+def test_a_move_cutting_an_edge_across_a_corner_is_not_taken() -> None:
     box = scenarios.CORNER_BOX
 
     result = run(scenarios.via_corner())
 
     (via,) = result.vias
     top = result.chains[0].polyline
-    # The chain's own vertices wrap the corner as the via pulls it down.
-    assert result.chains[0].rejected_edges > 0
+    # The chain's own vertices wrap the corner as the via pulls it down,
+    # the line search taking no step that cuts it.
+    assert result.chains[0].rejected_edges == 0
     assert via.position[1] < scenarios.DETOUR_VIA[1] - 2.0
     assert box.segments_clear(top[:-1], top[1:]).all()
 
@@ -761,10 +762,10 @@ def over_short_pinned() -> ViasScenario:
     return replace(scenario, chains=(*scenario.chains[:2], short))
 
 
-def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
-    # The hinge is too weak to hold the via off the pinned chain: only moving
-    # it back when it newly enters its clearance does. At one spacing: at a
-    # coarse level the guard puts the via back whole first.
+def test_a_burst_stops_the_via_short_of_its_clearance() -> None:
+    # The hinge is too weak to hold the via off the pinned chain: only the
+    # line search rejecting every trial that takes it into its clearance
+    # does, so the check after a burst has nothing to move back.
     scenario = over_short_pinned()
     params = replace(scenario.params, clearance_weight=0.1)
     shorter = replace(COARSE, burst_maxiter=15, coarse_spacings=())
@@ -774,7 +775,7 @@ def test_a_move_leaving_the_via_inside_its_clearance_is_undone() -> None:
     (via,) = result.vias
     gap = to_polyline(via.position, result.chains[2].polyline)
     assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
-    assert via.rejected_edges > 0
+    assert via.rejected_edges == 0
 
 
 PUSHING_DOWN = Disc(5.0, 3.9, 1.0)
@@ -798,7 +799,7 @@ def test_a_via_starting_inside_one_obstacle_is_checked_against_the_others() -> N
     gap = to_polyline(via.position, result.chains[2].polyline)
     assert via.position != scenarios.DETOUR_VIA
     assert gap >= VIA_TO_CHAIN - INSIDE_TOLERANCE
-    assert via.rejected_edges > 0
+    assert via.rejected_edges == 0
 
 
 INSIDE_PINNED = 0.3

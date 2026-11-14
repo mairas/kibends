@@ -16,6 +16,9 @@ use crate::field::Field;
 
 static EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 static LIST_SEARCHES: AtomicU64 = AtomicU64::new(0);
+static ABNORMAL: AtomicU64 = AtomicU64::new(0);
+static FAILED_SEARCHES: AtomicU64 = AtomicU64::new(0);
+static REJECTED: AtomicU64 = AtomicU64::new(0);
 static QUERIES: Mutex<Option<HashMap<usize, u64>>> = Mutex::new(None);
 
 /// The counts at one moment.
@@ -25,6 +28,12 @@ pub struct Statistics {
     pub evaluations: u64,
     /// Searches of a layer's neighbour list for its pairs.
     pub list_searches: u64,
+    /// Bursts L-BFGS ended abnormally.
+    pub abnormal: u64,
+    /// Line searches that failed (`burst::Burst::failed_searches`).
+    pub failed_searches: u64,
+    /// Line-search trials a burst's check rejected.
+    pub rejected: u64,
 }
 
 /// The counts so far.
@@ -32,6 +41,9 @@ pub fn statistics() -> Statistics {
     Statistics {
         evaluations: EVALUATIONS.load(Ordering::Relaxed),
         list_searches: LIST_SEARCHES.load(Ordering::Relaxed),
+        abnormal: ABNORMAL.load(Ordering::Relaxed),
+        failed_searches: FAILED_SEARCHES.load(Ordering::Relaxed),
+        rejected: REJECTED.load(Ordering::Relaxed),
     }
 }
 
@@ -39,11 +51,22 @@ pub fn statistics() -> Statistics {
 pub fn reset() {
     EVALUATIONS.store(0, Ordering::Relaxed);
     LIST_SEARCHES.store(0, Ordering::Relaxed);
+    ABNORMAL.store(0, Ordering::Relaxed);
+    FAILED_SEARCHES.store(0, Ordering::Relaxed);
+    REJECTED.store(0, Ordering::Relaxed);
     *QUERIES.lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
 pub(crate) fn evaluated() {
     EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Counts what a burst ended with: whether abnormally, its failed line
+/// searches and its rejected trials.
+pub(crate) fn burst_ended(abnormal: bool, failed_searches: u64, rejected: u64) {
+    ABNORMAL.fetch_add(u64::from(abnormal), Ordering::Relaxed);
+    FAILED_SEARCHES.fetch_add(failed_searches, Ordering::Relaxed);
+    REJECTED.fetch_add(rejected, Ordering::Relaxed);
 }
 
 pub(crate) fn searched() {

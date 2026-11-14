@@ -50,6 +50,32 @@
 //! wrapper keeps a copy of `LBFGS` from before each step and takes it back
 //! to drop the step's pair.
 //!
+//! A burst given `entered` keeps every point it takes clear: a trial of a
+//! line search that `entered` rejects counts as an energy of +inf, which
+//! the objective is not asked for. argmin's More-Thuente cannot take an
+//! infinite energy, so the objective's answer there is an error
+//! (`Rejected`) that the search catches (`ScipyStart`) and starts again
+//! from its start. What `entered` still rejects at PROBE_FRACTION of the
+//! step crosses at first order: copper resting against a clearance that
+//! the direction pushes into, which no step along it can take. The search
+//! holds at the start the coordinates `entered` names there and at the
+//! rejected trial, and tries the rest of the step again at its length, so
+//! that the copper beside moves on as if nothing rested against a wall:
+//! among tracks pressed together at clearance, holding only what rests
+//! took a round of rejections for each track. Otherwise, or where holding
+//! leaves no descent, it bisects: it runs along its direction bounded to
+//! STEP_BACK of the rejected step and starting there, and a search ended
+//! at its bound still descending takes the bound, short of what it
+//! rejected. Rejected trials count toward MAX_LINE_SEARCH, so a search
+//! whose every trial is rejected fails as one that runs out of
+//! evaluations does; a bound below More-Thuente's smallest step fails it
+//! at once. Either way the failure is handled as any other below, its
+//! lowest trial admitted, but that a failure without correction pairs
+//! whose last rejected trial would have descended, as one more evaluation
+//! there tells, ends the burst normally where it is (`Ending::Blocked`): a clearance blocks every descent there, and
+//! counting it abnormal would give up on a problem that only rests
+//! against its clearances.
+//!
 //! The line search's width tolerance is scipy's too, since argmin's default
 //! keeps narrowing an interval that round-off already decides, and so is
 //! its first step: the burst's first search, along the gradient, starts
@@ -94,8 +120,20 @@ pub const CURVATURE: f64 = 0.9;
 /// scipy's L-BFGS-B sets it.
 pub const WIDTH_TOLERANCE: f64 = 0.1;
 /// Energy evaluations after which a line search fails, scipy's default
-/// `maxls`.
+/// `maxls`; a rejected trial counts as one.
 pub const MAX_LINE_SEARCH: u64 = 20;
+/// The fraction of a rejected step that the line search starts again
+/// bounded to: bisection toward the start.
+pub const STEP_BACK: f64 = 0.5;
+/// The fraction of a rejected step at which the check is asked again:
+/// what it still rejects there crosses at first order, such as copper
+/// resting against a clearance that the direction pushes into. Then what
+/// either rejection names is held for the rest of the search, and the
+/// rest of the step is tried again whole. Small enough that a step only
+/// a long step takes across is bisected instead.
+pub const PROBE_FRACTION: f64 = 1e-3;
+/// The smallest step of a line search, More-Thuente's default.
+const MIN_STEP: f64 = 1.490_116_119_384_765_6e-8;
 
 /// When a burst ends.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,6 +159,13 @@ pub enum Ending {
     MaxIterations,
     /// `stop` answered true before the cap.
     Stopped,
+    /// A line search without correction pairs failed, none of its admitted
+    /// trials below the start by the sufficient decrease, and its last
+    /// rejected trial (`ClearanceEntered`) lies below it so: a clearance blocks the
+    /// descent from the last accepted point along the gradient. A search
+    /// whose rejected trials would not have descended either ends
+    /// abnormally.
+    Blocked,
     /// An iteration was not accepted, for the reason given.
     Abnormal(String),
 }
@@ -133,6 +178,7 @@ impl Ending {
             Ending::Decrease => "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH".into(),
             Ending::MaxIterations => "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT".into(),
             Ending::Stopped => "STOP: CALLBACK REQUESTED HALT".into(),
+            Ending::Blocked => "STOP: A CLEARANCE BLOCKS THE LINE SEARCH".into(),
             Ending::Abnormal(reason) => format!("ABNORMAL: {reason}"),
         }
     }
@@ -149,6 +195,11 @@ pub struct Burst {
     pub iterations: u64,
     /// The objective's evaluations.
     pub evaluations: u64,
+    /// The line searches' trials `entered` rejected.
+    pub rejected: u64,
+    /// The line searches that failed, whether a lowest trial, a retry
+    /// without correction pairs or an abnormal end followed.
+    pub failed_searches: u64,
     /// The time the evaluations took.
     pub evaluating: Duration,
     pub ending: Ending,
@@ -165,6 +216,9 @@ impl Burst {
     }
 }
 
+/// A line search's trial: its y, and the energy and gradient there.
+type Trial = (Vec<f64>, Evaluation);
+
 /// The energy and its gradient at x.
 pub type Evaluation = (f64, Vec<f64>);
 
@@ -172,14 +226,21 @@ pub type Evaluation = (f64, Vec<f64>);
 /// the burst.
 pub type Objective<'a, E> = dyn FnMut(&[f64]) -> Result<Evaluation, E> + 'a;
 
+/// Where x enters a clearance: None where it enters none and a line search
+/// may take it; else the coordinates to hold at the search's start for it
+/// to enter none, which may be none.
+pub type ClearanceEntered<'a> = dyn FnMut(&[f64]) -> Option<Vec<bool>> + 'a;
+
 /// Minimises `objective` from `start` over y with x = `scale` ⊙ y, or over
-/// x without a scale, asking `stop` after each iteration.
+/// x without a scale, asking `stop` after each iteration and taking only
+/// trials that enter no clearance by `entered`, if given.
 pub fn run<E>(
     objective: &mut Objective<'_, E>,
     start: &[f64],
     scale: Option<&[f64]>,
     settings: &Settings,
     stop: &mut dyn FnMut() -> Result<bool, E>,
+    entered: Option<&mut ClearanceEntered<'_>>,
 ) -> Result<Burst, E> {
     if let Some(s) = scale {
         assert_eq!(s.len(), start.len(), "one scale per coordinate");
@@ -187,9 +248,14 @@ pub fn run<E>(
     let scaled = Scaled {
         objective: RefCell::new(objective),
         scale,
+        entered: RefCell::new(entered.map(|a| a as &mut ClearanceEntered<'_>)),
         last: RefCell::new(None),
         failure: RefCell::new(None),
         evaluations: Cell::new(0),
+        rejected: Cell::new(0),
+        last_rejected: RefCell::new(None),
+        search_start: RefCell::new(None),
+        failed_searches: Cell::new(0),
         searching: Cell::new(None),
         lowest: RefCell::new(None),
         evaluating: Cell::new(Duration::ZERO),
@@ -233,11 +299,18 @@ pub fn run<E>(
         Some(s) => record.point.iter().zip(s).map(|(y, s)| s * y).collect(),
         None => record.point,
     };
+    crate::stats::burst_ended(
+        matches!(ending, Ending::Abnormal(_)),
+        scaled.failed_searches.get(),
+        scaled.rejected.get(),
+    );
     Ok(Burst {
         point,
         energy: record.energy,
         iterations: record.iterations,
         evaluations: scaled.evaluations.get(),
+        rejected: scaled.rejected.get(),
+        failed_searches: scaled.failed_searches.get(),
         evaluating: scaled.evaluating.get(),
         ending,
     })
@@ -250,25 +323,117 @@ type MoreThuente = MoreThuenteLineSearch<Vec<f64>, Vec<f64>, f64>;
 /// L-BFGS whose first line search, if `first`, starts as scipy's first
 /// one does.
 fn lbfgs(first: bool) -> Lbfgs {
-    let search = MoreThuente::new()
-        .with_c(SUFFICIENT_DECREASE, CURVATURE)
-        .and_then(|l| l.with_width_tolerance(WIDTH_TOLERANCE))
-        .expect("scipy's line search constants are valid");
-    LBFGS::new(ScipyStart { search, first }, MEMORY)
+    let search = ScipyStart {
+        search: more_thuente(),
+        first,
+        direction: Vec::new(),
+        held: Vec::new(),
+        start: None,
+    };
+    LBFGS::new(search, MEMORY)
         .with_tolerance_grad(0.0)
         .and_then(|l| l.with_tolerance_cost(0.0))
         .expect("zero tolerances are valid")
 }
 
+/// A line search's trial that `entered` rejected, at y, and the
+/// coordinates it named to hold.
+#[derive(Debug)]
+struct Rejected {
+    at: Vec<f64>,
+    hold: Vec<bool>,
+}
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a trial was not admitted")
+    }
+}
+
+impl std::error::Error for Rejected {}
+
 /// More-Thuente starting a burst's first line search, along the gradient,
 /// at a step of unit length, 1/|d|, as scipy's L-BFGS-B does, and every
 /// later one at 1. L-BFGS sets the direction on the line search it keeps
 /// and searches with a copy, so the first direction set is the first
-/// search's.
+/// search's. A rejected trial starts the search again (`step_back`).
 #[derive(Clone)]
 struct ScipyStart {
     search: MoreThuente,
     first: bool,
+    /// The direction the search runs along, held coordinates 0.
+    direction: Vec<f64>,
+    /// The coordinates the running search holds at its start.
+    held: Vec<bool>,
+    /// The search's start: y, the gradient there and the energy.
+    start: Option<(Vec<f64>, Vec<f64>, f64)>,
+}
+
+/// More-Thuente with scipy's constants.
+fn more_thuente() -> MoreThuente {
+    MoreThuente::new()
+        .with_c(SUFFICIENT_DECREASE, CURVATURE)
+        .and_then(|l| l.with_width_tolerance(WIDTH_TOLERANCE))
+        .expect("scipy's line search constants are valid")
+}
+
+impl ScipyStart {
+    /// The search started again from its start after a trial `rejected`.
+    /// Where that trial names coordinates to hold that the search does not
+    /// hold yet, and the direction with them held still descends, along
+    /// that direction from the rejected step, unbounded; else along its
+    /// direction bounded to STEP_BACK of the rejected step, its first
+    /// trial there, which fails when the bound falls below MIN_STEP.
+    fn step_back<O>(
+        &mut self,
+        problem: &mut Problem<O>,
+        state: Iterate,
+        rejected: &Rejected,
+    ) -> Result<(Iterate, Option<KV>), Error>
+    where
+        O: CostFunction<Param = Vec<f64>, Output = f64>
+            + Gradient<Param = Vec<f64>, Gradient = Vec<f64>>,
+    {
+        let (y0, g0, f0) = self.start.clone().expect("the search keeps its start");
+        let along: f64 = rejected
+            .at
+            .iter()
+            .zip(&y0)
+            .zip(&self.direction)
+            .map(|((y, y0), d)| (y - y0) * d)
+            .sum();
+        let step = along / self.direction.iter().map(|d| d * d).sum::<f64>();
+        if self.held.len() != y0.len() {
+            self.held = vec![false; y0.len()];
+        }
+        let mut grew = false;
+        for (h, &r) in self.held.iter_mut().zip(&rejected.hold) {
+            grew |= r && !*h;
+            *h |= r;
+        }
+        let holding: Vec<f64> = self
+            .direction
+            .iter()
+            .zip(&self.held)
+            .map(|(&d, &h)| if h { 0.0 } else { d })
+            .collect();
+        let slope: f64 = holding.iter().zip(&g0).map(|(d, g)| d * g).sum();
+        let mut search = if grew && slope < 0.0 {
+            self.direction = holding;
+            let mut search = more_thuente();
+            search.initial_step_length(step)?;
+            search
+        } else {
+            let bound = STEP_BACK * step;
+            let mut search = more_thuente().with_bounds(MIN_STEP, bound)?;
+            search.initial_step_length(bound)?;
+            search
+        };
+        search.search_direction(self.direction.clone());
+        search.init(problem, IterState::new().param(y0).gradient(g0).cost(f0))?;
+        self.search = search;
+        Ok((state, None))
+    }
 }
 
 impl LineSearch<Vec<f64>, f64> for ScipyStart {
@@ -283,6 +448,7 @@ impl LineSearch<Vec<f64>, f64> for ScipyStart {
         self.search
             .initial_step_length(step)
             .expect("a positive step is valid");
+        self.direction.clone_from(&direction);
         self.search.search_direction(direction);
     }
 
@@ -305,6 +471,10 @@ where
         problem: &mut Problem<O>,
         state: Iterate,
     ) -> Result<(Iterate, Option<KV>), Error> {
+        if let (Some(y), Some(g)) = (state.get_param(), state.get_gradient()) {
+            self.start = Some((y.clone(), g.clone(), state.get_cost()));
+        }
+        self.held.clear();
         self.search.init(problem, state)
     }
 
@@ -313,7 +483,14 @@ where
         problem: &mut Problem<O>,
         state: Iterate,
     ) -> Result<(Iterate, Option<KV>), Error> {
-        self.search.next_iter(problem, state)
+        let kept = state.clone();
+        match self.search.next_iter(problem, state) {
+            Err(e) => match e.downcast::<Rejected>() {
+                Ok(rejected) => self.step_back(problem, kept, &rejected),
+                Err(e) => Err(e),
+            },
+            stepped => stepped,
+        }
     }
 }
 
@@ -321,11 +498,19 @@ where
 struct Scaled<'a, E> {
     objective: RefCell<&'a mut Objective<'a, E>>,
     scale: Option<&'a [f64]>,
+    /// What judges a line search's trials, by x.
+    entered: RefCell<Option<&'a mut ClearanceEntered<'a>>>,
     /// The last y evaluated, the energy there and its gradient by y.
     last: RefCell<Option<(Vec<f64>, Evaluation)>>,
     /// The objective's error, which ends the burst.
     failure: RefCell<Option<E>>,
     evaluations: Cell<u64>,
+    rejected: Cell<u64>,
+    /// The running line search's last rejected trial, y.
+    last_rejected: RefCell<Option<Vec<f64>>>,
+    /// Where the running line search starts, y.
+    search_start: RefCell<Option<Vec<f64>>>,
+    failed_searches: Cell<u64>,
     /// The evaluations of the running line search; None outside one.
     searching: Cell<Option<u64>>,
     /// The running line search's lowest trial: its y, energy and gradient.
@@ -334,6 +519,13 @@ struct Scaled<'a, E> {
 }
 
 impl<E> Scaled<'_, E> {
+    fn x_of(&self, y: &[f64]) -> Vec<f64> {
+        match self.scale {
+            Some(s) => y.iter().zip(s).map(|(y, s)| s * y).collect(),
+            None => y.to_vec(),
+        }
+    }
+
     fn evaluate(&self, y: &[f64]) -> Result<Evaluation, Error> {
         if let Some((at, evaluation)) = self.last.borrow().as_ref()
             && at.as_slice() == y
@@ -351,10 +543,34 @@ impl<E> Scaled<'_, E> {
             }
             self.searching.set(Some(n + 1));
         }
-        let x: Vec<f64> = match self.scale {
-            Some(s) => y.iter().zip(s).map(|(y, s)| s * y).collect(),
-            None => y.to_vec(),
-        };
+        let x = self.x_of(y);
+        if self.searching.get().is_some()
+            && let Some(entered) = self.entered.borrow_mut().as_mut()
+            && let Some(named) = entered(&x)
+        {
+            self.rejected.set(self.rejected.get() + 1);
+            *self.last_rejected.borrow_mut() = Some(y.to_vec());
+            let hold = match self.search_start.borrow().as_ref() {
+                Some(y0) => {
+                    let near: Vec<f64> = y0
+                        .iter()
+                        .zip(y)
+                        .map(|(a, b)| a + PROBE_FRACTION * (b - a))
+                        .collect();
+                    match entered(&self.x_of(&near)) {
+                        Some(resting) => {
+                            resting.iter().zip(&named).map(|(&r, &n)| r || n).collect()
+                        }
+                        None => Vec::new(),
+                    }
+                }
+                None => Vec::new(),
+            };
+            return Err(Error::new(Rejected {
+                at: y.to_vec(),
+                hold,
+            }));
+        }
         let began = Instant::now();
         let answer = (self.objective.borrow_mut())(&x);
         self.evaluating.set(self.evaluating.get() + began.elapsed());
@@ -383,15 +599,21 @@ impl<E> Scaled<'_, E> {
     }
 
     /// Counts the evaluations of a line search from now on.
-    fn begin_search(&self) {
+    fn begin_search(&self, from: &[f64]) {
+        *self.search_start.borrow_mut() = Some(from.to_vec());
         self.searching.set(Some(0));
+        *self.last_rejected.borrow_mut() = None;
         *self.lowest.borrow_mut() = None;
     }
 
-    /// Ends the line search; returns its lowest trial.
-    fn end_search(&self) -> Option<(Vec<f64>, Evaluation)> {
+    /// Ends the line search; returns its lowest trial, and its last
+    /// rejected trial.
+    fn end_search(&self) -> (Option<Trial>, Option<Vec<f64>>) {
         self.searching.set(None);
-        self.lowest.borrow_mut().take()
+        (
+            self.lowest.borrow_mut().take(),
+            self.last_rejected.borrow_mut().take(),
+        )
     }
 }
 
@@ -537,7 +759,9 @@ impl<E> Wrapper<'_, E> {
             Ending::Abnormal(r) => TerminationReason::SolverExit(r.clone()),
             Ending::MaxIterations => TerminationReason::MaxItersReached,
             Ending::Stopped => TerminationReason::SolverExit(ending.message()),
-            Ending::Gradient | Ending::Decrease => TerminationReason::SolverConverged,
+            Ending::Gradient | Ending::Decrease | Ending::Blocked => {
+                TerminationReason::SolverConverged
+            }
         };
         self.record.ending = Some(ending);
         TerminationStatus::Terminated(reason)
@@ -572,11 +796,11 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
             // its memory, so it counts from its own start.
             state.iter = self.pairs;
             if let Some(s) = scaled {
-                s.begin_search();
+                s.begin_search(&self.record.point);
             }
             let kept = self.lbfgs.clone();
             let stepped = self.lbfgs.next_iter(problem, state);
-            let lowest = scaled.and_then(|s| {
+            let (lowest, rejected) = scaled.map_or((None, None), |s| {
                 // A failed line search drops the problem it took.
                 problem.problem.get_or_insert(Operator(s));
                 s.end_search()
@@ -602,6 +826,9 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
                 }
                 return Ok((self.accept(next, before), kv));
             };
+            if let Some(s) = scaled {
+                s.failed_searches.set(s.failed_searches.get() + 1);
+            }
             if let Some((y, evaluation)) = lowest
                 && self.record.sufficiently_below(&y, evaluation.0)
             {
@@ -612,12 +839,23 @@ impl<'s, 'a, E> Solver<Operator<'s, 'a, E>, Iterate> for Wrapper<'_, E> {
                 return Ok((self.accept(at(next, y, evaluation), before), kv));
             }
             if self.pairs == 0 {
-                self.record.ending = Some(Ending::Abnormal(reason.clone()));
+                // What failed the search is the check where its last
+                // rejected trial would have descended, as the energy there,
+                // asked outside the search, tells.
+                let blocked = rejected.zip(scaled).is_some_and(|(y, s)| {
+                    s.evaluate(&y)
+                        .is_ok_and(|(f, _)| self.record.sufficiently_below(&y, f))
+                });
                 let ended = self.record.restore(next);
-                return Ok((
-                    ended.terminate_with(TerminationReason::SolverExit(reason)),
-                    kv,
-                ));
+                let status = if blocked {
+                    self.end(Ending::Blocked)
+                } else {
+                    self.end(Ending::Abnormal(reason))
+                };
+                let TerminationStatus::Terminated(why) = status else {
+                    unreachable!("`end` terminates");
+                };
+                return Ok((ended.terminate_with(why), kv));
             }
             self.restart();
             state = self.record.restore(next);
@@ -686,7 +924,7 @@ mod tests {
         start: &[f64],
         settings: &Settings,
     ) -> Burst {
-        run(objective, start, None, settings, &mut never()).unwrap()
+        run(objective, start, None, settings, &mut never(), None).unwrap()
     }
 
     #[test]
@@ -754,7 +992,15 @@ mod tests {
             Ok::<_, ()>(asked >= 2)
         };
 
-        let b = run(&mut rosenbrock, &[-1.2, 1.0], None, &SETTINGS, &mut stop).unwrap();
+        let b = run(
+            &mut rosenbrock,
+            &[-1.2, 1.0],
+            None,
+            &SETTINGS,
+            &mut stop,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(b.ending, Ending::Stopped);
         assert_eq!(b.iterations, 2);
@@ -773,7 +1019,15 @@ mod tests {
             Ok::<_, ()>(asked >= 2)
         };
 
-        let b = run(&mut rosenbrock, &[-1.2, 1.0], None, &capped, &mut stop).unwrap();
+        let b = run(
+            &mut rosenbrock,
+            &[-1.2, 1.0],
+            None,
+            &capped,
+            &mut stop,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(b.ending, Ending::MaxIterations);
         assert_eq!(b.iterations, 2);
@@ -791,7 +1045,15 @@ mod tests {
             ..SETTINGS
         };
 
-        let b = run(&mut rosenbrock, &[-1.2, 1.0], None, &loose, &mut always()).unwrap();
+        let b = run(
+            &mut rosenbrock,
+            &[-1.2, 1.0],
+            None,
+            &loose,
+            &mut always(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(b.ending, Ending::Stopped);
         assert_eq!(b.iterations, 1);
@@ -813,7 +1075,15 @@ mod tests {
             Ok::<_, ()>(asked >= unstopped.iterations)
         };
 
-        let b = run(&mut quadratic(&[1.0, 1.0]), &start, None, &loose, &mut stop).unwrap();
+        let b = run(
+            &mut quadratic(&[1.0, 1.0]),
+            &start,
+            None,
+            &loose,
+            &mut stop,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(b.ending, Ending::Stopped);
         assert_eq!(b.iterations, unstopped.iterations);
@@ -849,6 +1119,7 @@ mod tests {
             None,
             &SETTINGS,
             &mut stop,
+            None,
         )
         .unwrap();
 
@@ -861,7 +1132,14 @@ mod tests {
         let mut stop = || Err::<bool, _>("interrupted");
         let mut objective = |x: &[f64]| rosenbrock(x).map_err(|()| "");
 
-        let answer = run(&mut objective, &[-1.2, 1.0], None, &SETTINGS, &mut stop);
+        let answer = run(
+            &mut objective,
+            &[-1.2, 1.0],
+            None,
+            &SETTINGS,
+            &mut stop,
+            None,
+        );
 
         assert_eq!(answer, Err("interrupted"));
     }
@@ -877,7 +1155,7 @@ mod tests {
             }
         };
 
-        let answer = run(&mut objective, &[1.0], None, &SETTINGS, &mut stop);
+        let answer = run(&mut objective, &[1.0], None, &SETTINGS, &mut stop, None);
 
         assert_eq!(answer, Err("not finite"));
     }
@@ -1058,6 +1336,7 @@ mod tests {
             Some(&scale),
             &capped,
             &mut never(),
+            None,
         )
         .unwrap();
 
@@ -1080,5 +1359,146 @@ mod tests {
         let b = burst(&mut objective, &[-1.2, 1.0], &SETTINGS);
 
         assert_eq!(b.evaluations, calls);
+    }
+
+    /// Enters a clearance beyond x[0] = WALL, holding coordinate 0 there.
+    fn below_wall(x: &[f64]) -> Option<Vec<bool>> {
+        (x[0] > WALL).then(|| {
+            let mut hold = vec![false; x.len()];
+            hold[0] = true;
+            hold
+        })
+    }
+
+    const WALL: f64 = 1.0;
+
+    /// Falling along x[0] without end, and a bowl of curvature 1 in x[1]
+    /// about 1.
+    fn falling(x: &[f64]) -> Result<Evaluation, ()> {
+        let value = -x[0] + 0.5 * (x[1] - 1.0) * (x[1] - 1.0);
+        Ok((value, vec![-1.0, x[1] - 1.0]))
+    }
+
+    fn admitted_burst(
+        objective: &mut dyn FnMut(&[f64]) -> Result<Evaluation, ()>,
+        start: &[f64],
+    ) -> Burst {
+        let mut entered = below_wall;
+        run(
+            objective,
+            start,
+            None,
+            &SETTINGS,
+            &mut never(),
+            Some(&mut entered),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_burst_takes_no_trial_its_check_rejects_and_stops_short_of_it() {
+        let mut evaluated = Vec::new();
+        let mut recorded = |x: &[f64]| {
+            evaluated.push(x[0]);
+            falling(x)
+        };
+
+        let b = admitted_burst(&mut recorded, &[0.0, 0.0]);
+
+        assert!(!b.abnormal(), "{:?}", b.ending);
+        assert!(b.rejected > 0);
+        assert!(evaluated.iter().all(|&x| x <= WALL), "{evaluated:?}");
+        assert!(
+            b.point[0] <= WALL && b.point[0] > 0.9 * WALL,
+            "{:?}",
+            b.point
+        );
+        assert!((b.point[1] - 1.0).abs() < 1e-6, "{:?}", b.point);
+    }
+
+    #[test]
+    fn a_coordinate_against_the_wall_is_held_and_the_rest_move_on() {
+        // x[0] starts on the wall, which every step along the gradient
+        // crosses at once; x[1] reaches its bowl's minimum all the same.
+        let b = admitted_burst(&mut falling, &[WALL, 0.0]);
+
+        assert!(!b.abnormal(), "{:?}", b.ending);
+        assert_eq!(b.point[0], WALL);
+        assert!((b.point[1] - 1.0).abs() < 1e-6, "{:?}", b.point);
+    }
+
+    #[test]
+    fn a_burst_whose_every_descent_the_wall_blocks_ends_normally_where_it_is() {
+        let mut along = |x: &[f64]| -> Result<Evaluation, ()> { Ok((-x[0], vec![-1.0])) };
+
+        let b = admitted_burst(&mut along, &[WALL]);
+
+        assert_eq!(b.ending, Ending::Blocked);
+        assert!(!b.abnormal());
+        assert_eq!(b.point, vec![WALL]);
+        assert_eq!(b.iterations, 0);
+    }
+
+    /// Falling as -SLOPE·x from 0, which every step leaves; `rejects` holds
+    /// nothing.
+    const SLOPE: f64 = 1e6;
+
+    #[test]
+    fn a_bound_below_the_smallest_step_ends_the_search_on_its_rejection() {
+        // The first step, of unit length, is 1/SLOPE: halving it falls below
+        // More-Thuente's smallest step long before MAX_LINE_SEARCH trials.
+        let mut steep = |x: &[f64]| -> Result<Evaluation, ()> { Ok((-SLOPE * x[0], vec![-SLOPE])) };
+        let mut rejects = |x: &[f64]| (x[0] > 0.0).then(|| vec![false]);
+
+        let b = run(
+            &mut steep,
+            &[0.0],
+            None,
+            &SETTINGS,
+            &mut never(),
+            Some(&mut rejects),
+        )
+        .unwrap();
+
+        assert_eq!(b.ending, Ending::Blocked);
+        assert!(b.rejected < MAX_LINE_SEARCH, "{}", b.rejected);
+        assert_eq!(b.point, vec![0.0]);
+    }
+
+    #[test]
+    fn holding_what_leaves_no_descent_bisects_instead() {
+        // Coordinate 0 is the only one that descends; holding it leaves a
+        // direction of slope 0, so the search bisects along the gradient,
+        // rejecting again.
+        let mut along = |x: &[f64]| -> Result<Evaluation, ()> { Ok((-x[0], vec![-1.0, 0.0])) };
+
+        let b = admitted_burst(&mut along, &[WALL, 0.0]);
+
+        assert_eq!(b.ending, Ending::Blocked);
+        assert!(b.rejected > 1, "{}", b.rejected);
+        assert_eq!(b.point, vec![WALL, 0.0]);
+    }
+
+    #[test]
+    fn a_search_that_rejected_a_trial_but_failed_otherwise_ends_abnormally() {
+        // Every step along the misleading gradient raises the energy; the
+        // first trial lies beyond the wall and is rejected, the search then
+        // fails on admitted trials above its start, and the rejected one
+        // would not have descended either.
+        let mut uphill = |x: &[f64]| Ok(testing::quadratic(&[1.0], true, x));
+        let mut rejects = |x: &[f64]| (x[0] > 1.5).then(|| vec![false]);
+
+        let b = run(
+            &mut uphill,
+            &[1.0],
+            None,
+            &SETTINGS,
+            &mut never(),
+            Some(&mut rejects),
+        )
+        .unwrap();
+
+        assert!(b.abnormal(), "{:?}", b.ending);
+        assert!(b.rejected > 0);
     }
 }
