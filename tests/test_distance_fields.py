@@ -6,8 +6,9 @@ from distance_fields import Box, Disc, FloatArray, Union, Walls
 
 SEGMENT_COUNT = 400
 SAMPLES_PER_SEGMENT = 2001
-# Sampling misses grazing intersections shallower than this, mm.
 GRAZE = 1e-4
+"""mm: a segment that grazes a shape by less than this can pass between
+the samples, so sampling cannot judge it."""
 
 SHAPES = [
     Disc(0.0, 0.0, 1.0),

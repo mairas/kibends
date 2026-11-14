@@ -20,8 +20,9 @@ from conftest import (
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import ViaType, ZoneType
 from kipy.wrapper import Wrapper
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import Polygon, box
 
+from kibends.bursts import INSIDE_TOLERANCE
 from kibends.chain import Chain
 from kibends.coords import UserFrame
 from kibends.obstacles import containment
@@ -32,14 +33,12 @@ from kibends.snapshot import (
     Via,
     ViaZone,
     read_selection,
-    zone_unions,
 )
 from kibends.vias import (
     ChainEnd,
     MovableVia,
     PairKind,
     StaticVia,
-    _depth,  # pyright: ignore[reportPrivateUsage]
     carried_copper,
     chain_cuts,
     may_move,
@@ -992,33 +991,61 @@ def test_pairs_are_ground_and_regular_or_two_ground_nets(
     assert pairs_with(via_on(net), net in GROUND, standing) is expected
 
 
-DEPTH_ROUNDING = 1e-12
-"""How far the containment field's distance may differ from the zone depth
-(`_core.zone_depth`) it is built from, mm: their round-off, as the two
-reach it by different operations."""
+ZONE_REGION = box(0.0, -1.0, 2.0, 1.0)
+"""A zone's region with a hole, `ZONE_HOLE`."""
+ZONE_HOLE = box(0.8, -0.2, 1.2, 0.2)
+EDGE_ZONE = ViaZone(
+    "plane",
+    {"In2.Cu": Polygon(ZONE_REGION.exterior.coords, [ZONE_HOLE.exterior.coords])},
+    0.2,
+    0.1,
+)
+LEFT_EDGE = ZONE_REGION.bounds[0] + EDGE_ZONE.margin
+"""x where a via's centre on y = 0 is as deep inside `EDGE_ZONE` as the
+refill needs."""
+HOLE_EDGE = ZONE_HOLE.bounds[0] - EDGE_ZONE.margin
+"""The same beside the hole."""
 
 
-class TestZoneDepth:
-    """`_edge_reason` and the containment field judge a zone's edge by one
-    zone depth (`_core.zone_depth`)."""
+@pytest.mark.parametrize(
+    ("x", "moves"),
+    [
+        (LEFT_EDGE - 0.1, False),
+        (LEFT_EDGE - 2 * INSIDE_TOLERANCE, False),
+        (LEFT_EDGE - INSIDE_TOLERANCE / 2, True),
+        (LEFT_EDGE, True),
+        (LEFT_EDGE + INSIDE_TOLERANCE / 2, True),
+        (0.5, True),
+        (HOLE_EDGE + 2 * INSIDE_TOLERANCE, False),
+        (HOLE_EDGE + INSIDE_TOLERANCE / 2, True),
+        (1.0, False),
+    ],
+    ids=[
+        "outside",
+        "just-outside",
+        "within-noise-outside",
+        "at-edge",
+        "just-inside",
+        "deep-inside",
+        "just-past-the-hole-edge",
+        "within-noise-of-the-hole-edge",
+        "in-hole",
+    ],
+)
+def test_a_via_moves_exactly_where_its_containment_holds_it(
+    x: float, moves: bool
+) -> None:
+    """A stitching via the judgement lets move starts where the optimizer's
+    containment field holds it, and one it fixes at a zone's edge would
+    start outside: both ignore depths within INSIDE_TOLERANCE as noise."""
+    via = replace(via_on("GND"), position=(x, 0.0))
+    field = containment([EDGE_ZONE])
+    assert field is not None
 
-    REGION = box(0.0, -1.0, 2.0, 1.0)
-    HOLED = Polygon(REGION.exterior.coords, [box(0.8, -0.2, 1.2, 0.2).exterior.coords])
-
-    @pytest.mark.parametrize(
-        "at",
-        [(-0.1, 0.0), (0.0, 0.0), (1e-7, 0.0), (0.05, 0.0), (0.0, 1.0), (1.0, 0.0)],
-        ids=["outside", "at-edge", "just-inside", "inside", "at-vertex", "in-hole"],
+    movable = movable_vias(
+        [via], {}, [], frame=BOARD_FRAME, zones={via.id: (EDGE_ZONE,)}, nets=()
     )
-    def test_the_containment_field_agrees_with_the_depth(
-        self, at: tuple[float, float]
-    ) -> None:
-        zone = ViaZone("plane", {"In2.Cu": self.HOLED}, 0.2, 0.1)
-        centres = zone_unions([zone])["In2.Cu"].centres
-        field = containment([zone])
-        assert field is not None
+    distance, _ = field.signed_distance(np.array([via.position]))
 
-        distance, _ = field.signed_distance(np.array([at]))
-
-        depth = _depth(centres, Point(at))
-        assert distance[0] == pytest.approx(depth, abs=DEPTH_ROUNDING)
+    assert bool(movable) is moves
+    assert bool(distance[0] >= -INSIDE_TOLERANCE) is moves

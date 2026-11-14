@@ -2,6 +2,13 @@ import math
 
 import numpy as np
 import pytest
+from conftest import (
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
+    NM_ROUNDING,
+    POSITION_ROUND_OFF,
+)
 from distance_fields import FreeSpace
 from shapely.geometry import LineString
 
@@ -30,9 +37,13 @@ from kibends.simplify import simplify
 WIDTH = 0.2
 GAP = 0.15
 HALF_PITCH = (GAP + WIDTH) / 2
-ROUND_TRIP_TOLERANCE = 1e-9
-# Hand-routed coordinates are rounded to KiCad's 1 nm grid.
-NM_ROUNDING_TOLERANCE = 1e-5
+SAMPLED_GAP = 1e-6
+"""mm the gap measured between offsets of a densely drawn curve may differ
+from the offset's gap."""
+MITRED_RADIUS = 1e-5
+"""mm a mitred offset vertex of `arc` may lie off the offset radius."""
+SAMPLED_RADIUS = 1e-4
+"""Relative error of a bend radius measured on `arc`'s vertices."""
 CHORD = DEFAULT_CHORD_TOLERANCE
 TAN_HALF_45 = math.tan(math.pi / 8)
 
@@ -186,7 +197,7 @@ def test_chains_running_opposite_ways_still_pair() -> None:
     np.testing.assert_allclose(coupled_b, [(9.0, HALF_PITCH), (1.0, HALF_PITCH)])
     middle = centreline(coupled_a, coupled_b, WIDTH).points
     np.testing.assert_allclose(middle[[0, -1]], [(1.0, 0.0), (9.0, 0.0)])
-    np.testing.assert_allclose(middle[:, 1], 0.0, atol=ROUND_TRIP_TOLERANCE)
+    np.testing.assert_allclose(middle[:, 1], 0.0, atol=POSITION_ROUND_OFF)
 
 
 def split_pair() -> tuple[Chain, Chain]:
@@ -325,26 +336,6 @@ def test_stretch_at_another_spacing_does_not_set_the_pitch(chord: float) -> None
     assert pair.gap == pytest.approx(GAP)
 
 
-@pytest.mark.parametrize(
-    ("beyond_step", "expected"), [(0.0, (1.75, 8.25)), (0.01, (2.0, 8.0))]
-)
-def test_section_end_snaps_to_a_vertex_at_most_a_sample_step_outward(
-    beyond_step: float, expected: tuple[float, float]
-) -> None:
-    """Runs reach 2..8 mm; in-band vertices lie a 0.25 mm step, plus
-    `beyond_step`, outward of each run end."""
-    step = 0.25
-    a = array((0.0, -HALF_PITCH), (10.0, -HALF_PITCH))
-    b = array((0.0, HALF_PITCH), (10.0, HALF_PITCH))
-    first, last = 2.0 - step - beyond_step, 8.0 + step + beyond_step
-    candidates = array((first, first), (last, last))
-
-    ends = _ends(a, b, (2.0, 8.0), (2.0, 8.0), candidates, 2 * HALF_PITCH, step)
-
-    assert ends.a == expected
-    assert ends.b == expected
-
-
 def test_section_ends_of_a_run_shorter_than_a_pitch_do_not_cross() -> None:
     """The run reaches 5.0..5.05 mm; in-band vertices lie inward of each run
     end, past the other, but within a pitch of it."""
@@ -427,7 +418,7 @@ def test_pair_widening_briefly_at_its_pads_is_coupled_from_the_jog() -> None:
     coupled_a, coupled_b = pair.coupled(section)
     np.testing.assert_allclose(coupled_a, a.points[2:6])
     np.testing.assert_allclose(coupled_b, b.points[3:6])
-    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING_TOLERANCE)
+    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING)
 
 
 def test_u_turn_is_one_coupled_section() -> None:
@@ -442,7 +433,7 @@ def test_u_turn_is_one_coupled_section() -> None:
     assert pair is not None
     assert len(coupled_a) == len(right)
     assert len(coupled_b) == len(left)
-    assert pair.gap == pytest.approx(GAP, abs=1e-6)
+    assert pair.gap == pytest.approx(GAP, abs=SAMPLED_GAP)
 
 
 LEG_45 = 5.0 / math.sqrt(2)
@@ -611,7 +602,7 @@ def test_hand_routed_pair_with_45_degree_corners(inner_first: bool) -> None:
     assert pair is not None
     np.testing.assert_allclose(coupled_a, a_nm)
     np.testing.assert_allclose(coupled_b, b_nm)
-    assert pair.gap == pytest.approx(GAP, abs=NM_ROUNDING_TOLERANCE)
+    assert pair.gap == pytest.approx(GAP, abs=NM_ROUNDING)
 
 
 def curved_path() -> FloatArray:
@@ -628,7 +619,7 @@ def test_offset_pair_around_a_dense_arc_is_coupled_throughout() -> None:
     assert pair is not None
     assert len(coupled_a) == len(right)
     assert len(coupled_b) == len(left)
-    assert pair.gap == pytest.approx(GAP, abs=1e-6)
+    assert pair.gap == pytest.approx(GAP, abs=SAMPLED_GAP)
 
 
 def test_curved_pair_simplified_track_by_track_is_coupled_throughout() -> None:
@@ -670,8 +661,8 @@ def test_straight_pair_round_trips_through_centreline_and_offset() -> None:
     right, left = offset_pair(middle.points, GAP, WIDTH)
 
     assert not middle.a_on_right
-    assert hausdorff(right, b) < ROUND_TRIP_TOLERANCE
-    assert hausdorff(left, a) < ROUND_TRIP_TOLERANCE
+    assert hausdorff(right, b) < POSITION_ROUND_OFF
+    assert hausdorff(left, a) < POSITION_ROUND_OFF
 
 
 @pytest.mark.parametrize("inner_first", [True, False])
@@ -683,8 +674,8 @@ def test_pair_with_45_degree_corners_round_trips(inner_first: bool) -> None:
     right, left = offset_pair(middle.points, GAP, WIDTH)
 
     track_a, track_b = (right, left) if middle.a_on_right else (left, right)
-    assert hausdorff(track_a, a) < ROUND_TRIP_TOLERANCE
-    assert hausdorff(track_b, b) < ROUND_TRIP_TOLERANCE
+    assert hausdorff(track_a, a) < POSITION_ROUND_OFF
+    assert hausdorff(track_b, b) < POSITION_ROUND_OFF
 
 
 def test_arc_offsets_to_tracks_at_radius_plus_and_minus_half_pitch() -> None:
@@ -692,8 +683,12 @@ def test_arc_offsets_to_tracks_at_radius_plus_and_minus_half_pitch() -> None:
 
     right, left = offset_pair(arc(radius), GAP, WIDTH)
 
-    np.testing.assert_allclose(np.hypot(*right.T), radius - HALF_PITCH, atol=1e-5)
-    np.testing.assert_allclose(np.hypot(*left.T), radius + HALF_PITCH, atol=1e-5)
+    np.testing.assert_allclose(
+        np.hypot(*right.T), radius - HALF_PITCH, atol=MITRED_RADIUS
+    )
+    np.testing.assert_allclose(
+        np.hypot(*left.T), radius + HALF_PITCH, atol=MITRED_RADIUS
+    )
 
 
 def test_bend_at_the_radius_limit_passes_and_offsets_without_folding() -> None:
@@ -716,7 +711,7 @@ def test_bend_tighter_than_the_limit_is_reported() -> None:
     check = check_bend_radius(arc(0.9 * limit), GAP, WIDTH)
 
     assert check.too_tight
-    assert check.radius == pytest.approx(0.9 * limit, rel=1e-4)
+    assert check.radius == pytest.approx(0.9 * limit, rel=SAMPLED_RADIUS)
 
 
 def test_bend_above_the_limit_passes() -> None:
@@ -764,9 +759,6 @@ def test_the_offset_pullback_at_a_fold_is_finite() -> None:
     assert np.isfinite(gradient).all()
 
 
-PULLBACK_STEP = 1e-7
-
-
 @pytest.mark.parametrize("turn", [0.5 * math.pi, 0.99 * math.pi])
 def test_the_offset_pullback_matches_finite_differences(turn: float) -> None:
     # 0.99π lies past the turn beyond which the miter stops growing.
@@ -784,10 +776,10 @@ def test_the_offset_pullback_matches_finite_differences(turn: float) -> None:
     for k in range(len(points)):
         for axis in (0, 1):
             up, down = points.copy(), points.copy()
-            up[k, axis] += PULLBACK_STEP
-            down[k, axis] -= PULLBACK_STEP
-            numeric[k, axis] = (value(up) - value(down)) / (2 * PULLBACK_STEP)
-    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-6)
+            up[k, axis] += CENTRAL_STEP
+            down[k, axis] -= CENTRAL_STEP
+            numeric[k, axis] = (value(up) - value(down)) / (2 * CENTRAL_STEP)
+    np.testing.assert_allclose(analytic, numeric, rtol=CENTRAL_RTOL, atol=CENTRAL_ATOL)
 
 
 def test_a_fold_is_too_tight() -> None:

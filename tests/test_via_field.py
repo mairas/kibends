@@ -9,10 +9,12 @@ import kipy.board_types as kbt
 import numpy as np
 import pytest
 from conftest import (
+    NM_TOLERANCE,
     PAD_HALF_SIZE,
     FakeBoard,
     build_via_obstacles,
     contained,
+    judged_obstacles,
     kipy_pad,
     kipy_rect,
     kipy_segment,
@@ -63,7 +65,6 @@ DEFAULT_CLEARANCE = 0.2
 # A via's copper keeps the copper clearance with its ring, and the hole
 # clearance with its hole; with the defaults the ring is the farther reach.
 COPPER = max(DEFAULT_CLEARANCE + RADIUS, HOLE_CLEARANCE + HOLE_RADIUS)
-NM_TOLERANCE = 1e-6
 BOTH = ("F.Cu", "B.Cu")
 BOTH_LAYERS = (BL.BL_F_Cu, BL.BL_B_Cu)
 
@@ -133,16 +134,11 @@ class TestViaField:
             ],
             vias=[moving_via()],
         )
-
         field = field_of(fake)
-
         assert isinstance(field, Obstacles)
-        clearance = field.static_edges.clearance_obstacles
-        piece = {
-            o.description: int(c) for o, c in zip(field.items, clearance, strict=False)
-        }
-        assert piece["track top"] == piece["track top-branch"]
-        assert piece["track top"] != piece["track bottom"]
+
+        assert judged_obstacles(field, points((3, 2))) == 1
+        assert judged_obstacles(field, points((5, 2))) == 2
 
     def test_the_nearer_of_a_pad_on_top_and_a_track_below_limits_it(self) -> None:
         fake = FakeBoard(pads=[PAD_ON_TOP], tracks=[TRACK_BELOW], vias=[moving_via()])

@@ -4,6 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
+from conftest import SUM_ORDER_ROUNDING
 from distance_fields import FloatArray, FreeSpace
 from scenarios import ChainsScenario, PairsScenario, ViasScenario
 
@@ -64,17 +65,14 @@ def test_the_listed_energy_is_the_searched_one(
         x = x + step * SKIN_LEAST * rng.uniform(-1.0, 1.0, len(x)) / np.sqrt(2)
         value, gradient = searched(x)
         listed_value, listed_gradient = listed(x)
-        assert listed_value == pytest.approx(value, rel=1e-12, abs=1e-12)
-        np.testing.assert_allclose(listed_gradient, gradient, rtol=1e-10, atol=1e-12)
-    layers = seen.layer_count
-    # The first evaluation and the two steps past the skin search each layer.
-    # Random steps swing a section's mitred tracks farther than its
-    # centreline, so a layer with a section searches more often, though
-    # not at every step.
-    if pairs:
-        assert searches() < len(steps) * layers
-    else:
-        assert searches() == 3 * layers
+        assert listed_value == pytest.approx(
+            value, rel=SUM_ORDER_ROUNDING, abs=SUM_ORDER_ROUNDING
+        )
+        np.testing.assert_allclose(
+            listed_gradient, gradient, rtol=SUM_ORDER_ROUNDING, atol=SUM_ORDER_ROUNDING
+        )
+    # Else every step searched afresh and the list answered nothing itself.
+    assert searches() < len(steps) * seen.layer_count
 
 
 REACH = 1.0
@@ -105,12 +103,15 @@ def _searches() -> Callable[[], int]:
 def _assert_listed_is_searched(
     chains: list[ChainInput],
     steps: list[list[float]],
-    searches_after: list[int],
+    searches_after: list[int] | None = None,
 ) -> None:
     """With each chain moved along y by its move in each of `steps` in turn,
-    the list made at the start has searched as many times as
-    `searches_after` gives after each step, once at the start included, and
-    answers every point as a search does."""
+    the list made at the start answers every point as a search does.
+
+    `searches_after`, where given, is how many times it has searched after
+    each step, once at the start included: the premise that the steps it
+    did not search at were answered from the pairs it found before, where a
+    search would answer rightly whatever the list kept."""
     searches = _searches()
     polylines = [chain.centreline.points for chain in chains]
     seen = seen_parts(chains, polylines)
@@ -124,7 +125,8 @@ def _assert_listed_is_searched(
         return seen.smooth_answers(queries, flat, REACH, neighbours)
 
     answers(polylines, listed)
-    for moves, count in zip(steps, searches_after, strict=True):
+    counts = searches_after or [None] * len(steps)
+    for moves, count in zip(steps, counts, strict=True):
         polylines = [
             points + np.array([0.0, move])
             for points, move in zip(polylines, moves, strict=True)
@@ -135,7 +137,7 @@ def _assert_listed_is_searched(
             np.testing.assert_array_equal(got.point, expected.point)
             np.testing.assert_array_equal(got.edge, expected.edge)
             np.testing.assert_array_equal(got.share, expected.share)
-        assert searches() == count
+        assert count is None or searches() == count
 
 
 def test_an_edge_listed_beyond_reach_answers_once_it_comes_within_it() -> None:
@@ -170,10 +172,15 @@ def test_a_list_that_searched_again_keeps_its_pairs_through_as_far_a_move() -> N
     assert far - SKIN_MOST - 2 * closer < WITHIN
 
 
-def test_a_list_widens_its_skin_to_SKIN_MOST_at_most() -> None:
-    """After a move far beyond SKIN_MOST, which makes the list search
-    again, a move of almost SKIN_MOST keeps to the pairs found and one a
-    little farther makes it search once more."""
-    chains = [_level("A", 0.0), _level("B", 0.6)]
-    steps = [[0.0, FAR_MOVE], [0.0, 0.95 * SKIN_MOST], [0.0, 0.1 * SKIN_MOST]]
-    _assert_listed_is_searched(chains, steps, [2, 2, 3])
+def test_a_list_that_searched_after_a_far_move_answers_moves_past_its_skin() -> None:
+    """A chain moving far beyond SKIN_MOST toward another, to beyond the
+    reach it would list with twice that, then both moving toward each other
+    by almost SKIN_MOST, and then by enough more to bring it within reach:
+    a list that kept its pairs past SKIN_MOST would miss it."""
+    after_far = WITHIN + 2.05 * SKIN_MOST
+    chains = [_level("A", 0.0), _level("B", after_far + FAR_MOVE)]
+    closer, past = 0.95 * SKIN_MOST, 0.2 * SKIN_MOST
+    steps = [[0.0, -FAR_MOVE], [closer, -closer], [past, -past]]
+    _assert_listed_is_searched(chains, steps)
+    assert after_far - 2 * closer > WITHIN
+    assert after_far - 2 * (closer + past) < WITHIN

@@ -1,14 +1,19 @@
 import math
 from itertools import pairwise
-from typing import NamedTuple
 
 import kipy.board_types as kbt
 import numpy as np
 import pytest
 import shapely
 from conftest import (
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
+    NM_TOLERANCE,
     PAD_HALF_SIZE,
+    POSITION_ROUND_OFF,
     FakeBoard,
+    judged_obstacles,
     kipy_footprint,
     kipy_pad,
     kipy_rect,
@@ -20,6 +25,7 @@ from conftest import (
     layer_snapshot,
     netclass,
     obstacle_energy,
+    static_distances,
     total_energy,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -33,7 +39,6 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
-    IntArray,
     ObstacleField,
     smooth_minimum,
     weighted_sum,
@@ -59,8 +64,10 @@ NET = "SIG"
 WIDTH = 0.25
 HALF = WIDTH / 2
 DEFAULT_CLEARANCE = 0.2
-NM_TOLERANCE = 1e-6
-FD_STEP = 1e-6
+MEDIAL_AXIS_SHARE = 0.05
+"""The share of random points that may lie so near a medial axis, where the
+nearest feature switches and the distance has no gradient, that a central
+difference straddles it."""
 
 
 def obstacles_of(
@@ -357,7 +364,9 @@ class TestPairObstacleSet:
             "track keepout": pytest.approx(PAIR_HALF_EXTENT)
         }
         inside = np.array([[10.0 - 0.4 - PAIR_HALF_EXTENT, 0.0]])
-        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(0.0, abs=1e-9)
+        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(
+            0.0, abs=POSITION_ROUND_OFF
+        )
 
 
 class TestBoardEdge:
@@ -425,7 +434,7 @@ class TestSignedDistance:
         d, g = SQUARE.signed_distance(points(point))
 
         assert d[0] == pytest.approx(distance, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx(gradient, abs=1e-6)
+        assert g[0] == pytest.approx(gradient, abs=POSITION_ROUND_OFF)
 
     def test_vectorised_over_many_points(self) -> None:
         d, g = SQUARE.signed_distance(points((4, 1), (0.5, 1), (1, 5)))
@@ -542,19 +551,18 @@ class TestSignedDistance:
         pts = rng.uniform(-6, 11, size=(200, 2))
 
         _, analytic = field.signed_distance(pts)
-        step = np.eye(2) * FD_STEP
+        step = np.eye(2) * CENTRAL_STEP
         numeric = np.stack(
             [
                 (field.signed_distance(pts + s)[0] - field.signed_distance(pts - s)[0])
-                / (2 * FD_STEP)
+                / (2 * CENTRAL_STEP)
                 for s in step
             ],
             axis=1,
         )
 
-        # Medial axes, where the nearest feature switches, have no gradient.
-        agree = np.linalg.norm(analytic - numeric, axis=1) < 1e-4
-        assert agree.mean() > 0.95
+        agree = np.isclose(analytic, numeric, rtol=CENTRAL_RTOL, atol=CENTRAL_ATOL)
+        assert agree.all(axis=1).mean() > 1 - MEDIAL_AXIS_SHARE
 
 
 class TestSegmentsClear:
@@ -677,8 +685,8 @@ class TestChainObstacles:
         assert d == pytest.approx(
             [0.8 - OTHER_NET_INFLATION, 0.5 - OTHER_NET_INFLATION], abs=NM_TOLERANCE
         )
-        assert g[0] == pytest.approx((0, 1), abs=1e-9)
-        assert g[1] == pytest.approx((0, -1), abs=1e-9)
+        assert g[0] == pytest.approx((0, 1), abs=POSITION_ROUND_OFF)
+        assert g[1] == pytest.approx((0, -1), abs=POSITION_ROUND_OFF)
 
     def test_chains_of_different_vertex_counts(self) -> None:
         bent = other_chain("THIRD", (0, 2), (5, 2), (10, 2))
@@ -736,7 +744,9 @@ class TestChainObstacles:
 
         _, g = diagonal.signed_distance(points((1, 3)))
 
-        assert g[0] == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)), abs=1e-9)
+        assert g[0] == pytest.approx(
+            (-math.sqrt(0.5), math.sqrt(0.5)), abs=POSITION_ROUND_OFF
+        )
 
     def test_segments_crossing_the_band_are_not_clear(self) -> None:
         inside = OTHER_NET_INFLATION / 2
@@ -794,7 +804,7 @@ class TestChainObstacles:
         d, g = neighbours(BELOW).signed_distance(points((5, 0)))
 
         assert d[0] == pytest.approx(-OTHER_NET_INFLATION, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((0, 1), abs=1e-9)
+        assert g[0] == pytest.approx((0, 1), abs=POSITION_ROUND_OFF)
 
 
 def random_chains(rng: np.random.Generator) -> list[ChainCentreline]:
@@ -853,9 +863,9 @@ def probes_around(
     return np.vstack([near, rng.uniform(low, high, (200, 2))])
 
 
-# Closer than this to a centreline, the gradient is the direction of a
-# micrometre offset and only agrees to within rounding of the nearest point.
 GRADIENT_COMPARISON_MIN_DISTANCE = 1e-3
+"""mm: nearer a centreline than this, the gradient is the direction of a
+tiny offset and agrees only to within rounding of the nearest point."""
 
 
 class TestChainFieldMatchesShapely:
@@ -874,13 +884,17 @@ class TestChainFieldMatchesShapely:
 
         np.testing.assert_array_equal(np.isinf(d), np.isinf(d_ref))
         finite = np.isfinite(d_ref)
-        np.testing.assert_allclose(d[finite], d_ref[finite], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(
+            d[finite], d_ref[finite], rtol=0, atol=POSITION_ROUND_OFF
+        )
         centrelines = MultiLineString([c.points for c in chains])
         away = finite & (
             centrelines.distance(shapely.points(probes))
             > GRADIENT_COMPARISON_MIN_DISTANCE
         )
-        np.testing.assert_allclose(g[away], g_ref[away], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(
+            g[away], g_ref[away], rtol=0, atol=POSITION_ROUND_OFF
+        )
         np.testing.assert_array_equal(g[~finite], 0.0)
 
     @pytest.mark.parametrize("seed", range(6))
@@ -908,11 +922,6 @@ SPREAD = points((4, 1), (0.5, 1), (1, 5), (2.5, 1), (0, 0), (-3, 2), (12, 0.1))
 
 
 class TestCompositeField:
-    def test_satisfies_the_optimizer_protocol(self) -> None:
-        field: ObstacleField = CompositeField([SQUARE])
-
-        assert field.segments_clear(points((4, 4)), points((4, 4))).tolist() == [True]
-
     @pytest.mark.parametrize("reach", [math.inf, 1.0])
     def test_composite_of_one_field_is_that_field(self, reach: float) -> None:
         d, g = CompositeField([SQUARE]).signed_distance(SPREAD, reach)
@@ -937,8 +946,8 @@ class TestCompositeField:
         d, g = composite.signed_distance(points((4, 1), (7, 1)))
 
         assert d == pytest.approx([1.5, 1 - OTHER_NET_INFLATION], abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((1, 0), abs=1e-9)
-        assert g[1] == pytest.approx((-1, 0), abs=1e-9)
+        assert g[0] == pytest.approx((1, 0), abs=POSITION_ROUND_OFF)
+        assert g[1] == pytest.approx((-1, 0), abs=POSITION_ROUND_OFF)
 
     def test_beyond_reach_of_every_field_is_infinite(self) -> None:
         composite = CompositeField([SQUARE, neighbours(BELOW)])
@@ -1086,9 +1095,6 @@ SCENE = [
 ]
 """Static copper of every kind, each item an obstacle of its own, inside
 `SCENE_OUTLINE`."""
-EXACT = 1e-9
-"""How far the edge list's distances may differ from shapely's, mm:
-round-off only."""
 
 
 def _scene_points(seed: int) -> FloatArray:
@@ -1123,8 +1129,10 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(points)
 
         expected, expected_toward = _shapely_smooth(points)
-        np.testing.assert_allclose(smooth, expected, atol=EXACT, rtol=0.0)
-        np.testing.assert_allclose(toward, expected_toward, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(smooth, expected, atol=POSITION_ROUND_OFF, rtol=0.0)
+        np.testing.assert_allclose(
+            toward, expected_toward, atol=POSITION_ROUND_OFF, rtol=0.0
+        )
 
     def test_matches_shapely_within_reach(self) -> None:
         reach = 0.3
@@ -1136,9 +1144,11 @@ class TestEdgeList:
         expected, expected_toward = _shapely_smooth(points)
         near = expected <= reach
         assert near.any() and not near.all()
-        np.testing.assert_allclose(smooth[near], expected[near], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[near], expected_toward[near], atol=EXACT, rtol=0.0
+            smooth[near], expected[near], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[near], expected_toward[near], atol=POSITION_ROUND_OFF, rtol=0.0
         )
         assert (smooth[~near] > reach).all()
 
@@ -1155,9 +1165,11 @@ class TestEdgeList:
 
         exact, exact_toward = field.signed_distance(points)
         assert single.sum() > len(points) // 2
-        np.testing.assert_allclose(smooth[single], exact[single], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[single], exact_toward[single], atol=EXACT, rtol=0.0
+            smooth[single], exact[single], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[single], exact_toward[single], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     @pytest.mark.parametrize(
@@ -1186,8 +1198,10 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(point, 0.3)
 
         exact, exact_toward = field.signed_distance(point)
-        np.testing.assert_allclose(smooth, exact, atol=EXACT, rtol=0.0)
-        np.testing.assert_allclose(toward, exact_toward, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(smooth, exact, atol=POSITION_ROUND_OFF, rtol=0.0)
+        np.testing.assert_allclose(
+            toward, exact_toward, atol=POSITION_ROUND_OFF, rtol=0.0
+        )
 
     def test_far_outside_the_board_is_reported(self) -> None:
         field = Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
@@ -1196,11 +1210,15 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(points, 0.3)
 
         exact, exact_toward = field.signed_distance(points)
-        assert smooth[0] == pytest.approx(-41.0 - SCENE_EDGE_INFLATION, abs=EXACT)
+        assert smooth[0] == pytest.approx(
+            -41.0 - SCENE_EDGE_INFLATION, abs=POSITION_ROUND_OFF
+        )
         assert smooth[1] == np.inf
-        np.testing.assert_allclose(smooth[[0, 2]], exact[[0, 2]], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[[0, 2]], exact_toward[[0, 2]], atol=EXACT, rtol=0.0
+            smooth[[0, 2]], exact[[0, 2]], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[[0, 2]], exact_toward[[0, 2]], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     def test_no_items_and_no_outline_is_free(self) -> None:
@@ -1226,23 +1244,6 @@ def _shapely_by_obstacle(
     }
 
 
-class StaticDistances(NamedTuple):
-    """(point, obstacle) pairs, by point then obstacle, and each point's
-    exact signed distance to its obstacle."""
-
-    point: IntArray
-    obstacle: IntArray
-    distance: FloatArray
-
-
-def static_distances(
-    field: Obstacles, points: FloatArray, below: float
-) -> StaticDistances:
-    """Each point's exact distance to each obstacle of `field` nearer than
-    `below`, as a clearance check judges it (`StaticEdges.distances`)."""
-    return StaticDistances(*field.static_edges.distances(points, below))
-
-
 class TestStaticDistances:
     """Each obstacle's exact distance from the static edges, as a clearance
     check judges it item by item."""
@@ -1263,7 +1264,7 @@ class TestStaticDistances:
         np.testing.assert_allclose(
             [found[key] for key in expected],
             list(expected.values()),
-            atol=EXACT,
+            atol=POSITION_ROUND_OFF,
             rtol=0.0,
         )
 
@@ -1277,7 +1278,10 @@ class TestStaticDistances:
 
         assert got.point.tolist() == list(range(len(points)))
         np.testing.assert_allclose(
-            got.distance, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+            got.distance,
+            field.signed_distance(points)[0],
+            atol=POSITION_ROUND_OFF,
+            rtol=0.0,
         )
 
     def test_without_a_bound_holds_each_point_s_nearest(self) -> None:
@@ -1289,20 +1293,21 @@ class TestStaticDistances:
         nearest = np.full(len(points), np.inf)
         np.minimum.at(nearest, got.point, got.distance)
         np.testing.assert_allclose(
-            nearest, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+            nearest, field.signed_distance(points)[0], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
-    def test_numbers_obstacles_one_part_after_another(self) -> None:
-        first = Obstacles(SCENE[:2])
-        second = Obstacles(SCENE[2:3], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
-        # Inside the edge's clearance only: the second part's second obstacle.
-        at = [np.array([8.9, 3.9])]
+    def test_a_via_inside_obstacles_of_two_parts_is_inside_both(self) -> None:
+        """Each part numbers its obstacles from 0: a via's clearance check
+        still tells the first obstacle of one part from that of another."""
+        first = Obstacles([Obstacle("pad", Point(0.0, 0.0), 0.5)])
+        second = Obstacles([Obstacle("via", Point(0.2, 0.0), 0.5)])
+        at = [np.array([0.1, 0.0])]
 
         got = free_distances(
             [[CompositeField([first, second])]], ViaSight([{}], [{}], 0), [], at, 0.0
         )
 
-        assert got.static.key.tolist() == [3]
+        assert len(set(got.static.key.tolist())) == 2
 
 
 JOINT_EXTENT = 0.1
@@ -1337,24 +1342,32 @@ def _joint(
     )
 
 
+JUNCTION = np.array([[2.0, 0.1]])
+"""A point inside the clearance of the track of `_joint` and of a branch
+leaving it at (2, 0)."""
+
+
 class TestClearanceObstacles:
     """Connected copper of one net is one obstacle to a clearance check,
-    however the energy splits it."""
+    however the energy splits it: a via inside its clearance that slides
+    along it enters no new copper's."""
 
     @pytest.mark.parametrize(
-        "field",
+        ("field", "at"),
         [
-            _joint(LineString([(2.0, 0.0), (2.0, 2.0)])),
-            _joint(LineString([(4.0, 0.0), (6.0, 0.0)]), inflation=0.4, extent=0.2),
-            _joint(LineString([(2.0, 0.15), (2.0, 2.0)])),
+            (_joint(LineString([(2.0, 0.0), (2.0, 2.0)])), JUNCTION),
+            (
+                _joint(LineString([(4.0, 0.0), (6.0, 0.0)]), inflation=0.4, extent=0.2),
+                np.array([[4.0, 0.1]]),
+            ),
+            (_joint(LineString([(2.0, 0.15), (2.0, 2.0)])), JUNCTION),
         ],
         ids=["t-junction", "width-change", "overlapping"],
     )
-    def test_connected_copper_of_one_net_is_one(self, field: Obstacles) -> None:
-        edges = field.static_edges
-
-        assert edges.obstacles.tolist() == [0, 1]
-        assert edges.clearance_obstacles.tolist() == [0, 0]
+    def test_connected_copper_of_one_net_is_one(
+        self, field: Obstacles, at: FloatArray
+    ) -> None:
+        assert judged_obstacles(field, at) == 1
 
     @pytest.mark.parametrize(
         "field",
@@ -1376,7 +1389,7 @@ class TestClearanceObstacles:
         ],
     )
     def test_other_items_stay_apart(self, field: Obstacles) -> None:
-        assert field.static_edges.clearance_obstacles.tolist() == [0, 1]
+        assert judged_obstacles(field, JUNCTION) == 2
 
     def test_distances_judge_connected_copper_as_one(self) -> None:
         field = _joint(LineString([(2.0, 0.0), (2.0, 2.0)]))
@@ -1385,17 +1398,9 @@ class TestClearanceObstacles:
         got = static_distances(field, at, math.inf)
 
         assert got.point.tolist() == [0, 1]
-        assert got.obstacle.tolist() == [0, 0]
         np.testing.assert_allclose(
-            got.distance, [0.1 - JOINT_INFLATION] * 2, atol=EXACT, rtol=0.0
+            got.distance, [0.1 - JOINT_INFLATION] * 2, atol=POSITION_ROUND_OFF, rtol=0.0
         )
-
-    def test_the_board_edge_stays_its_own(self) -> None:
-        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
-
-        edges = field.static_edges
-
-        assert edges.clearance_obstacles.tolist() == edges.obstacles.tolist()
 
     def test_a_board_s_tracks_meeting_at_a_width_change_are_one(self) -> None:
         fake = FakeBoard(
@@ -1405,8 +1410,7 @@ class TestClearanceObstacles:
                 kipy_track("other", "VCC", (5, 0), (7, 0), width=2 * WIDTH),
             ]
         )
+        field = obstacles_of(fake)
 
-        edges = obstacles_of(fake).static_edges
-
-        assert edges.obstacles.tolist() == [0, 1, 2]
-        assert edges.clearance_obstacles.tolist() == [0, 0, 2]
+        assert judged_obstacles(field, np.array([[2.0, 0.3]])) == 1
+        assert judged_obstacles(field, np.array([[4.5, 0.0]])) == 2

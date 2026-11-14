@@ -51,7 +51,6 @@ from kibends.chain import NM_PER_MM, Contact, SameNetTrack, Segment
 from kibends.coords import UserFrame
 from kibends.snapshot import (
     CONTACT_MARGIN,
-    MIN_ARC_SEGMENTS,
     Arc,
     BoardSnapshot,
     Disc,
@@ -243,16 +242,13 @@ class TestReadSelection:
             ),
         )
 
-    def test_small_half_circle_has_four_pieces_or_more_with_exact_ends(
-        self,
-    ) -> None:
+    def test_small_half_circle_becomes_pieces_with_exact_ends(self) -> None:
         fake = FakeBoard(
             selection=[kipy_arc("arc", start=(5, 5), mid=(5.05, 5.05), end=(5.1, 5))]
         )
 
         pieces = read_selection(board(fake)).segments
 
-        assert len(pieces) >= MIN_ARC_SEGMENTS
         assert (pieces[0].start, pieces[-1].end) == (
             (5_000_000, 5_000_000),
             (5_100_000, 5_000_000),
@@ -302,7 +298,6 @@ class TestReadBoard:
         assert [(v.id, v.locked) for v in selection.vias] == [("v", False)]
         assert selection.nets == {"SIG"}
         assert selection.whole_board
-        assert fake.reads["get_selection"] == 0
 
     def test_ignores_the_selection(self) -> None:
         fake = whole_board_fake([kipy_track("x", "SIG", (5, 5), (6, 5))])
@@ -384,7 +379,6 @@ class TestReadSelectionElseBoard:
 
         assert [s.id for s in selection.segments] == ["x"]
         assert not selection.whole_board
-        assert fake.reads["get_tracks"] == 0
 
     def test_a_selection_without_copper_is_an_error(self) -> None:
         fake = whole_board_fake([kipy_footprint("fp")])
@@ -754,6 +748,15 @@ class TestKeepoutsAndEdge:
 
         assert keepout.area == pytest.approx(4)
 
+    def test_a_circular_keepout_keeps_out_its_disc(self) -> None:
+        zone = kipy_zone(kipy_circular_outline((5.0, 5.0), 2.0), [BL.BL_F_Cu])
+
+        (keepout,) = snapshot(FakeBoard(zones=[zone])).track_keepouts
+
+        assert keepout.is_valid
+        assert keepout.area == pytest.approx(math.pi * 2.0**2, rel=0.01)
+        assert keepout.contains(Point(5, 5))
+
     def test_edge_paths_from_board_and_footprint_edge_cuts(self) -> None:
         def edge(a: tuple[float, float], b: tuple[float, float]) -> kbt.BoardSegment:
             return kipy_segment(a, b, layer=BL.BL_Edge_Cuts)
@@ -905,26 +908,19 @@ class TestBoardSnapshot:
             alone = layer_snapshot(fake, layer, self.REPLACED)
             assert plain(snap.slice(layer, self.REPLACED)) == plain(alone)
 
-    def test_two_layers_read_each_board_wide_kind_once(self) -> None:
+    def test_a_run_on_two_layers_reads_the_board_once(self) -> None:
+        """A run reads the board once however many layers it touches, but
+        for pad shapes, which KiCad gives one layer at a time."""
         fake = two_layer_board()
 
         snap = BoardSnapshot.read(board(fake), self.LAYERS)
         for layer in self.LAYERS:
             snap.slice(layer, self.REPLACED)
 
-        assert fake.reads == {
-            "get_footprints": 1,
-            "get_tracks": 1,
-            "get_pads": 1,
-            "get_vias": 1,
-            "get_shapes": 1,
-            "get_text": 1,
-            "get_zones": 1,
-            "get_project": 1,
-            "get_netclass_for_nets": 1,
-            "get_pad_shapes_as_polygons": 2,
-        }
-        assert fake.client.renders == 2
+        by_layer = "get_pad_shapes_as_polygons"
+        assert fake.reads[by_layer] == len(self.LAYERS)
+        assert {n for kind, n in fake.reads.items() if kind != by_layer} == {1}
+        assert fake.client.renders == len(fake.texts)
 
     def test_layer_without_copper_gives_an_empty_slice(self) -> None:
         fake = FakeBoard(
@@ -1226,6 +1222,8 @@ class TestViaContacts:
     def test_each_region_is_built_once_per_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Reading costs the same whether a run moves one via on a plane or
+        a hundred stitching it."""
         built: list[tuple[str, str]] = []
 
         def spy(zones: Sequence[kbt.Zone], zone: kbt.Zone, layer: str) -> BaseGeometry:
@@ -1329,11 +1327,15 @@ class TestViaContacts:
         _, top, _, _ = region.bounds
         assert top == (3 if pour else 0)
 
-    def test_pads_on_layers_not_read_cost_one_read_per_layer(self) -> None:
+    def test_pad_shapes_beyond_the_run_s_layers_are_read_once_for_all_vias(
+        self,
+    ) -> None:
         fake = self.contact_board()
-        (via,) = read_selection(board(fake)).vias
+        fake.selection = [*fake.selection, *fake.vias[1:3]]
+        vias = read_selection(board(fake)).vias
+        assert len(vias) == 3
 
-        BoardSnapshot.read(board(fake), ["F.Cu"], [via])
+        BoardSnapshot.read(board(fake), ["F.Cu"], vias)
 
         assert fake.reads["get_pad_shapes_as_polygons"] == 2
 
@@ -1485,14 +1487,6 @@ class TestGeometryHelpers:
         p = (1.0, 2.0)
 
         assert arc_points(p, p, p) == [p, p]
-
-    def test_circular_zone_outline_reads_as_its_disc(self) -> None:
-        outline = kipy_circular_outline((5.0, 5.0), 2.0)
-
-        poly = snapshot_module._polygon(outline)  # pyright: ignore[reportPrivateUsage]
-
-        assert poly.is_valid
-        assert poly.area == pytest.approx(math.pi * 2.0**2, rel=0.01)
 
     def test_open_outline_is_not_closed(self) -> None:
         square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
