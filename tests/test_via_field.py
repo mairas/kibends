@@ -64,6 +64,8 @@ DEFAULT_CLEARANCE = 0.2
 # clearance with its hole; with the defaults the ring is the farther reach.
 COPPER = max(DEFAULT_CLEARANCE + RADIUS, HOLE_CLEARANCE + HOLE_RADIUS)
 NM_TOLERANCE = 1e-6
+"""mm: KiCad's coordinate step. Distances within it are the same clearance
+on the board."""
 BOTH = ("F.Cu", "B.Cu")
 BOTH_LAYERS = (BL.BL_F_Cu, BL.BL_B_Cu)
 
@@ -116,6 +118,11 @@ def edge_segments(corners: list[tuple[float, float]]) -> list[kbt.BoardShape]:
     return [kipy_segment(a, b, layer=BL.BL_Edge_Cuts) for a, b in pairwise(path)]
 
 
+NEAR = 1.0
+"""mm: the obstacles nearer a point than this are those whose clearance it
+lies in, not the next track over."""
+
+
 PAD_ON_TOP = kipy_pad("top", "GND", 5, 0, layers=(BL.BL_F_Cu,))
 TRACK_BELOW = kipy_track("below", "GND", (0, 3), (10, 3), layer=BL.BL_B_Cu)
 TRACK_HALF = 0.25 / 2
@@ -133,16 +140,15 @@ class TestViaField:
             ],
             vias=[moving_via()],
         )
-
         field = field_of(fake)
-
         assert isinstance(field, Obstacles)
-        clearance = field.static_edges.clearance_obstacles
-        piece = {
-            o.description: int(c) for o, c in zip(field.items, clearance, strict=False)
-        }
-        assert piece["track top"] == piece["track top-branch"]
-        assert piece["track top"] != piece["track bottom"]
+
+        def judged_against(at: tuple[float, float]) -> int:
+            _, obstacles, _ = field.static_edges.distances(points(at), NEAR)
+            return len(obstacles)
+
+        assert judged_against((3, 2)) == 1
+        assert judged_against((5, 2)) == 2
 
     def test_the_nearer_of_a_pad_on_top_and_a_track_below_limits_it(self) -> None:
         fake = FakeBoard(pads=[PAD_ON_TOP], tracks=[TRACK_BELOW], vias=[moving_via()])
