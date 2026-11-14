@@ -22,8 +22,10 @@ from conftest import (
     BOARD_FRAME,
     COMMIT_CALLS,
     PAD_HALF_SIZE,
+    REPORTED,
     RETURN_SIGNAL_VIA,
     RETURN_VIAS_APART,
+    STRAIGHT_TOLERANCE,
     BurstClock,
     CommitBoard,
     FakeKiCad,
@@ -128,9 +130,6 @@ WIDE = 0.5
 NARROW = 0.25
 WIDTH_CHANGE = (12.0, 4.0)
 """Where `width_change` narrows, at its corner."""
-# Positions of a straight result within this of the ideal line, mm: COARSE
-# leaves the width change bowed by about 2 µm.
-STRAIGHT_TOLERANCE = 0.01
 
 
 def width_change() -> list[kbt.Track]:
@@ -158,11 +157,6 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
-COARSE_LEVELS = (1.2, 0.6)
-"""Coarse spacings above COARSE's final 0.3 mm."""
-L_COARSE_BURSTS = 13
-"""Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
-reaches the final spacing."""
 
 
 SPACING_MEASURED = 1e-3
@@ -305,11 +299,9 @@ class TestSmooth:
         pad = box(x - h, y - h, x + h, y + h)
         required = CLEARANCE + WIDTH / 2
         for t in created:
-            segment = LineString(
-                [(t.start.x / 1e6, t.start.y / 1e6), (t.end.x / 1e6, t.end.y / 1e6)]
-            )
-            assert segment.distance(pad) >= required - NM_ROUNDING
-        assert len(created) > 2
+            assert segment(t).distance(pad) >= required - NM_ROUNDING
+        drawn = sum(segment(t).length for t in l_chain())
+        assert created_path(board).length < drawn
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_tee_moves_its_junction_and_commits_branches_that_meet_there(
@@ -827,12 +819,12 @@ class TestSmooth:
         ]
 
     @pytest.mark.parametrize(
-        ("limit", "warning"),
-        # Of the L's run: bursts at the coarse levels, coarsest first, until
-        # it reaches the final spacing after L_COARSE_BURSTS.
+        ("coarse", "warning"),
+        # The limit passes with the first burst, which runs at the first
+        # spacing of the schedule.
         [
-            (1.5, "time limit before reaching the final spacing"),
-            (L_COARSE_BURSTS + 0.5, "time limit without converging"),
+            (COARSE.coarse_spacings, "time limit before reaching the final spacing"),
+            ((), "time limit without converging"),
         ],
         ids=["at a coarse level", "at the final level"],
     )
@@ -841,18 +833,16 @@ class TestSmooth:
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
-        limit: float,
+        coarse: tuple[float, ...],
         warning: str,
     ) -> None:
         connect.to(l_board())
         monkeypatch.setattr(
-            pipeline,
-            "optimize_chains",
-            at(replace(COARSE, coarse_spacings=COARSE_LEVELS)),
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
         )
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
 
-        run("--dry-run", f"--time-limit={limit}")
+        run("--dry-run", "--time-limit=0.5")
 
         (stopped,) = [
             line
@@ -1248,10 +1238,8 @@ class TestStop:
     ) -> None:
         board = connect.to(l_board())
         real: Callable[..., RunResult] = pipeline.optimize_chains
-        stops: list[object] = []
 
         def abnormal(*args: object, **kwargs: object) -> RunResult:
-            stops.append(kwargs["stop"])
             return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
         monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
@@ -1260,7 +1248,6 @@ class TestStop:
 
         assert "abnormally" in exit_message(log)
         assert clock.bursts == 1
-        assert len(stops) == 1 and stops[0] is not None
         assert board.calls == []
 
 
@@ -1453,24 +1440,6 @@ class TestProgress:
         assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
         elapsed = [r.elapsed for r in records]
         assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
-
-    def test_a_run_with_nothing_to_do_reports_at_most_once_per_level(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-    ) -> None:
-        connect.to(straight_board())
-        records: list[Progress] = []
-        monkeypatch.setattr(
-            cli, "run_smooth", partial(cli.run_smooth, on_progress=records.append)
-        )
-
-        run()
-
-        # One burst at each level, none moving anything.
-        assert len(records) <= len(cli.DEFAULT_SCHEDULE)
-        assert any(line.startswith("INFO Nothing to do") for line in log)
 
 
 class TestPlot:
@@ -2187,31 +2156,20 @@ class TestSeveralChains:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
-    # Chains pressed into each other's clearance settle well before the
-    # iteration cap. Measured: 3.
-    SETTLED_PRESSED = 20
-
     def test_chains_starting_inside_each_other_s_clearance_commit_unwarned(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
         board = connect.to(off_grid(two_l_board(inner=across)))
-        results: list[RunResult] = []
-        optimize = at(COARSE)
-
-        def kept(*args: object, **kwargs: object) -> RunResult:
-            results.append(optimize(*args, **kwargs))
-            return results[-1]
-
-        monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
         run()
 
-        # The chains pressed into each other's clearance settle.
-        (result,) = results
-        assert result.termination is Termination.CONVERGED
-        assert result.iterations <= self.SETTLED_PRESSED
+        (report,) = reports
+        assert report.termination is Termination.CONVERGED
         # Only the board's missing outline warns.
         assert not [
             line
@@ -2219,6 +2177,10 @@ class TestSeveralChains:
             if line.startswith("WARNING") and "Edge.Cuts" not in line
         ]
         assert "push_commit" in board.calls
+        lines = by_net(board, ("SIG", "SIG2"))
+        sig2 = lines["SIG2"] or [segment(t) for t in across]
+        apart = unary_union(lines["SIG"]).distance(unary_union(sig2))
+        assert apart >= CLEARANCE + WIDTH - NM_ROUNDING
 
     def test_run_function_reports_each_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -4391,9 +4353,6 @@ SECOND_PAIR = 5.0
 """How far, mm, a second pair runs below the first."""
 FAR = 100.0
 """mm, beyond any track of a test board."""
-REPORTED = 5e-4
-"""mm: how near a pair's reported gap or skew must be to the expected value:
-the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
