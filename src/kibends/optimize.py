@@ -12,8 +12,14 @@ Each burst runs through `bursts.run_burst`, its evaluations in Rust.
 What does not depend on a problem lives beside it: `members` (the members
 as the energy takes them), `polylines` (statistics), `contacts` (the terms
 that keep a vertex on its contact) and `results` (what a run returns).
+
+Nothing in the energy keeps a chain's ends apart, so a moving via may shrink
+a chain it carries to nothing, as a fan-out whose via reaches its pad's
+anchor. The result then moves the via by at most MIN_TRACK_LENGTH, so that
+the chain commits as a track (`_Problem.via_shift`).
 """
 
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -32,6 +38,7 @@ from kibends.bursts import (
     ScaledObjective,
     run_burst,
 )
+from kibends.chain import NM_PER_MM
 from kibends.energy import (
     BoolArray,
     EnergyParams,
@@ -66,6 +73,14 @@ from kibends.vias import StaticVia, ViaInput
 MAX_ABNORMAL_BURSTS = _core.MAX_ABNORMAL_BURSTS
 """After this many abnormal L-BFGS ends in a row a problem counts as
 settled and keeps what its bursts reached."""
+
+
+MIN_TRACK_LENGTH = math.sqrt(2) / NM_PER_MM
+"""The shortest chain a moving via leaves, mm: its ends, each rounded to
+KiCad's 1 nm grid, stay apart. KiCad takes a track whose ends coincide for
+null and deletes it in its track cleanup, and its footprint drag, carrying
+the track ends on a pad's anchor, would leave a via with no track to it
+behind."""
 
 
 # A run logs its progress at INFO at most this often, seconds, and not at all
@@ -832,7 +847,6 @@ class _Problem:
             self.via_stop,
             None if self.pairs is None else self.pairs.core,
             params,
-            settings.short_edge,
         )
         """The problem's energy and what its members see of each other
         (`kibends_core::optimize::problem`)."""
@@ -1087,8 +1101,13 @@ class _Problem:
         return self.state.scale(list(starts), seen, lookups)
 
     def result(self, k: int, *, best: bool) -> ChainResult:
-        """Chain k's best state, with `best`, else its input."""
+        """Chain k's best state, with `best`, its ends moved with their
+        vias' `via_shift`, else its input."""
         polyline, mask, contact_of, rejected = self.state.member(k, best)
+        if best:
+            polyline = polyline.copy()
+            for v, end in self.carried[k]:
+                polyline[end] += self.via_shift(v)
         return ChainResult(
             polyline=polyline,
             fixed=mask | (contact_of >= 0),
@@ -1117,6 +1136,37 @@ class _Problem:
         )
 
     def via_result(self, k: int, *, best: bool) -> ViaResult:
-        """Via k's best centre, with `best`, else its input."""
-        position, rejected = self.state.via(k, best)
-        return ViaResult(position, rejected)
+        """Via k's best centre, with `best`, moved by its `via_shift`, else
+        its input."""
+        (x, y), rejected = self.state.via(k, best)
+        if best:
+            dx, dy = self.via_shift(k)
+            x, y = x + float(dx), y + float(dy)
+        return ViaResult((x, y), rejected)
+
+    def via_shift(self, k: int) -> FloatArray:
+        """How far via k moves from its best centre so that no chain it
+        carries alone, with its other end staying, is shorter than
+        MIN_TRACK_LENGTH: its end of that chain goes to MIN_TRACK_LENGTH
+        from the other end, toward where it was drawn, so that the
+        direction comes from the drawn geometry and not from what rounding
+        leaves of a chain shrunk to nothing. A chain drawn with both ends on
+        one point aims along its end's offset now instead, and one shrunk
+        to exactly that point as well keeps it. Zero for most."""
+        for i, end, _ in self.vias[k].carried:
+            if len(self.carried[i]) > 1:
+                continue
+            points = self.state.member(i, True)[0]
+            other = points[-1 if end == 0 else 0]
+            if float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()) >= (
+                MIN_TRACK_LENGTH
+            ):
+                continue
+            toward: FloatArray = self.state.member(i, False)[0][end] - other
+            if not toward.any():
+                toward = points[end] - other
+            if not toward.any():
+                continue
+            unit = toward / float(np.linalg.norm(toward))
+            return other + MIN_TRACK_LENGTH * unit - points[end]
+        return np.zeros(2)

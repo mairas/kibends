@@ -232,9 +232,9 @@ clearance there starts from the drawn tracks instead. Between bursts, each
 chain is simplified within half `--settled-change`, as the result is before it
 is committed, its vertices across edges shorter than 0.02 mm are merged where
 that keeps clearance, moving vias included, and its long edges are split
-again. Edges shorter than a tenth of the final spacing are pushed apart, so
-with a final spacing above 0.2 mm a chain that shrinks to a few hundredths of
-a millimetre can end with a small crumple. A coupled section is laid out
+again. Nothing else holds a chain's vertices apart: within a burst they may
+bunch, and the merge before the next burst takes them out, so a chain that
+shrinks loses vertices rather than crumpling. A coupled section is laid out
 the same way, as its centreline at the final spacing, but its shortest edge
 is its fold length: half the pitch times the final spacing over the
 smallest bend radius its inner track allows, about two thirds of the

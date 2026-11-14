@@ -55,7 +55,7 @@ PARAMS = EnergyParams(
 
 
 def length_energy(points: FloatArray, fixed: NDArray[np.bool_]) -> TermValue:
-    return shape_energy(points, fixed, 0.0)
+    return shape_energy(points, fixed, None)
 
 
 def weighted(
@@ -405,9 +405,10 @@ SHORT_EDGE = 0.1
 
 
 def short_edge_barrier(points: FloatArray, fixed: NDArray[np.bool_]) -> TermValue:
-    """The barrier's share of the total energy."""
-    with_value, with_gradient = total_energy(points, fixed, DISC, PARAMS, SHORT_EDGE)
-    without_value, without_gradient = total_energy(points, fixed, DISC, PARAMS)
+    """The barrier's share of the shape energy, as a coupled section carries
+    it from its fold length."""
+    with_value, with_gradient = shape_energy(points, fixed, SHORT_EDGE)
+    without_value, without_gradient = shape_energy(points, fixed, None)
     return with_value - without_value, with_gradient - without_gradient
 
 
@@ -439,9 +440,25 @@ class TestShortEdgeBarrier:
 
     def test_pulling_two_vertices_together_costs_energy(self) -> None:
         def energy(gap: float) -> float:
-            return total_energy(pinched(gap), free(9), DISC, PARAMS, SHORT_EDGE)[0]
+            return shape_energy(pinched(gap), free(9), SHORT_EDGE)[0]
 
         assert energy(1e-6) > energy(0.03)
+
+    def test_a_chain_carries_none(self) -> None:
+        # Through the members' energy, two of a chain's vertices 10 nm apart
+        # cost only their length and obstacle terms.
+        points = pinched(1e-5)
+        fixed = free(len(points))
+        value, gradient = total_energy(points, fixed, DISC, PARAMS)
+        length, length_gradient = length_energy(points, fixed)
+        obstacle, obstacle_gradient = weighted(points, fixed, DISC, PARAMS)
+        assert value == pytest.approx(length + obstacle, rel=SUM_ORDER_ROUNDING)
+        np.testing.assert_allclose(
+            gradient,
+            length_gradient + obstacle_gradient,
+            rtol=SUM_ORDER_ROUNDING,
+            atol=SUM_ORDER_ROUNDING,
+        )
 
     def test_leaves_an_edge_between_fixed_vertices_alone(self) -> None:
         points = pinched(1e-3)

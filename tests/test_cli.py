@@ -329,6 +329,32 @@ class TestSmooth:
         assert nm(2.0) < junction[1] < nm(3.2)
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_junction_reaching_a_branch_s_pad_commits_the_others_there(
+        self, connect: Connector
+    ) -> None:
+        # The branch to the pad meets the bar at 157 deg, past the 120 deg
+        # beyond which the Fermat point is the pad's anchor itself.
+        anchor = (5.0, 1.0)
+        tee = [
+            kipy_track("a", "SIG", (0, 0), (5, 0), width=WIDTH),
+            kipy_track("b", "SIG", (5, 0), (10, 0), width=WIDTH),
+            kipy_track("c", "SIG", (5, 0), anchor, width=WIDTH),
+        ]
+        board = connect.to(anchored_board(tee, "pad", anchor))
+
+        run()
+
+        assert sorted(board.deleted) == ["a", "b", "c"]
+        degree = Counter(
+            (p.x, p.y)
+            for t in cast(list[kbt.Track], board.created)
+            for p in (t.start, t.end)
+        )
+        # The branch to the pad is gone, and the other two end on its
+        # anchor, where KiCad's footprint drag carries them.
+        assert degree == {(nm(0), nm(0)): 1, (nm(10), nm(0)): 1, (nm(5), nm(1)): 2}
+
+    @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_track_ending_mid_track_joins_it_at_a_junction(
         self, connect: Connector
     ) -> None:
@@ -3584,16 +3610,7 @@ class TestMovingVias:
         [
             (False, COARSE.spacing),
             (True, DEFAULT_SETTINGS.spacing),
-            pytest.param(
-                True,
-                COARSE.spacing,
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    reason="at 0.3 mm the short-edge barrier starts above "
-                    "MERGE_EDGE and holds the shrunk track's vertices apart "
-                    "(https://github.com/mairas/kibends/issues/206)",
-                ),
-            ),
+            (True, COARSE.spacing),
         ],
     )
     def test_a_fan_out_via_moves_to_its_pad_and_stops_there_unless_allowed(
@@ -3632,12 +3649,20 @@ class TestMovingVias:
         tracks = [segment(t) for t in created_on(board, BL.BL_F_Cu)]
         length = sum(t.length for t in tracks)
         assert length < centre.distance(Point(0, 0)) + STRAIGHT_TOLERANCE
-        # Shrunk from 8 mm, even to micrometres, it commits straight.
+        # Shrunk from 8 mm, even to the pad's anchor, it commits straight as
+        # one track, which KiCad's footprint drag stretches to the via.
         assert len(tracks) == 1
         h = PAD_HALF_SIZE
         pad = box(-h, -h, h, h)
         if in_pad:
             assert pad.contains(centre)
+            # One end on the pad's anchor, which the drag carries, and the
+            # via off it on the side it came from, drawn at VIA.
+            (track,) = created_on(board, BL.BL_F_Cu)
+            ends = {(track.start.x, track.start.y), (track.end.x, track.end.y)}
+            assert (0, 0) in ends
+            assert moved.position.x > 0
+            assert moved.position.y > 0
         else:
             assert pad.distance(centre) >= moved.diameter / 2e6 - NM_ROUNDING
             assert pad.distance(centre) < moved.diameter / 2e6 + AGAINST_PAD

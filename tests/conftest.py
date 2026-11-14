@@ -368,7 +368,6 @@ def total_energy(
     fixed: BoolArray,
     field: DistanceField,
     params: EnergyParams,
-    short_edge: float = 0.0,
     hinge: tuple[float, float] | None = None,
 ) -> TermValue:
     """One polyline's energy in `field` alone, as the optimizer sums its
@@ -384,7 +383,6 @@ def total_energy(
         [points],
         [fixed],
         params,
-        short_edge,
         seen_parts([alone], [points]),
         (),
     )
@@ -406,16 +404,13 @@ def layer_energy(
     polylines: Sequence[FloatArray],
     masks: Sequence[BoolArray],
     params: EnergyParams,
-    short_edge: float,
     seen: Seen | None = None,
 ) -> tuple[float, list[FloatArray]]:
     """`members.members_energy` of chains and sections of one layer without
     vias, by default seeing each other as `members.seen_parts` finds them."""
     if seen is None:
         seen = seen_parts(chains, polylines)
-    value, gradients, _ = members_energy(
-        chains, polylines, masks, params, short_edge, seen, ()
-    )
+    value, gradients, _ = members_energy(chains, polylines, masks, params, seen, ())
     return value, gradients
 
 

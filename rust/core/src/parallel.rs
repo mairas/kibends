@@ -107,7 +107,6 @@ mod tests {
             stop: ViaSight::new(&[vec![]], &[vec![]], CHAINS),
             pairs: None,
             params: params(),
-            short_edge: 0.05,
         };
         (problem, polylines, vec![V2::new(5.0, 2.0)])
     }

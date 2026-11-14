@@ -511,7 +511,7 @@ class Members:
         What the others see of every member at `polylines`, one after
         another, then each via's centre at `positions` twice.
         """
-    def energy(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], params: energy.EnergyParams, short_edge: builtins.float, seen: Seen, positions: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
+    def energy(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], masks: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], params: energy.EnergyParams, seen: Seen, positions: numpy.typing.NDArray[numpy.float64]) -> tuple[builtins.float, builtins.list[numpy.typing.NDArray[numpy.float64]], numpy.typing.NDArray[numpy.float64]]:
         r"""
         The members' summed energy at `polylines` as `seen` shows them, with
         vias at `positions` among them; its gradient at every vertex, the
@@ -680,13 +680,13 @@ class Problem:
     The members, moving vias and terms of one problem
     (`kibends_core::optimize::problem::Problem`).
     """
-    def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams, short_edge: builtins.float) -> Problem:
+    def __new__(cls, members: Members, rings: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], diameters: typing.Sequence[builtins.float], fields: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stops: typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]], repel: ViaSight, stop: ViaSight, pairs: typing.Optional[ViaPairs], params: energy.EnergyParams) -> Problem:
         r"""
         The problem of `members`, the vias seen by the members `rings`
         names at those distances, each moving via with its `diameter`, its
         static `fields` and its `stops`, what the vias' full terms see
         (`repel`) and what their stops see (`stop`), the pairwise term
-        `pairs`, the energy's `params` and its `short_edge`.
+        `pairs` and the energy's `params`.
         """
     def seen(self, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> Seen:
         r"""
@@ -1502,12 +1502,12 @@ def shape_change(before: numpy.typing.NDArray[numpy.float64], after: numpy.typin
     vertices sliding along an unchanged shape.
     """
 
-def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], short_edge: builtins.float) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
+def shape_energy(points: numpy.typing.NDArray[numpy.float64], fixed: numpy.typing.NDArray[numpy.bool_], barrier: typing.Optional[builtins.float]) -> tuple[builtins.float, numpy.typing.NDArray[numpy.float64]]:
     r"""
     The terms of a member's energy that depend on the polyline alone: its
-    length and, with a positive `short_edge`, mm, the short-edge barrier
-    (`kibends_core::energy::polyline::shape_energy`); and the gradient,
-    zero at `fixed` vertices.
+    length and, with a `barrier` start, mm, a coupled section's short-edge
+    barrier (`kibends_core::energy::polyline::shape_energy`); and the
+    gradient, zero at `fixed` vertices.
     """
 
 def simplify_chains(members: typing.Sequence[Member], polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], fixed: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], directions: typing.Sequence[numpy.typing.NDArray[numpy.float64]], tolerance: builtins.float) -> builtins.list[numpy.typing.NDArray[numpy.float64]]:

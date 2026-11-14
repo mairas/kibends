@@ -1,13 +1,15 @@
-//! The terms that depend on the polyline alone: its length with the
-//! short-edge barrier, and the bend-radius hinge.
+//! The terms that depend on the polyline alone: its length with a coupled
+//! section's short-edge barrier, and the bend-radius hinge.
 
 use super::integrands::hinge;
 use super::{EnergyParams, MAX_SMOOTH_TURN, MIN_EDGE_LENGTH, TermValue, zero_fixed};
 use crate::geometry::V2;
 use crate::numeric::{clip, exact_sum, maximum, numpy_sum};
 
-/// A polyline's edge vectors, their lengths, and their unit directions,
-/// zero for degenerate edges.
+/// A polyline's edge vectors, their lengths, and their directions: each
+/// vector over the larger of its length and MIN_EDGE_LENGTH, so a unit
+/// vector but for an edge shorter than that, and zero only for a zero
+/// vector.
 pub struct Edges {
     pub vectors: Vec<V2>,
     pub lengths: Vec<f64>,
@@ -61,33 +63,36 @@ pub fn arc_lengths(points: &[V2]) -> Vec<f64> {
 }
 
 /// The terms of a member's energy that depend on the polyline alone: its
-/// length and, with a positive `short_edge`, mm, a barrier Σ (s - l)²/l
-/// over the edges shorter than s = `short_edge` that have a free end.
+/// length and, with a `barrier` start s, mm, a barrier Σ (s - l)²/l over
+/// the edges shorter than s that have a free end.
 ///
-/// Nothing else keeps neighbouring vertices apart: sliding a vertex along
-/// the track barely changes length or repulsion, while an edge's
-/// direction, and with it the gradient of its length and of the turns the
-/// bend-radius hinge measures, is undefined as it vanishes. The barrier
-/// grows without bound as an edge shrinks, so free vertices never pile up.
-/// It is 0 with zero slope at s, so it leaves longer edges alone.
-pub fn shape_energy(points: &[V2], fixed: &[bool], short_edge: f64) -> TermValue {
+/// A section's barrier starts at its fold length
+/// (`members::Section::layout_limits`): below it its inner track folds,
+/// and the turns its bend-radius hinge measures are undefined as an edge
+/// vanishes. The barrier grows without bound as an edge shrinks, and it is
+/// 0 with zero slope at s, so it leaves longer edges alone.
+///
+/// A chain has no barrier: sliding a vertex along it barely changes length
+/// or repulsion, so its free vertices may bunch within a burst, and the
+/// layout between bursts merges them (`optimize::state::MERGE_EDGE`).
+pub fn shape_energy(points: &[V2], fixed: &[bool], barrier: Option<f64>) -> TermValue {
     let Edges {
         lengths, mut units, ..
     } = Edges::of(points);
     let mut value = numpy_sum(&lengths);
-    if lengths.iter().any(|&l| l < short_edge) {
-        let mut barrier = Vec::new();
+    if let Some(start) = barrier.filter(|&s| lengths.iter().any(|&l| l < s)) {
+        let mut terms = Vec::new();
         for (e, (&l, unit)) in lengths.iter().zip(units.iter_mut()).enumerate() {
-            if l < short_edge && !(fixed[e] && fixed[e + 1]) {
+            if l < start && !(fixed[e] && fixed[e + 1]) {
                 let clamped = maximum(l, MIN_EDGE_LENGTH);
-                let gap = short_edge - clamped;
-                barrier.push(gap * gap / clamped);
-                let ratio = short_edge / clamped;
+                let gap = start - clamped;
+                terms.push(gap * gap / clamped);
+                let ratio = start / clamped;
                 let slope = 1.0 + (1.0 - ratio * ratio);
                 *unit = V2::new(unit.x * slope, unit.y * slope);
             }
         }
-        value += numpy_sum(&barrier);
+        value += numpy_sum(&terms);
     }
     let backward: Vec<V2> = units.iter().map(|&u| -u).collect();
     let gradient = scatter_edge_gradient(points.len(), &backward, &units);
@@ -312,14 +317,14 @@ mod tests {
     #[test]
     fn the_length_is_the_sum_of_the_edges() {
         let points = [V2::new(0.0, 0.0), V2::new(3.0, 4.0), V2::new(3.0, 10.0)];
-        assert_eq!(shape_energy(&points, &free(3), 0.0).0, 11.0);
+        assert_eq!(shape_energy(&points, &free(3), None).0, 11.0);
     }
 
     #[test]
     fn the_length_s_gradient_matches_finite_differences() {
         for seed in 0..3 {
             let points = wiggly(seed);
-            assert_gradient_matches(|p, f| shape_energy(p, f, 0.0), &points);
+            assert_gradient_matches(|p, f| shape_energy(p, f, None), &points);
         }
     }
 
@@ -331,7 +336,7 @@ mod tests {
         let along = (1.0 / chord.norm()) * chord;
         points[4] = middle - 0.015 * along;
         points[5] = middle + 0.015 * along;
-        assert_gradient_matches(|p, f| shape_energy(p, f, 0.1), &points);
+        assert_gradient_matches(|p, f| shape_energy(p, f, Some(0.1)), &points);
     }
 
     #[test]
@@ -339,10 +344,10 @@ mod tests {
         let mut points = arc(2.0, 1.0, 9);
         points[5] = points[4] + V2::new(1e-3, 0.0);
         let mut fixed = free(9);
-        let plain = shape_energy(&points, &fixed, 0.0).0;
+        let plain = shape_energy(&points, &fixed, None).0;
         fixed[4] = true;
         fixed[5] = true;
-        assert_eq!(shape_energy(&points, &fixed, 0.1).0, plain);
+        assert_eq!(shape_energy(&points, &fixed, Some(0.1)).0, plain);
     }
 
     #[test]
@@ -387,7 +392,7 @@ mod tests {
             V2::new(2.0, 1.2),
         ];
         for (value, gradient) in [
-            shape_energy(&points, &free(4), 0.1),
+            shape_energy(&points, &free(4), Some(0.1)),
             bend_radius_energy(&points, &free(4), 1.8, 0.1, &params()),
         ] {
             assert!(value.is_finite());
@@ -443,7 +448,7 @@ mod tests {
         fixed[4] = true;
         let (_, gradient) = bend_radius_energy(&points, &fixed, 1.8, 0.1, &params());
         assert_eq!(gradient[4], V2::default());
-        let (_, gradient) = shape_energy(&points, &fixed, 0.0);
+        let (_, gradient) = shape_energy(&points, &fixed, None);
         assert_eq!(gradient[0], V2::default());
     }
 
