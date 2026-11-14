@@ -831,8 +831,9 @@ class TestSmooth:
     @pytest.mark.parametrize(
         "limit",
         # Of the L's run: bursts at the coarse levels, coarsest first, until
-        # it reaches the final spacing after L_COARSE_BURSTS.
-        [1.5, L_COARSE_BURSTS + 0.5],
+        # it reaches the final spacing after L_COARSE_BURSTS; the second
+        # limit runs out after a burst there.
+        [1.5, L_COARSE_BURSTS + 1.5],
         ids=["out at a coarse level", "out at the final level"],
     )
     def test_a_time_limit_warns_that_it_stopped_without_converging(

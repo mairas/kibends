@@ -1032,7 +1032,7 @@ def test_what_moves_with_a_part_put_back_goes_back_with_it(
     result = optimize_chains(
         scenario.chains,
         scenario.params,
-        replace(COARSE, time_limit=HOLD_BUDGET),
+        replace(ONE_SPACING, time_limit=HOLD_BUDGET),
         vias,
         pairs=scenario.pairs,
         clock=BurstClock(monkeypatch),

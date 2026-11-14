@@ -728,11 +728,33 @@ def test_a_time_limit_ends_each_coarse_level_and_the_run_only_at_the_final_one(
     assert measure(chain.polyline, COARSE.spacing).length < chain.before.length
 
 
+def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # The first 1.2 mm burst straightens the chain, so the 0.6 mm level
+    # settles in its first burst, the one the limit runs out in.
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, time_limit=ONE_BURST)
+
+    result = optimize_chains(
+        on_two_layers(*BOWED)[:1], PARAMS, settings, clock=BurstClock(monkeypatch)
+    )
+
+    assert not result.before_final_spacing
+    assert levels_of(log, "F.Cu") == [*COARSE_LEVELS, None]
+    assert limit_lines(log) == [
+        "INFO Time limit reached at 1.2 mm spacing; going on at 0.6 mm spacing "
+        "with the chains on F.Cu",
+        "INFO Time limit reached before a burst at 0.3 mm spacing; counting it "
+        "again for the chains on F.Cu",
+    ]
+
+
 def test_the_time_limit_hands_over_only_the_problems_at_a_coarse_level(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
     # The straight chain's first burst settles its one coarse level; the
-    # limit runs out after the bowed chain's, which has not settled.
+    # limit runs out after the bowed chain's, which has not settled, before
+    # the straight one has run at the final spacing.
     chains = [
         scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
         scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
@@ -746,6 +768,9 @@ def test_the_time_limit_hands_over_only_the_problems_at_a_coarse_level(
     assert limit_lines(log) == [
         "INFO Time limit reached at 1.2 mm spacing; going on at 0.3 mm spacing "
         "with the chains on B.Cu",
+        # The straight chain had entered the final spacing in that iteration.
+        "INFO Time limit reached before a burst at 0.3 mm spacing; counting it "
+        "again for the chains on F.Cu",
     ]
     # Both go on at the final spacing.
     assert levels_of(log, "F.Cu") == [COARSE_LEVELS[0], None]

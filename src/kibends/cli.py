@@ -490,8 +490,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="SECONDS",
         help="How long each spacing may optimize: when it runs out, the "
         "problems at a coarse spacing go on at the next with the full time "
-        "again, and once every problem still running is at the final spacing, "
-        "optimizing stops and goes on with the best result found so far "
+        "again, as it does once for a problem that reached its spacing as the "
+        "time ran out; once every problem still running is at the final "
+        "spacing and has optimized there, optimizing stops and goes on with "
+        "the best result found so far "
         "(default: no limit)",
     )
     smooth_parser.add_argument(
