@@ -7,17 +7,25 @@ scipy's L-BFGS-B rules, evaluating a `kibends._core.Objective` without
 calling Python. Between iterations it checks for signals and asks the
 caller's `stop`, so that Ctrl-C and the time limit end it there.
 
-A burst does not bound its coordinates; a check after the run moves back
-whatever newly crosses an obstacle. The run loop (`kibends_core::optimize`)
-runs each of its bursts through `optimize.run_burst`, which is this
-module's, with its check a `kibends._core.Revert`.
+A burst does not bound its coordinates. The run loop
+(`kibends_core::optimize`) runs each of its bursts through
+`optimize.run_burst`, which is this module's, with its check a
+`kibends._core.Revert`, which also travels with the objective
+(`ScaledObjective.clearance_check`) and judges every trial of the burst's line
+searches: one that enters a clearance anew, or goes deeper into one,
+counts as an infinite energy, so the line search steps back short of it,
+and every point the burst takes keeps the clearance its start keeps.
+After the run the check moves back what it rejects beside clearance: a
+vertex newly outside its contact, a section newly bent below its
+limit.
 
 A burst whose objective is a `ScaledObjective` minimises over y, with
 x = s ⊙ y for the objective's per-coordinate scale s, so that L-BFGS's one
-curvature model fits stiff and soft coordinates alike. The scale travels
-with the objective rather than as an argument of its own, so that whatever
-wraps `run_burst` and passes the objective on keeps it; the check and the
-burst's result stay in x.
+curvature model fits stiff and soft coordinates alike. The scale and the
+line searches' check travel with the objective rather than as arguments of
+their own, so that whatever wraps `run_burst` and passes the objective on,
+such as a check of its own that times the run's, keeps them; the checks
+and the burst's result stay in x.
 """
 
 from collections.abc import Callable
@@ -144,12 +152,19 @@ Stop = Callable[[], bool]
 
 
 class ScaledObjective:
-    """An objective, answering as itself, and the scale of each coordinate
-    that a burst of it minimises over (`run_burst`)."""
+    """An objective, answering as itself, the scale of each coordinate that a
+    burst of it minimises over, and what judges the burst's line-search
+    trials, if anything (`run_burst`)."""
 
-    def __init__(self, objective: _core.Objective, scale: FloatArray) -> None:
+    def __init__(
+        self,
+        objective: _core.Objective,
+        scale: FloatArray,
+        clearance_check: _core.Revert | None = None,
+    ) -> None:
         self.objective = objective
         self.scale = scale
+        self.clearance_check = clearance_check
 
     def __call__(self, x: FloatArray) -> tuple[float, FloatArray]:
         return self.objective(x)
@@ -187,9 +202,12 @@ def run_burst(
     `revert` finds.
 
     `revert` moves back, in place, the coordinates of edges that newly cross
-    an obstacle, and returns how many edges crossed. `stop`, asked after
-    each L-BFGS iteration, ends the run there when it answers True, such
-    as when the time limit has passed. With no coordinate to move, the
+    an obstacle, and returns how many edges crossed. A `ScaledObjective`'s
+    `clearance_check` judges every line-search trial, which may enter no
+    clearance anew nor deeper; contacts and bends are not judged there, and
+    the revert after the burst moves them back. `stop`, asked after each
+    L-BFGS iteration, ends the run there when it answers True, such as when
+    the time limit has passed. With no coordinate to move, the
     burst ends where it is without running L-BFGS. A `ScaledObjective`
     runs L-BFGS over the coordinates divided by its scale. The burst
     carries what L-BFGS reports of its run; one whose iteration failed
@@ -199,9 +217,13 @@ def run_burst(
     if len(start) == 0:
         return Burst(start.copy(), False)
     if isinstance(objective, ScaledObjective):
-        core, scale = objective.objective, objective.scale
+        core, scale, check = (
+            objective.objective,
+            objective.scale,
+            objective.clearance_check,
+        )
     else:
-        core, scale = objective, None
+        core, scale, check = objective, None, None
     result = _core.run_burst(
         core,
         start,
@@ -210,6 +232,7 @@ def run_burst(
         settings.lbfgs_ftol,
         settings.lbfgs_gtol,
         stop,
+        check,
     )
     current = result.points
     revert(current)

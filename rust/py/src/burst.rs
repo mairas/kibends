@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction};
 
 use crate::arrays::{Floats, floats, floats_of};
+use crate::optimize::Revert;
 use crate::problem::Objective;
 use kibends_core::burst::{self, Settings};
 
@@ -53,11 +54,12 @@ impl BurstResult {
 /// `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
 /// `gtol` ends it (`kibends_core::burst`). After each iteration it checks
 /// for signals and asks `stop`, if given, which ends the burst by
-/// answering true before the cap. An exception raised there or by the
-/// objective ends the burst and propagates.
+/// answering true before the cap. With a `check`, its line searches take
+/// only points that enter no clearance by the check. An exception
+/// raised there or by the objective ends the burst and propagates.
 #[gen_stub_pyfunction]
 #[pyfunction]
-#[pyo3(signature = (objective, start, scale, max_iterations, ftol, gtol, stop = None))]
+#[pyo3(signature = (objective, start, scale, max_iterations, ftol, gtol, stop = None, check = None))]
 #[allow(clippy::too_many_arguments)]
 fn run_burst(
     py: Python<'_>,
@@ -72,6 +74,7 @@ fn run_burst(
         imports = ("typing", "collections.abc", "builtins")
     ))]
     stop: Option<Py<PyAny>>,
+    check: Option<PyRef<'_, Revert>>,
 ) -> PyResult<BurstResult> {
     let start = floats_of(&start);
     let scale = scale.map(|s| floats_of(&s));
@@ -91,12 +94,16 @@ fn run_burst(
             None => Ok(false),
         }
     };
+    let mut entered = check.as_ref().map(|c| |x: &[f64]| c.clearance_entered(x));
     let b = burst::run(
         &mut evaluate,
         &start,
         scale.as_deref(),
         &settings,
         &mut asked,
+        entered
+            .as_mut()
+            .map(|a| a as &mut burst::ClearanceEntered<'_>),
     )?;
     Ok(BurstResult {
         message: b.ending.message(),

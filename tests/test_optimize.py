@@ -274,8 +274,8 @@ def test_a_wrap_too_taut_for_its_clearance_weight_still_keeps_clearance() -> Non
     result = run(replace(scenario, params=params), COARSE)
 
     assert result.termination is Termination.CONVERGED
-    # The case needs the edge check: bursts cut the corner and are moved back.
-    assert result.rejected_edges > 0
+    # The line search takes no step cutting the corner.
+    assert result.rejected_edges == 0
     assert all_edges_clear(result.polyline, scenario.field)
 
 

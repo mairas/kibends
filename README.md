@@ -335,6 +335,12 @@ and the clearance pushes it out where there is room, another selected
 chain moving aside too if it must. Where there is none, as in a channel
 narrower than the track's clearance asks, the result has no more clearance
 violations than the selection had, and KiCad's DRC reports what remains.
+No step of the optimizer takes copper newly inside a clearance, nor deeper
+inside another selected chain's or moving via's than its burst started:
+such a trial step is not taken, and the step stops short of it. Static
+copper is the exception: an edge is judged against all of it at once,
+clear or not, so an edge that starts inside static copper's clearance may
+move deeper into it, or to where it is inside another piece's.
 
 ### Differential pairs
 

@@ -1,5 +1,11 @@
-//! What a burst checks: the checks after L-BFGS compare where the burst
-//! ends with where it started, and move back what they reject.
+//! What a burst checks: the checks compare a point of the burst with where
+//! it started. A burst's line searches take no trial that enters a
+//! clearance anew or deeper (`Check::clearance_entered`, `burst::ClearanceEntered`), which names
+//! the coordinates to move back as the revert would; after L-BFGS the
+//! checks move back what they reject (`Check::revert`): for a burst run
+//! so, a vertex newly outside its contact or a section newly
+//! bent below its limit, which are no clearance and which the line search
+//! takes.
 //!
 //! An edge that starts clear of static copper and ends crossing it moves
 //! its free ends back to the burst's start, and the check repeats, as
@@ -136,6 +142,16 @@ fn refs(polylines: &[Vec<V2>]) -> Vec<&[V2]> {
     polylines.iter().map(Vec::as_slice).collect()
 }
 
+/// What `Check::crossings` judges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Judged {
+    /// Only the clearances: a vertex newly outside its contact and a
+    /// section newly bent below its limit count for nothing.
+    Clearances,
+    /// The clearances, the contacts and the sections' bends.
+    Everything,
+}
+
 /// The checks of one burst, measured at its start.
 pub struct Check {
     shared: Arc<Shared>,
@@ -236,8 +252,10 @@ impl Check {
 
     /// What `Round` counts at `x`, and the coordinates of the variables to
     /// move back. A crossing between two members, a via and a member or
-    /// two vias moves back what both its sides can move.
-    pub fn crossings(&self, x: &[f64]) -> (Round, Vec<bool>) {
+    /// two vias moves back what both its sides can move, judged as
+    /// `judged` says.
+    pub fn crossings(&self, x: &[f64], judged: Judged) -> (Round, Vec<bool>) {
+        let clearances = judged == Judged::Clearances;
         let shared = &self.shared;
         let layout = &self.layout;
         let index = &layout.index;
@@ -295,16 +313,17 @@ impl Check {
             for &(k, end) in &shared.carried_by[i] {
                 via_counts[k] += usize::from(ends[end.of(points.len())]);
             }
-            let left = shared.left(i, points, &self.contact_of[i]);
-            let mut outside = 0;
-            for ((e, &l), &before) in ends.iter_mut().zip(&left).zip(&self.left_before[i]) {
-                if l && !before {
-                    *e = true;
-                    outside += 1;
+            let mut rejected = crossing.iter().filter(|&&c| c).count();
+            if !clearances {
+                let left = shared.left(i, points, &self.contact_of[i]);
+                for ((e, &l), &before) in ends.iter_mut().zip(&left).zip(&self.left_before[i]) {
+                    if l && !before {
+                        *e = true;
+                        rejected += 1;
+                    }
                 }
             }
-            let mut rejected = crossing.iter().filter(|&&c| c).count() + outside;
-            if let Some(check) = &self.self_checks[i] {
+            if !clearances && let Some(check) = &self.self_checks[i] {
                 let (own, more) = check.check(points);
                 for (e, o) in ends.iter_mut().zip(own) {
                     *e |= o;
@@ -364,13 +383,26 @@ impl Check {
         )
     }
 
+    /// None where `x` enters no clearance anew nor deeper (`crossings`, its
+    /// clearances only), as the burst's line search takes only such points
+    /// (`burst::ClearanceEntered`); else the coordinates to move back for what
+    /// enters. A vertex leaving its contact or a section bent below its
+    /// limit is no clearance: the line search takes it, the energy's stop
+    /// and hinge push it back, and the revert after the burst moves back
+    /// what they did not.
+    pub fn clearance_entered(&self, x: &[f64]) -> Option<Vec<bool>> {
+        let (round, back) = self.crossings(x, Judged::Clearances);
+        let clear = round.members.iter().chain(&round.vias).all(|&c| c == 0);
+        (!clear).then_some(back)
+    }
+
     /// Moves coordinates of `candidate` back to the burst's start, in
     /// place, until the crossings find no edge newly crossing an obstacle
     /// (`revert_until_clear`), and keeps the first round found.
     pub fn revert(&mut self, candidate: &mut [f64]) -> Reverted {
         let start = std::mem::take(&mut self.start);
         let reverted = revert_until_clear(candidate, &start, |x| {
-            let (round, back) = self.crossings(x);
+            let (round, back) = self.crossings(x, Judged::Everything);
             let count = round.members.iter().sum::<usize>() + round.vias.iter().sum::<usize>();
             if self.found.is_none() {
                 self.found = Some(round);

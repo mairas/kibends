@@ -341,10 +341,28 @@ def test_chains_racing_toward_each_other_head_on_stop_at_their_clearance(
     assert y_at(a, 5.0) > y_at(b, 5.0)
 
 
-def test_moves_into_another_chains_clearance_are_undone_and_counted() -> None:
-    # The hinge is too weak to hold the chains apart: only moving back the
-    # edges that newly enter the other chain's clearance does. At one
-    # spacing: at a coarse level the guard puts a chain back whole first.
+@pytest.mark.parametrize("wrapped", [False, True], ids=["as run", "check wrapped"])
+def test_bursts_stop_short_of_another_chain_s_clearance(
+    monkeypatch: pytest.MonkeyPatch, wrapped: bool
+) -> None:
+    # The hinge is too weak to hold the chains apart: only the line search
+    # rejecting every trial that enters the other chain's clearance does,
+    # so the check after a burst has nothing to move back. A wrapper giving
+    # the burst a check of its own, as the benchmark's timing does, leaves
+    # the line search its check.
+    if wrapped:
+        real = optimize_module.run_burst
+
+        def timed(
+            objective: Objective,
+            start: FloatArray,
+            revert: Check,
+            settings: OptimizerSettings,
+            stop: Stop | None = None,
+        ) -> Burst:
+            return real(objective, start, lambda x: revert(x), settings, stop)
+
+        monkeypatch.setattr(optimize_module, "run_burst", timed)
     scenario = scenarios.squeeze()
     params = replace(scenario.params, clearance_weight=0.1)
 
@@ -352,7 +370,7 @@ def test_moves_into_another_chains_clearance_are_undone_and_counted() -> None:
 
     a, b = (c.polyline for c in result.chains)
     assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
-    assert all(chain.rejected_edges > 0 for chain in result.chains)
+    assert all(chain.rejected_edges == 0 for chain in result.chains)
 
 
 PRESSED_SETTINGS = replace(COARSE, spacing=0.1, max_iterations=4, coarse_spacings=())
