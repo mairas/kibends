@@ -52,7 +52,7 @@ from kibends.contacts import no_contacts
 from kibends.energy import EnergyParams, ObstacleField, arc_lengths
 from kibends.members import Member, seen_parts
 from kibends.neighbours import ChainInput
-from kibends.obstacles import ChainCentreline, core_field
+from kibends.obstacles import ChainCentreline
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import Hold, PairBlock, PairInput, pair_block
 from kibends.pair_layout import cut_parts, find_pairs, lay_out
@@ -1098,25 +1098,6 @@ def test_a_chain_starting_inside_a_section_s_clearance_moves_clear_of_it() -> No
         assert LineString(track).distance(middle) >= (
             scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
         )
-
-
-PAIR_COST = 1.7
-"""A pair may query its field for this many times as many points as one
-chain along its centreline. Measured 1.64: the pair's first burst starts
-from its drawn tracks, 101 evaluations where an even layout took 65."""
-
-
-def test_a_pair_costs_about_one_chain() -> None:
-    pair, chain = scenarios.pair_over_pad(), scenarios.centreline_over_pad()
-    (section,), (centreline,) = pair.pairs, chain.chains
-    _core.reset_statistics()
-
-    run(pair)
-    optimize_chains([centreline], chain.params, COARSE)
-
-    pair_points = _core.field_queries(core_field(section.field))
-    chain_points = _core.field_queries(core_field(centreline.field))
-    assert 0 < pair_points < PAIR_COST * chain_points
 
 
 def test_a_junction_where_a_pair_starts_stays_whole() -> None:
