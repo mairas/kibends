@@ -1327,7 +1327,7 @@ class TestViaContacts:
         _, top, _, _ = region.bounds
         assert top == (3 if pour else 0)
 
-    def test_pad_shapes_beyond_the_run_s_layers_are_read_once_for_every_via(
+    def test_pad_shapes_beyond_the_run_s_layers_are_read_once_for_all_vias(
         self,
     ) -> None:
         fake = self.contact_board()
