@@ -30,6 +30,7 @@ from conftest import (
     extract_chains,
     layer_energy,
     off_straight,
+    refused,
     total_energy,
 )
 from distance_fields import Disc, FloatArray, FreeSpace
@@ -423,19 +424,41 @@ def kept_vertices(polyline: FloatArray, vertices: FloatArray) -> int:
     return sum(bool(np.all(polyline == v, axis=1).any()) for v in vertices)
 
 
-def test_vertices_inside_a_neighbours_clearance_move_out() -> None:
+def test_a_dip_pressed_against_a_neighbour_s_clearance_ends_clear() -> None:
     scenario = scenarios.crowded()
 
     result = run(scenario)
 
-    # B's dip moves out of A's clearance; A, straight, may keep its vertex,
-    # which B's leaves clear.
+    # B's dip pulls straight away from A; A, straight, may keep its vertex.
     _, b = result.chains
     assert (
         kept_vertices(b.polyline, np.array([scenarios.CROWDED_NEIGHBOUR_VERTEX])) == 0
     )
     for c in min_clearances(scenario.chains, result, scenario.params):
         assert c >= -INSIDE_TOLERANCE
+
+
+CROSSED_DIP = 0.1
+"""How far from A's centreline B's dip reaches, mm: inside their clearance."""
+
+
+def test_chains_starting_inside_each_other_s_clearance_are_refused() -> None:
+    a, b = scenarios.crowded().chains
+    dipped = replace(
+        b.centreline,
+        points=np.array([(0.0, 1.0), (5.0, CROSSED_DIP), (10.0, 1.0)]),
+    )
+
+    found = refused(
+        lambda: optimize_chains(
+            [a, replace(b, centreline=dipped)], scenarios.PARAMS, COARSE
+        )
+    )
+
+    assert {(v.subject, v.obstacle) for v in found} == {("A", "B"), ("B", "A")}
+    for v in found:
+        assert v.required == pytest.approx(scenarios.PAIR_CLEARANCE)
+        assert v.distance == pytest.approx(CROSSED_DIP - scenarios.PAIR_WIDTH)
 
 
 TIGHT_WIDTH = 0.25
@@ -471,13 +494,19 @@ def tight_bus() -> list[ChainInput]:
     ]
 
 
-def test_a_bus_tighter_than_its_clearance_spreads_out() -> None:
+def test_a_bus_tighter_than_its_clearance_is_refused_between_neighbours() -> None:
     chains = tight_bus()
 
-    result = optimize_chains(chains, scenarios.PARAMS, COARSE)
+    found = refused(lambda: optimize_chains(chains, scenarios.PARAMS, COARSE))
 
-    for c in min_clearances(chains, result, scenarios.PARAMS):
-        assert c >= -INSIDE_TOLERANCE
+    neighbours = {(f"S{i}", f"S{i + 1}") for i in range(3)}
+    assert {tuple(sorted((v.subject, v.obstacle))) for v in found} == neighbours
+    for v in found:
+        assert v.required == pytest.approx(TIGHT_CLEARANCE)
+        # The deepest place is where the bus fans in, no farther apart than
+        # its pitch.
+        assert v.distance is not None
+        assert v.distance <= TIGHT_PITCH - TIGHT_WIDTH + INSIDE_TOLERANCE
 
 
 def on_layer(chain: ChainInput, layer: str) -> ChainInput:
@@ -945,10 +974,9 @@ def test_tracks_of_a_diff_pair_s_two_nets_are_not_pushed_apart() -> None:
 
 
 def test_a_diff_pair_s_track_keeps_clear_of_a_third_net() -> None:
-    result = side_by_side("USB_D+", "GND")
+    found = refused(lambda: side_by_side("USB_D+", "GND"))
 
-    first, second = (c.polyline for c in result.chains)
-    assert gap(first, second) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE
+    assert ("track", "bar") in {(v.subject, v.obstacle) for v in found}
 
 
 def re_extracted(scenario: ChainsScenario, result: RunResult) -> list[ChainInput]:

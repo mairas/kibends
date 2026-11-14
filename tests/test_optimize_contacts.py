@@ -137,10 +137,10 @@ def test_a_vertex_beyond_the_tolerance_outside_its_contact_has_left_it(
     assert left.tolist() == [False, outside, False]
 
 
-def test_a_sliding_vertex_inside_another_net_s_clearance_keeps_its_contact() -> None:
-    # Deep inside the other net's clearance, which covers the pad's edge
-    # nearest the route.
-    blocked = Obstacles([Obstacle("other", Point(0.3, 0.0), 0.5)])
+def test_a_sliding_vertex_kept_off_its_pad_s_corner_keeps_its_contact() -> None:
+    # The other net's clearance covers the pad's corner nearest the route,
+    # where the end would come to rest, but not the end nor its edge.
+    blocked = Obstacles([Obstacle("other", Point(0.8, 0.5), 0.7)])
     chain = replace(end_in_pad(), field=blocked)
 
     result = optimize_chains([chain], scenarios.PARAMS, SETTINGS)

@@ -47,6 +47,15 @@ from kibends.energy import (
     ObstacleField,
     obstacle_reach,
 )
+from kibends.inside import (
+    NO_CHORDS,
+    START_TOLERANCE,
+    ArcChords,
+    InsideClearanceError,
+    Rules,
+    Violation,
+    violations,
+)
 from kibends.members import Member, body_of, core_members, positions_array
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -170,6 +179,7 @@ def optimize_chains(
     to_hold: Callable[[Sequence[PairResult]], Sequence[int]] | None = None,
     stop: Callable[[], bool] | None = None,
     on_progress: Callable[[Progress], None] | None = None,
+    arc_chords: ArcChords = NO_CHORDS,
 ) -> RunResult:
     """Minimise the chains', sections' and vias' summed energy, each
     problem's jointly: the layers that moving vias tie together are one
@@ -182,6 +192,12 @@ def optimize_chains(
     `hole_to_hole` where holes are involved. `static_vias` are the board's
     vias that are none of `vias`; each problem keeps those its moving vias
     share a layer with.
+
+    Before any burst it raises `inside.InsideClearanceError` naming each
+    place where the copper of a problem that moves starts inside a
+    clearance, allowing copper on a selected arc's concave side the arc's
+    offset from its chords (`arc_chords`, `inside`): a burst keeps the
+    clearance its start keeps, and the run is to end clean.
 
     Each problem runs through `settings`' schedule: its chains at each of
     `coarse_spacings` in turn, then at the final spacing, a level handing
@@ -263,6 +279,9 @@ def optimize_chains(
     placed = _problems(chains, blocks, moving_vias, params, settings, static_vias)
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
+    unclean = [v for p in moving for v in p.start_violations(arc_chords)]
+    if unclean:
+        raise InsideClearanceError(unclean)
     # A problem given up on before a hold stays given up on, though the
     # problem that replaces it converges.
     gave_up: dict[str, int] = {}
@@ -779,6 +798,8 @@ class _Problem:
         hole_to_hole: float,
     ) -> None:
         self.vias = list(vias)
+        self.hole_clearance = hole_clearance
+        self.hole_to_hole = hole_to_hole
         self.static_vias = [
             s
             for s in static_vias
@@ -951,6 +972,17 @@ class _Problem:
         """The summed length of the selected tracks at their current shapes,
         a section's as its two tracks, mm."""
         return self.state.length()
+
+    def start_violations(self, chords: ArcChords) -> list[Violation]:
+        """Where its inputs, the drawn copper, are inside a clearance by the
+        rules a user can see, named (`inside`), each place on the concave
+        side of the arc `chords` allowed the arc's offset from them."""
+        return violations(
+            self.state.start_inside(START_TOLERANCE),
+            self.members,
+            [v.given for v in self.vias],
+            Rules(self.hole_clearance, self.hole_to_hole, chords),
+        )
 
     def go_on_from(self, earlier: _Problem) -> tuple[int, int]:
         """Take `earlier`'s best state, `earlier` being this problem with

@@ -132,6 +132,16 @@ def _ends(owner: IntArray, count: int) -> IntArray:
     return np.cumsum(np.bincount(owner, minlength=count)).astype(np.intp)
 
 
+class ObstacleKind(enum.Enum):
+    """What an obstacle is, as the start check tells rules apart
+    (`inside`)."""
+
+    COPPER = enum.auto()
+    HOLE = enum.auto()
+    """A pad's or via's drill, its centre the geometry."""
+    KEEPOUT = enum.auto()
+
+
 @dataclass(frozen=True)
 class Obstacle:
     description: str
@@ -146,6 +156,10 @@ class Obstacle:
     a via's diameter."""
     layer: str | None = None
     """The layer of copper, None for what is not copper of one layer."""
+    kind: ObstacleKind = ObstacleKind.COPPER
+    owner: str | None = None
+    """The net of the pad or via a hole is drilled in, None for any other
+    obstacle."""
 
 
 class Obstacles:
@@ -594,17 +608,37 @@ def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
                 g = s.graphics[index]
                 item = Obstacle(g.description, g.geometry, inflation, g.net, 0.0, on)
             case _Source.TRACK_KEEPOUT:
-                item = Obstacle("track keepout", s.track_keepouts[index], inflation)
+                item = Obstacle(
+                    "track keepout",
+                    s.track_keepouts[index],
+                    inflation,
+                    kind=ObstacleKind.KEEPOUT,
+                )
             case _Source.VIA_KEEPOUT:
-                item = Obstacle("via keepout", s.via_keepouts[index], inflation)
+                item = Obstacle(
+                    "via keepout",
+                    s.via_keepouts[index],
+                    inflation,
+                    kind=ObstacleKind.KEEPOUT,
+                )
             case _Source.PAD_HOLE:
                 pad = s.pads[index]
                 item = Obstacle(
-                    f"hole of pad {pad.name}", Point(pad.position), inflation
+                    f"hole of pad {pad.name}",
+                    Point(pad.position),
+                    inflation,
+                    kind=ObstacleKind.HOLE,
+                    owner=pad.net,
                 )
             case _Source.VIA_HOLE:
                 v = s.vias[index]
-                item = Obstacle(f"hole of via {v.id}", Point(v.position), inflation)
+                item = Obstacle(
+                    f"hole of via {v.id}",
+                    Point(v.position),
+                    inflation,
+                    kind=ObstacleKind.HOLE,
+                    owner=v.net,
+                )
             case _Source.PAD_STOP:
                 pad = s.pads[index]
                 assert pad.shape is not None

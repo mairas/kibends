@@ -1,7 +1,9 @@
-"""Single chains through `optimize.optimize`: shapes, clearance, copper
-that starts inside it and stop rules, on the scenarios of `tests/scenarios.py`."""
+"""Single chains through `optimize.optimize`: shapes, clearance, the
+refusal of copper that starts inside it and stop rules, on the scenarios
+of `tests/scenarios.py`."""
 
 import json
+import math
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +20,7 @@ from conftest import (
     BurstClock,
     clearances,
     off_straight,
+    refused,
     total_energy,
     violations,
 )
@@ -213,46 +216,47 @@ def test_repulsion_moves_a_path_at_exact_clearance_off_it() -> None:
 JOG_ALLOWANCE = 0.05
 
 
-def test_input_that_cuts_a_corner_is_still_pulled_tight() -> None:
-    # The edge from (4, -0.9) to (6, -0.9) cuts 100 µm into the disc;
-    # resampling puts free vertices inside it.
+def test_an_edge_cutting_into_an_obstacle_is_refused_at_its_deepest() -> None:
+    # The edge from (4, -0.9) to (6, -0.9) cuts 100 µm into the disc; split
+    # at the spacing, its vertices between are a run inside.
     field = Disc(5.0, 0.0, 1.0)
     polyline, fixed = chain(
         (0.0, -0.9), (2.5, -3.0), (4.0, -0.9), (6.0, -0.9), (10.0, -0.9)
     )
 
-    result = optimize(polyline, fixed, field, PARAMS, COARSE)
+    (violation,) = refused(lambda: optimize(polyline, fixed, field, PARAMS, COARSE))
 
-    assert result.after.length == pytest.approx(10.0, abs=JOG_ALLOWANCE)
-    clear = field.segments_clear(result.polyline[:-1], result.polyline[1:])
-    crossing_starts = ~clear & np.concatenate(([True], clear[:-1]))
-    # At most the one run resampling laid inside the disc still crosses it;
-    # the bursts usually move it out entirely.
-    assert crossing_starts.sum() <= 1
+    assert violation.subject == "chain"
+    assert violation.obstacle == "static copper"
+    # The deepest vertex the split leaves, within a spacing of the deepest
+    # point.
+    x, y = violation.at
+    assert y == -0.9
+    assert abs(x - 5.0) <= COARSE.spacing
+    assert violation.depth == pytest.approx(1.0 - math.hypot(x - 5.0, 0.9))
 
 
-def test_a_vertex_deep_inside_an_obstacle_moves_out() -> None:
+def test_a_vertex_deep_inside_an_obstacle_is_refused_where_it_lies() -> None:
     scenario = scenarios.starts_inside()
 
-    result = run(scenario, COARSE)
+    (violation,) = refused(lambda: run(scenario, COARSE))
 
-    assert not np.all(result.polyline == scenarios.INSIDE_VERTEX, axis=1).any()
-    assert clearances(result.polyline, scenario.field).min() >= -INSIDE_TOLERANCE
-    assert result.after.length < result.before.length
+    assert violation.at == scenarios.INSIDE_VERTEX
+    assert violation.depth == pytest.approx(0.5)
 
 
 PAD_DEPTH = 0.02
 """How far the vertex starts inside the pad's clearance, mm."""
 
 
-def test_a_vertex_just_inside_a_pad_s_clearance_ends_clear_of_it() -> None:
+def test_a_vertex_just_inside_a_pad_s_clearance_is_refused_with_its_depth() -> None:
     pad = Box(5.0, 1.0, 1.0, 1.0, corner_radius=scenarios.ENVELOPE)
     polyline, fixed = chain((0.0, -1.0), (5.0, PAD_DEPTH), (10.0, -1.0))
 
-    result = optimize(polyline, fixed, pad, PARAMS, COARSE)
+    (violation,) = refused(lambda: optimize(polyline, fixed, pad, PARAMS, COARSE))
 
-    assert clearances(polyline, pad).min() == pytest.approx(-PAD_DEPTH)
-    assert clearances(result.polyline, pad).min() >= -INSIDE_TOLERANCE
+    assert violation.at == (5.0, PAD_DEPTH)
+    assert violation.depth == pytest.approx(PAD_DEPTH)
 
 
 def test_a_pinned_end_inside_a_clearance_stays() -> None:
@@ -295,35 +299,64 @@ def test_result_stopped_at_the_cap_adds_no_crossing(cap: int) -> None:
 DISC_CLIP = 0.12
 """Radius of two discs either side of the detour's pocket, which its legs
 cut into by 20 µm, mm."""
+CLIP_HEIGHT = 1.2
+"""Where the discs sit along the legs, mm."""
 
 
 # A run stopped at its cap can trade the input's violation for one at another
-# obstacle (https://github.com/mairas/kibends/issues/14). The run converges
-# in 5 iterations at these settings, so every cap here stops it unsettled.
+# obstacle (https://github.com/mairas/kibends/issues/14). The legs are pinned
+# where they cut into the discs, a start the refusal lets through since those
+# vertices cannot move. The run converges in 5 iterations at these settings,
+# so every cap here stops it unsettled.
 @pytest.mark.parametrize("cap", [1, 2, 3, 4])
 def test_a_clipped_detour_stopped_at_the_cap_adds_no_violation(cap: int) -> None:
     detour = scenarios.detour()
     assert isinstance(detour.field, Union)
+    x, leg = scenarios.DETOUR_POCKET_X, scenarios.DETOUR_LEG_OFFSET
     field = Union(
         [
             *detour.field.shapes,
-            Disc(9.75, 1.2, DISC_CLIP),
-            Disc(10.25, 1.2, DISC_CLIP),
+            Disc(x - 0.25, CLIP_HEIGHT, DISC_CLIP),
+            Disc(x + 0.25, CLIP_HEIGHT, DISC_CLIP),
         ]
     )
+    points = detour.polyline.tolist()
+    pinned = detour.fixed.tolist()
+    points[2:2] = [[x - leg, CLIP_HEIGHT]]
+    points[5:5] = [[x + leg, CLIP_HEIGHT]]
+    pinned[2:2], pinned[5:5] = [True], [True]
+    polyline, fixed = np.array(points), np.array(pinned)
+    assert clearances(polyline, field).min() < -INSIDE_TOLERANCE
+
+    result = optimize(
+        polyline, fixed, field, detour.params, replace(COARSE, max_iterations=cap)
+    )
+
+    assert result.termination is Termination.ITERATION_CAP
+    assert violations(result.polyline, result.fixed, field) <= violations(
+        polyline, fixed, field
+    )
+
+
+# The run converges in 5 iterations at these settings, so every cap here
+# stops it unsettled.
+@pytest.mark.parametrize("cap", [1, 2, 3, 4])
+def test_a_detour_stopped_at_the_cap_ends_with_nothing_inside_clearance(
+    cap: int,
+) -> None:
+    detour = scenarios.detour()
+    assert violations(detour.polyline, detour.fixed, detour.field) == 0
 
     result = optimize(
         detour.polyline,
         detour.fixed,
-        field,
+        detour.field,
         detour.params,
         replace(COARSE, max_iterations=cap),
     )
 
     assert result.termination is Termination.ITERATION_CAP
-    assert violations(result.polyline, result.fixed, field) <= violations(
-        detour.polyline, detour.fixed, field
-    )
+    assert violations(result.polyline, result.fixed, detour.field) == 0
 
 
 GUARDED_DISC = Disc(5.0, -1.0, 0.5)
@@ -358,7 +391,7 @@ NARROW = 0.05
 through it is clear."""
 
 
-def test_a_chain_through_a_slot_narrower_than_its_clearance_adds_no_violation() -> None:
+def test_a_chain_through_a_slot_narrower_than_its_clearance_is_refused() -> None:
     # The walls reach far beyond the ends, so the chain cannot go around.
     field = Union(
         [
@@ -368,11 +401,7 @@ def test_a_chain_through_a_slot_narrower_than_its_clearance_adds_no_violation() 
     )
     polyline, fixed = chain((0.0, 0.0), (5.0, 0.5), (10.0, 0.0))
 
-    result = optimize(polyline, fixed, field, PARAMS, COARSE)
-
-    assert violations(result.polyline, result.fixed, field) <= violations(
-        polyline, fixed, field
-    )
+    assert refused(lambda: optimize(polyline, fixed, field, PARAMS, COARSE))
 
 
 SHALLOW_DEPTH = 0.001

@@ -236,7 +236,7 @@ from kipy.board_types import Track, Via  # noqa: E402
 from kipy.proto.board.board_types_pb2 import BoardLayer  # noqa: E402
 from loguru import logger  # noqa: E402
 from scenarios import ChainsScenario, PairsScenario, ViasScenario  # noqa: E402
-from shapely.geometry import box  # noqa: E402
+from shapely.geometry import LineString, Point, box  # noqa: E402
 
 import kibends  # noqa: E402
 from kibends import _core, cli  # noqa: E402
@@ -454,7 +454,8 @@ class Plane:
 PLANES = {
     "194 vias at 1.72 mm, 3 routes": Plane(16, 1.72, 3, 30.0),
     "194 vias at 1.72 mm, no route": Plane(16, 1.72, 0, 30.0),
-    "9x9 at 1.27 mm, 3 routes": Plane(9, 1.27, 3, 12.7),
+    # 13.5 mm wide, so that each route keeps clear of the via above it.
+    "9x9 at 1.27 mm, 3 routes": Plane(9, 1.27, 3, 13.5),
     "6x6 at 1.27 mm, 1 route": Plane(6, 1.27, 1, 8.9),
     "7x7 at 1.5 mm, 1 route": Plane(7, 1.5, 1, 12.0),
 }
@@ -544,7 +545,6 @@ def scenario_makers() -> dict[str, Callable[[], scenarios.Scenario | Several]]:
         "channel-1": lambda: scenarios.channel(1.0),
         "topology": scenarios.topology,
         "pad-row": scenarios.pad_row,
-        "starts-inside": scenarios.starts_inside,
         "detour": scenarios.detour,
         "narrow-gap": scenarios.narrow_gap,
         "channel-pair": scenarios.channel_pair,
@@ -664,13 +664,15 @@ ring, the stitching via's and the clearance."""
 def crossed_grid(count: int, pitch: float, routes: int) -> ViasScenario:
     """GND stitching vias on a square grid in a GND zone on F.Cu and B.Cu,
     and signal routes crossing it, F.Cu to a via amid the grid and B.Cu on,
-    each rising across it."""
+    each rising across it; the grid leaves out the vias the drawn routes'
+    clearance reaches."""
     size = (count - 1) * pitch
     region = box(-1.0, -1.0, size + 1.0, size + 1.0)
     zone = ViaZone("GND", {layer: region for layer in ("F.Cu", "B.Cu")}, 0.2, 0.0)
     params = smooth_options().params
     chains: list[ChainInput] = []
     vias: list[ViaInput] = []
+    drawn: list[LineString] = []
     for k in range(routes):
         row = round(size * (k + 1) / (routes + 1) / pitch - 0.5) + 0.5
         at = ((round(count / 2) - 0.5) * pitch, row * pitch)
@@ -680,11 +682,13 @@ def crossed_grid(count: int, pitch: float, routes: int) -> ViasScenario:
         signal = scenarios.through_via(f"x{k}", net, at)
         vias.append(scenarios.joining(signal, len(chains)))
         chains += scenarios.route(net, at, start, end)
+        drawn.append(LineString([start, at, end]))
     signals = [v.via.position for v in vias]
     for i in range(count):
         for j in range(count):
             at = (i * pitch, j * pitch)
-            if all(math.dist(at, s) > SIGNAL_KEEPOUT for s in signals):
+            clear = all(r.distance(Point(at)) >= scenarios.VIA_TO_CHAIN for r in drawn)
+            if clear and all(math.dist(at, s) > SIGNAL_KEEPOUT for s in signals):
                 via = scenarios.through_via(f"g{i}_{j}", "GND", at)
                 stitching = ViaInput(
                     via, (), FreeSpace(), scenarios.PAIR_CLEARANCE, zones=(zone,)
@@ -1126,7 +1130,7 @@ def joint() -> None:
 
 RETURN_CASES = {
     "unselected GND via 1.5 mm across the route": ((5.0, 1.5), False),
-    "unselected GND via 1.5 mm diagonally": ((6.06, 1.06), False),
+    "unselected GND via 1.5 mm diagonally": ((6.15, 1.15), False),
     "stitching GND via 2.5 mm across the route": ((5.0, 2.5), True),
 }
 RETURN_SETTINGS = {"defaults": [], "--repulsion 0": ["--repulsion", "0"]}

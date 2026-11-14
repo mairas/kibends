@@ -10,7 +10,9 @@
 
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::prelude::*;
-use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
+use pyo3_stub_gen::derive::{
+    gen_stub_pyclass, gen_stub_pyclass_enum, gen_stub_pyfunction, gen_stub_pymethods,
+};
 
 use crate::arrays::{
     BoolArg, Flags, Floats, Indices, IntpArray, Points, Polyline, check_count, flags, floats,
@@ -24,7 +26,7 @@ use kibends_core::geometry::V2;
 use kibends_core::optimize::checks::{Check, Round};
 use kibends_core::optimize::layout;
 use kibends_core::optimize::problem::{self, Layout};
-use kibends_core::optimize::state::{MemberSetup, Setup, State, ViaSetup};
+use kibends_core::optimize::state::{self, MemberSetup, Setup, State, ViaSetup};
 use kibends_core::optimize::{
     self as core, Bursts, CoarseSpacings, End, NotFinite, Notice, Outcome, Ran, Settings,
 };
@@ -424,6 +426,16 @@ impl ProblemState {
         })
     }
 
+    /// Where its inputs, the drawn copper, are inside a clearance by more
+    /// than `tolerance` (`kibends_core::optimize::state::Shared::insides`).
+    fn start_inside(&self, tolerance: f64) -> Vec<Inside> {
+        self.inner
+            .start_inside(tolerance)
+            .into_iter()
+            .map(Inside::of)
+            .collect()
+    }
+
     /// The variables of a burst from `starts` and the current centres.
     fn layout(&self, starts: Vec<Polyline<'_>>) -> PyResult<BurstLayout> {
         Ok(BurstLayout {
@@ -549,6 +561,75 @@ impl ProblemState {
         self.inner
             .go_on_from(&earlier.inner)
             .map_err(|e| not_finite(py, e.0))
+    }
+}
+
+/// What a place is inside the clearance of
+/// (`kibends_core::optimize::state::Against`).
+#[gen_stub_pyclass_enum]
+#[pyclass(eq, eq_int, frozen, module = "kibends._core", rename_all = "UPPERCASE")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsideOf {
+    /// Static copper, holes, keepouts or the board edge.
+    Static,
+    Member,
+    Via,
+    /// What only stops a via: where its zones do not connect it, or its
+    /// net's stops.
+    Stops,
+}
+
+/// A place where a problem's copper is inside a clearance
+/// (`kibends_core::optimize::state::Inside`).
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct Inside {
+    /// The member whose copper is inside, None for a via.
+    #[pyo3(get)]
+    member: Option<usize>,
+    /// The via whose copper is inside, None for a member.
+    #[pyo3(get)]
+    via: Option<usize>,
+    /// The member's vertex, `start` and `end` alike, or its edge; a via's
+    /// centre.
+    #[pyo3(get)]
+    start: (f64, f64),
+    #[pyo3(get)]
+    end: (f64, f64),
+    /// Its signed distance, mm, negative; NaN for an edge cutting into
+    /// static copper, which the field does not measure.
+    #[pyo3(get)]
+    depth: f64,
+    /// What it is inside the clearance of.
+    #[pyo3(get)]
+    against: InsideOf,
+    /// The member or via of `InsideOf.MEMBER` and `InsideOf.VIA`, else
+    /// None.
+    #[pyo3(get)]
+    other: Option<usize>,
+}
+
+impl Inside {
+    fn of(inside: state::Inside) -> Self {
+        let (member, via) = match inside.subject {
+            state::Subject::Member(i) => (Some(i), None),
+            state::Subject::Via(k) => (None, Some(k)),
+        };
+        let (against, other) = match inside.against {
+            state::Against::Static => (InsideOf::Static, None),
+            state::Against::Member(i) => (InsideOf::Member, Some(i)),
+            state::Against::Via(k) => (InsideOf::Via, Some(k)),
+            state::Against::Stops => (InsideOf::Stops, None),
+        };
+        Self {
+            member,
+            via,
+            start: (inside.from.x, inside.from.y),
+            end: (inside.to.x, inside.to.y),
+            depth: inside.depth,
+            against,
+            other,
+        }
     }
 }
 
@@ -978,6 +1059,8 @@ fn stalled(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ProblemState>()?;
     m.add_class::<Revert>()?;
+    m.add_class::<Inside>()?;
+    m.add_class::<InsideOf>()?;
     m.add_class::<BurstLayout>()?;
     m.add_class::<FallbackNotice>()?;
     m.add_class::<AbnormalNotice>()?;
