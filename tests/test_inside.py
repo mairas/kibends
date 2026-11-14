@@ -642,3 +642,54 @@ def test_a_chain_beside_a_section_past_a_pad_of_its_net_is_refused() -> None:
 
     assert {v.obstacle for v in found} == {"g"}
     assert min(v.distance or 0.0 for v in found) == pytest.approx(PRESSED_GAP)
+
+
+FLAT_DEPTH = 0.05
+"""mm a chain's straight flat reaches into another chain's clearance."""
+
+
+def test_a_straight_flat_beside_a_skipped_arc_is_refused() -> None:
+    # The arc of chain B reaches nearer A than its flat does; places along
+    # its chords are skipped, the flat is not.
+    nm = round(NM_PER_MM)
+    arc = Arc("arc", (0, 0), (nm, nm // 5), (2 * nm, 0), nm // 5, "F.Cu", "B")
+    ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+    points = [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+    b = selected(
+        "B",
+        "B",
+        FreeSpace(),
+        (-10.0, -3.0),
+        (-4.0, 0.0),
+        *points,
+        (4.0, 0.0),
+        (10.0, -3.0),
+    )
+    h = scenarios.PAIR_INFLATION - FLAT_DEPTH
+    a = selected("A", "A", FreeSpace(), (-3.0, h), (5.0, h))
+
+    found = refused(
+        lambda: optimize_chains(
+            [b, a], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert max(v.depth for v in found) == pytest.approx(FLAT_DEPTH)
+
+
+WIDER_CLEARANCE = 0.3
+"""mm, the netclass clearance of one of two chains, the other's
+PAIR_CLEARANCE."""
+
+
+def test_two_chains_keep_the_larger_of_their_clearances() -> None:
+    # Their copper is between the two clearances apart.
+    gap = (PAIR_CLEARANCE + WIDER_CLEARANCE) / 2
+    wide = selected("wide", "W", FreeSpace(), (0.0, 0.0), (10.0, 0.0))
+    wide = replace(wide, centreline=replace(wide.centreline, clearance=WIDER_CLEARANCE))
+    y = PAIR_WIDTH + gap
+    near = selected("near", "N", FreeSpace(), (5.0, y), (5.0, y + 5.0))
+
+    found = refused(lambda: optimize_chains([wide, near], scenarios.PARAMS, SETTINGS))
+
+    assert [v.required for v in found] == pytest.approx([WIDER_CLEARANCE] * len(found))

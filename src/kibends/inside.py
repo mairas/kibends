@@ -275,18 +275,48 @@ def _chord(chords: ArcChords, a: Point2, b: Point2) -> bool:
     return (a, b) in chords or (b, a) in chords
 
 
+def _edge_allowance(
+    chords: ArcChords, a: Point2, b: Point2, at: Point2, obstacle: Point2
+) -> float:
+    """How much a place at `at` on the edge of a member's copper from `a`
+    to `b` is let off toward `obstacle`: without limit where the edge is an
+    arc chord, whose places the start check skips; else nothing."""
+    del at, obstacle
+    return math.inf if _chord(chords, a, b) else 0.0
+
+
 def _nearest_allowance(
     drawn: FloatArray, at: Point2, chords: ArcChords, obstacle: Point2
 ) -> float:
-    """How much a place at `at` is let off toward `obstacle`: without
-    limit where the edge of `drawn` nearest it is an arc chord, whose places
-    the start check skips; else nothing."""
-    del obstacle
+    """The allowance (`_edge_allowance`) at `at` toward `obstacle` of the
+    edge of `drawn` nearest `at`."""
     edges = list(pairwise(_vertices(drawn)))
     if not edges:
         return 0.0
     a, b = min(edges, key=lambda e: LineString(e).distance(Point(at)))
-    return math.inf if _chord(chords, a, b) else 0.0
+    return _edge_allowance(chords, a, b, at, obstacle)
+
+
+def _sub_edges(
+    track: ChainCentreline, copper: BaseGeometry
+) -> list[tuple[Point2, Point2, Point2, Point2]]:
+    """The edges of `copper`, a stretch of `track`, each with the edge of
+    the track it lies on: that edge's ends, then its own."""
+    edges = list(pairwise(_vertices(track.points)))
+    found: list[tuple[Point2, Point2, Point2, Point2]] = []
+    for part in shapely.get_parts(copper):  # pyright: ignore[reportUnknownMemberType]
+        coords = _vertices(np.asarray(shapely.get_coordinates(part), dtype=float))  # pyright: ignore[reportUnknownMemberType]
+        if len(coords) == 1:
+            coords = coords * 2
+        for start, end in pairwise(coords):
+            middle = Point((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+            a, b = min(edges, key=lambda e: LineString(e).distance(middle))
+            found.append((a, b, start, end))
+    return found
+
+
+def _segment(start: Point2, end: Point2) -> BaseGeometry:
+    return Point(start) if start == end else LineString([start, end])
 
 
 def violations(
@@ -339,28 +369,32 @@ def _violation(
         other_member = members[other]
     if other is not None and inside.against is _core.InsideOf.VIA:
         other_via = vias[other]
+    run = (inside.run_start, inside.run_end)
     if via is not None and other_member is not None:
-        return _via_and_member(via, other_member, rules, clearance_of)
+        return _via_and_member(via, other_member, None, rules, clearance_of)
     if member is not None and other_via is not None:
-        return _via_and_member(other_via, member, rules, clearance_of)
+        return _via_and_member(other_via, member, run, rules, clearance_of)
     if via is not None and other_via is not None:
         return _two_vias(via, other_via, rules, clearance_of)
     if via is not None:
         return _via_and_static(via, stops=inside.against is _core.InsideOf.STOPS)
     assert member is not None
     if other_member is not None:
-        return _two_members(member, other_member, rules)
+        return _two_members(member, other_member, run, rules)
     return _member_and_static(inside, member, rules)
 
 
 def _via_and_member(
     via: ViaInput,
     member: Member,
+    run: Sequence[Point2] | None,
     rules: Rules,
     clearance_of: Callable[[str], float],
 ) -> Violation | None:
     """A via inside a member's clearance, judged by each drawn track's
-    netclass and hole rules without the via's zones."""
+    netclass and hole rules without the via's zones, at each edge of the
+    track, or of the stretch of it along `run`, by its depth less its own
+    allowance (`_edge_allowance`): the worst."""
     centre = Point(via.via.position)
     worst: tuple[float, float, ChainCentreline] | None = None
     for track in _tracks(member):
@@ -369,12 +403,14 @@ def _via_and_member(
         )
         if keep is None:
             continue
-        depth = keep - LineString(track.points).distance(centre)
-        depth -= _nearest_allowance(
-            track.points, via.via.position, rules.chords, via.via.position
-        )
-        if worst is None or depth > worst[0]:
-            worst = (depth, keep, track)
+        line = LineString(track.points)
+        copper = line if run is None else _along(track, run)
+        for a, b, start, end in _sub_edges(track, copper):
+            near = _point(shapely.ops.nearest_points(_segment(start, end), centre)[0])
+            depth = keep - math.dist(near, via.via.position)
+            depth -= _edge_allowance(rules.chords, a, b, near, via.via.position)
+            if worst is None or depth > worst[0]:
+                worst = (depth, keep, track)
     if worst is None or worst[0] <= START_TOLERANCE:
         return None
     depth, keep, track = worst
@@ -448,24 +484,45 @@ def _via_and_static(via: ViaInput, *, stops: bool) -> Violation | None:
     return Violation(_via_name(via.via), obstacle, via.via.position, depth, required)
 
 
-def _two_members(member: Member, other: Member, rules: Rules) -> Violation | None:
+def _two_members(
+    member: Member, other: Member, run: Sequence[Point2], rules: Rules
+) -> Violation | None:
     """Two members inside each other's clearance, judged by their drawn
-    tracks and the larger netclass clearance."""
+    tracks and the larger netclass clearance: the member's along `run`, at
+    each of its samples and its nearest point to the other, each by its
+    depth less its own allowance (`_edge_allowance`) and the other's there:
+    the worst."""
+    along = np.linspace(0.0, 1.0, EDGE_SAMPLES)
     worst: tuple[float, float, Point2] | None = None
     for track in _tracks(member):
-        line = LineString(track.points)
+        copper = _along(track, run)
         for against in _tracks(other):
             far = LineString(against.points)
             keep = max(track.clearance, against.clearance)
-            here, there = (_point(p) for p in shapely.ops.nearest_points(line, far))
-            gap = math.dist(here, there) - track.width / 2 - against.width / 2
-            allowance = max(
-                _nearest_allowance(track.points, here, rules.chords, there),
-                _nearest_allowance(against.points, there, rules.chords, here),
-            )
-            depth = keep - gap - allowance
-            if worst is None or depth > worst[0]:
-                worst = (depth, keep, here)
+            for a, b, start, end in _sub_edges(track, copper):
+                nearest = _point(
+                    shapely.ops.nearest_points(_segment(start, end), far)[0]
+                )
+                places = [
+                    nearest,
+                    *(
+                        (
+                            start[0] + t * (end[0] - start[0]),
+                            start[1] + t * (end[1] - start[1]),
+                        )
+                        for t in along
+                    ),
+                ]
+                for here in places:
+                    there = _point(shapely.ops.nearest_points(far, Point(here))[0])
+                    gap = math.dist(here, there) - track.width / 2 - against.width / 2
+                    allowance = max(
+                        _edge_allowance(rules.chords, a, b, here, there),
+                        _nearest_allowance(against.points, there, rules.chords, here),
+                    )
+                    depth = keep - gap - allowance
+                    if worst is None or depth > worst[0]:
+                        worst = (depth, keep, here)
     if worst is None or worst[0] <= START_TOLERANCE:
         return None
     depth, keep, at = worst
