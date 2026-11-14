@@ -235,8 +235,19 @@ that keeps clearance, moving vias included, and its long edges are split
 again. Edges shorter than a tenth of the final spacing are pushed apart, so
 with a final spacing above 0.2 mm a chain that shrinks to a few hundredths of
 a millimetre can end with a small crumple. A coupled section is laid out
-evenly at the final spacing between its pins, since its tracks are its
-centreline's offsets.
+the same way, as its centreline at the final spacing, but its shortest edge
+is its fold length: half the pitch times the final spacing over the
+smallest bend radius its inner track allows, about two thirds of the
+spacing. Its tracks are the centreline's offsets, and the inner one folds
+back at an edge shorter than that between turns as sharp as that radius
+allows, so its vertices across a shorter edge are merged, its edges are not
+split into shorter ones, and shorter edges are pushed apart. Neither merging
+nor splitting bends a section tighter than that radius where it was not
+already, nor any tighter where it was: a vertex whose merge would is kept,
+and an edge beside a turn is split into fewer, longer pieces. The
+simplification before the commit keeps a section's vertices by the same
+rule, so a section's committed tracks bend no tighter than the optimizer
+left them.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had

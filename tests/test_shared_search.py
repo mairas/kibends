@@ -66,7 +66,7 @@ from kibends.obstacles import (
     zones_on,
 )
 from kibends.pair_blocks import PairBlock, pair_block
-from kibends.pairs import complementary_net
+from kibends.pairs import complementary_net, fold_edge
 from kibends.seen import SKIN_LEAST
 from kibends.snapshot import LayerSnapshot, ViaZone
 from kibends.via_moves import FreeDistances, MovingVias
@@ -421,7 +421,11 @@ def _reference_members(
         obstacle, obstacle_gradient, slopes = edge_integral(
             points, distance, direction, integrand, k
         )
-        shape, shape_gradient = shape_energy(points, masks[i], short_edge)
+        shortest = short_edge
+        if isinstance(member, PairBlock):
+            half_pitch = (member.given.gap + member.given.a.width) / 2
+            shortest = fold_edge(half_pitch, member.limit, member.spacing)
+        shape, shape_gradient = shape_energy(points, masks[i], shortest)
         value += shape + obstacle
         gradient = shape_gradient + obstacle_gradient
         if isinstance(member, PairBlock):

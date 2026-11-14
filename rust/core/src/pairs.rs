@@ -58,6 +58,16 @@ pub fn bend_radius_limit(gap: f64, width: f64) -> f64 {
     (gap + width) / 2.0 + width / 2.0
 }
 
+/// The shortest edge a section's centreline keeps, mm, at half the pitch
+/// `half_pitch`, bend-radius `limit` and layout `spacing`. An edge's
+/// mitred inner offset falls short of it by h·(tan(θ₁/2) + tan(θ₂/2)) for
+/// the turns θ at its ends; at the turns the limit allows between edges of
+/// the spacing, tan(θ/2) = spacing/(2·limit), that is
+/// half_pitch·spacing/limit.
+pub fn fold_edge(half_pitch: f64, limit: f64, spacing: f64) -> f64 {
+    half_pitch * spacing / limit
+}
+
 /// Whether a bend radius is below `limit`, beyond round-off.
 pub fn too_tight(radius: f64, limit: f64) -> bool {
     radius < limit * (1.0 - BEND_RADIUS_TOLERANCE)

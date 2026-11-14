@@ -85,6 +85,7 @@ __all__ = [
     "edge_curvature",
     "edge_integral",
     "field_queries",
+    "fold_edge",
     "free_distances",
     "hinge_curvature",
     "hinge_integrand",
@@ -478,15 +479,17 @@ class Member:
     A chain, or a coupled section as its centreline
     (`kibends_core::members::Member`).
     """
-    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None, spacing: typing.Optional[builtins.float] = None) -> Member:
+    def __new__(cls, layer: builtins.str, viewer: tuple[builtins.str, builtins.float, builtins.float], ignored: typing.Sequence[builtins.str], shown: typing.Sequence[tuple[builtins.str, builtins.float, builtins.float]], field: Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField, width: builtins.float, contacts: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], section: typing.Optional[PairOffset] = None, limit: typing.Optional[builtins.float] = None, spacing: typing.Optional[builtins.float] = None, hinged: builtins.bool = True) -> Member:
         r"""
         On `layer`, keeping clear of the others as the track `viewer`,
         ignoring the tracks of the nets `ignored`, showing the others the
         tracks `shown`, in its static `field`, its contact stops weighed by
         `width` and its contacts' regions `contacts`; a coupled section with
-        its `section` offset and the bend-radius `limit` its hinge keeps,
-        none without the hinge, each edge's hinge weighed by `spacing`, the
-        one the centreline is laid out at.
+        its `section` offset, its bend-radius `limit`, none for none, and
+        `spacing`, the one the centreline is laid out at, which set its fold
+        length (`kibends_core::members::Section::layout_limits`), and with
+        `hinged` its energy's bend-radius hinge at the limit, each edge
+        weighed by the spacing.
         """
 
 @typing.final
@@ -812,13 +815,13 @@ class ProblemState:
         Whether it has not reached the final level
         (`kibends_core::optimize::state::State::before_final`).
         """
-    def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], limits: typing.Sequence[typing.Optional[builtins.float]], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
+    def __new__(cls, energy: Problem, originals: typing.Sequence[numpy.typing.NDArray[numpy.float64]], anchors: typing.Sequence[numpy.typing.NDArray[numpy.bool_]], contacts: typing.Sequence[typing.Sequence[builtins.int]], held: typing.Sequence[builtins.bool], starts: numpy.typing.NDArray[numpy.float64], carried: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool, tuple[builtins.float, builtins.float]]]], copper: typing.Sequence[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField], stop_parts: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], groups: typing.Sequence[typing.Sequence[tuple[builtins.int, builtins.bool]]], sight: ViaSight, spacing: builtins.float, coarse_spacings: typing.Sequence[builtins.float], settled_change: builtins.float, stall_window: builtins.int, stall_tolerance: builtins.float, burst_maxiter: builtins.int, ftol: builtins.float, gtol: builtins.float) -> ProblemState:
         r"""
         The problem of `energy`'s members and moving vias: per member, its
         centreline as given (`originals`), its pinned vertices (`anchors`),
-        the vertex that keeps each of its contacts (`contacts`), whether it
-        is `held` and a section's bend-radius limit (`limits`); per via, its
-        centre (`starts`), the chain ends it `carried`, each the member,
+        the vertex that keeps each of its contacts (`contacts`) and whether
+        it is `held`, a section's bend-radius limit coming with its member
+        in `energy`; per via, its centre (`starts`), the chain ends it `carried`, each the member,
         whether it is its last point and its offset from the centre, its
         static `copper` and what only stops it in parts (`stop_parts`); the
         loose ends that share a point (`groups`, each member and whether it
@@ -1332,6 +1335,13 @@ def field_queries(field: Obstacles  |  ChainField  |  CompositeField  |  testing
     r"""
     The points the energy asked `field` about since the last
     `reset_statistics`.
+    """
+
+def fold_edge(half_pitch: builtins.float, limit: builtins.float, spacing: builtins.float) -> builtins.float:
+    r"""
+    The shortest edge a section's centreline keeps, mm, at half the pitch
+    `half_pitch`, bend-radius `limit` and layout `spacing`, below which its
+    inner track would fold at the turns the limit allows.
     """
 
 def free_distances(statics: typing.Sequence[typing.Sequence[typing.Optional[Obstacles  |  ChainField  |  CompositeField  |  testing.FreeSpace  |  testing.Disc  |  testing.Box  |  testing.Walls  |  testing.MisleadingWalls  |  testing.Union  |  testing.ReachIgnored  |  testing.NanField]]], sight: ViaSight, polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], positions: numpy.typing.NDArray[numpy.float64], below: builtins.float) -> FreeDistances:

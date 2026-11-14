@@ -33,6 +33,10 @@
 //! corners at kept vertices next to a merged edge reach farther out than
 //! the edges: where one enters the field, the vertices on either side of
 //! it are kept and the section merged again (`Neighbours::loose_corners`).
+//! Nor does a merge bend one of its edges below its bend-radius limit and
+//! tighter than the edges it replaces: the vertices around such an edge
+//! are kept too (`tightened`), since merging an arc's vertices concentrates
+//! its turn on those left and would fold the inner track.
 
 use std::sync::Arc;
 
@@ -43,6 +47,7 @@ use crate::geometry::V2;
 use crate::members::Member;
 use crate::numeric::{clip, maximum, minimum};
 use crate::optimize::INSIDE_TOLERANCE;
+use crate::pairs::{bend_radii, too_tight};
 
 /// A member where the optimizer left it: its polyline, its fixed vertices,
 /// and a section's direction pins, which stay where they started.
@@ -52,10 +57,22 @@ pub struct Optimised<'a> {
     pub directions: &'a [V2],
 }
 
+/// How a member's polyline merges besides within the chord tolerance:
+/// across its edges shorter than `shortest` (`merge_short_edges`), and,
+/// with a `bend_limit`, never leaving an edge below it and tighter than the
+/// edges it replaces (`tightened`), so that merging never folds a
+/// section's inner track.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Merging {
+    pub shortest: f64,
+    pub bend_limit: Option<f64>,
+}
+
 /// Each of `members` where the optimizer left it simplified within
 /// `tolerance`, in order, each against its static field and the others on
 /// its layer that it does not ignore, at their latest shapes. Its direction
-/// pins keep within `INSIDE_TOLERANCE` of a chord merged across them.
+/// pins keep within `INSIDE_TOLERANCE` of a chord merged across them, and a
+/// section bends no edge below its limit tighter than it was.
 ///
 /// Panics unless `optimised` holds one entry per member, each with a fixed
 /// flag per vertex, and a moving section's polyline two vertices or more.
@@ -65,7 +82,14 @@ pub fn simplify_chains(
     tolerance: f64,
 ) -> Vec<Vec<V2>> {
     let none = vec![None; members.len()];
-    simplified_vertices(members, optimised, &none, tolerance, 0.0)
+    let merging: Vec<Merging> = members
+        .iter()
+        .map(|m| Merging {
+            shortest: 0.0,
+            bend_limit: m.bend_limit(),
+        })
+        .collect();
+    simplified_vertices(members, optimised, &none, tolerance, &merging)
         .iter()
         .zip(optimised)
         .map(|(kept, given)| kept.iter().map(|&k| given.polyline[k]).collect())
@@ -73,18 +97,19 @@ pub fn simplify_chains(
 }
 
 /// `simplify_chains`, as the vertices of each member's polyline that
-/// merging keeps, in order, with the edges shorter than `shortest` then
-/// merged across too (`merge_short_edges`), each member also kept clear of
-/// its `extra` obstacles, if any, as of its static field.
+/// merging keeps, in order, each member merging as its `merging` says and
+/// also kept clear of its `extra` obstacles, if any, as of its static
+/// field. A member with a bend limit keeps every vertex around an edge
+/// that merging would bend below it tighter than it was.
 ///
-/// Panics unless `extra` holds one entry per member, besides as
-/// `simplify_chains`.
+/// Panics unless `extra` and `merging` hold one entry per member, besides
+/// as `simplify_chains`.
 pub fn simplified_vertices(
     members: &[Member],
     optimised: &[Optimised<'_>],
     extra: &[Option<Arc<dyn Field>>],
     tolerance: f64,
-    shortest: f64,
+    merging: &[Merging],
 ) -> Vec<Vec<usize>> {
     assert_eq!(
         members.len(),
@@ -92,6 +117,7 @@ pub fn simplified_vertices(
         "one optimised shape per member"
     );
     assert_eq!(members.len(), extra.len(), "one extra field per member");
+    assert_eq!(members.len(), merging.len(), "one merging per member");
     let mut seen = Neighbours::new(members, optimised, extra);
     let mut vertices = Vec::with_capacity(optimised.len());
     for (i, given) in optimised.iter().enumerate() {
@@ -114,17 +140,36 @@ pub fn simplified_vertices(
             })
             .collect();
         let mut fixed = given.fixed.to_vec();
+        let Merging {
+            shortest,
+            bend_limit,
+        } = merging[i];
+        let radii_before = bend_limit.map(|_| bend_radii(polyline, None));
+        // Each pass fixes more vertices, so it ends at the latest with all
+        // of them fixed, where nothing is tighter.
         let kept = loop {
-            let kept = kept_vertices(polyline, &fixed, field.as_ref(), &allowed);
-            let loose = seen.loose_corners(i, &kept);
-            if !loose.contains(&true) {
+            let kept = loop {
+                let kept = kept_vertices(polyline, &fixed, field.as_ref(), &allowed);
+                let loose = seen.loose_corners(i, &kept);
+                if !loose.contains(&true) {
+                    break kept;
+                }
+                for (f, l) in fixed.iter_mut().zip(loose) {
+                    *f |= l;
+                }
+            };
+            let kept = merge_short_edges(polyline, &kept, &fixed, field.as_ref(), shortest);
+            let (Some(limit), Some(before)) = (bend_limit, &radii_before) else {
+                break kept;
+            };
+            let around = tightened(polyline, &kept, before, limit);
+            if !around.contains(&true) {
                 break kept;
             }
-            for (f, l) in fixed.iter_mut().zip(loose) {
-                *f |= l;
+            for (f, a) in fixed.iter_mut().zip(around) {
+                *f |= a;
             }
         };
-        let kept = merge_short_edges(polyline, &kept, &fixed, field.as_ref(), shortest);
         seen.relocate(i, kept.iter().map(|&k| polyline[k]).collect());
         vertices.push(kept);
     }
@@ -341,6 +386,33 @@ pub fn kept_vertices(
     kept
 }
 
+/// The vertices of `polyline` around each edge of `kept`, the vertices
+/// kept in order, that bends below `limit` and tighter than the tightest
+/// edge of `polyline` it replaces, whose bend radii are `before`
+/// (`pairs::bend_radii`): each vertex between the kept vertex before the
+/// edge and the one after it, so that keeping them puts the polyline back
+/// as it was there. So a merge never makes an edge newly too tight, and
+/// one already too tight no tighter.
+fn tightened(polyline: &[V2], kept: &[usize], before: &[f64], limit: f64) -> Vec<bool> {
+    let points: Vec<V2> = kept.iter().map(|&k| polyline[k]).collect();
+    let mut around = vec![false; polyline.len()];
+    for (j, radius) in bend_radii(&points, None).into_iter().enumerate() {
+        let tightest = before[kept[j]..kept[j + 1]]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, minimum);
+        if !too_tight(radius, limit) || !too_tight(radius, tightest) {
+            continue;
+        }
+        let from = kept[j.saturating_sub(1)];
+        let to = kept[(j + 2).min(kept.len() - 1)];
+        for a in &mut around[from + 1..to] {
+            *a = true;
+        }
+    }
+    around
+}
+
 /// `kept`, the vertices of `polyline` kept in order, without a free vertex
 /// at each edge between them shorter than `shortest`, where the chord that
 /// replaces its two edges is clear in `field`: the later end, else the
@@ -451,6 +523,117 @@ mod tests {
             },
         ];
         simplify_chains(&members, &optimised, TOLERANCE)
+    }
+
+    #[test]
+    fn a_merge_with_a_bend_limit_bends_no_edge_below_it() {
+        // Two fixed vertices, then a free one 0.05 mm on, shorter than the
+        // 0.07 mm merged across, where an arc of radius 0.32 mm starts.
+        const LIMIT: f64 = 0.3;
+        const ARC: f64 = 0.32;
+        let mut points = vec![V2::new(0.0, 0.0), V2::new(0.1, 0.0), V2::new(0.15, 0.0)];
+        for k in 1..=8 {
+            let turn = f64::from(k) * 0.1 / ARC;
+            points.push(V2::new(
+                0.15 + ARC * libm::sin(turn),
+                ARC * (1.0 - libm::cos(turn)),
+            ));
+        }
+        let mut fixed = vec![false; points.len()];
+        fixed[0] = true;
+        fixed[1] = true;
+        *fixed.last_mut().expect("vertices") = true;
+        let tightest = |kept: &[usize]| {
+            let at: Vec<V2> = kept.iter().map(|&k| points[k]).collect();
+            bend_radii(&at, None)
+                .into_iter()
+                .fold(f64::INFINITY, f64::min)
+        };
+        let all: Vec<usize> = (0..points.len()).collect();
+        assert!(tightest(&all) >= LIMIT);
+        let merged = |bend_limit| {
+            simplified_vertices(
+                &[chain("A", "F.Cu")],
+                &[Optimised {
+                    polyline: &points,
+                    fixed: &fixed,
+                    directions: &[],
+                }],
+                &[None],
+                TOLERANCE / 10.0,
+                &[Merging {
+                    shortest: 0.07,
+                    bend_limit,
+                }],
+            )
+            .remove(0)
+        };
+
+        let unlimited = merged(None);
+        let limited = merged(Some(LIMIT));
+
+        // Without the limit the free vertex goes and its turn lands on the
+        // fixed one before it, below the limit.
+        assert!(!unlimited.contains(&2));
+        assert!(tightest(&unlimited) < LIMIT);
+        assert!(limited.contains(&2));
+        assert!(tightest(&limited) >= LIMIT);
+    }
+
+    #[test]
+    fn a_merge_with_a_bend_limit_bends_no_edge_tighter_than_it_was() {
+        // An arc of radius 0.2 mm, tighter than the 0.3 mm limit already,
+        // its free vertices 0.05 mm apart, shorter than the 0.07 mm merged
+        // across. Dropping one raises its neighbours' turns, so the edges
+        // beside the merged one bend tighter than the edges they replace.
+        const LIMIT: f64 = 0.3;
+        const ARC: f64 = 0.2;
+        const STEP: f64 = 0.05;
+        let mut points = vec![V2::new(-0.5, 0.0)];
+        for k in 0..=20 {
+            let turn = f64::from(k) * STEP / ARC;
+            points.push(V2::new(
+                ARC * libm::sin(turn),
+                ARC * (1.0 - libm::cos(turn)),
+            ));
+        }
+        let mut fixed = vec![false; points.len()];
+        fixed[0] = true;
+        *fixed.last_mut().expect("vertices") = true;
+        let tightest = |kept: &[usize]| {
+            let at: Vec<V2> = kept.iter().map(|&k| points[k]).collect();
+            bend_radii(&at, None)
+                .into_iter()
+                .fold(f64::INFINITY, f64::min)
+        };
+        let all: Vec<usize> = (0..points.len()).collect();
+        let before = tightest(&all);
+        assert!(before < LIMIT);
+        let merged = |bend_limit| {
+            simplified_vertices(
+                &[chain("A", "F.Cu")],
+                &[Optimised {
+                    polyline: &points,
+                    fixed: &fixed,
+                    directions: &[],
+                }],
+                &[None],
+                TOLERANCE / 10.0,
+                &[Merging {
+                    shortest: 0.07,
+                    bend_limit,
+                }],
+            )
+            .remove(0)
+        };
+
+        let unlimited = merged(None);
+        let limited = merged(Some(LIMIT));
+
+        assert!(unlimited.len() < all.len());
+        assert!(too_tight(tightest(&unlimited), before));
+        assert!(limited.len() > unlimited.len());
+        assert!(!too_tight(tightest(&limited), before));
     }
 
     #[test]

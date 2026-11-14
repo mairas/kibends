@@ -201,8 +201,10 @@ fn turn_gradient(n: usize, edges: &Edges, d_turn: &[f64]) -> Vec<V2> {
 /// Each edge weighs by the same `spacing`, the one the polyline is laid
 /// out at, not by its own length: a turn on a shorter edge has a smaller
 /// radius, so it costs more, never less, and vertices cannot hide a bend
-/// on an edge too short to weigh anything. Edges laid out at the spacing
-/// are no longer than it, so the weight is about their length.
+/// on an edge too short to weigh anything. A section's edges are mostly
+/// laid out between its fold length and twice it, about the spacing, so
+/// the weight is about their length; beside a sharp turn a split may leave
+/// them longer, and there the weight is less than their length.
 ///
 /// That is the radius `pairs.check_bend_radius` measures: below it the
 /// polyline's mitred offset to the inside folds back on itself, so with

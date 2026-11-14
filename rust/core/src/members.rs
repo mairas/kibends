@@ -41,6 +41,8 @@ use crate::geometry::V2;
 use crate::neighbours::{NeighbourList, StaticList};
 use crate::numeric::clip;
 use crate::pair_blocks::PairOffset;
+use crate::pairs;
+use crate::polylines::LayoutLimits;
 use crate::rules::track_inflation;
 use crate::seen::{Pieces, Seen, Track, Viewer};
 use crate::vias::sight::ViaSmooth;
@@ -53,22 +55,45 @@ pub struct Trace {
     pub clearance: f64,
 }
 
-/// A coupled section's offset and its bend-radius hinge; None leaves the
-/// hinge out.
+/// A coupled section's offset and its bend, None for no bend-radius limit;
+/// with `hinged`, its energy has the bend-radius hinge at that limit.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub offset: PairOffset,
-    pub hinge: Option<Hinge>,
+    pub bend: Option<Bend>,
+    pub hinged: bool,
 }
 
-/// What a section's bend-radius hinge keeps
-/// (`energy::polyline::bend_radius_energy`).
+impl Section {
+    /// Its bend-radius limit, if it has a positive one: what bursts and
+    /// laying it out may not newly bend it below.
+    pub fn bend_limit(&self) -> Option<f64> {
+        self.bend.map(|b| b.limit).filter(|&limit| limit > 0.0)
+    }
+
+    /// What laying it out keeps, with a positive limit: its fold length
+    /// (`pairs::fold_edge`), the shortest edge laying it out splits, below
+    /// which laying it out between bursts merges an edge and where its
+    /// short-edge barrier starts, and its bend-radius limit.
+    pub fn layout_limits(&self) -> Option<LayoutLimits> {
+        let bend = self.bend?;
+        let bend_limit = self.bend_limit()?;
+        let half_pitch = (self.offset.gap + self.offset.width) / 2.0;
+        Some(LayoutLimits {
+            shortest: pairs::fold_edge(half_pitch, bend_limit, bend.spacing),
+            bend_limit,
+        })
+    }
+}
+
+/// A section's bend-radius limit and the spacing its centreline is laid
+/// out at, which each edge's hinge weighs by
+/// (`energy::polyline::bend_radius_energy`) and its fold length takes.
 #[derive(Clone, Copy, Debug)]
-pub struct Hinge {
+pub struct Bend {
     /// The smallest bend radius its centreline keeps, mm.
     pub limit: f64,
-    /// The spacing the centreline is laid out at, which each edge's hinge
-    /// weighs by, mm.
+    /// The spacing its centreline is laid out at, mm.
     pub spacing: f64,
 }
 
@@ -96,6 +121,18 @@ pub struct Member {
 }
 
 impl Member {
+    /// A section's bend-radius limit (`Section::bend_limit`); None for a
+    /// chain.
+    pub fn bend_limit(&self) -> Option<f64> {
+        self.section.as_ref().and_then(Section::bend_limit)
+    }
+
+    /// What laying a section out keeps (`Section::layout_limits`); None for
+    /// a chain.
+    pub fn layout_limits(&self) -> Option<LayoutLimits> {
+        self.section.as_ref().and_then(Section::layout_limits)
+    }
+
     /// Whether it sees nothing of the tracks of `net`: its own and those
     /// of `ignored`.
     pub fn ignores(&self, net: &str) -> bool {
@@ -370,9 +407,9 @@ impl Members {
     /// `polylines` as `seen` shows them, with vias at `positions` among
     /// them, a section with its bend-radius hinge; its gradient at every
     /// vertex of every chain and centreline, with the vertices of `masks`
-    /// zeroed; and the gradient at each via's centre. The short-edge
-    /// barrier starts at `short_edge`. Err with the value if it is not
-    /// finite.
+    /// zeroed; and the gradient at each via's centre. A chain's short-edge
+    /// barrier starts at `short_edge`, a section's at its fold length
+    /// (`Section::layout_limits`). Err with the value if it is not finite.
     ///
     /// A section's centreline is what it keeps clear as, and its two
     /// tracks, offset from it, are what the others keep clear of: their
@@ -414,13 +451,21 @@ impl Members {
                     &integrand,
                     k,
                 );
-                let (shape, shape_gradient) = shape_energy(points, masks[i], short_edge);
+                let short = member
+                    .layout_limits()
+                    .map_or(short_edge, |limits| limits.shortest);
+                let (shape, shape_gradient) = shape_energy(points, masks[i], short);
                 let mut gradient: Vec<V2> = shape_gradient
                     .iter()
                     .zip(&obstacle_gradient)
                     .map(|(&s, &o)| s + o)
                     .collect();
-                let bend = member.section.as_ref().and_then(|s| s.hinge).map(|h| {
+                let hinge = member
+                    .section
+                    .as_ref()
+                    .filter(|s| s.hinged)
+                    .and_then(|s| s.bend);
+                let bend = hinge.map(|h| {
                     let (bend, bend_gradient) =
                         bend_radius_energy(points, masks[i], h.limit, h.spacing, params);
                     add_to(&mut gradient, &bend_gradient);

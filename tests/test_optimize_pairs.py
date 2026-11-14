@@ -65,6 +65,7 @@ from kibends.pairs import (
     GAP_TOLERANCE,
     bend_radius_limit,
     check_bend_radius,
+    fold_edge,
     offset_pair,
 )
 from kibends.polylines import SelfCheck, resample
@@ -614,6 +615,177 @@ def test_a_pair_turning_back_around_a_pad_keeps_its_gap_and_bend() -> None:
     assert_gap_kept(pair)
     assert pair.bend is not None and not pair.bend.too_tight
     assert result.termination is Termination.CONVERGED
+
+
+def test_bursts_that_move_nothing_keep_a_section_s_drawn_vertices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starts: list[FloatArray] = []
+
+    def still(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        starts.append(start.reshape(-1, 2).copy())
+        return Burst(start.copy(), abnormal=False)
+
+    monkeypatch.setattr(optimize_module, "run_burst", still)
+    scenario = scenarios.pair_round_corner()
+    (given,) = scenario.pairs
+    # Nothing settles it: it runs until it stalls, each burst from the
+    # shape laid out again, and no drawn vertex is within a tolerance of 0
+    # of a chord.
+    settings = replace(DEFAULT_SPACING, settled_change=0.0)
+    block = pair_block(given, settings.spacing)
+
+    run(scenario, settings)
+
+    drawn: FloatArray = block.chain.centreline.points[~block.chain.fixed]
+    assert len(starts) > 1
+    for start in starts:
+        # Each drawn vertex's distance from the nearest vertex of the start.
+        apart = np.linalg.norm(start[:, None, :] - drawn[None, :, :], axis=2)
+        assert apart.min(axis=0).max() < POSITION_ROUND_OFF
+
+
+@pytest.mark.parametrize(
+    ("scenario", "settings"),
+    [
+        pytest.param(
+            scenarios.pair_turning_back(), scenarios.TURNING_BACK, id="turning-back"
+        ),
+        pytest.param(scenarios.pair_corner(), CORNER, id="corner"),
+        pytest.param(scenarios.pair_chamfered(), COARSE, id="chamfered"),
+    ],
+)
+def test_no_burst_starts_or_ends_with_a_section_s_inner_track_folded(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: PairsScenario,
+    settings: OptimizerSettings,
+) -> None:
+    # Laying the section out between bursts must not fold it either: where
+    # a burst starts, nothing checks it.
+    shapes: list[FloatArray] = []
+
+    def recording(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        shapes.append(start.copy())
+        burst = run_burst(objective, start, revert, settings, stop)
+        shapes.append(burst.points.copy())
+        return burst
+
+    monkeypatch.setattr(optimize_module, "run_burst", recording)
+    (given,) = scenario.pairs
+    block = pair_block(given, settings.spacing)
+    # Its ends and their direction pins stay; every other vertex is a
+    # variable of each burst.
+    line, fixed = block.chain.centreline.points, block.chain.fixed
+    assert fixed.tolist() == [True, True] + [False] * (len(fixed) - 4) + [True, True]
+
+    run(scenario, settings)
+
+    assert shapes
+    for shape in shapes:
+        centre = np.concatenate([line[:2], shape.reshape(-1, 2), line[-2:]])
+        along = np.diff(centre, axis=0)
+        along /= np.linalg.norm(along, axis=1)[:, None]
+        for track in offset_pair(centre, given.gap, given.a.width):
+            # Each track's edge measured along its centreline edge: below 0
+            # where the mitred offset folds back.
+            lengths = np.sum(np.diff(track, axis=0) * along, axis=1)
+            assert lengths.min() > 0.0
+
+
+def test_a_section_keeps_clear_as_wide_as_its_outer_corners_reach() -> None:
+    (given,) = scenarios.pair_corner().pairs
+    spacing = OptimizerSettings().spacing
+    block = pair_block(given, spacing)
+    width = given.a.width
+    half_pitch = (given.gap + width) / 2
+    # Laying a section out leaves edges up to twice its fold length, and
+    # between two that long a vertex turns as far as the limit lets either.
+    longest = 2 * fold_edge(half_pitch, block.limit, spacing)
+    turn = 2 * math.atan(longest / block.limit)
+    centre = np.array(
+        [
+            (-longest, 0.0),
+            (0.0, 0.0),
+            (longest * math.cos(turn), longest * math.sin(turn)),
+        ]
+    )
+    assert not check_bend_radius(centre, given.gap, width).too_tight
+
+    right, left = offset_pair(centre, given.gap, width)
+
+    # The outer track's mitred corner, the pair's farthest copper there.
+    corners: FloatArray = np.array([right[1], left[1]])
+    reach = float(np.linalg.norm(corners, axis=1).max()) + width / 2
+    assert reach <= block.chain.centreline.width / 2 + POSITION_ROUND_OFF
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        pytest.param(scenarios.pair_corner(), id="corner"),
+        pytest.param(scenarios.pair_round_corner(), id="round-corner"),
+        pytest.param(scenarios.pair_chamfered(), id="chamfered"),
+    ],
+)
+def test_a_committed_section_bends_no_tighter_than_its_limit(
+    scenario: PairsScenario,
+) -> None:
+    # Turning at its limit, as these do, merging at the chord tolerance
+    # alone would bend its inner track tighter than it allows.
+    run_result = run(scenario, DEFAULT_SPACING)
+    (pair,) = run_result.pairs
+    block = pair.block
+    result = ChainResult(
+        pair.centreline, pair.fixed, 0, pair.before, no_contacts(pair.centreline)
+    )
+
+    # As run.py simplifies a section before the commit.
+    (centreline,) = simplify_chains(
+        [block.facing],
+        replace(run_result, chains=(result,), pairs=()),
+        DEFAULT_CHORD_TOLERANCE,
+        sections={0: block},
+    )
+
+    assert len(centreline) < len(pair.centreline)
+    gap, width = block.given.gap, block.given.a.width
+    assert not check_bend_radius(centreline, gap, width).too_tight
+
+
+def without_stalls(settings: OptimizerSettings) -> OptimizerSettings:
+    """`settings` with a stall window as long as the run, so that only a
+    burst that changes nothing by the settled change settles a problem."""
+    return replace(settings, stall_window=settings.max_iterations)
+
+
+def test_a_section_settles_by_its_change() -> None:
+    # Laying it out between bursts must not undo what the last burst did.
+    result = run(scenarios.pair_chamfered(), without_stalls(COARSE))
+
+    assert result.termination is Termination.CONVERGED
+
+
+def test_a_section_s_long_free_bow_settles_by_its_change() -> None:
+    # A pin on a corner leaves the rest of the pair a bow across 11 mm of
+    # free space, which a real run straightens bit by bit.
+    tracks = scenarios.tracks(*PINNED_PAIR)
+    chains = pinned_near(tracks, "P", [corner_arc(tracks[0], 1)])
+
+    out = smoothed(chains, without_stalls(OptimizerSettings()))
+
+    assert out.result.termination is Termination.CONVERGED
 
 
 def test_a_section_held_stays_as_it_is() -> None:

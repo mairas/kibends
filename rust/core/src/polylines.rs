@@ -3,10 +3,9 @@
 //! operations (`numeric`), the same on every platform.
 //!
 //! `subdivide` splits a polyline's long edges, keeping every vertex, which
-//! is how a chain is laid out at each level's start and each burst's.
+//! is how a member is laid out at each level's start and each burst's.
 //! `resample` lays each span between fixed vertices out at uniform
-//! arc-length spacing, as a coupled section is between bursts.
-//! `count_violations` counts
+//! arc-length spacing. `count_violations` counts
 //! where a polyline enters its clearance away from its anchors, which the
 //! best state may not add to. `shape_change` is how far a burst moved a
 //! shape, not counting vertices sliding along it, which settles a problem.
@@ -48,7 +47,17 @@ const BEND_REACH: [isize; 4] = [-1, 0, 1, 2];
 /// first vertex starts the result, fixed; vertices after the last fixed
 /// one are dropped.
 pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bool>) {
-    resample_spans(points, fixed, |total| edges_at(total, spacing))
+    resample_spans(points, fixed, |_, total| edges_at(total, spacing))
+}
+
+/// What laying a coupled section's centreline out keeps
+/// (`members::Section::layout_limits`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutLimits {
+    /// The shortest edge a split leaves, mm: its fold length.
+    pub shortest: f64,
+    /// The bend radius no split leaves an edge below, mm.
+    pub bend_limit: f64,
 }
 
 /// Each edge split evenly into edges no longer than its span's spacing,
@@ -58,14 +67,24 @@ pub fn resample(points: &[V2], fixed: &[bool], spacing: f64) -> (Vec<V2>, Vec<bo
 /// polyline's ends. It takes `spacing`, unless that leaves it fewer than
 /// `minimum_free` vertices between its ends: then a spacing that does, its
 /// length over one more than `minimum_free`, but never finer than
-/// `finest`.
+/// `finest`. With `limits`, a section's, no split leaves an edge shorter
+/// than their shortest, nor so short beside a turn that it bends below
+/// their limit (`split_count`).
+///
+/// A split vertex does not turn, so an edge split beside a vertex turning
+/// by θ has bend radius its length over tan(θ/2) (`pairs::bend_radii`):
+/// the piece there is kept no shorter than the limit times tan(θ/2), which
+/// an edge at least the limit's radius always leaves room for. An edge
+/// beside a sharp turn may so stay whole, however long.
 pub fn subdivide(
     points: &[V2],
     anchors: &[bool],
     spacing: f64,
     minimum_free: usize,
     finest: f64,
+    limits: Option<LayoutLimits>,
 ) -> (Vec<V2>, Vec<Option<usize>>) {
+    let beside = shortest_beside(points, limits);
     let last = points.len() - 1;
     let mut out = vec![points[0]];
     let mut source = vec![Some(0)];
@@ -83,7 +102,11 @@ pub fn subdivide(
         } else {
             maximum(numpy_sum(&lengths) / wanted as f64, finest)
         };
-        let (points, kept) = resample(span, &vec![true; span.len()], here);
+        // Every vertex of the span fixed: its k-th edge is the k-th split.
+        let (points, kept) = resample_spans(span, &vec![true; span.len()], |k, total| {
+            let edge = start + k;
+            split_count(total, here, maximum(beside[edge], beside[edge + 1]))
+        });
         let mut at = start;
         for (p, k) in points.into_iter().zip(kept).skip(1) {
             out.push(p);
@@ -102,22 +125,64 @@ fn edges_at(total: f64, spacing: f64) -> usize {
     ((total / spacing - RESAMPLE_SLACK).ceil() as i64).max(1) as usize
 }
 
+/// Per vertex of `points`, the shortest edge `subdivide` leaves beside it:
+/// none without `limits`, else their shortest, or their limit times
+/// tan(θ/2) of the vertex's turn θ where that is longer; infinite at a
+/// reversal.
+fn shortest_beside(points: &[V2], limits: Option<LayoutLimits>) -> Vec<f64> {
+    let Some(LayoutLimits {
+        shortest,
+        bend_limit: limit,
+    }) = limits
+    else {
+        return vec![0.0; points.len()];
+    };
+    let mut beside = vec![shortest; points.len()];
+    for (b, w) in beside[1..].iter_mut().zip(points.windows(3)) {
+        let (incoming, outgoing) = (w[1] - w[0], w[2] - w[1]);
+        let cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
+        let dot = incoming.x * outgoing.x + incoming.y * outgoing.y;
+        // tan(θ/2) = |sin θ| / (1 + cos θ), scaled by both lengths.
+        let across = incoming.norm() * outgoing.norm() + dot;
+        let half_turn = if across > 0.0 {
+            cross.abs() / across
+        } else {
+            f64::INFINITY
+        };
+        *b = maximum(*b, limit * half_turn);
+    }
+    beside
+}
+
+/// How many edges `subdivide` splits an edge `total` long into: as many as
+/// `spacing` gives, but none shorter than `shortest`, so an edge shorter
+/// than twice that may stay longer than the spacing.
+fn split_count(total: f64, spacing: f64, shortest: f64) -> usize {
+    let even = edges_at(total, spacing);
+    if shortest > 0.0 {
+        even.min(((total / shortest + RESAMPLE_SLACK).floor() as i64).max(1) as usize)
+    } else {
+        even
+    }
+}
+
 /// Each span between fixed vertices resampled to uniform arc-length
-/// spacing, as many edges as `edges` gives for its length.
+/// spacing, as many edges as `edges` gives for the span, by its place
+/// among the spans and its length.
 fn resample_spans(
     points: &[V2],
     fixed: &[bool],
-    edges: impl Fn(f64) -> usize,
+    edges: impl Fn(usize, f64) -> usize,
 ) -> (Vec<V2>, Vec<bool>) {
     let anchors: Vec<usize> = (0..fixed.len()).filter(|&k| fixed[k]).collect();
     let mut out = vec![points[0]];
     let mut mask = vec![true];
-    for pair in anchors.windows(2) {
+    for (k, pair) in anchors.windows(2).enumerate() {
         let (start, end) = (pair[0], pair[1]);
         let span = &points[start..=end];
         let arc = arc_lengths(span);
         let total = arc[arc.len() - 1];
-        let count = edges(total);
+        let count = edges(k, total);
         let step = total / count as f64;
         let xs: Vec<f64> = span.iter().map(|p| p.x).collect();
         let ys: Vec<f64> = span.iter().map(|p| p.y).collect();
@@ -281,7 +346,9 @@ impl SelfCheck {
     }
 }
 
-fn tight(points: &[V2], limit: f64) -> Vec<bool> {
+/// Whether each edge of `points` bends below `limit`, as `SelfCheck`
+/// judges it.
+pub fn tight(points: &[V2], limit: f64) -> Vec<bool> {
     bend_radii(points, None)
         .into_iter()
         .map(|r| too_tight(r, limit))
@@ -317,7 +384,7 @@ mod tests {
     fn subdividing_keeps_every_vertex_and_splits_only_long_edges() {
         // A 90° corner with a sub-micrometre jog before it.
         let points = line(&[(0.0, 0.0), (0.25, 0.0), (0.25, 5e-4), (0.25, 0.1)]);
-        let (out, source) = subdivide(&points, &[true, false, false, true], 0.1, 0, 0.1);
+        let (out, source) = subdivide(&points, &[true, false, false, true], 0.1, 0, 0.1, None);
         let kept: Vec<V2> = out
             .iter()
             .zip(&source)
@@ -334,27 +401,84 @@ mod tests {
     }
 
     #[test]
+    fn subdividing_splits_no_edge_shorter_than_the_shortest() {
+        // At 0.1 a 0.13 mm edge would split into two of 0.065, shorter than
+        // 0.07, so it stays whole; a 0.15 mm edge splits into two of 0.075,
+        // a 0.35 mm one into four of 0.0875.
+        let points = line(&[(0.0, 0.0), (0.13, 0.0), (0.28, 0.0), (0.63, 0.0)]);
+        let (out, _) = subdivide(
+            &points,
+            &[true, false, false, true],
+            0.1,
+            0,
+            0.1,
+            // The line does not turn, so the limit plays no part.
+            Some(LayoutLimits {
+                shortest: 0.07,
+                bend_limit: 0.3,
+            }),
+        );
+        let lengths: Vec<f64> = out.windows(2).map(|w| (w[1] - w[0]).norm()).collect();
+        let expected = [0.13, 0.075, 0.075, 0.0875, 0.0875, 0.0875, 0.0875];
+        assert_eq!(lengths.len(), expected.len());
+        for (l, e) in lengths.iter().zip(expected) {
+            assert!((l - e).abs() < 1e-12, "{lengths:?}");
+        }
+    }
+
+    #[test]
+    fn subdividing_bends_no_edge_beside_a_turn_below_the_limit() {
+        // A right angle between two 1 mm edges has bend radius 1 mm; split at
+        // 0.1 its pieces beside the corner would have 0.1 mm.
+        let points = line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]);
+        let limit = 0.3;
+        let all = [true, false, true];
+        assert!(!tight(&points, limit).contains(&true));
+        let (unlimited, _) = subdivide(&points, &all, 0.1, 0, 0.1, None);
+        assert!(tight(&unlimited, limit).contains(&true));
+
+        let (out, _) = subdivide(
+            &points,
+            &all,
+            0.1,
+            0,
+            0.1,
+            Some(LayoutLimits {
+                shortest: 0.0,
+                bend_limit: limit,
+            }),
+        );
+
+        assert!(!tight(&out, limit).contains(&true));
+        // Three pieces of 1/3 mm each side: as many as leaves them the room.
+        assert_eq!(out.len(), 7);
+    }
+
+    #[test]
     fn a_coarse_span_too_short_keeps_the_minimum_free_vertices() {
         let points = line(&[(0.0, 0.0), (1.0, 0.0)]);
         // At 1.6 the span would be one chord; at 0.2 it keeps four free
         // vertices.
-        let (out, source) = subdivide(&points, &[true, true], 1.6, 4, 0.1);
+        let (out, source) = subdivide(&points, &[true, true], 1.6, 4, 0.1, None);
         assert_eq!(source, vec![Some(0), None, None, None, None, Some(1)]);
         assert!((out[1].x - 0.2).abs() < 1e-15);
         // Never finer than the finest spacing.
         let short = line(&[(0.0, 0.0), (0.25, 0.0)]);
-        assert_eq!(subdivide(&short, &[true, true], 1.6, 4, 0.1).0.len(), 4);
+        assert_eq!(
+            subdivide(&short, &[true, true], 1.6, 4, 0.1, None).0.len(),
+            4
+        );
         // A span long enough at the coarse spacing takes it.
         let long = line(&[(0.0, 0.0), (10.0, 0.0)]);
         assert_eq!(
-            subdivide(&long, &[true, true], 1.6, 4, 0.1).0,
+            subdivide(&long, &[true, true], 1.6, 4, 0.1, None).0,
             resample(&long, &[true, true], 1.6).0
         );
         // Each span apart: a drawn vertex is free and counts, its two edges
         // split alike, three each; an anchor splits the polyline, and the
         // 4 mm span after it takes five edges where 1.6 gives three.
         let kinked = line(&[(0.0, 0.0), (0.5, 0.5), (1.0, 0.0), (5.0, 0.0)]);
-        let (out, _) = subdivide(&kinked, &[true, false, true, true], 1.6, 4, 0.1);
+        let (out, _) = subdivide(&kinked, &[true, false, true, true], 1.6, 4, 0.1, None);
         assert_eq!(out.len(), 1 + 6 + 5);
     }
 

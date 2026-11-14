@@ -4,7 +4,10 @@ A coupled section moves as its centreline: a chain as wide as the pair's
 outer extent, two track widths plus the gap, that keeps the larger of the
 two nets' clearances, in a static field from
 `obstacles.build_pair_obstacles`. The bend-radius hinge of
-`energy.bend_radius_energy` keeps its inner track from folding. Each
+`energy.bend_radius_energy` keeps its inner track from folding, and so does
+its shortest edge, its fold length (`pairs.fold_edge`), which the optimizer
+lays it out and pushes its edges apart to
+(`kibends_core::optimize::state`). Each
 track's routing is first merged within a micrometre (`ROUTING_TOLERANCE`),
 through its ends and pins, as `simplify` merges a result, so that a jog or
 sliver too short to see bends nothing. Its two ends are pinned, and so is
@@ -22,7 +25,10 @@ half the pitch at the section's routed gap all along, through their own
 ends and pins: where an end's own gap differs from it, the track's end edge
 takes up the difference. The centreline is a little wider than the pair,
 by as far as the outer track's mitred corners reach beyond half the pitch
-at the bend-radius limit, so that its clearance covers them.
+at the bend-radius limit between edges twice its fold length, so that its
+clearance covers them. A sharper corner reaches farther: one drawn so,
+until the bursts round it, or between edges a split beside it left longer
+still.
 
 The other blocks see the two tracks at the centreline's current shape. The
 centreline sees every other chain, and every track of another diff pair,
@@ -50,6 +56,7 @@ from kibends.pairs import (
     bend_radius_limit,
     centreline,
     check_bend_radius,
+    fold_edge,
     offset_pair,
     with_nearest_vertices,
 )
@@ -221,8 +228,12 @@ def pair_block(given: PairInput, spacing: float) -> PairBlock:
     half_pitch = (given.gap + width) / 2
     # A mitred outer corner lies half_pitch / cos(turn / 2) from the
     # centreline's vertex. At the bend-radius limit a vertex turns at most
-    # 2·atan(spacing / limit) between edges as long as the spacing.
-    overshoot = half_pitch * (math.hypot(1.0, spacing / limit) - 1.0)
+    # 2·atan(edge / limit) between edges `edge` long. Laying the centreline
+    # out leaves edges up to the spacing, or up to twice its fold length
+    # where splitting one would make them shorter than that; only beside a
+    # turn too sharp for pieces that short does it leave them longer.
+    longest = max(spacing, 2 * fold_edge(half_pitch, limit, spacing))
+    overshoot = half_pitch * (math.hypot(1.0, longest / limit) - 1.0)
     pseudo = ChainCentreline(
         f"{given.a.description} and {given.b.description}, coupled",
         f"{given.a.net} & {given.b.net}",
