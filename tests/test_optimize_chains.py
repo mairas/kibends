@@ -824,8 +824,9 @@ def excess(result: RunResult) -> float:
 
 
 def test_a_long_track_among_many_goes_taut_within_a_few_bursts() -> None:
+    # At the defaults: a run without --spacing goes through the levels.
     scenario = scenarios.bowed_among_many()
-    budget = OptimizerSettings(max_iterations=BURST_BUDGET, coarse_spacings=LEVELS)
+    budget = OptimizerSettings(max_iterations=BURST_BUDGET)
 
     result = run(scenario, budget)
 
