@@ -116,9 +116,9 @@ impl ProblemState {
 impl ProblemState {
     /// The problem of `energy`'s members and moving vias: per member, its
     /// centreline as given (`originals`), its pinned vertices (`anchors`),
-    /// the vertex that keeps each of its contacts (`contacts`), whether it
-    /// is `held` and a section's bend-radius limit (`limits`); per via, its
-    /// centre (`starts`), the chain ends it `carried`, each the member,
+    /// the vertex that keeps each of its contacts (`contacts`) and whether
+    /// it is `held`, a section's bend-radius limit coming with its member
+    /// in `energy`; per via, its centre (`starts`), the chain ends it `carried`, each the member,
     /// whether it is its last point and its offset from the centre, its
     /// static `copper` and what only stops it in parts (`stop_parts`); the
     /// loose ends that share a point (`groups`, each member and whether it
@@ -135,7 +135,6 @@ impl ProblemState {
         anchors: Vec<BoolArg<'_>>,
         contacts: Vec<Vec<usize>>,
         held: Vec<bool>,
-        limits: Vec<Option<f64>>,
         starts: Polyline<'_>,
         carried: Vec<Carried>,
         copper: Vec<FieldArg>,
@@ -165,7 +164,6 @@ impl ProblemState {
             ("centrelines", originals.len()),
             ("contacts", contacts.len()),
             ("holds", held.len()),
-            ("limits", limits.len()),
         ] {
             check_count(what, got, count)?;
         }
@@ -185,16 +183,13 @@ impl ProblemState {
             .into_iter()
             .zip(anchors)
             .zip(contacts)
-            .zip(held.into_iter().zip(limits))
-            .map(
-                |(((original, anchors), contacts), (held, limit))| MemberSetup {
-                    original,
-                    anchors,
-                    contacts,
-                    held,
-                    limit,
-                },
-            )
+            .zip(held)
+            .map(|(((original, anchors), contacts), held)| MemberSetup {
+                original,
+                anchors,
+                contacts,
+                held,
+            })
             .collect();
         let vias = starts
             .into_iter()

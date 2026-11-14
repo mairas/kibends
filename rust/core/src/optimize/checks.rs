@@ -195,10 +195,12 @@ impl Check {
             .collect();
         let self_checks = shared
             .setup
+            .energy
+            .members
             .members
             .iter()
             .zip(starts)
-            .map(|(m, s)| m.limit.map(|limit| SelfCheck::of(s, limit)))
+            .map(|(m, s)| m.bend_limit().map(|limit| SelfCheck::of(s, limit)))
             .collect();
         let free_before = shared.via_distances(starts, positions, -INSIDE_TOLERANCE);
         let stopped_before = shared.stop_distances(starts, positions, -INSIDE_TOLERANCE);

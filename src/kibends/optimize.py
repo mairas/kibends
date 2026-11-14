@@ -768,7 +768,6 @@ class _Problem:
             [body.fixed for body in self.bodies],
             [[v for v, _ in body.contacts] for body in self.bodies],
             [body.held for body in self.bodies],
-            [m.limit if isinstance(m, PairBlock) else None for m in self.members],
             positions_array([np.array(v.given.via.position) for v in vias]),
             [
                 [(i, end == -1, (float(o[0]), float(o[1]))) for i, end, o in v.carried]

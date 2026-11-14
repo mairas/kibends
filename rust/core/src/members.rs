@@ -53,22 +53,31 @@ pub struct Trace {
     pub clearance: f64,
 }
 
-/// A coupled section's offset and its bend-radius hinge; None leaves the
-/// hinge out.
+/// A coupled section's offset and its bend, None for no bend-radius limit;
+/// with `hinged`, its energy has the bend-radius hinge at that limit.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub offset: PairOffset,
-    pub hinge: Option<Hinge>,
+    pub bend: Option<Bend>,
+    pub hinged: bool,
 }
 
-/// What a section's bend-radius hinge keeps
+impl Section {
+    /// Its bend-radius limit, if it has a positive one: what bursts may
+    /// not newly bend it below.
+    pub fn bend_limit(&self) -> Option<f64> {
+        self.bend.map(|b| b.limit).filter(|&limit| limit > 0.0)
+    }
+}
+
+/// A section's bend-radius limit and the spacing its centreline is laid
+/// out at, which each edge's hinge weighs by
 /// (`energy::polyline::bend_radius_energy`).
 #[derive(Clone, Copy, Debug)]
-pub struct Hinge {
+pub struct Bend {
     /// The smallest bend radius its centreline keeps, mm.
     pub limit: f64,
-    /// The spacing the centreline is laid out at, which each edge's hinge
-    /// weighs by, mm.
+    /// The spacing its centreline is laid out at, mm.
     pub spacing: f64,
 }
 
@@ -96,6 +105,12 @@ pub struct Member {
 }
 
 impl Member {
+    /// A section's bend-radius limit (`Section::bend_limit`); None for a
+    /// chain.
+    pub fn bend_limit(&self) -> Option<f64> {
+        self.section.as_ref().and_then(Section::bend_limit)
+    }
+
     /// Whether it sees nothing of the tracks of `net`: its own and those
     /// of `ignored`.
     pub fn ignores(&self, net: &str) -> bool {
@@ -420,7 +435,12 @@ impl Members {
                     .zip(&obstacle_gradient)
                     .map(|(&s, &o)| s + o)
                     .collect();
-                let bend = member.section.as_ref().and_then(|s| s.hinge).map(|h| {
+                let hinge = member
+                    .section
+                    .as_ref()
+                    .filter(|s| s.hinged)
+                    .and_then(|s| s.bend);
+                let bend = hinge.map(|h| {
                     let (bend, bend_gradient) =
                         bend_radius_energy(points, masks[i], h.limit, h.spacing, params);
                     add_to(&mut gradient, &bend_gradient);

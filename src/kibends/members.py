@@ -58,7 +58,8 @@ def core_member(member: Member, *, hinged: bool = True) -> _core.Member:
     """`member` as the Rust energy takes it: what it keeps clear of the
     others as and the nets it ignores (`viewer_of`), the tracks it shows
     (`shown`), its body's field, width and contacts (`body_of`), and a
-    section's offset and, `hinged`, its bend-radius hinge."""
+    section's offset, its bend-radius limit and spacing, and, `hinged`, its
+    bend-radius hinge."""
     own, ignored = viewer_of(member)
     body = body_of(member)
     contacts = [core_field(field) for _, field in body.contacts]
@@ -68,7 +69,7 @@ def core_member(member: Member, *, hinged: bool = True) -> _core.Member:
     tracks = [body]
     if isinstance(member, PairBlock):
         section = member.core
-        limit = member.limit if hinged else None
+        limit = member.limit
         spacing = member.spacing
         tracks = list(member.tracks)
     return _core.Member(
@@ -82,6 +83,7 @@ def core_member(member: Member, *, hinged: bool = True) -> _core.Member:
         section,
         limit,
         spacing,
+        hinged,
     )
 
 

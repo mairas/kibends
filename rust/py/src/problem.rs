@@ -173,11 +173,12 @@ impl Member {
     /// ignoring the tracks of the nets `ignored`, showing the others the
     /// tracks `shown`, in its static `field`, its contact stops weighed by
     /// `width` and its contacts' regions `contacts`; a coupled section with
-    /// its `section` offset and the bend-radius `limit` its hinge keeps,
-    /// none without the hinge, each edge's hinge weighed by `spacing`, the
-    /// one the centreline is laid out at.
+    /// its `section` offset, its bend-radius `limit`, none for none, which
+    /// its bursts may not newly bend it below, and `spacing`, the one the
+    /// centreline is laid out at, and with `hinged` its energy's
+    /// bend-radius hinge at the limit, each edge weighed by the spacing.
     #[new]
-    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None, spacing = None))]
+    #[pyo3(signature = (layer, viewer, ignored, shown, field, width, contacts, section = None, limit = None, spacing = None, hinged = true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         layer: String,
@@ -190,11 +191,12 @@ impl Member {
         section: Option<PyRef<'_, PairOffset>>,
         limit: Option<f64>,
         spacing: Option<f64>,
+        hinged: bool,
     ) -> PyResult<Self> {
         let parts = if section.is_some() { 2 } else { 1 };
         check_count("shown tracks", shown.len(), parts)?;
-        let hinge = match (limit, spacing) {
-            (Some(limit), Some(spacing)) => Some(members::Hinge { limit, spacing }),
+        let bend = match (limit, spacing) {
+            (Some(limit), Some(spacing)) => Some(members::Bend { limit, spacing }),
             (None, _) => None,
             (Some(_), None) => {
                 return Err(PyValueError::new_err(
@@ -213,7 +215,8 @@ impl Member {
                 contacts: contacts.into_iter().map(|f| f.0).collect(),
                 section: section.map(|s| members::Section {
                     offset: s.inner.clone(),
-                    hinge,
+                    bend,
+                    hinged,
                 }),
             },
         })

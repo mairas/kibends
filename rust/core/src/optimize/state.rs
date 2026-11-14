@@ -148,9 +148,6 @@ pub struct MemberSetup {
     pub contacts: Vec<usize>,
     /// Whether it is pinned throughout and never laid out again.
     pub held: bool,
-    /// A section's bend-radius limit, which its bursts may not newly bend
-    /// it below (`polylines::SelfCheck`).
-    pub limit: Option<f64>,
 }
 
 /// A moving via of a problem as the run takes it.
@@ -1658,7 +1655,6 @@ mod tests {
                 anchors: vec![true, false, true],
                 contacts: vec![],
                 held: false,
-                limit: None,
             })
             .collect();
         let vias: Vec<(V2, Arc<dyn Field>)> =
@@ -2674,7 +2670,8 @@ mod tests {
                     a: line(9.8, HELD_A),
                     b: line(10.2, HELD_B),
                 },
-                hinge: None,
+                bend: None,
+                hinged: false,
             }),
         };
         let setup = |original: Vec<V2>, held: bool| MemberSetup {
@@ -2684,7 +2681,6 @@ mod tests {
             original,
             contacts: vec![],
             held,
-            limit: None,
         };
         let vias: Vec<(V2, Arc<dyn Field>)> = via
             .into_iter()
@@ -2877,7 +2873,6 @@ mod tests {
             original,
             contacts: vec![],
             held: false,
-            limit: None,
         };
         (member, setup)
     }
@@ -3009,7 +3004,8 @@ mod tests {
                 a: vec![],
                 b: vec![],
             },
-            hinge: None,
+            bend: None,
+            hinged: false,
         });
         members.push(m);
         setups.push(s);
