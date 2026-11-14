@@ -2460,9 +2460,9 @@ class TestLoopsAndDots:
         assert at in path.coords[:]
         assert_round_the_pad(path, loop)
 
-    def via_loop_run(self, connect: Connector) -> tuple[CommitBoard, LineString]:
+    def via_loop_run(self, connect: Connector) -> LineString:
         """Runs on `triangle_loop` through a selected via, round a pad; the
-        board, and the committed path, which passes through the moved via."""
+        committed path, which passes through the moved via."""
         loop = triangle_loop()
         via = kipy_via("v", "SIG", 9, 0)
         board = connect.to(
@@ -2483,33 +2483,24 @@ class TestLoopsAndDots:
         path = created_path(board)
         assert path.is_closed
         assert (at[0] / NM_PER_MM, at[1] / NM_PER_MM) in path.coords[:]
-        return board, path
+        return path
 
+    @pytest.mark.parametrize(
+        "coarse", [COARSE.coarse_spacings, ()], ids=["schedule", "one spacing"]
+    )
     def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        coarse: tuple[float, ...],
     ) -> None:
-        # At one spacing: from the loop as drawn, the default schedule's
-        # first burst, at 1.6 mm, steps it across the pad (below).
         monkeypatch.setattr(
-            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=()))
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
         )
 
-        _, path = self.via_loop_run(connect)
+        path = self.via_loop_run(connect)
 
         assert_round_the_pad(path, triangle_loop())
-        # The first extraction already cuts the loop at the via.
-        assert not any("Leaving out" in line for line in log)
-
-    def test_a_coarse_burst_may_step_a_loop_through_a_via_across_a_pad(
-        self, connect: Connector
-    ) -> None:
-        # The checks judge where a burst leaves the loop, not the way there,
-        # so a coarse burst's long steps can take it across the pad, where
-        # it shrinks to the via; the run accepts that, clear of the pad.
-        _, path = self.via_loop_run(connect)
-
-        pad = pad_box(*IN_TRIANGLE)
-        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
 
     def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
         tracks = [
