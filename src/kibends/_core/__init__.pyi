@@ -891,6 +891,14 @@ class ProblemState:
         the inputs. Does nothing at the final level. Raises ValueError if the
         energy there is not finite.
         """
+    def hand_over(self) -> typing.Optional[builtins.int]:
+        r"""
+        End the level it runs at for the run's time limit: before the final
+        level it goes on at the next as if it had settled where it runs
+        (`kibends_core::optimize::state::State::hand_over`). Returns the
+        level it left, None at the final level. Raises ValueError if the
+        energy there is not finite.
+        """
     def go_on_from(self, earlier: ProblemState) -> tuple[builtins.int, builtins.int]:
         r"""
         Take `earlier`'s best state, keeping the sections held only here as

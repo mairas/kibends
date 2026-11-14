@@ -67,9 +67,12 @@
 //! none of them on abnormal bursts, and otherwise stops at the iteration
 //! cap or at the time limit, which ends the running burst at its next
 //! L-BFGS iteration; that burst's state goes through the checks and the
-//! guard as any, and it settles nothing. Each problem keeps its best state
-//! either way. A run where every problem settled without moving anything
-//! had nothing to do.
+//! guard as any, and it settles nothing. At the time limit the caller may
+//! hand every problem still before the final level over to its next level,
+//! as if it had settled there (`state::State::hand_over`), and advance
+//! again, so that a time limit counts for each level. Each problem keeps
+//! its best state either way. A run where every problem settled without
+//! moving anything had nothing to do.
 
 pub mod checks;
 pub mod layout;

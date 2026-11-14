@@ -524,6 +524,15 @@ impl ProblemState {
         self.inner.finish().map_err(|e| not_finite(py, e.0))
     }
 
+    /// End the level it runs at for the run's time limit: before the final
+    /// level it goes on at the next as if it had settled where it runs
+    /// (`kibends_core::optimize::state::State::hand_over`). Returns the
+    /// level it left, None at the final level. Raises ValueError if the
+    /// energy there is not finite.
+    fn hand_over(&mut self, py: Python<'_>) -> PyResult<Option<usize>> {
+        self.inner.hand_over().map_err(|e| not_finite(py, e.0))
+    }
+
     /// Take `earlier`'s best state, keeping the sections held only here as
     /// drawn, and put back where they started the members and vias that
     /// would come too close; returns how many members that move and how
