@@ -5,9 +5,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 from conftest import (
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
     CURVATURE_ATOL,
     CURVATURE_RTOL,
     CURVATURE_STEP,
+    SUM_ORDER_ROUNDING,
     obstacle_energy,
     total_energy,
 )
@@ -36,8 +39,6 @@ from kibends.obstacles import ChainCentreline, ChainField, chains_field
 
 Term = Callable[[FloatArray, NDArray[np.bool_]], tuple[float, FloatArray]]
 
-FD_STEP = 1e-6
-GRADIENT_RTOL = 1e-5
 POINTS_PER_EDGE = 3
 FALLOFF_RANGE = 1.5
 STANDOFF = 0.2
@@ -96,9 +97,9 @@ def numeric_gradient(
     gradient = np.zeros_like(points)
     for index in np.ndindex(points.shape):
         step = np.zeros_like(points)
-        step[index] = FD_STEP
+        step[index] = CENTRAL_STEP
         gradient[index] = (energy(points + step) - energy(points - step)) / (
-            2 * FD_STEP
+            2 * CENTRAL_STEP
         )
     return gradient
 
@@ -108,7 +109,7 @@ def assert_gradient_matches(term: Term, points: FloatArray) -> None:
     _, analytic = term(points, fixed)
     numeric = numeric_gradient(lambda p: term(p, fixed)[0], points)
     error = np.linalg.norm(analytic - numeric) / max(np.linalg.norm(numeric), 1e-12)
-    assert error < GRADIENT_RTOL, (analytic, numeric)
+    assert error < CENTRAL_RTOL, (analytic, numeric)
 
 
 def wiggly_polyline(
@@ -268,8 +269,15 @@ class TestTotal:
             ),
         ]
         value, gradient = total_energy(points, fixed, DISC, PARAMS)
-        assert value == pytest.approx(sum(w * v for w, (v, _) in terms))
-        np.testing.assert_allclose(gradient, sum(w * g for w, (_, g) in terms))
+        assert value == pytest.approx(
+            sum(w * v for w, (v, _) in terms), rel=SUM_ORDER_ROUNDING
+        )
+        np.testing.assert_allclose(
+            gradient,
+            sum(w * g for w, (_, g) in terms),
+            rtol=SUM_ORDER_ROUNDING,
+            atol=SUM_ORDER_ROUNDING,
+        )
 
     def test_non_finite_energy_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="finite"):
@@ -357,8 +365,13 @@ class TestBendRadius:
         value, gradient = total_energy(
             points, fixed, DISC, PARAMS, hinge=(BEND_LIMIT, BEND_SPACING)
         )
-        assert value == pytest.approx(plain[0] + bend[0])
-        np.testing.assert_allclose(gradient, plain[1] + bend[1])
+        assert value == pytest.approx(plain[0] + bend[0], rel=SUM_ORDER_ROUNDING)
+        np.testing.assert_allclose(
+            gradient,
+            plain[1] + bend[1],
+            rtol=SUM_ORDER_ROUNDING,
+            atol=SUM_ORDER_ROUNDING,
+        )
 
 
 ALL_TERMS: dict[str, Term] = {
@@ -487,10 +500,10 @@ class TestAttraction:
 
     def test_slope_is_the_derivative_of_the_value(self) -> None:
         for r in (0.3, LIMIT + 0.01, 1.7, ATTRACTION_RANGE - 0.01):
-            numeric = (attraction(r + FD_STEP)[0] - attraction(r - FD_STEP)[0]) / (
-                2 * FD_STEP
-            )
-            assert attraction(r)[1] == pytest.approx(numeric, rel=1e-6)
+            numeric = (
+                attraction(r + CENTRAL_STEP)[0] - attraction(r - CENTRAL_STEP)[0]
+            ) / (2 * CENTRAL_STEP)
+            assert attraction(r)[1] == pytest.approx(numeric, rel=CENTRAL_RTOL)
 
     def test_a_limit_beyond_the_range_attracts_nowhere(self) -> None:
         for r in (0.5, 3.5, 5.0):
@@ -507,7 +520,7 @@ SMOOTH_POINT = np.array([[5.0, 0.4]])
 EXACT = 1e-12
 """How far the smooth distance of one obstacle may part from the exact one,
 mm: they take the same differences."""
-MICROMETRE_THOUSANDTH = 1e-6
+BEYOND_REACH_SHIFT = 1e-6
 """How far an obstacle farther than SMOOTH_REACH may move the smooth
 distance, mm."""
 
@@ -529,7 +542,7 @@ class TestSmoothMinimum:
     def test_a_farther_obstacle_beyond_the_reach_leaves_the_nearer(self) -> None:
         far = 0.1 + SMOOTH_REACH + SMOOTH_WIDTH
         smooth, share = smooth_minimum(np.array([0, 0]), np.array([0.1, far]), 1)
-        assert smooth[0] == pytest.approx(0.1, abs=MICROMETRE_THOUSANDTH)
+        assert smooth[0] == pytest.approx(0.1, abs=BEYOND_REACH_SHIFT)
         np.testing.assert_array_equal(share, [1.0, 0.0])
 
     def test_two_equally_near_are_seen_tau_ln_2_nearer(self) -> None:
@@ -552,6 +565,12 @@ class TestSmoothMinimum:
         np.testing.assert_allclose(toward, exact_toward, atol=EXACT)
 
 
+ONE_SIDED_STEP = 1e-7
+"""mm of a one-sided difference of an energy, for its slope to one side.
+Its error grows with the step, as the curvature times it, so the bound it
+is compared to scales with this."""
+
+
 def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
     """A straight track midway between two walls: the energy's slope across
     it, to either side, is the gradient's, 0, where the nearest wall alone
@@ -565,11 +584,10 @@ def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
         return total_energy(at, fixed, walls, PARAMS)[0]
 
     step = np.zeros_like(points)
-    step[2, 1] = FD_STEP
-    up = (energy(points + step) - energy(points)) / FD_STEP
-    down = (energy(points) - energy(points - step)) / FD_STEP
-    # One-sided differences err by the curvature times the step.
-    scale = abs(energy(points)) * FD_STEP / SMOOTH_WIDTH
+    step[2, 1] = ONE_SIDED_STEP
+    up = (energy(points + step) - energy(points)) / ONE_SIDED_STEP
+    down = (energy(points) - energy(points - step)) / ONE_SIDED_STEP
+    scale = abs(energy(points)) * ONE_SIDED_STEP / SMOOTH_WIDTH
     assert gradient[2, 1] == pytest.approx(0.0, abs=EXACT)
     assert up == pytest.approx(gradient[2, 1], abs=scale)
     assert down == pytest.approx(gradient[2, 1], abs=scale)

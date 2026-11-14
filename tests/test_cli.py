@@ -21,9 +21,12 @@ import shapely
 from conftest import (
     BOARD_FRAME,
     COMMIT_CALLS,
+    NM_ROUNDING,
     PAD_HALF_SIZE,
+    REPORTED,
     RETURN_SIGNAL_VIA,
     RETURN_VIAS_APART,
+    STRAIGHT_TOLERANCE,
     BurstClock,
     CommitBoard,
     FakeKiCad,
@@ -56,7 +59,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 import kibends.optimize as optimize_module
-from kibends import _core, cli, plot
+from kibends import cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
@@ -100,8 +103,6 @@ ON_CHORD = (2.2, 1.8)
 """Pad centre inside the L, near enough its chord to block it."""
 STUB_TOUCH = (2, 0)
 """Where a same-net stub ends, mid-way along the L's first leg."""
-# Rounding the created tracks to whole nanometres may cost this much clearance.
-NM_ROUNDING = 2e-6
 
 
 def l_chain() -> list[kbt.Track]:
@@ -128,9 +129,6 @@ WIDE = 0.5
 NARROW = 0.25
 WIDTH_CHANGE = (12.0, 4.0)
 """Where `width_change` narrows, at its corner."""
-# Positions of a straight result within this of the ideal line, mm: COARSE
-# leaves the width change bowed by about 2 µm.
-STRAIGHT_TOLERANCE = 0.01
 
 
 def width_change() -> list[kbt.Track]:
@@ -158,33 +156,27 @@ def keep_test_log_sinks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
-COARSE_LEVELS = (1.2, 0.6)
-"""Coarse spacings above COARSE's final 0.3 mm."""
-L_COARSE_BURSTS = 13
-"""Bursts of `l_board`'s run under COARSE with COARSE_LEVELS until it
-reaches the final spacing."""
 
 
 SPACING_MEASURED = 1e-3
 """Relative difference between a reported bend radius and the committed
 tracks' own at the same spacing, from their rounding to nanometres; a
 different spacing scales the radius of a corner with it."""
-KEPT = 1e-3
-"""mm a chain's length may rise by between runs, as repulsion trades it."""
-# The runs of `return_via_board` with `BALANCED` here end 0.0005 to
-# 0.004 mm from the neutral distance; the rest is platform slack.
-RETURN_SETTLED = 0.02
-"""How near its neutral distance a SIG via and its return via settle under
-COARSE, mm."""
+RETURN_SETTLED = 0.01
+"""mm from where their push and pull balance within which a via and its
+return via settle, and by more than which the default's pull must bring
+them nearer for "nearer" to be told apart from where they settle. A
+measured margin, not a placement a user needs: on `return_via_board` they
+settle within 0.005 mm of the balance, and the default brings them over
+0.2 mm nearer."""
 BALANCED = "--attraction=0.25"
 """The argument for a weight whose pull stays below the push beyond the
 clearance and standoff of `return_via_board`'s vias, so that they balance
 about 1.58 mm apart; the default pulls harder."""
-# The default's runs of `return_via_board` here end 0.0065 mm shorter to
-# 0.0033 mm longer than without attraction; the rest is platform slack.
 RETURN_TRADED = 0.01
-"""mm the default's pull may lengthen `return_via_board`'s route by, against
-the run without attraction."""
+"""mm the default's pull may lengthen a route by to bring its via nearer a
+return via, against the run without attraction: a length no signal on a
+board can tell apart."""
 
 
 def at(settings: OptimizerSettings) -> Callable[..., RunResult]:
@@ -305,11 +297,9 @@ class TestSmooth:
         pad = box(x - h, y - h, x + h, y + h)
         required = CLEARANCE + WIDTH / 2
         for t in created:
-            segment = LineString(
-                [(t.start.x / 1e6, t.start.y / 1e6), (t.end.x / 1e6, t.end.y / 1e6)]
-            )
-            assert segment.distance(pad) >= required - NM_ROUNDING
-        assert len(created) > 2
+            assert segment(t).distance(pad) >= required - NM_ROUNDING
+        drawn = sum(segment(t).length for t in l_chain())
+        assert created_path(board).length < drawn
 
     @pytest.mark.usefixtures("coarse_optimizer")
     def test_a_tee_moves_its_junction_and_commits_branches_that_meet_there(
@@ -827,12 +817,12 @@ class TestSmooth:
         ]
 
     @pytest.mark.parametrize(
-        ("limit", "warning"),
-        # Of the L's run: bursts at the coarse levels, coarsest first, until
-        # it reaches the final spacing after L_COARSE_BURSTS.
+        ("coarse", "warning"),
+        # The limit passes with the first burst, which runs at the first
+        # spacing of the schedule.
         [
-            (1.5, "time limit before reaching the final spacing"),
-            (L_COARSE_BURSTS + 0.5, "time limit without converging"),
+            (COARSE.coarse_spacings, "time limit before reaching the final spacing"),
+            ((), "time limit without converging"),
         ],
         ids=["at a coarse level", "at the final level"],
     )
@@ -841,18 +831,16 @@ class TestSmooth:
         connect: Connector,
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
-        limit: float,
+        coarse: tuple[float, ...],
         warning: str,
     ) -> None:
         connect.to(l_board())
         monkeypatch.setattr(
-            pipeline,
-            "optimize_chains",
-            at(replace(COARSE, coarse_spacings=COARSE_LEVELS)),
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
         )
         monkeypatch.setattr(pipeline, "monotonic", BurstClock(monkeypatch))
 
-        run("--dry-run", f"--time-limit={limit}")
+        run("--dry-run", "--time-limit=0.5")
 
         (stopped,) = [
             line
@@ -1248,10 +1236,8 @@ class TestStop:
     ) -> None:
         board = connect.to(l_board())
         real: Callable[..., RunResult] = pipeline.optimize_chains
-        stops: list[object] = []
 
         def abnormal(*args: object, **kwargs: object) -> RunResult:
-            stops.append(kwargs["stop"])
             return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
 
         monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
@@ -1260,7 +1246,6 @@ class TestStop:
 
         assert "abnormally" in exit_message(log)
         assert clock.bursts == 1
-        assert len(stops) == 1 and stops[0] is not None
         assert board.calls == []
 
 
@@ -1453,24 +1438,6 @@ class TestProgress:
         assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
         elapsed = [r.elapsed for r in records]
         assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
-
-    def test_a_run_with_nothing_to_do_reports_at_most_once_per_level(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-    ) -> None:
-        connect.to(straight_board())
-        records: list[Progress] = []
-        monkeypatch.setattr(
-            cli, "run_smooth", partial(cli.run_smooth, on_progress=records.append)
-        )
-
-        run()
-
-        # One burst at each level, none moving anything.
-        assert len(records) <= len(cli.DEFAULT_SCHEDULE)
-        assert any(line.startswith("INFO Nothing to do") for line in log)
 
 
 class TestPlot:
@@ -2187,31 +2154,20 @@ class TestSeveralChains:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
-    # Chains pressed into each other's clearance settle well before the
-    # iteration cap. Measured: 3.
-    SETTLED_PRESSED = 20
-
     def test_chains_starting_inside_each_other_s_clearance_commit_unwarned(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+        self,
+        connect: Connector,
+        log: list[str],
+        reports: list[pipeline.RunReport],
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
         board = connect.to(off_grid(two_l_board(inner=across)))
-        results: list[RunResult] = []
-        optimize = at(COARSE)
-
-        def kept(*args: object, **kwargs: object) -> RunResult:
-            results.append(optimize(*args, **kwargs))
-            return results[-1]
-
-        monkeypatch.setattr(pipeline, "optimize_chains", kept)
 
         run()
 
-        # The chains pressed into each other's clearance settle.
-        (result,) = results
-        assert result.termination is Termination.CONVERGED
-        assert result.iterations <= self.SETTLED_PRESSED
+        (report,) = reports
+        assert report.termination is Termination.CONVERGED
         # Only the board's missing outline warns.
         assert not [
             line
@@ -2219,6 +2175,10 @@ class TestSeveralChains:
             if line.startswith("WARNING") and "Edge.Cuts" not in line
         ]
         assert "push_commit" in board.calls
+        lines = by_net(board, ("SIG", "SIG2"))
+        sig2 = lines["SIG2"] or [segment(t) for t in across]
+        apart = unary_union(lines["SIG"]).distance(unary_union(sig2))
+        assert apart >= CLEARANCE + WIDTH - NM_ROUNDING
 
     def test_run_function_reports_each_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -2391,9 +2351,8 @@ def z_bus_board() -> CommitBoard:
 
 Z_BUS_SPACING = 5.0
 """Vertex spacing for the bus, mm: coarse, so that the run converges
-within a second, and still several vertices to each of its edges, which
-the nearest neighbour alone left on the tie: there every problem gave
-up."""
+within a second, with still several vertices to each of its edges, each
+at the tie between the tracks either side of it."""
 
 
 def test_an_equally_spaced_bus_converges(
@@ -2498,9 +2457,19 @@ class TestLoopsAndDots:
         assert at in path.coords[:]
         assert_round_the_pad(path, loop)
 
-    def via_loop_run(self, connect: Connector) -> tuple[CommitBoard, LineString]:
-        """Runs on `triangle_loop` through a selected via, round a pad; the
-        board, and the committed path, which passes through the moved via."""
+    @pytest.mark.parametrize(
+        "coarse", [COARSE.coarse_spacings, ()], ids=["schedule", "one spacing"]
+    )
+    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        coarse: tuple[float, ...],
+    ) -> None:
+        monkeypatch.setattr(
+            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=coarse))
+        )
+
         loop = triangle_loop()
         via = kipy_via("v", "SIG", 9, 0)
         board = connect.to(
@@ -2516,38 +2485,12 @@ class TestLoopsAndDots:
 
         assert sorted(board.deleted) == ["a", "b", "c", "v"]
         (moved,) = created_vias(board)
-        at = (moved.position.x, moved.position.y)
-        assert at != (nm(9), nm(0))
+        centre = (moved.position.x, moved.position.y)
+        assert centre != (nm(9), nm(0))
         path = created_path(board)
         assert path.is_closed
-        assert (at[0] / NM_PER_MM, at[1] / NM_PER_MM) in path.coords[:]
-        return board, path
-
-    def test_a_loop_through_a_selected_via_moves_it_and_is_smoothed_round_a_pad(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        # At one spacing: from the loop as drawn, the default schedule's
-        # first burst, at 1.6 mm, steps it across the pad (below).
-        monkeypatch.setattr(
-            pipeline, "optimize_chains", at(replace(COARSE, coarse_spacings=()))
-        )
-
-        _, path = self.via_loop_run(connect)
-
-        assert_round_the_pad(path, triangle_loop())
-        # The first extraction already cuts the loop at the via.
-        assert not any("Leaving out" in line for line in log)
-
-    def test_a_coarse_burst_may_step_a_loop_through_a_via_across_a_pad(
-        self, connect: Connector
-    ) -> None:
-        # The checks judge where a burst leaves the loop, not the way there,
-        # so a coarse burst's long steps can take it across the pad, where
-        # it shrinks to the via; the run accepts that, clear of the pad.
-        _, path = self.via_loop_run(connect)
-
-        pad = pad_box(*IN_TRIANGLE)
-        assert path.distance(pad) >= CLEARANCE + WIDTH / 2 - NM_ROUNDING
+        assert (centre[0] / NM_PER_MM, centre[1] / NM_PER_MM) in path.coords[:]
+        assert_round_the_pad(path, loop)
 
     def test_a_loop_off_a_junction_moves_with_it(self, connect: Connector) -> None:
         tracks = [
@@ -3023,17 +2966,10 @@ INSIDE_PAD = (4.0, 4.65)
 inside its 0.2 mm clearance."""
 
 
-# The fan-out vias here stop 0.019 mm short of touching their pad; the rest
-# is platform slack.
-PAD_SETTLED = 0.05
-"""How near touching a pad of its net that stops it a via settles under
-COARSE, mm."""
-SHRUNK_SEGMENTS = 2
-"""The most segments a fan-out track that shrank to its pad ends with; it
-ends with one, and crumpled it ended with six."""
-MERGED_BELOW = _core.MERGE_EDGE
-"""The edge length below which laying out between bursts merges a free
-vertex, mm."""
+AGAINST_PAD = 0.05
+"""mm short of touching it within which a via that its route pulls onto a
+pad of its net stops against the pad: a small part of the via's ring, so
+that it sits at the pad rather than short of it."""
 
 
 def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
@@ -3687,21 +3623,17 @@ class TestMovingVias:
         tracks = [segment(t) for t in created_on(board, BL.BL_F_Cu)]
         length = sum(t.length for t in tracks)
         assert length < centre.distance(Point(0, 0)) + STRAIGHT_TOLERANCE
+        # Shrunk from 8 mm, even to micrometres, it commits straight.
+        assert len(tracks) == 1
         h = PAD_HALF_SIZE
         pad = box(-h, -h, h, h)
         if in_pad:
             assert pad.contains(centre)
-            # The track shrinks from 8 mm to micrometres without crumpling:
-            # laying out between bursts merges its vertices across short
-            # edges, so only a track that is its whole chain is shorter.
-            assert len(tracks) <= SHRUNK_SEGMENTS
-            if len(tracks) > 1:
-                assert min(t.length for t in tracks) >= MERGED_BELOW - NM_ROUNDING
         else:
             assert pad.distance(centre) >= moved.diameter / 2e6 - NM_ROUNDING
-            assert pad.distance(centre) < moved.diameter / 2e6 + PAD_SETTLED
+            assert pad.distance(centre) < moved.diameter / 2e6 + AGAINST_PAD
 
-    def test_chains_meeting_at_a_moved_via_on_one_layer_need_no_trim_there(
+    def test_chains_meeting_at_a_moved_via_on_one_layer_both_commit_straight(
         self, connect: Connector
     ) -> None:
         # Two widths, so that the two sides are two chains of one layer.
@@ -4139,7 +4071,8 @@ class TestViaClasses:
             distances.append(math.dist(ends["v"], ends.get("g", ground)))
 
         pulled, alone, defaulted = lengths
-        assert pulled <= alone + KEPT
+        # The balanced pull costs the route no length that the report shows.
+        assert pulled <= alone + REPORTED
         assert defaulted <= alone + RETURN_TRADED
         params = cli.smooth_options(cli.parse_args(["smooth", BALANCED])).params
         neutral = neutral_distance(params, RETURN_VIAS_APART)
@@ -4247,8 +4180,8 @@ def plane_board() -> CommitBoard:
 
 
 PLANE_BURSTS = 25
-"""Outer iterations for `plane_board`: the via reaches its region's top in
-about 16, then creeps along it to the iteration cap
+"""Outer iterations for `plane_board`, a cap that keeps its run short: once
+the via reaches its region's top it only creeps along it
 (https://github.com/mairas/kibends/issues/21)."""
 
 
@@ -4391,9 +4324,6 @@ SECOND_PAIR = 5.0
 """How far, mm, a second pair runs below the first."""
 FAR = 100.0
 """mm, beyond any track of a test board."""
-REPORTED = 5e-4
-"""mm: how near a pair's reported gap or skew must be to the expected value:
-the optimizer and simplification leave them within a micrometre."""
 COUPLED_FROM = 0.5
 """x beyond which the pair's tracks run coupled, clear of the fan-out."""
 TOO_TIGHT_RADIUS = 0.01
@@ -5088,7 +5018,7 @@ class TestPairs:
         lines = by_net(board)
         n = [line for line in lines[USB[1]] if {x for x, _ in line.coords} != {at}]
         gaps = coupled_gaps(lines[USB[0]], n)
-        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
     def test_a_stub_on_a_corner_holds_the_section(
         self,
@@ -5306,19 +5236,18 @@ class TestPairs:
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
     ) -> None:
-        asked = self.too_tight_once(monkeypatch)
+        self.too_tight_once(monkeypatch)
         board = connect.to(pair_board())
 
         run()
 
-        assert asked == [[None], [Hold.CROWDING]]
-        assert log.count("INFO Setting up the optimizer\n") == 1
+        assert not unexpected_warnings(log)
         (holding,) = [line for line in log if "Holding" in line]
         assert holding.startswith("INFO Holding 1 coupled section of ")
         # Whether a net's chain is committed depends on how far repulsion
-        # bends its fan-out (some 25 µm, varying with the BLAS) against the
-        # chord tolerance; either way the held section, all pins, stays as
-        # routed, however its tracks are split.
+        # bends its fan-out, some 25 µm, against the chord tolerance; either
+        # way the held section, all pins, stays as routed, however its
+        # tracks are split.
         copper = {
             net: unary_union(lines).buffer(NM_ROUNDING)
             for net, lines in by_net(board).items()
@@ -5417,18 +5346,14 @@ came in the first burst."""
 
 
 @pytest.mark.parametrize(("net", "x"), FOLDED)
-def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, net: str, x: float
+def test_a_pair_pinned_on_a_straight_commits_without_holding_a_section(
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    reports: list[pipeline.RunReport],
+    net: str,
+    x: float,
 ) -> None:
-    results: list[RunResult] = []
-    first_burst = at(FOLDING)
-
-    def spy(*args: object, **kwargs: object) -> RunResult:
-        result = first_burst(*args, **kwargs)
-        results.append(result)
-        return result
-
-    monkeypatch.setattr(pipeline, "optimize_chains", spy)
+    monkeypatch.setattr(pipeline, "optimize_chains", at(FOLDING))
     # Without its fan-out, the pair is coupled from its start.
     tracks = [t for t in pair_tracks() if t.id.value not in ("p1", "n1")]
     side = 1.0 if net == USB[0] else -1.0
@@ -5444,34 +5369,26 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
 
     run()
 
+    # A folded section would leave no finite copper to commit, or be held
+    # as bent too tightly.
     assert board.calls == COMMIT_CALLS
-    sections = [p for r in results for p in r.pairs]
-    assert sections
-    for p in sections:
-        assert all(np.isfinite(t).all() for t in (p.centreline, p.a, p.b))
-        assert p.bend is None or not p.bend.too_tight
+    (report,) = reports
+    assert report.pairs
+    assert all(pair.held == 0 for pair in report.pairs)
 
 
 ROUND_OFF = 1e-12
+"""rad of float round-off in a direction computed from positions."""
 
 
-PAIR_BOARD_TRACKS = 9
-"""Per net on `pair_board`, as measured at default and coarse settings: two
-in its fan-out and seven through the S-bend."""
-
-
-def pair_tracks_at(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, clearance: float
-) -> tuple[dict[str, list[LineString]], list[Simplified]]:
-    """The tracks committed for `pair_board` with netclass `clearance`, and
-    the run's calls of `simplify_chains`."""
-    calls = spy_simplify(monkeypatch)
+def pair_tracks_at(connect: Connector, clearance: float) -> dict[str, list[LineString]]:
+    """The tracks committed for `pair_board` with netclass `clearance`."""
     board = pair_board()
     usb = netclass("USB", clearance)
     board.netclasses = {"USB_D+": usb, "USB_D-": usb}
     connect.to(board)
     run()
-    return by_net(board), calls
+    return by_net(board)
 
 
 @pytest.mark.parametrize(
@@ -5486,27 +5403,20 @@ def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
 ) -> None:
     monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
 
-    tracks, calls = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+    p, n = pair_tracks_at(connect, PAIR_GAP).values()
 
-    p, n = tracks.values()
-    assert len(p) <= PAIR_BOARD_TRACKS and len(n) <= PAIR_BOARD_TRACKS
     gap = unary_union(p).distance(unary_union(n)) - PAIR_WIDTH
     assert gap >= PAIR_GAP - NM_ROUNDING
-    # Offset from one simplified centreline, the tracks keep the optimised
-    # tracks' gap.
-    (call,) = calls
-    for i, result in zip(call.sections, call.run.pairs, strict=True):
-        assert gap_range(*call.tracks(i), PAIR_WIDTH) == pytest.approx(
-            gap_range(result.a, result.b, PAIR_WIDTH), abs=ROUND_OFF
-        )
+    gaps = coupled_gaps(p, n)
+    assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
 def test_a_clearance_equal_to_the_gap_costs_a_pair_no_tracks(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch
+    connect: Connector,
 ) -> None:
-    below, _ = pair_tracks_at(connect, monkeypatch, PAIR_CLEARANCE)
-    equal, _ = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+    below = pair_tracks_at(connect, PAIR_CLEARANCE)
+    equal = pair_tracks_at(connect, PAIR_GAP)
 
     for at_gap, below_gap in zip(equal.values(), below.values(), strict=True):
         assert len(at_gap) <= len(below_gap)

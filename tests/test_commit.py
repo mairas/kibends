@@ -297,12 +297,11 @@ def run_commit_chains(
 
 
 class TestCommitChains:
-    def test_replaces_every_chain_in_one_request_per_step(self) -> None:
+    def test_replaces_every_chain_in_one_commit(self) -> None:
         board, chains, selected = two_chains()
 
         run_commit_chains(board, chains, selected)
 
-        assert board.reads["get_items_by_id"] == 1
         assert board.calls == COMMIT_CALLS
         assert len(board.labels) == 1
         assert sorted(board.deleted) == ["a", "b", "c", "d"]
@@ -413,7 +412,6 @@ class TestMovedVias:
 
         run_commit_vias(board, chains, selected, vias)
 
-        assert board.reads["get_items_by_id"] == 1
         assert board.calls == COMMIT_CALLS
         assert sorted(board.deleted) == ["a", "e", "v"]
         (via,) = [i for i in board.created if isinstance(i, kbt.Via)]
@@ -435,6 +433,15 @@ class TestMovedVias:
         assert [(t.layer, (t.start.x, t.start.y)) for t in tracks[1:]] == [
             (BL.BL_B_Cu, moved)
         ]
+
+    def test_rereads_every_chain_and_via_in_one_request(self) -> None:
+        """A whole-board run waits on one round trip to KiCad before its
+        commit, not one for each chain or via."""
+        board, chains, selected, vias = via_route()
+
+        run_commit_vias(board, chains, selected, vias)
+
+        assert board.reads["get_items_by_id"] == 1
 
     def test_moves_a_via_without_chains(self) -> None:
         board, _, selected, vias = via_route()

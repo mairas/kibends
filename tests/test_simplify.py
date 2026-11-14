@@ -3,7 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import scenarios
-from conftest import clearances
+from conftest import STRAIGHT_TOLERANCE, clearances
 from distance_fields import BoolArray, Disc, FloatArray, FreeSpace
 from reference_fields import chain_obstacles
 from scenarios import (
@@ -102,8 +102,6 @@ def test_optimized_straight_line_simplifies_to_one_segment() -> None:
 
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
-# Above the 0.002 mm that COARSE leaves the width change's chains bowed by.
-COARSE_STRAIGHT_TOLERANCE = 0.01
 # At spacing 0.3 the drape's first burst piles vertices up.
 DRAPE_SETTINGS = replace(COARSE, spacing=0.2, settled_change=0.002, coarse_spacings=())
 """At one spacing, where the arch drapes over the bar: at 1.6 mm the first
@@ -186,7 +184,7 @@ class TestSeveralChains:
         scenario = scenarios.width_change()
         run = optimized(scenario, COARSE)
 
-        result = simplify_run(scenario, run, COARSE_STRAIGHT_TOLERANCE)
+        result = simplify_run(scenario, run, STRAIGHT_TOLERANCE)
 
         for simplified, c in zip(result, run.chains, strict=True):
             assert np.array_equal(simplified, c.polyline[[0, -1]])

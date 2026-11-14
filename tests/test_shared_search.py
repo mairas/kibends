@@ -21,7 +21,7 @@ from typing import NamedTuple
 import numpy as np
 import pytest
 import scenarios
-from conftest import violations
+from conftest import POSITION_ROUND_OFF, SUM_ORDER_ROUNDING, violations
 from distance_fields import FloatArray, FreeSpace
 from reference_fields import chain_obstacles_for_via
 from scenarios import (
@@ -594,10 +594,16 @@ def _assert_same(
     got: tuple[float, list[FloatArray], FloatArray],
     expected: tuple[float, list[FloatArray], FloatArray],
 ) -> None:
-    assert got[0] == pytest.approx(expected[0], rel=1e-10, abs=1e-12)
+    assert got[0] == pytest.approx(
+        expected[0], rel=SUM_ORDER_ROUNDING, abs=SUM_ORDER_ROUNDING
+    )
     for g, e in zip(got[1], expected[1], strict=True):
-        np.testing.assert_allclose(g, e, rtol=1e-9, atol=1e-10)
-    np.testing.assert_allclose(got[2], expected[2], rtol=1e-9, atol=1e-10)
+        np.testing.assert_allclose(
+            g, e, rtol=SUM_ORDER_ROUNDING, atol=SUM_ORDER_ROUNDING
+        )
+    np.testing.assert_allclose(
+        got[2], expected[2], rtol=SUM_ORDER_ROUNDING, atol=SUM_ORDER_ROUNDING
+    )
 
 
 @pytest.mark.parametrize("repulsion", [None, 0.5])
@@ -657,8 +663,8 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
             np.testing.assert_allclose(
                 [by_obstacle[key] for key in expected_seen],
                 list(expected_seen.values()),
-                rtol=1e-12,
-                atol=1e-12,
+                rtol=DISTANCE_ROUNDING,
+                atol=DISTANCE_ROUNDING,
             )
 
 
@@ -750,10 +756,6 @@ def _reference_fields(
     return fields
 
 
-ROUND_OFF = 1e-9
-"""How far inside a piece a segment that touches it may measure, mm."""
-
-
 def _point_gaps(p: FloatArray, a: FloatArray, b: FloatArray) -> FloatArray:
     """The distance from each of `p` to the segment from a to b."""
     t = _parameters(p, a, b)
@@ -803,7 +805,7 @@ def _reference_entered(
         gap = _segment_gaps(
             points[:-1][edge], points[1:][edge], starts[piece], ends[piece]
         )
-        inside = gap < part.inflation[piece] - ROUND_OFF
+        inside = gap < part.inflation[piece] - POSITION_ROUND_OFF
         entered.append(
             set(
                 zip(
@@ -1006,6 +1008,6 @@ def test_the_free_distance_of_zoned_vias_is_their_own_fields(
                     _reference_free_distance(problem, k, polylines, positions)
                     for k in range(len(problem.vias))
                 ],
-                rtol=1e-12,
-                atol=1e-12,
+                rtol=DISTANCE_ROUNDING,
+                atol=DISTANCE_ROUNDING,
             )
