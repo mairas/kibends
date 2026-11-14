@@ -803,6 +803,11 @@ def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
 ) -> None:
     scenario = two_tents()
     clock = BurstClock(monkeypatch)
+    asked_after: list[int] = []
+
+    def holding(results: Sequence[PairResult]) -> list[int]:
+        asked_after.append(clock.bursts)
+        return hold_first(results)
 
     result = optimize_chains(
         scenario.chains,
@@ -810,11 +815,15 @@ def test_a_hold_at_the_time_limit_holds_what_it_leaves_too_tight(
         replace(COARSE, time_limit=1),
         pairs=scenario.pairs,
         clock=clock,
-        to_hold=hold_first,
+        to_hold=holding,
     )
 
     assert result.termination is Termination.TIME_LIMIT
-    assert clock.bursts == 1
+    # The limit counted again at each coarse level, and the holds came
+    # once it ran out at the final one, with no burst after them.
+    assert not result.before_final_spacing
+    assert len(asked_after) > 1
+    assert set(asked_after) == {clock.bursts}
     assert_held_as_drawn(result, scenario)
 
 
@@ -858,7 +867,9 @@ def test_a_hold_after_converging_as_the_run_ends_starts_no_burst(
     # hold then undoes the convergence, so the run ends on what ended it.
     scenario = two_tents()
     clock = BurstClock(monkeypatch)
-    settings = replace(COARSE, settled_change=SETTLES_AT_ONCE, time_limit=time_limit)
+    settings = replace(
+        ONE_SPACING, settled_change=SETTLES_AT_ONCE, time_limit=time_limit
+    )
 
     result = optimize_chains(
         scenario.chains,

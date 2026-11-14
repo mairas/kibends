@@ -681,6 +681,111 @@ def test_a_problem_stopped_before_its_first_step_is_before_the_final_spacing(
     assert result.before_final_spacing
 
 
+ONE_BURST = 0.5
+"""A time limit in bursts of `BurstClock`: each level it covers runs out of
+it after its first burst."""
+UNFINISHED_BURST = 1
+"""L-BFGS iterations of a burst too short to straighten `BOWED` at any
+level, so that no level settles in its first burst."""
+
+
+def limit_lines(log: list[str]) -> list[str]:
+    """The lines that say the time limit ended a coarse level."""
+    return [line.strip() for line in log if line.startswith("INFO Time limit")]
+
+
+def levels_of(log: list[str], layer: str) -> list[float | None]:
+    """The level each burst of the problem on `layer` ran at, as
+    `LoggedBurst.coarse` gives it."""
+    return [b.coarse for b in logged_bursts([x for x in log if f" {layer}: " in x])]
+
+
+def test_a_time_limit_ends_each_coarse_level_and_the_run_only_at_the_final_one(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    chain_on_front = on_two_layers(*BOWED)[:1]
+    settings = replace(
+        COARSE,
+        coarse_spacings=COARSE_LEVELS,
+        time_limit=ONE_BURST,
+        burst_maxiter=UNFINISHED_BURST,
+    )
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(chain_on_front, PARAMS, settings, clock=clock)
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert not result.before_final_spacing
+    # One burst at each level: the limit, counted again at each.
+    assert levels_of(log, "F.Cu") == [*COARSE_LEVELS, None]
+    assert limit_lines(log) == [
+        "INFO Time limit reached at 1.2 mm spacing; going on at 0.6 mm spacing "
+        "with the chains on F.Cu",
+        "INFO Time limit reached at 0.6 mm spacing; going on at 0.3 mm spacing "
+        "with the chains on F.Cu",
+    ]
+    (chain,) = result.chains
+    assert measure(chain.polyline, COARSE.spacing).length < chain.before.length
+
+
+def test_the_time_limit_hands_over_only_the_problems_at_a_coarse_level(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    # The straight chain's first burst settles its one coarse level; the
+    # limit runs out after the bowed chain's, which has not settled.
+    chains = [
+        scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
+        scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
+    ]
+    two_bursts = 1.5
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS[:1], time_limit=two_bursts)
+
+    result = optimize_chains(chains, PARAMS, settings, clock=BurstClock(monkeypatch))
+
+    assert not result.before_final_spacing
+    assert limit_lines(log) == [
+        "INFO Time limit reached at 1.2 mm spacing; going on at 0.3 mm spacing "
+        "with the chains on B.Cu",
+    ]
+    # Both go on at the final spacing.
+    assert levels_of(log, "F.Cu") == [COARSE_LEVELS[0], None]
+    assert levels_of(log, "B.Cu") == [COARSE_LEVELS[0], None]
+
+
+def test_a_stop_at_a_coarse_level_ends_the_run_there_within_the_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, time_limit=ONE_BURST)
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(
+        on_two_layers(*BOWED)[:1],
+        PARAMS,
+        settings,
+        clock=clock,
+        stop=lambda: clock.bursts >= 1,
+    )
+
+    assert result.termination is Termination.STOPPED
+    assert clock.bursts == 1
+    assert result.before_final_spacing
+
+
+def test_a_time_limit_at_one_spacing_ends_the_run(
+    monkeypatch: pytest.MonkeyPatch, log: list[str]
+) -> None:
+    two_bursts = 1.5
+    settings = replace(COARSE, coarse_spacings=(), time_limit=two_bursts)
+    clock = BurstClock(monkeypatch)
+
+    result = optimize_chains(on_two_layers(*BOWED)[:1], PARAMS, settings, clock=clock)
+
+    assert result.termination is Termination.TIME_LIMIT
+    assert clock.bursts == 2
+    assert not result.before_final_spacing
+    assert limit_lines(log) == []
+
+
 def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
     # Straight and off the walls' midline, the chain is as short as it can
     # be, so every step the misleading gradient takes, towards the nearer
