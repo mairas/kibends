@@ -132,7 +132,7 @@ use crate::geometry::V2;
 use crate::numeric::{python_max, python_min, python_sum};
 use crate::polylines::{self, count_violations, resample, shape_change, subdivide};
 use crate::seen::Seen;
-use crate::simplify::{Optimised, simplified_vertices};
+use crate::simplify::{Merging, Optimised, simplified_vertices};
 use crate::vias::free::{FreeDistances, free_distances, newly_inside};
 use crate::vias::sight::ViaSight;
 
@@ -853,12 +853,19 @@ impl State {
             })
             .collect();
         let tolerance = SIMPLIFY_FRACTION * shared.settings().settled_change;
+        let merging = vec![
+            Merging {
+                shortest: MERGE_EDGE,
+                bend_limit: None,
+            };
+            count
+        ];
         let kept = simplified_vertices(
             &shared.setup.energy.members.members,
             &optimised,
             &shared.via_rings(&shape.positions),
             tolerance,
-            MERGE_EDGE,
+            &merging,
         );
         let mut simplified = shape.clone();
         for (i, kept) in kept.iter().enumerate() {
