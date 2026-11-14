@@ -84,11 +84,6 @@ pub struct Problem {
     /// one without ground vias term for term.
     pub pairs: Option<Arc<ViaPairs>>,
     pub params: EnergyParams,
-    /// Where a chain's short-edge barrier starts, mm: the final spacing's
-    /// at every level, so that a coarse level does not push apart drawn
-    /// vertices closer than its own spacing, which it keeps. A section's
-    /// starts at its fold length (`members::Section::fold_edge`).
-    pub short_edge: f64,
 }
 
 fn refs(polylines: &[Vec<V2>]) -> Vec<&[V2]> {
@@ -145,8 +140,7 @@ impl Problem {
     /// and its gradient at every vertex and every via's centre: the members'
     /// terms with the vertices of `masks` zeroed, then the vias' own terms,
     /// the pairwise term and each vertex's contact stop by `contact_of`,
-    /// its index among its member's contacts. A chain's short-edge barrier
-    /// starts at `short_edge`.
+    /// its index among its member's contacts.
     /// With `lookups`, made for `seen`, the searches come from them, by
     /// default each its own. Err with the members' value if it is not
     /// finite.
@@ -176,7 +170,6 @@ impl Problem {
             polylines,
             masks,
             &self.params,
-            self.short_edge,
             seen,
             positions,
             neighbours,

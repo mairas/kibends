@@ -41,11 +41,6 @@ noise: a track routed at exactly the clearance splits into vertices about
 MAX_COARSE_LEVELS = _core.MAX_COARSE_LEVELS
 """The most coarse spacings a schedule may hold before its final spacing."""
 
-# Edges shorter than this fraction of the final spacing meet the short-edge
-# barrier, at every level. Drawn edges shorter than that keep their vertices
-# until the first burst slides them apart.
-SHORT_EDGE_FRACTION = 0.1
-
 # The chain's length term is ill-conditioned (tension spreads one vertex per
 # iteration), so scipy's default gtol (1e-5) ends a burst long before the
 # shape settles; with this gtol, burst_maxiter or ftol ends it instead. ftol is
@@ -136,11 +131,6 @@ class OptimizerSettings:
                 f"coarse_spacings holds at most {MAX_COARSE_LEVELS} spacings, "
                 f"got {len(self.coarse_spacings)}"
             )
-
-    @property
-    def short_edge(self) -> float:
-        """Length below which an edge meets the energy's short-edge barrier, mm."""
-        return SHORT_EDGE_FRACTION * self.spacing
 
 
 DEFAULT_SETTINGS = OptimizerSettings()

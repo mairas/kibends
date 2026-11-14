@@ -294,7 +294,6 @@ impl Members {
         polylines: Vec<Polyline<'_>>,
         masks: Vec<BoolArg<'_>>,
         params: Params,
-        short_edge: f64,
         seen: PyRef<'_, Seen>,
         positions: Polyline<'_>,
     ) -> PyResult<(f64, Vec<Points<'py>>, Points<'py>)> {
@@ -312,7 +311,6 @@ impl Members {
                 &refs(&polylines),
                 &mask_refs,
                 &params.0,
-                short_edge,
                 &seen.inner,
                 &positions,
                 None,
@@ -941,7 +939,7 @@ impl Problem {
     /// names at those distances, each moving via with its `diameter`, its
     /// static `fields` and its `stops`, what the vias' full terms see
     /// (`repel`) and what their stops see (`stop`), the pairwise term
-    /// `pairs`, the energy's `params` and its `short_edge`.
+    /// `pairs` and the energy's `params`.
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -954,7 +952,6 @@ impl Problem {
         stop: PyRef<'_, ViaSight>,
         pairs: Option<PyRef<'_, ViaPairs>>,
         params: Params,
-        short_edge: f64,
     ) -> PyResult<Self> {
         let count = members.inner.len();
         let vias = diameters.len();
@@ -991,7 +988,6 @@ impl Problem {
                 stop: stop.inner.clone(),
                 pairs: pairs.map(|p| p.inner.clone()),
                 params: params.0,
-                short_edge,
             }),
         })
     }

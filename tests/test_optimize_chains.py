@@ -115,13 +115,12 @@ def committed_energy(
     chains: Sequence[ChainInput],
     result: RunResult,
     params: EnergyParams,
-    settings: OptimizerSettings = COARSE,
 ) -> float:
     """The run energy of the returned shapes, each chain's in its field with
     the others."""
     polylines = [c.polyline for c in result.chains]
     return sum(
-        total_energy(c.polyline, c.fixed, field, params, settings.short_edge)[0]
+        total_energy(c.polyline, c.fixed, field, params)[0]
         for c, field in zip(result.chains, fields(chains, polylines), strict=True)
     )
 
@@ -166,10 +165,10 @@ class TestEnergy:
         polylines = [c.centreline.points for c in chains]
         masks = [c.fixed for c in chains]
 
-        value, _ = layer_energy(chains, polylines, masks, self.params(), 0.01)
+        value, _ = layer_energy(chains, polylines, masks, self.params())
 
         expected = sum(
-            total_energy(p, m, f, self.params(), 0.01)[0]
+            total_energy(p, m, f, self.params())[0]
             for p, m, f in zip(polylines, masks, fields(chains, polylines), strict=True)
         )
         assert value == pytest.approx(expected, rel=SUM_ORDER_ROUNDING)
@@ -179,21 +178,21 @@ class TestEnergy:
         polylines = [c.centreline.points.copy() for c in chains]
         masks = [c.fixed for c in chains]
         params = self.params()
-        _, gradients = layer_energy(chains, polylines, masks, params, 0.01)
+        _, gradients = layer_energy(chains, polylines, masks, params)
         step = CENTRAL_STEP
 
         for i, j in ((0, 1), (0, 2), (1, 1), (1, 2)):
             for axis in (0, 1):
                 shifted = [p.copy() for p in polylines]
                 shifted[i][j, axis] += step
-                up = layer_energy(chains, shifted, masks, params, 0.01)[0]
+                up = layer_energy(chains, shifted, masks, params)[0]
                 shifted[i][j, axis] -= 2 * step
-                down = layer_energy(chains, shifted, masks, params, 0.01)[0]
+                down = layer_energy(chains, shifted, masks, params)[0]
                 numeric = (up - down) / (2 * step)
                 assert gradients[i][j, axis] == pytest.approx(numeric, rel=CENTRAL_RTOL)
         # The chains are near enough for their repulsion to count.
         apart = [
-            layer_energy([c], [p], [m], params, 0.01)
+            layer_energy([c], [p], [m], params)
             for c, p, m in zip(chains, polylines, masks, strict=True)
         ]
         for (_, gradient), together in zip(apart, gradients, strict=True):
@@ -213,13 +212,13 @@ class TestEnergy:
         polylines = [c.centreline.points for c in chains]
         masks = [c.fixed for c in chains]
 
-        value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
+        value, gradients = layer_energy(chains, polylines, masks, self.params())
 
         for chain, points, mask, gradient in zip(
             chains, polylines, masks, gradients, strict=True
         ):
             alone, alone_gradient = layer_energy(
-                [chain], [points], [mask], self.params(), 0.01
+                [chain], [points], [mask], self.params()
             )
             value -= alone
             np.testing.assert_allclose(
@@ -243,7 +242,7 @@ class TestEnergy:
         masks = [c.fixed for c in chains]
         params = self.params()
         seen = seen_parts(chains, polylines)
-        _, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        _, gradients = layer_energy(chains, polylines, masks, params, seen)
         step = CENTRAL_STEP
 
         for i in range(len(polylines)):
@@ -251,9 +250,9 @@ class TestEnergy:
                 for axis in (0, 1):
                     shifted = [p.copy() for p in polylines]
                     shifted[i][j, axis] += step
-                    up = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    up = layer_energy(chains, shifted, masks, params, seen)[0]
                     shifted[i][j, axis] -= 2 * step
-                    down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    down = layer_energy(chains, shifted, masks, params, seen)[0]
                     numeric = (up - down) / (2 * step)
                     assert gradients[i][j, axis] == pytest.approx(
                         numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
@@ -265,9 +264,9 @@ class TestEnergy:
         masks = [c.fixed for c in chains]
         params = self.params()
         seen = seen_parts(chains, polylines)
-        value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        value, gradients = layer_energy(chains, polylines, masks, params, seen)
         alone = sum(
-            layer_energy([c], [p], [m], params, 0.01)[0]
+            layer_energy([c], [p], [m], params)[0]
             for c, p, m in zip(chains, polylines, masks, strict=True)
         )
         # B repels both chains of net A.
@@ -279,9 +278,9 @@ class TestEnergy:
                 for axis in (0, 1):
                     shifted = [p.copy() for p in polylines]
                     shifted[i][j, axis] += step
-                    up = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    up = layer_energy(chains, shifted, masks, params, seen)[0]
                     shifted[i][j, axis] -= 2 * step
-                    down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+                    down = layer_energy(chains, shifted, masks, params, seen)[0]
                     numeric = (up - down) / (2 * step)
                     assert gradients[i][j, axis] == pytest.approx(
                         numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
@@ -798,7 +797,7 @@ def test_a_rerun_through_the_levels_commits_no_more_energy_than_its_input() -> N
     )
 
     def energy(of: RunResult) -> float:
-        return committed_energy(again, of, scenario.params, settings)
+        return committed_energy(again, of, scenario.params)
 
     assert second.termination is Termination.CONVERGED
     assert energy(second) < energy(unchanged)
@@ -846,7 +845,7 @@ def test_a_run_stopped_at_a_coarse_level_ends_at_the_final_spacing() -> None:
     unchanged = run(scenario, replace(settings, max_iterations=0))
 
     def energy(of: RunResult) -> float:
-        return committed_energy(scenario.chains, of, scenario.params, settings)
+        return committed_energy(scenario.chains, of, scenario.params)
 
     assert energy(result) < energy(unchanged)
 
@@ -1599,7 +1598,7 @@ class TestJunctionEnergy:
         polylines = [c.centreline.points for c in chains]
         masks = [np.array([False, False, True])] * 3
 
-        value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
+        value, gradients = layer_energy(chains, polylines, masks, self.params())
 
         assert value == pytest.approx(12.0, rel=SUM_ORDER_ROUNDING)
         for g, pull in zip(
@@ -1624,17 +1623,17 @@ class TestJunctionEnergy:
         masks.append(other.fixed)
         params = self.params()
         seen = seen_parts(chains, polylines)
-        value, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
+        value, gradients = layer_energy(chains, polylines, masks, params, seen)
 
         def apart(members: Sequence[ChainInput]) -> float:
             """The members, the first of `chains`, each alone."""
             n = len(members)
             return sum(
-                layer_energy([c], [p], [m], params, 0.01)[0]
+                layer_energy([c], [p], [m], params)[0]
                 for c, p, m in zip(members, polylines[:n], masks[:n], strict=True)
             )
 
-        assert layer_energy(branches, polylines[:3], masks[:3], params, 0.01)[
+        assert layer_energy(branches, polylines[:3], masks[:3], params)[
             0
         ] == pytest.approx(apart(branches), rel=SUM_ORDER_ROUNDING)
         assert value > apart(chains)
@@ -1644,7 +1643,7 @@ class TestJunctionEnergy:
             shifted = [p.copy() for p in polylines]
             for p in shifted[:3]:
                 p[0, axis] += by
-            return layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
+            return layer_energy(chains, shifted, masks, params, seen)[0]
 
         for axis in (0, 1):
             numeric = (moved(axis, step) - moved(axis, -step)) / (2 * step)

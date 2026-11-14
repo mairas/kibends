@@ -62,7 +62,14 @@ pub type TermValue = (f64, Vec<V2>);
 pub const DEFAULT_ATTRACTION_RANGE: f64 = 3.0;
 
 /// 1 nm, KiCad's coordinate resolution: shorter edges are treated as
-/// degenerate.
+/// degenerate, their vector divided by this length rather than by their
+/// own, so the gradient of their length shrinks with them. A chain's free
+/// edges can get that short within a burst, since nothing holds its
+/// vertices apart; the gradient then misstates stretching such an edge but
+/// not moving it. The layout before the next burst merges such an edge
+/// where one of its ends is free and the chord that replaces it is clear
+/// (`simplify::merge_short_edges`); one between pinned, contact-keeping or
+/// via-carried vertices stays.
 pub const MIN_EDGE_LENGTH: f64 = 1e-6;
 
 /// Beyond this turning angle the curvature 2·tan(φ/2) is continued linearly

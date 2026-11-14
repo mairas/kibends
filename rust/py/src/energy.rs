@@ -211,19 +211,19 @@ fn polyline_of(
 }
 
 /// The terms of a member's energy that depend on the polyline alone: its
-/// length and, with a positive `short_edge`, mm, the short-edge barrier
-/// (`kibends_core::energy::polyline::shape_energy`); and the gradient,
-/// zero at `fixed` vertices.
+/// length and, with a `barrier` start, mm, a coupled section's short-edge
+/// barrier (`kibends_core::energy::polyline::shape_energy`); and the
+/// gradient, zero at `fixed` vertices.
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn shape_energy<'py>(
     py: Python<'py>,
     points: PyReadonlyArray2<'_, f64>,
     fixed: BoolArg<'_>,
-    short_edge: f64,
+    barrier: Option<f64>,
 ) -> PyResult<(f64, Points<'py>)> {
     let (points, fixed) = polyline_of(&points, &fixed)?;
-    let (value, gradient) = polyline::shape_energy(&points, &fixed, short_edge);
+    let (value, gradient) = polyline::shape_energy(&points, &fixed, barrier);
     Ok((value, vectors(py, &gradient)?))
 }
 

@@ -153,7 +153,6 @@ def reference_energy(
     polylines: Sequence[FloatArray],
     masks: Sequence[BoolArray],
     params: EnergyParams,
-    settings: OptimizerSettings = COARSE,
 ) -> float:
     """The energy at `polylines`, built member by member: each chain and
     section in its static field plus the others as `neighbour_field` shows
@@ -176,9 +175,7 @@ def reference_energy(
             near = neighbour_field(member, others)
             static, hinge = member.field, None
         field: ObstacleField = chain_field(static, near)
-        value += total_energy(points, mask, field, params, settings.short_edge, hinge)[
-            0
-        ]
+        value += total_energy(points, mask, field, params, hinge=hinge)[0]
     return value
 
 
@@ -264,11 +261,9 @@ class TestEnergy:
         # nets' fan-outs, which the sections ignore and which ignore them.
         members, polylines, masks = self.state(scenario)
 
-        value, _ = layer_energy(members, polylines, masks, self.params(), 0.01)
+        value, _ = layer_energy(members, polylines, masks, self.params())
 
-        expected = reference_energy(
-            members, polylines, masks, self.params(), replace(COARSE, spacing=0.1)
-        )
+        expected = reference_energy(members, polylines, masks, self.params())
         assert value == pytest.approx(expected, rel=SUM_ORDER_ROUNDING)
 
     def test_gradient_reaches_through_the_tracks(self) -> None:
@@ -279,8 +274,8 @@ class TestEnergy:
         members, polylines, masks = self.state(scenario)
         params = self.params()
         seen = seen_parts(members, polylines)
-        _, gradients = layer_energy(members, polylines, masks, params, 0.01, seen)
-        apart = layer_energy(members[1:], polylines[1:], masks[1:], params, 0.01)[1]
+        _, gradients = layer_energy(members, polylines, masks, params, seen)
+        apart = layer_energy(members[1:], polylines[1:], masks[1:], params)[1]
         assert not np.allclose(apart[0], gradients[1])
 
         for i in range(len(members)):
@@ -288,9 +283,9 @@ class TestEnergy:
                 for axis in (0, 1):
                     shifted = [p.copy() for p in polylines]
                     shifted[i][k, axis] += CENTRAL_STEP
-                    up = layer_energy(members, shifted, masks, params, 0.01, seen)[0]
+                    up = layer_energy(members, shifted, masks, params, seen)[0]
                     shifted[i][k, axis] -= 2 * CENTRAL_STEP
-                    down = layer_energy(members, shifted, masks, params, 0.01, seen)[0]
+                    down = layer_energy(members, shifted, masks, params, seen)[0]
                     numeric = (up - down) / (2 * CENTRAL_STEP)
                     assert gradients[i][k, axis] == pytest.approx(
                         numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
@@ -307,11 +302,11 @@ class TestEnergy:
         members, polylines, masks = self.state(scenario)
         params = self.params()
 
-        value, gradients = layer_energy(members, polylines, masks, params, 0.01)
+        value, gradients = layer_energy(members, polylines, masks, params)
 
         for k in range(len(members)):
             alone, alone_gradient = layer_energy(
-                [members[k]], [polylines[k]], [masks[k]], params, 0.01
+                [members[k]], [polylines[k]], [masks[k]], params
             )
             value -= alone
             np.testing.assert_allclose(
@@ -490,7 +485,6 @@ class TestTightCorner:
             [folded(points, first)],
             [fixed],
             scenarios.PARAMS,
-            COARSE.short_edge,
         )
 
         assert math.isfinite(value)

@@ -23,8 +23,9 @@
 //! across its edges shorter than MERGE_EDGE, each merge clear of what it
 //! sees and of the moving vias' rings where they are, then its edges
 //! longer than the level's spacing are split evenly. So the vertices the
-//! bursts bunched or left on a straight go, and a chain that shortens loses
-//! vertices rather than crumpling against the short-edge barrier. The
+//! bursts bunched or left on a straight go: a chain carries no short-edge
+//! barrier, its free vertices may bunch within a burst, and a chain that
+//! shortens loses vertices here rather than crumpling. The
 //! simplification moves a shape by no more than its tolerance, a merge
 //! across a short edge by up to that edge, and a split not at all; a
 //! burst's change counts from the shapes so laid out, so that laying out
@@ -32,8 +33,9 @@
 //!
 //! A coupled section is laid out as a chain is, its centreline from track
 //! a's drawn vertices, but its fold length (`members::Section::layout_limits`)
-//! takes MERGE_EDGE's place and the short-edge barrier's start, and no
-//! split leaves an edge shorter than it (`polylines::subdivide`). Its
+//! takes MERGE_EDGE's place, its short-edge barrier starts there
+//! (`energy::polyline::shape_energy`), and no split leaves an edge shorter
+//! than it (`polylines::subdivide`). Its
 //! tracks are its centreline's mitred offsets, whose inner side folds at an
 //! edge shorter than that between turns as sharp as its bend-radius limit
 //! allows at the spacing. The fold length is always above half the spacing,
@@ -83,9 +85,7 @@
 //! vertices, and its bow across the whole span is about N² softer than one
 //! vertex, so a few coarse vertices straighten it in a few bursts where the
 //! final spacing needs a hundred. Each level's stiffness reference takes
-//! its spacing; a chain's short-edge barrier starts at the final spacing's
-//! at every level, so that a coarse level does not push apart the drawn
-//! vertices it keeps.
+//! its spacing.
 //!
 //! The best state is always one that passes the guard at the current
 //! level's spacing, and energies are compared only within a level
@@ -695,8 +695,9 @@ pub const SIMPLIFY_FRACTION: f64 = 0.5;
 
 /// The shortest edge a burst's start keeps between free vertices, mm:
 /// across a shorter one a vertex is merged
-/// (`simplify::merge_short_edges`), so that a chain that shortens loses
-/// vertices rather than crumpling them.
+/// (`simplify::merge_short_edges`). A chain has no short-edge barrier, so
+/// this is what keeps its free vertices from piling up: a chain that
+/// shortens loses vertices rather than crumpling them.
 pub const MERGE_EDGE: f64 = 0.02;
 
 /// A member's pinned vertices, its `loose` ends and the vertices that keep
@@ -1702,7 +1703,6 @@ mod tests {
             stop: ViaSight::new(&none, &none, count),
             pairs: None,
             params: params(),
-            short_edge: 0.05,
         };
         State::new(Setup {
             energy: Arc::new(energy),

@@ -119,7 +119,6 @@ def members_energy(
     polylines: Sequence[FloatArray],
     masks: Sequence[BoolArray],
     params: EnergyParams,
-    short_edge: float,
     seen: Seen,
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
@@ -128,14 +127,13 @@ def members_energy(
     `polylines` as `seen` shows them, with vias at `positions` among them,
     a section with its bend-radius hinge; its gradient at every vertex of
     every chain and centreline, with the rows of `masks` zeroed; and the
-    gradient at each via's centre. A chain's short-edge barrier starts at
-    `short_edge`, a section's at its fold length. Raises ValueError if it
-    is not finite (`kibends_core::members::Members::energy`)."""
+    gradient at each via's centre. A section's short-edge barrier starts at
+    its fold length; a chain has none. Raises ValueError if it is not finite
+    (`kibends_core::members::Members::energy`)."""
     return core_members(members).energy(
         _points(polylines),
         [np.asarray(mask, dtype=bool) for mask in masks],
         params,
-        short_edge,
         seen,
         positions_array(positions),
     )

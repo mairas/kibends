@@ -384,7 +384,6 @@ def _reference_members(
     polylines: Sequence[FloatArray],
     masks: Sequence[BoolArray],
     params: EnergyParams,
-    short_edge: float,
     seen: Sequence[tuple[Pieces, IntArray]],
     positions: Sequence[FloatArray],
 ) -> tuple[float, list[FloatArray], FloatArray]:
@@ -421,11 +420,11 @@ def _reference_members(
         obstacle, obstacle_gradient, slopes = edge_integral(
             points, distance, direction, integrand, k
         )
-        shortest = short_edge
+        barrier: float | None = None
         if isinstance(member, PairBlock):
             half_pitch = (member.given.gap + member.given.a.width) / 2
-            shortest = fold_edge(half_pitch, member.limit, member.spacing)
-        shape, shape_gradient = shape_energy(points, masks[i], shortest)
+            barrier = fold_edge(half_pitch, member.limit, member.spacing)
+        shape, shape_gradient = shape_energy(points, masks[i], barrier)
         value += shape + obstacle
         gradient = shape_gradient + obstacle_gradient
         if isinstance(member, PairBlock):
@@ -641,12 +640,11 @@ def test_the_energy_is_the_one_each_members_own_field_gives(
                 polylines,
                 masks,
                 params,
-                DEFAULT_SETTINGS.short_edge,
                 seen,
                 positions,
             )
             expected = _reference_members(
-                *arguments[:5],
+                *arguments[:4],
                 _reference_parts(problem, layout.starts),
                 positions,
             )
