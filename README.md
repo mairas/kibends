@@ -244,7 +244,10 @@ allows, so its vertices across a shorter edge are merged, its edges are not
 split into shorter ones, and shorter edges are pushed apart. Neither merging
 nor splitting bends a section tighter than that radius where it was not
 already, nor any tighter where it was: a vertex whose merge would is kept,
-and an edge beside a turn is split into fewer, longer pieces.
+and an edge beside a turn is split into fewer, longer pieces. The
+simplification before the commit keeps a section's vertices by the same
+rule, so a section's committed tracks bend no tighter than the optimizer
+left them.
 
 The command prints the optimizer's outcome, after how many iterations and
 how many seconds, and how many edge moves it rejected. It converged, had

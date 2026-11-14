@@ -731,6 +731,39 @@ def test_a_section_keeps_clear_as_wide_as_its_outer_corners_reach() -> None:
     assert reach <= block.chain.centreline.width / 2 + POSITION_ROUND_OFF
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        pytest.param(scenarios.pair_corner(), id="corner"),
+        pytest.param(scenarios.pair_round_corner(), id="round-corner"),
+        pytest.param(scenarios.pair_chamfered(), id="chamfered"),
+    ],
+)
+def test_a_committed_section_bends_no_tighter_than_its_limit(
+    scenario: PairsScenario,
+) -> None:
+    # Turning at its limit, as these do, merging at the chord tolerance
+    # alone would bend its inner track tighter than it allows.
+    run_result = run(scenario, DEFAULT_SPACING)
+    (pair,) = run_result.pairs
+    block = pair.block
+    result = ChainResult(
+        pair.centreline, pair.fixed, 0, pair.before, no_contacts(pair.centreline)
+    )
+
+    # As run.py simplifies a section before the commit.
+    (centreline,) = simplify_chains(
+        [block.facing],
+        replace(run_result, chains=(result,), pairs=()),
+        DEFAULT_CHORD_TOLERANCE,
+        sections={0: block},
+    )
+
+    assert len(centreline) < len(pair.centreline)
+    gap, width = block.given.gap, block.given.a.width
+    assert not check_bend_radius(centreline, gap, width).too_tight
+
+
 def without_stalls(settings: OptimizerSettings) -> OptimizerSettings:
     """`settings` with a stall window as long as the run, so that only a
     burst that changes nothing by the settled change settles a problem."""

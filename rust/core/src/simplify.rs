@@ -33,6 +33,10 @@
 //! corners at kept vertices next to a merged edge reach farther out than
 //! the edges: where one enters the field, the vertices on either side of
 //! it are kept and the section merged again (`Neighbours::loose_corners`).
+//! Nor does a merge bend one of its edges below its bend-radius limit and
+//! tighter than the edges it replaces: the vertices around such an edge
+//! are kept too (`tightened`), since merging an arc's vertices concentrates
+//! its turn on those left and would fold the inner track.
 
 use std::sync::Arc;
 
@@ -67,7 +71,8 @@ pub struct Merging {
 /// Each of `members` where the optimizer left it simplified within
 /// `tolerance`, in order, each against its static field and the others on
 /// its layer that it does not ignore, at their latest shapes. Its direction
-/// pins keep within `INSIDE_TOLERANCE` of a chord merged across them.
+/// pins keep within `INSIDE_TOLERANCE` of a chord merged across them, and a
+/// section bends no edge below its limit tighter than it was.
 ///
 /// Panics unless `optimised` holds one entry per member, each with a fixed
 /// flag per vertex, and a moving section's polyline two vertices or more.
@@ -77,7 +82,13 @@ pub fn simplify_chains(
     tolerance: f64,
 ) -> Vec<Vec<V2>> {
     let none = vec![None; members.len()];
-    let merging = vec![Merging::default(); members.len()];
+    let merging: Vec<Merging> = members
+        .iter()
+        .map(|m| Merging {
+            shortest: 0.0,
+            bend_limit: m.bend_limit(),
+        })
+        .collect();
     simplified_vertices(members, optimised, &none, tolerance, &merging)
         .iter()
         .zip(optimised)
