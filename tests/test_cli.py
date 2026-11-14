@@ -21,6 +21,7 @@ import shapely
 from conftest import (
     BOARD_FRAME,
     COMMIT_CALLS,
+    NM_ROUNDING,
     PAD_HALF_SIZE,
     REPORTED,
     RETURN_SIGNAL_VIA,
@@ -102,8 +103,6 @@ ON_CHORD = (2.2, 1.8)
 """Pad centre inside the L, near enough its chord to block it."""
 STUB_TOUCH = (2, 0)
 """Where a same-net stub ends, mid-way along the L's first leg."""
-# Rounding the created tracks to whole nanometres may cost this much clearance.
-NM_ROUNDING = 2e-6
 
 
 def l_chain() -> list[kbt.Track]:

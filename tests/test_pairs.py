@@ -2,7 +2,13 @@ import math
 
 import numpy as np
 import pytest
-from conftest import CENTRAL_ATOL, CENTRAL_RTOL, CENTRAL_STEP, POSITION_ROUND_OFF
+from conftest import (
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
+    NM_ROUNDING,
+    POSITION_ROUND_OFF,
+)
 from distance_fields import FreeSpace
 from shapely.geometry import LineString
 
@@ -31,9 +37,6 @@ from kibends.simplify import simplify
 WIDTH = 0.2
 GAP = 0.15
 HALF_PITCH = (GAP + WIDTH) / 2
-NM_ROUNDING_TOLERANCE = 1e-5
-"""mm the gap of a pair whose vertices KiCad rounded to its 1 nm grid may
-differ from the drawn one."""
 SAMPLED_GAP = 1e-6
 """mm the gap measured between offsets of a densely drawn curve may differ
 from the offset's gap."""
@@ -415,7 +418,7 @@ def test_pair_widening_briefly_at_its_pads_is_coupled_from_the_jog() -> None:
     coupled_a, coupled_b = pair.coupled(section)
     np.testing.assert_allclose(coupled_a, a.points[2:6])
     np.testing.assert_allclose(coupled_b, b.points[3:6])
-    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING_TOLERANCE)
+    assert pair.gap == pytest.approx(0.25, abs=NM_ROUNDING)
 
 
 def test_u_turn_is_one_coupled_section() -> None:
@@ -599,7 +602,7 @@ def test_hand_routed_pair_with_45_degree_corners(inner_first: bool) -> None:
     assert pair is not None
     np.testing.assert_allclose(coupled_a, a_nm)
     np.testing.assert_allclose(coupled_b, b_nm)
-    assert pair.gap == pytest.approx(GAP, abs=NM_ROUNDING_TOLERANCE)
+    assert pair.gap == pytest.approx(GAP, abs=NM_ROUNDING)
 
 
 def curved_path() -> FloatArray:

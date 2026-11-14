@@ -262,6 +262,10 @@ in another order."""
 POSITION_ROUND_OFF = 1e-9
 """Float rounding between a position or a distance (mm), or a unit
 direction, and the same one computed another way."""
+NM_ROUNDING = math.sqrt(2) / NM_PER_MM
+"""mm a distance between committed copper may differ from the drawn one:
+KiCad rounds each end to whole nanometres, which moves it by at most
+√2/2 nm, so a distance between two rounded items by at most √2 nm."""
 NM_TOLERANCE = 1e-6
 """mm: KiCad's coordinate step. Distances within it are the same clearance
 on the board."""
