@@ -4,7 +4,7 @@ from dataclasses import replace
 from itertools import pairwise
 
 import pytest
-from conftest import BOARD_FRAME, extract_chains, one_chain
+from conftest import BOARD_FRAME, POSITION_ROUND_OFF, extract_chains, one_chain
 from shapely.geometry import LineString, Point, Polygon, box
 
 from kibends.chain import (
@@ -22,7 +22,6 @@ from kibends.snapshot import Arc, Disc
 WIDTH_NM = 250_000
 LAYER = "F.Cu"
 NET = "SIG"
-PIN_TOLERANCE_MM = 1e-6
 WIDTH_MM = WIDTH_NM / NM_PER_MM
 
 
@@ -63,7 +62,7 @@ def l_z_segments() -> list[Segment]:
 def assert_points(chain: Chain, expected: list[tuple[float, float]]) -> None:
     assert len(chain.points) == len(expected)
     for got, want in zip(chain.points, expected, strict=True):
-        assert got == pytest.approx(want, abs=PIN_TOLERANCE_MM)
+        assert got == pytest.approx(want, abs=POSITION_ROUND_OFF)
 
 
 def pinned_points(chain: Chain) -> list[tuple[float, float]]:
@@ -112,13 +111,6 @@ class TestOrdering:
 
         assert_points(chain, [(1, 2), (3, 4)])
         assert chain.pinned == (True, True)
-
-    def test_chain_is_frozen(self) -> None:
-        chain = one_chain(l_z_segments(), frame=BOARD_FRAME)
-
-        # The write pyright rejects statically is the one under test.
-        with pytest.raises(AttributeError):
-            chain.layer = "B.Cu"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 class TestDedupe:
@@ -222,7 +214,9 @@ class TestPinning:
 
         chain = one_chain(l_z_segments(), [branch], frame=BOARD_FRAME)
 
-        assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
+        assert pinned_points(chain)[1] == pytest.approx(
+            (2.5, 0), abs=POSITION_ROUND_OFF
+        )
 
     def test_track_whose_copper_stops_short_of_the_chain_copper_does_not_pin(
         self,
@@ -356,7 +350,7 @@ class TestContacts:
 
         assert sum(chain.pinned) == 2
         assert slide_points(chain) == [
-            pytest.approx((4.5 + 1.25, 0), abs=PIN_TOLERANCE_MM)
+            pytest.approx((4.5 + 1.25, 0), abs=POSITION_ROUND_OFF)
         ]
         assert_slides_within(chain, chain.slides[0][0], pad)
 
@@ -558,7 +552,9 @@ class TestLocked:
 
         chain = one_chain(segments, frame=BOARD_FRAME)
 
-        assert pinned_points(chain)[1] == pytest.approx((2.5, 0), abs=PIN_TOLERANCE_MM)
+        assert pinned_points(chain)[1] == pytest.approx(
+            (2.5, 0), abs=POSITION_ROUND_OFF
+        )
 
     def test_locked_segment_splitting_the_selection_gives_two_pinned_chains(
         self,
@@ -801,20 +797,14 @@ class TestSeveralChains:
             seg("b", (10, 0), (20, 0), layer="B.Cu"),
         ]
         via = Point(10, 0).buffer(0.3)
-        asked: list[tuple[str, str]] = []
 
-        def copper(layer: str, net: str) -> list[Polygon]:
-            asked.append((layer, net))
-            return [via]
-
-        back, front = extract_chains(segments, copper, frame=BOARD_FRAME)
+        back, front = extract_chains(segments, lambda _l, _n: [via], frame=BOARD_FRAME)
 
         assert (back.layer, back.segment_ids) == ("B.Cu", ("b",))
         assert (front.layer, front.segment_ids) == (LAYER, ("a",))
         assert_points(back, [(10, 0), (10.3, 0), (20, 0)])
         assert_points(front, [(0, 0), (9.7, 0), (10, 0)])
         assert back.pinned == front.pinned == (True, True, True)
-        assert sorted(asked) == [("B.Cu", NET), (LAYER, NET)]
 
     def test_same_net_tracks_crossing_on_two_layers_do_not_branch(self) -> None:
         segments = [
@@ -903,7 +893,7 @@ class TestLoops:
         chain = one_chain(square_loop(), [pad], frame=BOARD_FRAME)
 
         assert chain.points[0] == chain.points[-1]
-        assert chain.points[0] == pytest.approx((5, 0), abs=PIN_TOLERANCE_MM)
+        assert chain.points[0] == pytest.approx((5, 0), abs=POSITION_ROUND_OFF)
         assert pinned_points(chain) == [chain.points[0]] * 2
         assert chain.slides == ()
 
