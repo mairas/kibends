@@ -608,3 +608,37 @@ def test_a_place_along_an_arc_s_chords_is_skipped() -> None:
         [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
     )
     assert result.termination is not Termination.ABNORMAL
+
+
+PRESSED_GAP = 0.15
+"""mm between a chain's copper and a section's track P: inside their
+clearance."""
+OWN_PAD_GAP = 0.02
+"""mm between a pad of track P's net and the track's copper: deeper inside
+the optimizer's measure than the chain."""
+
+
+def test_a_chain_beside_a_section_past_a_pad_of_its_net_is_refused() -> None:
+    # The section's run inside is deepest at the pad of its net, which is no
+    # violation; the chain in the same run is.
+    straight = scenarios.coupled(FreeSpace(), (0.0, 0.0), (10.0, 0.0))
+    p_y = float(straight.a.points[0][1])
+    side = math.copysign(1.0, p_y)
+    extent = (straight.gap + PAIR_WIDTH) / 2 + PAIR_WIDTH / 2
+    pad = Obstacle(
+        "pad p",
+        Point(5.0, p_y + side * (PAIR_WIDTH / 2 + OWN_PAD_GAP + SECTION_PAD)),
+        SECTION_PAD + PAIR_CLEARANCE + extent,
+        net="P",
+        extent=SECTION_PAD,
+    )
+    section = replace(straight, field=Obstacles([pad]))
+    g_y = p_y + side * (PAIR_WIDTH + PRESSED_GAP)
+    chain = selected("g", "GND", FreeSpace(), (5.3, g_y), (5.3, g_y + side * 5.0))
+
+    found = refused(
+        lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS, pairs=[section])
+    )
+
+    assert {v.obstacle for v in found} == {"g"}
+    assert min(v.distance or 0.0 for v in found) == pytest.approx(PRESSED_GAP)
