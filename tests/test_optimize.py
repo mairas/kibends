@@ -12,8 +12,12 @@ import pytest
 import scenarios
 import shapely
 from conftest import (
+    REPORTED,
+    STRAIGHT_TOLERANCE,
+    SUM_ORDER_ROUNDING,
     BurstClock,
     clearances,
+    off_straight,
     total_energy,
     violations,
 )
@@ -51,9 +55,6 @@ SETTINGS = OptimizerSettings()
 # For long runs: about 20x faster than the defaults and, on the detour and
 # stall scenarios, still converging within 1 µm of the default result's length.
 COARSE = replace(SETTINGS, spacing=0.3, settled_change=0.003, burst_maxiter=30)
-STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
-"""mm from the ideal line within which a result is straight: simplification
-commits it as one straight track."""
 
 
 def run(scenario: Scenario, settings: OptimizerSettings = SETTINGS) -> OptimizeResult:
@@ -64,15 +65,6 @@ def run(scenario: Scenario, settings: OptimizerSettings = SETTINGS) -> OptimizeR
 
 def all_edges_clear(points: FloatArray, field: ObstacleField) -> bool:
     return bool(field.segments_clear(points[:-1], points[1:]).all())
-
-
-def distance_to_line(
-    points: FloatArray, start: FloatArray, end: FloatArray
-) -> FloatArray:
-    direction = (end - start) / np.linalg.norm(end - start)
-    offset = points - start
-    cross: FloatArray = offset[:, 0] * direction[1] - offset[:, 1] * direction[0]
-    return np.abs(cross)
 
 
 def y_at(points: FloatArray, x: float) -> float:
@@ -92,10 +84,9 @@ def test_l_path_in_free_space_becomes_straight() -> None:
     result = optimize(polyline, fixed, FreeSpace(), PARAMS, L_PATH_SETTINGS)
 
     assert result.termination is Termination.CONVERGED
-    start, end = polyline[0], polyline[-1]
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
-    assert distance_to_line(result.polyline, start, end).max() < STRAIGHT_TOLERANCE
-    assert result.after.length < np.hypot(10.0, 10.0) + STRAIGHT_TOLERANCE
+    assert off_straight(result.polyline) < STRAIGHT_TOLERANCE
+    assert result.after.length == pytest.approx(np.hypot(10.0, 10.0), abs=REPORTED)
     assert result.before.length == pytest.approx(20.0)
 
 
@@ -437,8 +428,8 @@ def test_detour_in_narrow_channel_is_pulled_tight() -> None:
     assert result.termination is Termination.CONVERGED
     assert all_edges_clear(result.polyline, scenario.field)
     assert result.before.length == pytest.approx(scenarios.DETOUR_LENGTH + 5.0)
-    start, end = scenario.polyline[0], scenario.polyline[-1]
-    assert distance_to_line(result.polyline, start, end).max() < STRAIGHT_TOLERANCE
+    assert np.array_equal(result.polyline[[0, -1]], scenario.polyline[[0, -1]])
+    assert off_straight(result.polyline) < STRAIGHT_TOLERANCE
 
 
 class TestNothingToDo:
@@ -480,15 +471,24 @@ def test_endpoints_must_be_fixed() -> None:
         optimize(polyline, np.array([True, False]), FreeSpace(), PARAMS)
 
 
+ARC_POINTS = 200
+MEASURED_RADIUS = 1e-2
+"""Relative error of the tightest bend radius `measure` finds on an arc of
+ARC_POINTS points at its 0.05 mm spacing."""
+MEASURED_LENGTH = 1e-4
+"""Relative error of the length `measure` finds on that arc: its chords
+fall short of the arc by about 1e-5."""
+
+
 def test_measure_reports_bend_and_length() -> None:
-    angles = np.linspace(0.0, np.pi, 200)
+    angles = np.linspace(0.0, np.pi, ARC_POINTS)
     radius = 1.5
     arc = radius * np.stack([np.cos(angles), np.sin(angles)], axis=1)
 
     stats = measure(arc, spacing=0.05)
 
-    assert stats.tightest_bend_radius == pytest.approx(radius, rel=1e-2)
-    assert stats.length == pytest.approx(np.pi * radius, rel=1e-4)
+    assert stats.tightest_bend_radius == pytest.approx(radius, rel=MEASURED_RADIUS)
+    assert stats.length == pytest.approx(np.pi * radius, rel=MEASURED_LENGTH)
 
 
 def test_measure_gives_a_sharp_corner_a_small_radius() -> None:
@@ -863,10 +863,6 @@ class TestStalled:
         twice = tuple(2 * length for length in lengths)
         assert self.stalled(lowest, lengths, 1, 1)
         assert not self.stalled([2 * e for e in lowest], twice, 2, 2)
-
-
-SUM_ORDER_ROUNDING = 1e-12
-"""How far two sums of the same terms in another order may differ."""
 
 
 def test_energy_with_a_reach_limited_field_is_unchanged() -> None:

@@ -49,7 +49,12 @@ from loguru import logger
 
 import kibends.optimize as optimize_module
 from kibends import _core
-from kibends.bursts import FALLBACK_WARNING, INSIDE_TOLERANCE, OptimizerSettings
+from kibends.bursts import (
+    DEFAULT_CHORD_TOLERANCE,
+    FALLBACK_WARNING,
+    INSIDE_TOLERANCE,
+    OptimizerSettings,
+)
 from kibends.chain import (
     NM_PER_MM,
     Chain,
@@ -243,6 +248,37 @@ CURVATURE_STEP = 1e-7
 CURVATURE_RTOL = 1e-5
 CURVATURE_ATOL = 1e-6
 """How near an analytic curvature lies to its central difference."""
+
+CENTRAL_STEP = 1e-7
+"""mm of a central difference of an energy, for its gradient."""
+CENTRAL_RTOL = 1e-5
+CENTRAL_ATOL = 1e-7
+"""How near an analytic gradient lies to its central difference at
+CENTRAL_STEP."""
+SUM_ORDER_ROUNDING = 1e-12
+"""Error, relative or near zero absolute, of summing the same energy terms
+in another order."""
+POSITION_ROUND_OFF = 1e-9
+"""mm of float rounding between a position and the same position computed
+another way."""
+
+STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
+"""mm from the line between its ends within which a route is straight:
+simplification commits it as one straight track."""
+REPORTED = 5e-4
+"""mm: half the last of the three decimals the CLI reports a length to."""
+
+
+def off_straight(points: FloatArray) -> float:
+    """How far `points` stray from the line between their first and last at
+    most, mm."""
+    start: FloatArray = points[0]
+    end: FloatArray = points[-1]
+    direction: FloatArray = (end - start) / np.linalg.norm(end - start)
+    offset = points - start
+    cross: FloatArray = offset[:, 0] * direction[1] - offset[:, 1] * direction[0]
+    return float(np.abs(cross).max())
+
 
 CLEARANCE_STEP = 0.01
 """mm between the points along a polyline's edges where `clearances` looks."""

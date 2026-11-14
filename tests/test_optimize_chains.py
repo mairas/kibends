@@ -16,18 +16,26 @@ import pytest
 import scenarios
 from conftest import (
     BOARD_FRAME,
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
+    POSITION_ROUND_OFF,
+    REPORTED,
+    STRAIGHT_TOLERANCE,
+    SUM_ORDER_ROUNDING,
     BurstClock,
     Ticking,
     all_abnormal_bursts,
     clearances,
     extract_chains,
     layer_energy,
+    off_straight,
     total_energy,
 )
 from distance_fields import Disc, FloatArray, FreeSpace
 from reference_fields import chain_field, neighbour_field
 from scenarios import ChainsScenario, selected
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
 from kibends.bursts import (
@@ -75,17 +83,6 @@ def gap(a: FloatArray, b: FloatArray) -> float:
 
 def length(points: FloatArray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-
-
-STRAIGHT_TOLERANCE = 0.01
-"""How far from the line between its ends a straight result's vertices may
-lie, mm: COARSE leaves the width change bowed by 2 µm."""
-
-
-def off_straight(points: FloatArray) -> float:
-    """How far `points` stray from the line between their ends at most, mm."""
-    line = LineString(points[[0, -1]])
-    return max(line.distance(Point(p)) for p in points)
 
 
 def y_at(points: FloatArray, x: float) -> float:
@@ -174,7 +171,7 @@ class TestEnergy:
             total_energy(p, m, f, self.params(), 0.01)[0]
             for p, m, f in zip(polylines, masks, fields(chains, polylines), strict=True)
         )
-        assert value == pytest.approx(expected, rel=1e-12)
+        assert value == pytest.approx(expected, rel=SUM_ORDER_ROUNDING)
 
     def test_gradient_reaches_the_other_chains_vertices(self) -> None:
         chains = self.chains()
@@ -182,7 +179,7 @@ class TestEnergy:
         masks = [c.fixed for c in chains]
         params = self.params()
         _, gradients = layer_energy(chains, polylines, masks, params, 0.01)
-        step = 1e-7
+        step = CENTRAL_STEP
 
         for i, j in ((0, 1), (0, 2), (1, 1), (1, 2)):
             for axis in (0, 1):
@@ -192,7 +189,7 @@ class TestEnergy:
                 shifted[i][j, axis] -= 2 * step
                 down = layer_energy(chains, shifted, masks, params, 0.01)[0]
                 numeric = (up - down) / (2 * step)
-                assert gradients[i][j, axis] == pytest.approx(numeric, rel=1e-5)
+                assert gradients[i][j, axis] == pytest.approx(numeric, rel=CENTRAL_RTOL)
         # The chains are near enough for their repulsion to count.
         apart = [
             layer_energy([c], [p], [m], params, 0.01)
@@ -224,8 +221,10 @@ class TestEnergy:
                 [chain], [points], [mask], self.params(), 0.01
             )
             value -= alone
-            np.testing.assert_allclose(gradient, alone_gradient[0], atol=1e-12)
-        assert value == pytest.approx(0.0, abs=1e-12)
+            np.testing.assert_allclose(
+                gradient, alone_gradient[0], atol=SUM_ORDER_ROUNDING
+            )
+        assert value == pytest.approx(0.0, abs=SUM_ORDER_ROUNDING)
 
     def test_gradient_of_a_chain_midway_between_two_matches_finite_differences(
         self,
@@ -244,7 +243,7 @@ class TestEnergy:
         params = self.params()
         seen = seen_parts(chains, polylines)
         _, gradients = layer_energy(chains, polylines, masks, params, 0.01, seen)
-        step = 1e-7
+        step = CENTRAL_STEP
 
         for i in range(len(polylines)):
             for j in np.flatnonzero(~masks[i]):
@@ -256,7 +255,7 @@ class TestEnergy:
                     down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
                     numeric = (up - down) / (2 * step)
                     assert gradients[i][j, axis] == pytest.approx(
-                        numeric, rel=1e-5, abs=1e-7
+                        numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
                     )
 
     def test_gradient_with_chains_of_one_net_and_another(self) -> None:
@@ -272,7 +271,7 @@ class TestEnergy:
         )
         # B repels both chains of net A.
         assert value > alone
-        step = 1e-7
+        step = CENTRAL_STEP
 
         for i in range(len(polylines)):
             for j in np.flatnonzero(~masks[i]):
@@ -284,7 +283,7 @@ class TestEnergy:
                     down = layer_energy(chains, shifted, masks, params, 0.01, seen)[0]
                     numeric = (up - down) / (2 * step)
                     assert gradients[i][j, axis] == pytest.approx(
-                        numeric, rel=1e-5, abs=1e-7
+                        numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
                     )
 
 
@@ -485,10 +484,6 @@ def on_layer(chain: ChainInput, layer: str) -> ChainInput:
     return replace(chain, layer=layer)
 
 
-SPLIT_ROUND_OFF = 1e-9
-"""How far splitting an edge may leave a point off it, mm: float round-off."""
-
-
 def test_time_limit_stops_in_the_burst_that_passes_it() -> None:
     scenario = bumps()
     back = on_layer(
@@ -507,7 +502,7 @@ def test_time_limit_stops_in_the_burst_that_passes_it() -> None:
     # Only the front layer had its burst; the back one keeps its drawn shape.
     drawn = LineString(back.centreline.points)
     kept = LineString(result.chains[2].polyline)
-    assert kept.hausdorff_distance(drawn) < SPLIT_ROUND_OFF
+    assert kept.hausdorff_distance(drawn) < POSITION_ROUND_OFF
 
 
 def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
@@ -1327,9 +1322,6 @@ class TestChannelPair:
 
 
 WIDTH_CHANGE_LENGTH = math.dist((0.0, 0.0), scenarios.WIDTH_CHANGE_END)
-REPORTED = 5e-4
-"""mm: the width change's length matches the straight line's 20.396 mm as
-reported to three decimals."""
 
 
 def test_a_width_change_moves_its_junction_onto_the_straight_line() -> None:
@@ -1341,9 +1333,9 @@ def test_a_width_change_moves_its_junction_onto_the_straight_line() -> None:
     wide, narrow = result.chains
     np.testing.assert_array_equal(wide.polyline[-1], narrow.polyline[0])
     assert not wide.fixed[-1] and not narrow.fixed[0]
-    line = LineString([(0.0, 0.0), scenarios.WIDTH_CHANGE_END])
-    for c in result.chains:
-        assert max(line.distance(Point(p)) for p in c.polyline) < STRAIGHT_TOLERANCE
+    assert (
+        off_straight(np.vstack([wide.polyline, narrow.polyline])) < STRAIGHT_TOLERANCE
+    )
     total = sum(length(c.polyline) for c in result.chains)
     assert total == pytest.approx(WIDTH_CHANGE_LENGTH, abs=REPORTED)
 
@@ -1610,11 +1602,11 @@ class TestJunctionEnergy:
 
         value, gradients = layer_energy(chains, polylines, masks, self.params(), 0.01)
 
-        assert value == pytest.approx(12.0, rel=1e-12)
+        assert value == pytest.approx(12.0, rel=SUM_ORDER_ROUNDING)
         for g, pull in zip(
             gradients, [(1.0, 0.0), (-1.0, 0.0), (0.0, -1.0)], strict=True
         ):
-            np.testing.assert_allclose(g[0], pull, atol=1e-12)
+            np.testing.assert_allclose(g[0], pull, atol=SUM_ORDER_ROUNDING)
 
     def test_gradient_of_the_shared_junction_matches_finite_differences(
         self,
@@ -1645,9 +1637,9 @@ class TestJunctionEnergy:
 
         assert layer_energy(branches, polylines[:3], masks[:3], params, 0.01)[
             0
-        ] == pytest.approx(apart(branches), rel=1e-12)
+        ] == pytest.approx(apart(branches), rel=SUM_ORDER_ROUNDING)
         assert value > apart(chains)
-        step = 1e-7
+        step = CENTRAL_STEP
 
         def moved(axis: int, by: float) -> float:
             shifted = [p.copy() for p in polylines]
@@ -1658,7 +1650,7 @@ class TestJunctionEnergy:
         for axis in (0, 1):
             numeric = (moved(axis, step) - moved(axis, -step)) / (2 * step)
             analytic = sum(g[0, axis] for g in gradients)
-            assert analytic == pytest.approx(numeric, rel=1e-5)
+            assert analytic == pytest.approx(numeric, rel=CENTRAL_RTOL)
 
 
 BUS_TRACKS = 10
