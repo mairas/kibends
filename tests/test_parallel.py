@@ -54,11 +54,15 @@ def z_bus() -> ChainsScenario:
     )
 
 
+ROW_PITCH = 1.4
+"""mm between the rows of pads: the tracks between them start clear."""
+
+
 def pad_rows() -> ChainsScenario:
     """Tracks between rows of pads, each pad of its own net, so that the
     static fields answer from their edges."""
     pads = [
-        kipy_pad(f"p{row}_{k}", f"P{row}_{k}", k * 1.0, (row + 0.5) * 1.0)
+        kipy_pad(f"p{row}_{k}", f"P{row}_{k}", k * 1.0, (row + 0.5) * ROW_PITCH)
         for row in range(-1, 3)
         for k in range(11)
     ]
@@ -70,9 +74,9 @@ def pad_rows() -> ChainsScenario:
                 f"S{i}",
                 f"S{i}",
                 build_obstacles(snap, f"S{i}", scenarios.PAIR_WIDTH),
-                (0.0, float(i)),
-                (5.0, i + 0.1),
-                (10.0, float(i)),
+                (0.0, i * ROW_PITCH),
+                (5.0, i * ROW_PITCH + 0.1),
+                (10.0, i * ROW_PITCH),
             )
             for i in range(3)
         ),

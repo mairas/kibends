@@ -49,6 +49,7 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
+from kibends.inside import InsideClearanceError
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE
 from kibends.results import Termination
 from kibends.run import (
@@ -122,6 +123,7 @@ EXPECTED_ERRORS = (
     CommitUncertainError,
     CreateItemsError,
     DeleteItemsError,
+    InsideClearanceError,
     NoBoardError,
     PlotUnavailableError,
     RunRefusedError,

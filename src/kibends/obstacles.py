@@ -132,6 +132,16 @@ def _ends(owner: IntArray, count: int) -> IntArray:
     return np.cumsum(np.bincount(owner, minlength=count)).astype(np.intp)
 
 
+class ObstacleKind(enum.Enum):
+    """What an obstacle is, as the start check tells rules apart
+    (`inside`)."""
+
+    COPPER = enum.auto()
+    HOLE = enum.auto()
+    """A pad's or via's drill, its centre the geometry."""
+    KEEPOUT = enum.auto()
+
+
 @dataclass(frozen=True)
 class Obstacle:
     description: str
@@ -146,6 +156,11 @@ class Obstacle:
     a via's diameter."""
     layer: str | None = None
     """The layer of copper, None for what is not copper of one layer."""
+    kind: ObstacleKind = ObstacleKind.COPPER
+    owner: str | None = None
+    """The net of the copper a plated hole is drilled through, its pad's or
+    via's; None for an unplated hole, which keeps the hole clearance from
+    copper of any net, and for any other obstacle."""
 
 
 class Obstacles:
@@ -167,6 +182,7 @@ class Obstacles:
         edge_inflation: float = 0.0,
     ) -> None:
         self.items = tuple(items)
+        self.outline = board_outline
         self.core = _core.Obstacles(
             plain_shapes(o.geometry for o in self.items),
             np.array([o.inflation for o in self.items], dtype=float),
@@ -178,12 +194,28 @@ class Obstacles:
         )
 
     @classmethod
-    def of(cls, core: _core.Obstacles, items: Sequence[Obstacle]) -> Obstacles:
-        """The field `core` answers for, of `items`."""
+    def of(
+        cls,
+        core: _core.Obstacles,
+        items: Sequence[Obstacle],
+        outline: BaseGeometry | None = None,
+    ) -> Obstacles:
+        """The field `core` answers for, of `items`, its board edge the
+        outside of `outline`."""
         field = cls.__new__(cls)
         field.items = tuple(items)
+        field.outline = outline
         field.core = core
         return field
+
+    @property
+    def edge(self) -> tuple[BaseGeometry, float] | None:
+        """The board's outline and how far its edge keeps from the copper's
+        centreline, mm; None without an edge."""
+        inflation = self.core.edge_inflation
+        if self.outline is None or inflation is None:
+            return None
+        return self.outline, inflation
 
     def signed_distance(
         self, points: FloatArray, reach: float = math.inf
@@ -456,6 +488,7 @@ def zones_on(zones: Iterable[ViaZone], layers: Iterable[str]) -> tuple[ViaZone, 
 
 _LAYERS: WeakKeyDictionary[LayerSnapshot, _core.BoardLayer] = WeakKeyDictionary()
 _VIAS: WeakKeyDictionary[Via, _core.Via] = WeakKeyDictionary()
+_OUTLINES: WeakKeyDictionary[LayerSnapshot, BaseGeometry | None] = WeakKeyDictionary()
 
 
 def core_layer(snapshot: LayerSnapshot) -> _core.BoardLayer:
@@ -472,7 +505,7 @@ def _read_layer(snapshot: LayerSnapshot) -> _core.BoardLayer:
     shaped = [k for k, p in enumerate(pads) if p.shape is not None]
     shape_of = np.full(len(pads), -1, dtype=np.intp)
     shape_of[shaped] = np.arange(len(shaped), dtype=np.intp)
-    outline = _board_outline(snapshot.edge_paths)
+    outline = _outline_of(snapshot)
     return _core.BoardLayer(
         snapshot.layer,
         layer_ordinal(snapshot.layer),
@@ -521,6 +554,14 @@ def core_zones(zones: Iterable[ViaZone]) -> list[_core.Zone]:
         _core.Zone(z.clearance, z.margin, [layer_ordinal(layer) for layer in z.layers])
         for z in zones
     ]
+
+
+def _outline_of(snapshot: LayerSnapshot) -> BaseGeometry | None:
+    """The snapshot's board area (`_board_outline`), read once per
+    snapshot."""
+    if snapshot not in _OUTLINES:
+        _OUTLINES[snapshot] = _board_outline(snapshot.edge_paths)
+    return _OUTLINES[snapshot]
 
 
 def _board_outline(edge_paths: Sequence[Sequence[Point2]]) -> BaseGeometry | None:
@@ -594,23 +635,46 @@ def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
                 g = s.graphics[index]
                 item = Obstacle(g.description, g.geometry, inflation, g.net, 0.0, on)
             case _Source.TRACK_KEEPOUT:
-                item = Obstacle("track keepout", s.track_keepouts[index], inflation)
+                item = Obstacle(
+                    "track keepout",
+                    s.track_keepouts[index],
+                    inflation,
+                    kind=ObstacleKind.KEEPOUT,
+                )
             case _Source.VIA_KEEPOUT:
-                item = Obstacle("via keepout", s.via_keepouts[index], inflation)
+                item = Obstacle(
+                    "via keepout",
+                    s.via_keepouts[index],
+                    inflation,
+                    kind=ObstacleKind.KEEPOUT,
+                )
             case _Source.PAD_HOLE:
                 pad = s.pads[index]
                 item = Obstacle(
-                    f"hole of pad {pad.name}", Point(pad.position), inflation
+                    f"hole of pad {pad.name}",
+                    Point(pad.position),
+                    inflation,
+                    kind=ObstacleKind.HOLE,
+                    owner=None if pad.kind is PadKind.NPTH else pad.net,
                 )
             case _Source.VIA_HOLE:
                 v = s.vias[index]
-                item = Obstacle(f"hole of via {v.id}", Point(v.position), inflation)
+                item = Obstacle(
+                    f"hole of via {v.id}",
+                    Point(v.position),
+                    inflation,
+                    kind=ObstacleKind.HOLE,
+                    owner=v.net,
+                )
             case _Source.PAD_STOP:
                 pad = s.pads[index]
                 assert pad.shape is not None
                 item = Obstacle(f"pad {pad.name}", pad.shape, inflation)
         items.append(item)
-    return Obstacles.of(core, items)
+    outline = None
+    if layers and core.edge_inflation is not None:
+        outline = _outline_of(layers[0])
+    return Obstacles.of(core, items, outline)
 
 
 def _warn_unclosed(layer: _core.BoardLayer) -> None:

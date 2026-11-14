@@ -258,11 +258,11 @@ def same_net_wrap() -> ChainsScenario:
 
 
 CROWDED_VERTEX = (5.0, 0.0)
-CROWDED_NEIGHBOUR_VERTEX = (5.0, 0.1)
+CROWDED_NEIGHBOUR_VERTEX = (5.0, PAIR_INFLATION)
 
 
 def crowded() -> ChainsScenario:
-    """Two chains hand-routed 0.1 mm apart at one vertex each."""
+    """Two chains hand-routed at their clearance at one vertex each."""
     return ChainsScenario(
         "crowded",
         (
@@ -965,20 +965,28 @@ TURN_BACK_LEG = 5.0
 """mm of the leg a pair turns back along."""
 
 
+TURN_BACK_MARGIN = 0.05
+"""How far beyond the pair's clearance of the pad its legs start, mm."""
+
+
 def turning_back(turn: float) -> tuple[FloatArray, tuple[float, float]]:
     """The centreline of a pair turning back by `turn` degrees, and the
-    centre of a pad inside the V halfway along its legs."""
+    centre of a pad inside the V on its bisector, as near the apex as keeps
+    both legs TURN_BACK_MARGIN beyond the pair's clearance of it."""
     apex = np.array([4.0, 0.0])
     angle = math.radians(turn)
     back = np.array([math.cos(angle), math.sin(angle)])
     centre = np.stack([np.zeros(2), apex, apex + TURN_BACK_LEG * back])
-    pad = apex + TURN_BACK_LEG / 2 * (np.array([-1.0, 0.0]) + back) / 2
+    bisector = np.array([-1.0, 0.0]) + back
+    half_angle = math.radians(180.0 - turn) / 2
+    reach = DP_PAD + PAIR_CLEARANCE + DP_HALF_EXTENT + TURN_BACK_MARGIN
+    pad = apex + reach / math.sin(half_angle) * bisector / np.linalg.norm(bisector)
     return centre, (float(pad[0]), float(pad[1]))
 
 
 def pair_turning_back(turn: float = 150.0) -> PairsScenario:
     """A pair turning back by `turn` degrees, with a pad inside the V
-    halfway along its legs, which the pair is pulled taut around."""
+    (`turning_back`), which the pair is pulled taut around."""
     centre, pad = turning_back(turn)
     section = coupled(pad_for_pair(*pad), *((float(x), float(y)) for x, y in centre))
     return PairsScenario(
