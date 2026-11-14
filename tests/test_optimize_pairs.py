@@ -76,8 +76,28 @@ CORNER = OptimizerSettings(burst_maxiter=30)
 direction pins bends tighter than the limit, with short bursts."""
 
 GAP_SLACK = GAP_TOLERANCE * DP_GAP
+"""mm the pair's gap may differ from its netclass gap, as `pairs` allows."""
 DIRECTION_TOLERANCE = 1e-9
+"""Of a unit heading: an end edge, fixed at both its ends, keeps its
+direction to float rounding."""
 EXTENT_SLACK = 1e-9
+"""mm of float rounding between a position and the same position computed
+another way."""
+TIGHT_BEND = 1.5
+"""How many times the bend-radius limit a corner pulled taut may end at:
+it rounds the corner at about the limit, not wider."""
+FD_REL = 1e-4
+"""Relative error a central difference at `STEP` leaves in a gradient of
+these energies."""
+FD_ABS = 1e-6
+"""Absolute error a central difference at `STEP` leaves in a gradient near
+zero."""
+OFFSET_FD_REL = 1e-5
+"""Relative error a central difference at `STEP` leaves in the offset's
+pullback, which is nearly linear in the centreline."""
+SUMMATION = 1e-12
+"""Error, relative or near zero absolute, of summing the same energy terms
+in another order."""
 
 
 def run(scenario: PairsScenario, settings: OptimizerSettings = COARSE) -> RunResult:
@@ -162,6 +182,7 @@ def reference_energy(
 
 
 STEP = 1e-7
+"""mm of a central finite difference."""
 WOBBLE = 0.05
 """mm by which free centreline vertices are moved off their resampled
 places, so that every vertex turns."""
@@ -207,7 +228,9 @@ def test_offset_pullback_matches_finite_differences(
             up[k, axis] += STEP
             down[k, axis] -= STEP
             numeric[k, axis] = (value(up) - value(down)) / (2 * STEP)
-    np.testing.assert_allclose(analytic[free], numeric[free], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        analytic[free], numeric[free], rtol=OFFSET_FD_REL, atol=FD_ABS
+    )
 
 
 class TestEnergy:
@@ -247,7 +270,7 @@ class TestEnergy:
         expected = reference_energy(
             members, polylines, masks, self.params(), replace(COARSE, spacing=0.1)
         )
-        assert value == pytest.approx(expected, rel=1e-12)
+        assert value == pytest.approx(expected, rel=SUMMATION)
 
     def test_gradient_reaches_through_the_tracks(self) -> None:
         # The bar lies under the tent's tracks: its repulsion of them moves
@@ -271,7 +294,7 @@ class TestEnergy:
                     down = layer_energy(members, shifted, masks, params, 0.01, seen)[0]
                     numeric = (up - down) / (2 * STEP)
                     assert gradients[i][k, axis] == pytest.approx(
-                        numeric, rel=1e-4, abs=1e-6
+                        numeric, rel=FD_REL, abs=FD_ABS
                     )
 
     @pytest.mark.parametrize("net", ["P", "N"])
@@ -292,8 +315,8 @@ class TestEnergy:
                 [members[k]], [polylines[k]], [masks[k]], params, 0.01
             )
             value -= alone
-            np.testing.assert_allclose(gradients[k], alone_gradient[0], atol=1e-12)
-        assert value == pytest.approx(0.0, abs=1e-12)
+            np.testing.assert_allclose(gradients[k], alone_gradient[0], atol=SUMMATION)
+        assert value == pytest.approx(0.0, abs=SUMMATION)
 
 
 @pytest.fixture(scope="module")
@@ -423,7 +446,7 @@ class TestTightCorner:
         assert not check_bend_radius(pair.centreline, DP_GAP, PAIR_WIDTH).too_tight
         assert pair.bend is not None and not pair.bend.too_tight
         radius = check_bend_radius(pair.centreline, DP_GAP, PAIR_WIDTH).radius
-        assert radius < 1.5 * bend_radius_limit(DP_GAP, PAIR_WIDTH)
+        assert radius < TIGHT_BEND * bend_radius_limit(DP_GAP, PAIR_WIDTH)
 
     def test_folds_without_the_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def unlimited(given: PairInput, spacing: float) -> PairBlock:
