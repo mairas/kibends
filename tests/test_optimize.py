@@ -526,46 +526,31 @@ BURST_LINE = re.compile(
 LOGGED_BURSTS = 3
 
 
-class BurstCost(NamedTuple):
-    iterations: int
-    evaluations: int
-    evaluating: float
-    rest: float
+class LoggedBurst(NamedTuple):
     ending: str
     coarse: float | None
     """The spacing of the coarse level it ran at, mm; None at the final
     spacing."""
 
 
-def burst_costs(log: list[str]) -> list[BurstCost]:
-    """Each burst's cost and ending, as logged."""
+def logged_bursts(log: list[str]) -> list[LoggedBurst]:
+    """Each burst's ending and level, from the cost line it logged."""
     lines = [line.strip() for line in log if "evaluations" in line]
     matches = [BURST_LINE.match(line) for line in lines]
     assert all(matches), lines
     return [
-        BurstCost(
-            int(m[1]),
-            int(m[2]),
-            float(m[3]),
-            float(m[4]),
-            m[5],
-            None if m[6] is None else float(m[6]),
-        )
-        for m in matches
-        if m
+        LoggedBurst(m[5], None if m[6] is None else float(m[6])) for m in matches if m
     ]
 
 
 def test_every_burst_logs_what_it_cost_at_debug_and_nothing_at_info(
     log: list[str],
 ) -> None:
-    # At one spacing: the first bursts at a coarse level evaluate too few
-    # vertices to show in milliseconds.
-    settings = replace(COARSE, max_iterations=LOGGED_BURSTS, coarse_spacings=())
+    settings = replace(COARSE, max_iterations=LOGGED_BURSTS)
 
     result = run(scenarios.wrap(), settings)
 
-    assert len(burst_costs(log)) == result.iterations == LOGGED_BURSTS
+    assert len(logged_bursts(log)) == result.iterations == LOGGED_BURSTS
     info = [line for line in log if line.startswith("INFO")]
     assert info and not any("Burst" in line for line in info)
 
@@ -615,7 +600,7 @@ def test_a_burst_at_a_coarse_level_logs_its_spacing(log: list[str]) -> None:
 
     optimize(polyline, fixed, FreeSpace(), PARAMS, settings)
 
-    levels = [cost.coarse for cost in burst_costs(log)]
+    levels = [burst.coarse for burst in logged_bursts(log)]
     # Each level in turn, the coarsest first, then the final spacing.
     assert levels[0] == COARSE_LEVELS[0]
     assert levels[-1] is None
@@ -745,7 +730,7 @@ def test_a_burst_that_ends_abnormally_logs_its_ending(
 
     optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
-    endings = [cost.ending for cost in burst_costs(log)]
+    endings = [burst.ending for burst in logged_bursts(log)]
     assert endings
     assert all(ending.startswith("ABNORMAL") for ending in endings)
 
