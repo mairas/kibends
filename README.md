@@ -334,15 +334,18 @@ required, and where, in the coordinates of the board's grid origin. Move
 the copper apart or relax the rules, then run again. A chain end pinned on
 a pad or via of its own net is no violation, nor is a stretch inside a
 clearance that holds a vertex that cannot move, nor copper within √2 nm
-of a clearance, as KiCad's grid rounds it. Nor is a selected arc checked:
-kibends smooths it as straight chords, which sit inside the arc, and the
-check skips places along them, leaving the drawn arc to KiCad's DRC. Nor
-is an unselected arc, which kibends reads as its chords, nor a hole that is
-not round, such as a slot, which it reads as a circle of its long axis:
-KiCad's DRC judges them. Arcs of copper graphics and the board edge's arcs
-and circles are judged by their chords, though, so copper inside their
-bend at exactly its clearance may be refused by up to a chord's offset
-from the arc.
+of a clearance, as KiCad's grid rounds it. A selected arc is
+judged as the straight chords kibends smooths it as, which sit inside the
+arc: on its inner side a chord is allowed the arc's offset from it, and
+on its outer side an arc that bulges into a clearance between chords that
+are clear of it starts. The run replaces the arc with straight tracks;
+if it leaves the chain unchanged, KiCad's DRC still sees the drawn arc.
+Nor is an unselected arc checked, which kibends reads as its chords, nor a
+hole that is not round, such as a slot, which it reads as a circle of its
+long axis: KiCad's DRC judges them.
+Arcs of copper graphics and the board edge's arcs and circles are judged
+by their chords, though, so copper inside their bend at exactly its
+clearance may be refused by up to a chord's offset from the arc.
 What kibends keeps beyond those rules does not stop a run: a
 moving via inside a zone's clearance and margin, which it keeps so that
 the refill reconnects the via, moves out of it as the optimizer runs.

@@ -195,9 +195,9 @@ def optimize_chains(
 
     Before any burst it raises `inside.InsideClearanceError` naming each
     place where the copper of a problem that moves starts inside a
-    clearance, but places along a selected arc's chords, which it skips
-    (`arc_chords`, `inside`): a burst keeps the clearance its start keeps,
-    and the run is to end clean.
+    clearance, allowing copper on a selected arc's concave side the arc's
+    offset from its chords (`arc_chords`, `inside`): a burst keeps the
+    clearance its start keeps, and the run is to end clean.
 
     Each problem runs through `settings`' schedule: its chains at each of
     `coarse_spacings` in turn, then at the final spacing, a level handing
@@ -975,8 +975,8 @@ class _Problem:
 
     def start_violations(self, chords: ArcChords) -> list[Violation]:
         """Where its inputs, the drawn copper, are inside a clearance by the
-        rules a user can see, named (`inside`), but places along the arc
-        `chords`."""
+        rules a user can see, named (`inside`), each place on the concave
+        side of the arc `chords` allowed the arc's offset from them."""
         return violations(
             self.state.start_inside(START_TOLERANCE),
             self.members,

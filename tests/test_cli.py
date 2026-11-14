@@ -6224,8 +6224,8 @@ def test_a_rounded_track_hugging_a_via_at_its_clearance_runs(
     connect: Connector, log: list[str]
 ) -> None:
     # A selected arc round an unselected GND via at exactly their clearance:
-    # its chords sit inside the arc, nearer the via by their sagitta, and
-    # the run's start check skips places along them (`inside.arc_chords`).
+    # its chords sit inside the arc, nearer the via by their sagitta, which
+    # the run excuses as the arc's (`inside.arc_chords`).
     x, y = VIA
     reach = VIA_DIAMETER / 2 + CLEARANCE + WIDTH / 2
     diagonal = reach / math.sqrt(2)

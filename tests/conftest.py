@@ -235,10 +235,11 @@ def unrefused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Lets runs start inside a clearance, for tests of how the bursts and
     the guard judge copper that starts inside, which the start check
     (`inside`) refuses but for a stretch inside that holds a pinned vertex,
-    copper within START_TOLERANCE of a clearance, places along a selected
-    arc's chords, a pinned end on copper of its own net and what is inside
-    only the optimizer's own keep-outs, a section's stand-in or a via's
-    zone clearance and margin."""
+    copper within START_TOLERANCE of a clearance, a selected arc's chords
+    on its concave side within the arc's offset from them and on its convex
+    side where they are clear, a pinned end on copper of its own net and
+    what is inside only the optimizer's own keep-outs, a section's
+    stand-in or a via's zone clearance and margin."""
 
     def nothing_inside(_problem: object, _chords: object) -> list[Violation]:
         return []

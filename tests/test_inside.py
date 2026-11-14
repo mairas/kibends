@@ -4,6 +4,7 @@ clearance as drawn, naming each place (`inside`)."""
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from itertools import pairwise
 
 import kipy.board_types as kbt
 import numpy as np
@@ -20,22 +21,28 @@ from conftest import (
     kipy_via,
     layer_snapshot,
     refused,
+    violations,
 )
-from distance_fields import FreeSpace
+from distance_fields import Disc, FreeSpace
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
 from scenarios import PAIR_CLEARANCE, PAIR_WIDTH, selected
 from shapely import affinity
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
 
+import kibends.optimize as optimize_module
 from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE
 from kibends.chain import NM_PER_MM, Point2
 from kibends.coords import UserFrame
 from kibends.inside import (
     INSIDE_MESSAGE,
+    START_TOLERANCE,
+    ArcChords,
+    Chord,
     InsideClearanceError,
     Violation,
     arc_chords,
+    sagitta,
 )
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -52,8 +59,10 @@ from kibends.obstacles import (
 )
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import PairInput
+from kibends.polylines import measure
 from kibends.results import RunResult, Termination
 from kibends.snapshot import Arc, LayerSnapshot, Pad, PadKind, Via
+from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
 
 SETTINGS = DEFAULT_SETTINGS
@@ -111,6 +120,70 @@ def round_arc() -> tuple[Arc, list[Point2]]:
     arc = Arc("a", (r, 0), (diagonal, diagonal), (0, r), r // 5, "F.Cu", "SIG")
     ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
     return arc, [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+
+
+def hugging(extra: float) -> tuple[ChainInput, Arc]:
+    """A quarter arc of RADIUS about the origin, as its chords, hugging a
+    round obstacle there whose clearance reaches `extra` beyond the arc,
+    between radial leads that end, pinned, outside it."""
+    arc, points = round_arc()
+    leads = [(RADIUS + LEAD, 0.0), *points, (0.0, RADIUS + LEAD)]
+    disc = Obstacles([Obstacle("disc", Point(0.0, 0.0), RADIUS + extra)])
+    return selected("arc", "SIG", disc, *leads), arc
+
+
+def test_an_arc_s_chords_inside_its_obstacle_by_their_sagitta_are_refused() -> None:
+    chain, _ = hugging(0.0)
+
+    assert refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
+
+
+def test_an_arc_s_chords_within_their_sagitta_start_and_end_clear() -> None:
+    chain, arc = hugging(0.0)
+    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+        [chain], [], MovingVias([chain], [], 0.0, 0.0), scenarios.PARAMS, SETTINGS
+    )
+
+    result = optimize_chains(
+        [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+    )
+
+    # A start the guard measures inside a clearance, chord by chord, which
+    # it holds the run to (`_core.ProblemState.allowed`).
+    assert placed.problem.allowed[0] > 0
+    assert result.termination is Termination.CONVERGED
+    (got,) = result.chains
+    assert violations(got.polyline, got.fixed, chain.field) == 0
+    drawn = measure(chain.centreline.points, SETTINGS.spacing).length
+    assert measure(got.polyline, SETTINGS.spacing).length < drawn
+
+
+def test_an_arc_inside_its_obstacle_beyond_its_sagitta_is_refused() -> None:
+    _, drawn = hugging(0.0)
+    deepest = max(c.sagitta for c in arc_chords([drawn]).values())
+    chain, arc = hugging(10 * deepest)
+
+    (violation,) = refused(
+        lambda: optimize_chains(
+            [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert violation.depth > deepest
+
+
+def test_the_chords_sagitta_is_how_far_they_sit_inside_the_arc() -> None:
+    chain, arc = hugging(0.0)
+
+    chords = arc_chords([arc])
+
+    assert len(chords) == len(chain.centreline.points) - 3
+    for (a, b), chord in chords.items():
+        middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        assert chord.sagitta == pytest.approx(
+            RADIUS - math.hypot(*middle), abs=NM_ROUNDING
+        )
+        assert chord.centre == pytest.approx((0.0, 0.0), abs=NM_ROUNDING)
 
 
 def test_the_refusal_prints_each_place_in_the_run_s_frame() -> None:
@@ -174,6 +247,42 @@ def test_a_via_just_inside_a_section_s_clearance_is_refused() -> None:
     assert violation.depth == pytest.approx(NEAR)
 
 
+ROUND_CORNER = 3.0
+"""mm, the radius of a pair's centreline around a corner."""
+CORNER_STEPS = 18
+"""Chords of the corner, 5 degrees each, as KiCad's arcs are segmented."""
+
+
+def arc_cornered() -> tuple[PairInput, ArcChords]:
+    """A pair whose centreline rounds a quarter corner of ROUND_CORNER as
+    chords about a round obstacle whose clearance it touches there, and the
+    sagittas of its tracks' chords."""
+    corner = [
+        (ROUND_CORNER * math.cos(t), ROUND_CORNER * math.sin(t))
+        for t in (math.pi / 2 * k / CORNER_STEPS for k in range(CORNER_STEPS + 1))
+    ]
+    centre = [(ROUND_CORNER + 1.0, 0.0), *corner, (0.0, ROUND_CORNER + 1.0)]
+    chords: dict[tuple[Point2, Point2], Chord] = {}
+    for track in scenarios.tracks(*centre):
+        vertices = [(float(x), float(y)) for x, y in track[1 : CORNER_STEPS + 2]]
+        for a, b in pairwise(vertices):
+            chord = sagitta(math.hypot(*a), math.dist(a, b))
+            chords[(a, b)] = Chord(chord, (0.0, 0.0))
+    return scenarios.coupled(Disc(0.0, 0.0, ROUND_CORNER), *centre), chords
+
+
+def test_an_arc_cornered_pair_at_clearance_starts_by_its_chords() -> None:
+    section, chords = arc_cornered()
+
+    assert refused(
+        lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, pairs=[section])
+    )
+    result = optimize_chains(
+        [], scenarios.PARAMS, SETTINGS, pairs=[section], arc_chords=chords
+    )
+    assert result.termination is not Termination.ABNORMAL
+
+
 def test_a_result_resting_at_clearance_rounded_to_the_grid_runs_again() -> None:
     # Pressed against each other's clearance, which the weak hinge cannot
     # hold them off, and rounded to KiCad's grid as KiCad holds them.
@@ -195,6 +304,199 @@ def test_a_result_resting_at_clearance_rounded_to_the_grid_runs_again() -> None:
     second = optimize_chains(again, params, SETTINGS)
 
     assert second.termination is not Termination.ABNORMAL
+
+
+WIDE_RADIUS = 20.0
+"""mm, of a gently rounded track, whose 5 degree chords sit about 17 µm
+inside it."""
+PAD_REACH = 0.5
+"""mm, how far a round obstacle's clearance reaches from its centre."""
+
+
+def wide_arc(radius: float = WIDE_RADIUS) -> tuple[Arc, list[Point2]]:
+    """A quarter arc of `radius` about the origin, and the points of its
+    chords."""
+    r = round(radius * NM_PER_MM)
+    d = round(radius * NM_PER_MM / math.sqrt(2))
+    arc = Arc("a", (r, 0), (d, d), (0, r), r // 100, "F.Cu", "SIG")
+    ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+    return arc, [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+
+
+ARC_DEPTH = 0.9
+"""How far into the clearance the arc reaches, as a fraction of its chords'
+sagitta: the chords alone are inside on the concave side, clear on the
+convex side."""
+
+
+def arc_direction(
+    points: Sequence[Point2], *, at_vertex: bool = False, along: float = 0.0
+) -> Point2:
+    """The unit direction from the arc's centre through a middle chord's
+    middle, turned `along` its half angle toward its end, or through its
+    first vertex."""
+    k = len(points) // 2
+    a, b = points[k], points[k + 1]
+    if at_vertex:
+        angle = math.atan2(a[1], a[0])
+    else:
+        first, last = math.atan2(a[1], a[0]), math.atan2(b[1], b[0])
+        angle = (first + last) / 2 + along * (last - first) / 2
+    return (math.cos(angle), math.sin(angle))
+
+
+def deepest_sagitta() -> float:
+    arc, _ = wide_arc()
+    return max(c.sagitta for c in arc_chords([arc]).values())
+
+
+def beyond_the_arc(
+    points: Sequence[Point2],
+    reach: float,
+    depth: float,
+    *,
+    outside: bool,
+    at_vertex: bool = False,
+) -> Point2:
+    """Where the centre of what keeps `reach` from the arc's centreline
+    lies for the arc to reach `depth` into that clearance, outside the arc
+    or inside it."""
+    ux, uy = arc_direction(points, at_vertex=at_vertex)
+    at = WIDE_RADIUS + (reach - depth if outside else depth - reach)
+    return (at * ux, at * uy)
+
+
+def near_the_arc(
+    depth: float, *, outside: bool, at_vertex: bool = False
+) -> Callable[[], RunResult]:
+    arc, points = wide_arc()
+    at = beyond_the_arc(points, PAD_REACH, depth, outside=outside, at_vertex=at_vertex)
+    field = Obstacles([Obstacle("pad", Point(at), PAD_REACH)])
+    chain = selected("arc", "SIG", field, *points)
+    chords = arc_chords([arc])
+    return lambda: optimize_chains(
+        [chain], scenarios.PARAMS, SETTINGS, arc_chords=chords
+    )
+
+
+def test_an_arc_inside_a_clearance_at_its_vertex_is_refused_by_the_chords() -> None:
+    # On the concave side the chords beside the vertex reach nearer than
+    # the arc, which is inside only at the vertex: a place there is judged
+    # as straight copper, as deep as the chords are, no shallower than the
+    # arc.
+    depth = ARC_DEPTH * deepest_sagitta()
+    _, points = wide_arc()
+    at = beyond_the_arc(points, PAD_REACH, depth, outside=False, at_vertex=True)
+    chords = LineString(points).distance(Point(at))
+
+    found = refused(near_the_arc(depth, outside=False, at_vertex=True))
+
+    assert {v.obstacle for v in found} == {"pad"}
+    deepest = max(v.depth for v in found)
+    assert depth - START_TOLERANCE <= deepest <= PAD_REACH - chords + START_TOLERANCE
+
+
+def test_an_arc_at_a_clearance_on_its_concave_side_starts() -> None:
+    result = near_the_arc(0.0, outside=False)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+def convex_pad(depth: float) -> tuple[list[ChainInput], list[ViaInput]]:
+    """The arc and a pad outside it, its clearance reaching `depth` into the
+    arc at a chord's middle."""
+    _, points = wide_arc()
+    at = beyond_the_arc(points, PAD_REACH, depth, outside=True)
+    field = Obstacles([Obstacle("pad", Point(at), PAD_REACH)])
+    return [selected("arc", "SIG", field, *points)], []
+
+
+def convex_chain(depth: float) -> tuple[list[ChainInput], list[ViaInput]]:
+    """The arc and a chain of another net outside it, its tip reaching
+    `depth` into their clearance of the arc at a chord's middle."""
+    _, points = wide_arc()
+    tip = beyond_the_arc(points, scenarios.PAIR_INFLATION, depth, outside=True)
+    ux, uy = arc_direction(points)
+    tail = (tip[0] + ux, tip[1] + uy)
+    return [
+        selected("arc", "SIG", FreeSpace(), *points),
+        selected("outer", "OTHER", FreeSpace(), tail, tip),
+    ], []
+
+
+def convex_via(depth: float) -> tuple[list[ChainInput], list[ViaInput]]:
+    """The arc and a moving via of another net outside it, reaching `depth`
+    into their clearance of the arc at a chord's middle."""
+    _, points = wide_arc()
+    at = beyond_the_arc(points, scenarios.VIA_TO_CHAIN, depth, outside=True)
+    via = ViaInput(
+        scenarios.through_via("v", "V", at),
+        (),
+        FreeSpace(),
+        PAIR_CLEARANCE,
+        own_vias=(),
+    )
+    return [selected("arc", "SIG", FreeSpace(), *points)], [via]
+
+
+@pytest.mark.parametrize(
+    "outside", [convex_pad, convex_chain, convex_via], ids=["pad", "chain", "via"]
+)
+def test_an_arc_between_clear_chords_on_its_convex_side_starts(
+    outside: Callable[[float], tuple[list[ChainInput], list[ViaInput]]],
+) -> None:
+    # The chords are judged as they are: they replace the arc in the
+    # result, and an unchanged chain leaves the drawn arc to KiCad's DRC.
+    arc, _ = wide_arc()
+    chains, vias = outside(ARC_DEPTH * deepest_sagitta())
+
+    result = optimize_chains(
+        chains, scenarios.PARAMS, SETTINGS, vias=vias, arc_chords=arc_chords([arc])
+    )
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+CONCAVE_ALONG = 0.02
+"""How far from a chord's middle toward its end the via inside the arc
+lies, as a fraction of the chord's half angle: between the chord's ends,
+where the chord's allowance, the arc's offset from it square to the chord,
+exceeds what the via needs by under START_TOLERANCE."""
+
+
+def inside_the_arc(radius: float, depth: float) -> Callable[[], RunResult]:
+    """An arc of `radius` and a moving via of another net inside it, off a
+    chord's middle, reaching `depth` into their clearance of the arc."""
+    arc, points = wide_arc(radius)
+    ux, uy = arc_direction(points, along=CONCAVE_ALONG)
+    at = radius - scenarios.VIA_TO_CHAIN + depth
+    via = ViaInput(
+        scenarios.through_via("v", "V", (at * ux, at * uy)),
+        (),
+        FreeSpace(),
+        PAIR_CLEARANCE,
+        own_vias=(),
+    )
+    chain = selected("arc", "SIG", FreeSpace(), *points)
+    return lambda: optimize_chains(
+        [chain], scenarios.PARAMS, SETTINGS, vias=[via], arc_chords=arc_chords([arc])
+    )
+
+
+@pytest.mark.parametrize("radius", [50.0, 100.0])
+def test_a_via_at_clearance_inside_a_wide_arc_starts(radius: float) -> None:
+    # Its chord is inside the clearance by nearly the chord's sagitta.
+    result = inside_the_arc(radius, 0.0)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+@pytest.mark.parametrize("radius", [50.0, 100.0])
+def test_a_via_just_inside_a_wide_arc_s_clearance_is_refused(radius: float) -> None:
+    (violation,) = refused(inside_the_arc(radius, 2 * START_TOLERANCE))
+
+    assert (violation.subject, violation.obstacle) == ("via v", "arc")
+    assert violation.depth > START_TOLERANCE
 
 
 OWN_NET_GAP = 0.1
@@ -270,6 +572,29 @@ def test_two_vias_of_one_net_closer_than_hole_to_hole_are_refused() -> None:
     assert violation.depth == pytest.approx(VIA_GAP)
 
 
+def test_a_chain_at_clearance_on_an_arc_s_concave_side_starts() -> None:
+    # A chain pinned inside the arc, its tip at their clearance from the
+    # arc where a chord sits nearer by its sagitta: between two chains, as
+    # against static copper, the chord's slack lets it start.
+    arc, points = wide_arc()
+    a, b = points[len(points) // 2], points[len(points) // 2 + 1]
+    angle = math.atan2(a[1] + b[1], a[0] + b[0])
+    unit = (math.cos(angle), math.sin(angle))
+    tip_at = WIDE_RADIUS - scenarios.PAIR_INFLATION
+    tip = (tip_at * unit[0], tip_at * unit[1])
+    tail = ((tip_at - 1.0) * unit[0], (tip_at - 1.0) * unit[1])
+    chains = [
+        selected("arc", "SIG", FreeSpace(), *points),
+        selected("inner", "OTHER", FreeSpace(), tail, tip),
+    ]
+
+    assert refused(lambda: optimize_chains(chains, scenarios.PARAMS, SETTINGS))
+    result = optimize_chains(
+        chains, scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+    )
+    assert result.termination is not Termination.ABNORMAL
+
+
 EDGE_DIP = 2.0
 """mm a section's ends lie below its middle, which rises toward the edge."""
 EDGE_DEPTH = 0.1
@@ -326,6 +651,95 @@ def test_a_section_beside_a_via_of_its_track_s_net_starts() -> None:
     result = section_beside_via("P")()
 
     assert result.termination is not Termination.ABNORMAL
+
+
+REAL_DEPTH = 0.5
+"""How far into the clearance the second obstacle reaches the outer track,
+as a fraction of the inner track's chords' sagitta, at a vertex."""
+
+
+def test_a_section_inside_one_obstacle_is_refused_beside_one_its_chords_may_be_in() -> (
+    None
+):
+    # The pad round the corner's centre keeps the inner track's vertices,
+    # mitred inward of the centreline's circle, at its clearance, its
+    # chords inside it by their sagitta on its concave side: the deeper,
+    # but allowed. The point beside the outer track reaches it at a vertex,
+    # less deep than the centre reaches the chords but truly inside.
+    section, chords = arc_cornered()
+    inner = min(
+        (track for track in (section.a, section.b)),
+        key=lambda t: float(np.hypot(*t.points[2])),
+    )
+    outer = section.b if inner is section.a else section.a
+    extent = (section.gap + section.a.width) / 2 + section.a.width / 2
+    k = CORNER_STEPS // 2 + 1
+    a, b = (float(x) for x in inner.points[k]), (float(x) for x in inner.points[k + 1])
+    a2, b2 = tuple(a), tuple(b)
+    inner_sagitta = sagitta(math.hypot(*a2), math.dist(a2, b2))
+    """How far the inner track's chords at the corner sit inside its arc."""
+    centre_reach = (
+        min(float(np.hypot(*v)) for v in inner.points[1 : CORNER_STEPS + 2])
+        + extent
+        - PAIR_WIDTH / 2
+    )
+    vertex = outer.points[CORNER_STEPS // 2 + 1]
+    unit = vertex / np.hypot(*vertex)
+    point_reach = 0.5
+    keeps = point_reach - extent + PAIR_WIDTH / 2
+    """How far the point keeps from the outer track's centreline."""
+    first = vertex + unit * keeps
+    drawn = LineString(outer.points).distance(Point(first))
+    at = first + unit * (keeps - REAL_DEPTH * inner_sagitta - drawn)
+    field = Obstacles(
+        [
+            Obstacle("centre", Point(0.0, 0.0), centre_reach),
+            Obstacle("point", Point(float(at[0]), float(at[1])), point_reach),
+        ]
+    )
+    beside = replace(section, field=field)
+
+    (violation,) = refused(
+        lambda: optimize_chains(
+            [], scenarios.PARAMS, SETTINGS, pairs=[beside], arc_chords=chords
+        )
+    )
+
+    assert violation.obstacle == "point"
+
+
+STRETCH_DEPTH = 0.005
+"""mm a straight chain's middle starts inside its clearance of a track, its
+pinned ends about as far outside it."""
+
+
+def test_a_stretch_inside_is_refused_beside_a_selected_arc_elsewhere() -> None:
+    # The arc's chords widen nothing the optimizer counts as inside: the
+    # stretch is no run holding a pinned end.
+    keep = scenarios.PAIR_INFLATION
+    track = LineString(
+        [
+            (-1.0, -(keep + STRETCH_DEPTH)),
+            (5.0, -(keep - STRETCH_DEPTH)),
+            (11.0, -(keep + STRETCH_DEPTH)),
+        ]
+    )
+    field = Obstacles([Obstacle("track t", track, keep, net="GND")])
+    chain = selected("chain", "SIG", field, (0.0, 0.0), (10.0, 0.0))
+    arc, points = wide_arc()
+    elsewhere = selected("arc", "SIG2", FreeSpace(), *points)
+
+    (violation,) = refused(
+        lambda: optimize_chains(
+            [chain, elsewhere],
+            scenarios.PARAMS,
+            SETTINGS,
+            arc_chords=arc_chords([arc]),
+        )
+    )
+
+    assert (violation.subject, violation.obstacle) == ("chain", "track t")
+    assert violation.depth == pytest.approx(STRETCH_DEPTH)
 
 
 SECTION_PAD = 0.25
@@ -399,6 +813,38 @@ def test_a_section_s_other_net_pad_is_found_past_a_deeper_own_net_one() -> None:
     assert violation.required == pytest.approx(PAIR_CLEARANCE)
 
 
+LEAD_OUT = 0.05
+"""mm of the straight lead leaving the hugging arc's end."""
+LEAD_PAD_GAP = 0.1
+"""mm from the lead's centreline to the centre of a pad beside it."""
+LEAD_DEPTH = 0.5
+"""How far the lead reaches into the pad's clearance, its ends clear of it,
+as a fraction of the arc's chords' sagitta: less than a chord's allowance
+would hide."""
+
+
+def test_a_lead_leaving_an_arc_into_a_clearance_is_refused() -> None:
+    # The lead's edge cuts into the pad's clearance between two clear
+    # vertices, one the arc's end: straight copper, which no chord allows.
+    arc, points = round_arc()
+    depth = LEAD_DEPTH * max(c.sagitta for c in arc_chords([arc]).values())
+    pad = Point(-LEAD_PAD_GAP, RADIUS + LEAD_OUT / 2)
+    reach = LEAD_PAD_GAP + depth
+    field = Obstacles([Obstacle("pad", pad, reach, net="GND")])
+    chain = selected(
+        "arc", "SIG", field, (2 * RADIUS, 0.0), *points, (0.0, RADIUS + LEAD_OUT)
+    )
+
+    (violation,) = refused(
+        lambda: optimize_chains(
+            [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert violation.obstacle == "pad"
+    assert violation.depth == pytest.approx(depth)
+
+
 DIP = 0.01
 """mm each of a chain's two dips reaches into its clearance of another."""
 
@@ -428,8 +874,54 @@ def test_two_chains_inside_each_other_at_two_places_are_named_once() -> None:
     assert [v.depth for v in found] == pytest.approx([DIP] * len(found))
 
 
+CONVEX_EXTRA = 0.002
+"""mm a pad outside the wide arc reaches into its chord's middle, its
+clearance reaching the arc by that plus the chord's sagitta."""
+
+
+def test_a_chord_inside_a_clearance_on_the_arc_s_convex_side_is_refused() -> None:
+    # The chord is farther than the arc on the convex side: no allowance.
+    found = refused(near_the_arc(deepest_sagitta() + CONVEX_EXTRA, outside=True))
+
+    assert {v.obstacle for v in found} == {"pad"}
+    assert max(v.depth for v in found) == pytest.approx(CONVEX_EXTRA, abs=NM_ROUNDING)
+
+
 EDGE_INFLATION = 0.3
 """mm the board edge keeps from a chain's centreline."""
+NOTCH_RADIUS = 0.5
+"""mm, of a round notch in the board's outline."""
+NOTCH_INTO = 0.01
+"""mm the notch's clearance reaches into the wide arc's chord at its
+middle."""
+
+
+def test_an_arc_between_a_pad_and_the_board_edge_is_refused_by_the_edge() -> None:
+    # The pad on the concave side is at the arc's clearance, its chord's
+    # allowance deeper than the edge on the convex side, which no allowance
+    # covers.
+    arc, points = wide_arc()
+    ux, uy = arc_direction(points)
+    centre = (
+        WIDE_RADIUS + EDGE_INFLATION + NOTCH_RADIUS - deepest_sagitta() - NOTCH_INTO
+    )
+    notch = Point(centre * ux, centre * uy).buffer(NOTCH_RADIUS, 256)
+    board = box(-50.0, -50.0, 50.0, 50.0).difference(notch)
+    pad = Obstacle(
+        "pad", Point(beyond_the_arc(points, PAD_REACH, 0.0, outside=False)), PAD_REACH
+    )
+    chain = selected("arc", "SIG", Obstacles([pad], board, EDGE_INFLATION), *points)
+
+    found = refused(
+        lambda: optimize_chains(
+            [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    # Measured at the vertices the optimizer splits the chord into, which
+    # sit off its middle, where the notch reaches deepest.
+    assert {v.obstacle for v in found} == {"the board edge"}
+    assert 0.0 < max(v.depth for v in found) <= NOTCH_INTO + NM_ROUNDING
 
 
 NOTCH_DEPTH = 0.005
@@ -571,6 +1063,35 @@ def test_a_section_beside_an_unplated_hole_of_its_track_s_net_is_refused() -> No
     assert violation.depth == pytest.approx(UNPLATED_INSIDE)
 
 
+CUTOUT_INTO = 0.006
+"""mm a board notch's clearance reaches into the wide arc's chord at its
+middle, on the arc's convex side."""
+
+
+def test_an_arc_in_a_neck_of_the_board_is_refused_by_its_convex_side() -> None:
+    # A cutout inside the arc at the arc's edge clearance, its chords
+    # inside by their offset and allowed; the notch outside, which the
+    # same board edge holds, is judged at its own samples, no allowance.
+    arc, points = wide_arc()
+    ux, uy = arc_direction(points)
+    centre = (
+        WIDE_RADIUS + EDGE_INFLATION + NOTCH_RADIUS - deepest_sagitta() - (CUTOUT_INTO)
+    )
+    notch = Point(centre * ux, centre * uy).buffer(NOTCH_RADIUS, 256)
+    cutout = Point(0.0, 0.0).buffer(WIDE_RADIUS - EDGE_INFLATION, 4096)
+    board = box(-50.0, -50.0, 50.0, 50.0).difference(notch).difference(cutout)
+    chain = selected("arc", "SIG", Obstacles([], board, EDGE_INFLATION), *points)
+
+    found = refused(
+        lambda: optimize_chains(
+            [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert {v.obstacle for v in found} == {"the board edge"}
+    assert 0.0 < max(v.depth for v in found) <= CUTOUT_INTO + NM_ROUNDING
+
+
 SPIKE_LENGTH = 0.08
 """mm of a chain's last edge, shorter than the spacing."""
 SPIKE_AT = 0.25
@@ -599,29 +1120,6 @@ def test_an_edge_cutting_into_the_board_edge_off_its_middle_is_refused() -> None
 
     assert violation.obstacle == "the board edge"
     assert violation.depth == pytest.approx(SPIKE_DEPTH, abs=NM_ROUNDING)
-
-
-ALONG_THE_ARC = 0.01
-"""mm a pad outside the round arc reaches into it at its middle vertex:
-truly inside, its leads clear."""
-ALONG_REACH = 0.5
-"""mm, how far the pad's clearance reaches from its centre."""
-
-
-def test_a_place_along_an_arc_s_chords_is_skipped() -> None:
-    # The start check leaves the drawn arc to KiCad's DRC.
-    arc, points = round_arc()
-    at = (RADIUS + ALONG_REACH - ALONG_THE_ARC) / math.sqrt(2)
-    field = Obstacles([Obstacle("pad", Point(at, at), ALONG_REACH)])
-    chain = selected(
-        "arc", "SIG", field, (RADIUS + LEAD, 0.0), *points, (0.0, RADIUS + LEAD)
-    )
-
-    assert refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
-    result = optimize_chains(
-        [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
-    )
-    assert result.termination is not Termination.ABNORMAL
 
 
 PRESSED_GAP = 0.15
@@ -662,9 +1160,9 @@ FLAT_DEPTH = 0.05
 """mm a chain's straight flat reaches into another chain's clearance."""
 
 
-def test_a_straight_flat_beside_a_skipped_arc_is_refused() -> None:
-    # The arc of chain B reaches nearer A than its flat does; places along
-    # its chords are skipped, the flat is not.
+def test_a_straight_flat_beside_an_arc_nearer_is_refused_by_the_arc() -> None:
+    # The arc of chain B reaches nearer A than its flat does, A on its
+    # convex side, where its chords are judged as they are.
     nm = round(NM_PER_MM)
     arc = Arc("arc", (0, 0), (nm, nm // 5), (2 * nm, 0), nm // 5, "F.Cu", "B")
     ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
@@ -688,7 +1186,7 @@ def test_a_straight_flat_beside_a_skipped_arc_is_refused() -> None:
         )
     )
 
-    assert max(v.depth for v in found) == pytest.approx(FLAT_DEPTH)
+    assert max(v.depth for v in found) > FLAT_DEPTH
 
 
 WIDER_CLEARANCE = 0.3
@@ -891,8 +1389,8 @@ def test_own_net_vias_are_the_still_vias_of_its_net_on_its_layers() -> None:
 
 def test_a_flat_inside_beside_an_arc_is_refused_where_the_arc_s_run_is_pinned() -> None:
     # B's run inside holds its pinned end, so only A's run is judged: its
-    # one drawn edge is nearest B at the arc, whose chords are skipped; its
-    # samples reach the flat.
+    # one drawn edge is nearest B at the arc, on whose convex side A lies,
+    # where the chords are judged as they are, deeper than the flat.
     nm = round(NM_PER_MM)
     arc = Arc("arc", (0, 0), (nm, nm // 5), (2 * nm, 0), nm // 5, "F.Cu", "B")
     ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
@@ -908,7 +1406,7 @@ def test_a_flat_inside_beside_an_arc_is_refused_where_the_arc_s_run_is_pinned() 
     )
 
     assert {v.subject for v in found} == {"A"}
-    assert max(v.depth for v in found) == pytest.approx(FLAT_DEPTH)
+    assert max(v.depth for v in found) > FLAT_DEPTH
 
 
 def u_section(depth: float) -> PairInput:
@@ -929,10 +1427,10 @@ ARC_DIP = 0.35
 clearance."""
 
 
-def test_a_chain_inside_where_it_is_pinned_and_along_its_arc_starts() -> None:
+def test_a_chain_inside_where_it_is_pinned_is_refused_along_its_arc() -> None:
     # X's start and Y's end, both pinned, lie inside each other's clearance;
-    # further on X's arc dips inside Y's, where its chords are skipped.
-    # Judged along that run, not as its whole track, X starts.
+    # further on X's arc dips inside Y's, on whose convex side Y lies: the
+    # chords are judged as they are, along that run.
     nm = round(NM_PER_MM)
     y = -BESIDE_START
     bottom = y + ARC_DIP
@@ -950,11 +1448,13 @@ def test_a_chain_inside_where_it_is_pinned_and_along_its_arc_starts() -> None:
     x = selected("x", "X", FreeSpace(), (0.0, 0.0), (0.0, 2.0), *points, (10.0, 2.0))
     other = selected("y", "Y", FreeSpace(), (0.0, y), (8.0, y))
 
-    result = optimize_chains(
-        [x, other], scenarios.PARAMS, START_ONLY, arc_chords=arc_chords([arc])
+    found = refused(
+        lambda: optimize_chains(
+            [x, other], scenarios.PARAMS, START_ONLY, arc_chords=arc_chords([arc])
+        )
     )
 
-    assert result.termination is not Termination.ABNORMAL
+    assert {v.subject for v in found} == {"x", "y"}
 
 
 def test_a_via_beside_a_section_s_pinned_start_and_past_its_run_starts() -> None:

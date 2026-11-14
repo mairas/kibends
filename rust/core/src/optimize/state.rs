@@ -68,9 +68,9 @@
 //! The run refuses inputs inside a clearance by the rules a user can see
 //! (`Shared::insides`, judged again by Python's `kibends.inside`), but for
 //! a run inside that holds an anchor, which `count_violations` does not
-//! count, places along an arc's chords, and what is inside only the
-//! optimizer's own keep-outs: a section's widened stand-in, a via's zone
-//! clearance and margin. What
+//! count, an arc's chords on its concave side within the arc's offset
+//! from them, and what is inside only the optimizer's own keep-outs: a
+//! section's widened stand-in, a via's zone clearance and margin. What
 //! starts inside so moves like any other: the clearance hinge pushes it
 //! out. No burst takes another member or a via newly or deeper inside
 //! than it starts, and no burst takes an edge newly across static copper;
