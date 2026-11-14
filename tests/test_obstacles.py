@@ -1,6 +1,5 @@
 import math
 from itertools import pairwise
-from typing import NamedTuple
 
 import kipy.board_types as kbt
 import numpy as np
@@ -10,8 +9,11 @@ from conftest import (
     CENTRAL_ATOL,
     CENTRAL_RTOL,
     CENTRAL_STEP,
+    NM_TOLERANCE,
     PAD_HALF_SIZE,
+    POSITION_ROUND_OFF,
     FakeBoard,
+    judged_obstacles,
     kipy_footprint,
     kipy_pad,
     kipy_rect,
@@ -23,6 +25,7 @@ from conftest import (
     layer_snapshot,
     netclass,
     obstacle_energy,
+    static_distances,
     total_energy,
 )
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
@@ -36,7 +39,6 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
-    IntArray,
     ObstacleField,
     smooth_minimum,
     weighted_sum,
@@ -62,12 +64,6 @@ NET = "SIG"
 WIDTH = 0.25
 HALF = WIDTH / 2
 DEFAULT_CLEARANCE = 0.2
-NM_TOLERANCE = 1e-6
-"""mm: KiCad's coordinate step. Distances within it are the same clearance
-on the board."""
-EXACT = 1e-9
-"""How far a distance (mm) or a unit direction may differ from the same one
-computed another way, by hand or by shapely: round-off only."""
 MEDIAL_AXIS_SHARE = 0.05
 """The share of random points that may lie so near a medial axis, where the
 nearest feature switches and the distance has no gradient, that a central
@@ -368,7 +364,9 @@ class TestPairObstacleSet:
             "track keepout": pytest.approx(PAIR_HALF_EXTENT)
         }
         inside = np.array([[10.0 - 0.4 - PAIR_HALF_EXTENT, 0.0]])
-        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(0.0, abs=EXACT)
+        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(
+            0.0, abs=POSITION_ROUND_OFF
+        )
 
 
 class TestBoardEdge:
@@ -436,7 +434,7 @@ class TestSignedDistance:
         d, g = SQUARE.signed_distance(points(point))
 
         assert d[0] == pytest.approx(distance, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx(gradient, abs=EXACT)
+        assert g[0] == pytest.approx(gradient, abs=POSITION_ROUND_OFF)
 
     def test_vectorised_over_many_points(self) -> None:
         d, g = SQUARE.signed_distance(points((4, 1), (0.5, 1), (1, 5)))
@@ -687,8 +685,8 @@ class TestChainObstacles:
         assert d == pytest.approx(
             [0.8 - OTHER_NET_INFLATION, 0.5 - OTHER_NET_INFLATION], abs=NM_TOLERANCE
         )
-        assert g[0] == pytest.approx((0, 1), abs=EXACT)
-        assert g[1] == pytest.approx((0, -1), abs=EXACT)
+        assert g[0] == pytest.approx((0, 1), abs=POSITION_ROUND_OFF)
+        assert g[1] == pytest.approx((0, -1), abs=POSITION_ROUND_OFF)
 
     def test_chains_of_different_vertex_counts(self) -> None:
         bent = other_chain("THIRD", (0, 2), (5, 2), (10, 2))
@@ -746,7 +744,9 @@ class TestChainObstacles:
 
         _, g = diagonal.signed_distance(points((1, 3)))
 
-        assert g[0] == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)), abs=EXACT)
+        assert g[0] == pytest.approx(
+            (-math.sqrt(0.5), math.sqrt(0.5)), abs=POSITION_ROUND_OFF
+        )
 
     def test_segments_crossing_the_band_are_not_clear(self) -> None:
         inside = OTHER_NET_INFLATION / 2
@@ -804,7 +804,7 @@ class TestChainObstacles:
         d, g = neighbours(BELOW).signed_distance(points((5, 0)))
 
         assert d[0] == pytest.approx(-OTHER_NET_INFLATION, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((0, 1), abs=EXACT)
+        assert g[0] == pytest.approx((0, 1), abs=POSITION_ROUND_OFF)
 
 
 def random_chains(rng: np.random.Generator) -> list[ChainCentreline]:
@@ -884,13 +884,17 @@ class TestChainFieldMatchesShapely:
 
         np.testing.assert_array_equal(np.isinf(d), np.isinf(d_ref))
         finite = np.isfinite(d_ref)
-        np.testing.assert_allclose(d[finite], d_ref[finite], rtol=0, atol=EXACT)
+        np.testing.assert_allclose(
+            d[finite], d_ref[finite], rtol=0, atol=POSITION_ROUND_OFF
+        )
         centrelines = MultiLineString([c.points for c in chains])
         away = finite & (
             centrelines.distance(shapely.points(probes))
             > GRADIENT_COMPARISON_MIN_DISTANCE
         )
-        np.testing.assert_allclose(g[away], g_ref[away], rtol=0, atol=EXACT)
+        np.testing.assert_allclose(
+            g[away], g_ref[away], rtol=0, atol=POSITION_ROUND_OFF
+        )
         np.testing.assert_array_equal(g[~finite], 0.0)
 
     @pytest.mark.parametrize("seed", range(6))
@@ -942,8 +946,8 @@ class TestCompositeField:
         d, g = composite.signed_distance(points((4, 1), (7, 1)))
 
         assert d == pytest.approx([1.5, 1 - OTHER_NET_INFLATION], abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((1, 0), abs=EXACT)
-        assert g[1] == pytest.approx((-1, 0), abs=EXACT)
+        assert g[0] == pytest.approx((1, 0), abs=POSITION_ROUND_OFF)
+        assert g[1] == pytest.approx((-1, 0), abs=POSITION_ROUND_OFF)
 
     def test_beyond_reach_of_every_field_is_infinite(self) -> None:
         composite = CompositeField([SQUARE, neighbours(BELOW)])
@@ -1125,8 +1129,10 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(points)
 
         expected, expected_toward = _shapely_smooth(points)
-        np.testing.assert_allclose(smooth, expected, atol=EXACT, rtol=0.0)
-        np.testing.assert_allclose(toward, expected_toward, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(smooth, expected, atol=POSITION_ROUND_OFF, rtol=0.0)
+        np.testing.assert_allclose(
+            toward, expected_toward, atol=POSITION_ROUND_OFF, rtol=0.0
+        )
 
     def test_matches_shapely_within_reach(self) -> None:
         reach = 0.3
@@ -1138,9 +1144,11 @@ class TestEdgeList:
         expected, expected_toward = _shapely_smooth(points)
         near = expected <= reach
         assert near.any() and not near.all()
-        np.testing.assert_allclose(smooth[near], expected[near], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[near], expected_toward[near], atol=EXACT, rtol=0.0
+            smooth[near], expected[near], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[near], expected_toward[near], atol=POSITION_ROUND_OFF, rtol=0.0
         )
         assert (smooth[~near] > reach).all()
 
@@ -1157,9 +1165,11 @@ class TestEdgeList:
 
         exact, exact_toward = field.signed_distance(points)
         assert single.sum() > len(points) // 2
-        np.testing.assert_allclose(smooth[single], exact[single], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[single], exact_toward[single], atol=EXACT, rtol=0.0
+            smooth[single], exact[single], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[single], exact_toward[single], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     @pytest.mark.parametrize(
@@ -1188,8 +1198,10 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(point, 0.3)
 
         exact, exact_toward = field.signed_distance(point)
-        np.testing.assert_allclose(smooth, exact, atol=EXACT, rtol=0.0)
-        np.testing.assert_allclose(toward, exact_toward, atol=EXACT, rtol=0.0)
+        np.testing.assert_allclose(smooth, exact, atol=POSITION_ROUND_OFF, rtol=0.0)
+        np.testing.assert_allclose(
+            toward, exact_toward, atol=POSITION_ROUND_OFF, rtol=0.0
+        )
 
     def test_far_outside_the_board_is_reported(self) -> None:
         field = Obstacles([], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
@@ -1198,11 +1210,15 @@ class TestEdgeList:
         smooth, toward = field.smooth_distance(points, 0.3)
 
         exact, exact_toward = field.signed_distance(points)
-        assert smooth[0] == pytest.approx(-41.0 - SCENE_EDGE_INFLATION, abs=EXACT)
+        assert smooth[0] == pytest.approx(
+            -41.0 - SCENE_EDGE_INFLATION, abs=POSITION_ROUND_OFF
+        )
         assert smooth[1] == np.inf
-        np.testing.assert_allclose(smooth[[0, 2]], exact[[0, 2]], atol=EXACT, rtol=0.0)
         np.testing.assert_allclose(
-            toward[[0, 2]], exact_toward[[0, 2]], atol=EXACT, rtol=0.0
+            smooth[[0, 2]], exact[[0, 2]], atol=POSITION_ROUND_OFF, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            toward[[0, 2]], exact_toward[[0, 2]], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     def test_no_items_and_no_outline_is_free(self) -> None:
@@ -1228,23 +1244,6 @@ def _shapely_by_obstacle(
     }
 
 
-class StaticDistances(NamedTuple):
-    """(point, obstacle) pairs, by point then obstacle, and each point's
-    exact signed distance to its obstacle."""
-
-    point: IntArray
-    obstacle: IntArray
-    distance: FloatArray
-
-
-def static_distances(
-    field: Obstacles, points: FloatArray, below: float
-) -> StaticDistances:
-    """Each point's exact distance to each obstacle of `field` nearer than
-    `below`, as a clearance check judges it (`StaticEdges.distances`)."""
-    return StaticDistances(*field.static_edges.distances(points, below))
-
-
 class TestStaticDistances:
     """Each obstacle's exact distance from the static edges, as a clearance
     check judges it item by item."""
@@ -1265,7 +1264,7 @@ class TestStaticDistances:
         np.testing.assert_allclose(
             [found[key] for key in expected],
             list(expected.values()),
-            atol=EXACT,
+            atol=POSITION_ROUND_OFF,
             rtol=0.0,
         )
 
@@ -1279,7 +1278,10 @@ class TestStaticDistances:
 
         assert got.point.tolist() == list(range(len(points)))
         np.testing.assert_allclose(
-            got.distance, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+            got.distance,
+            field.signed_distance(points)[0],
+            atol=POSITION_ROUND_OFF,
+            rtol=0.0,
         )
 
     def test_without_a_bound_holds_each_point_s_nearest(self) -> None:
@@ -1291,7 +1293,7 @@ class TestStaticDistances:
         nearest = np.full(len(points), np.inf)
         np.minimum.at(nearest, got.point, got.distance)
         np.testing.assert_allclose(
-            nearest, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
+            nearest, field.signed_distance(points)[0], atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     def test_a_via_inside_obstacles_of_two_parts_is_inside_both(self) -> None:
@@ -1343,15 +1345,6 @@ def _joint(
 JUNCTION = np.array([[2.0, 0.1]])
 """A point inside the clearance of the track of `_joint` and of a branch
 leaving it at (2, 0)."""
-NEAR = 1.0
-"""mm: the obstacles nearer a point than this are those whose clearance it
-lies in, not the next track over."""
-
-
-def judged_obstacles(field: Obstacles, at: FloatArray) -> int:
-    """How many obstacles a clearance check judges the single point `at`
-    against within NEAR."""
-    return len(static_distances(field, at, NEAR).obstacle)
 
 
 class TestClearanceObstacles:
@@ -1406,7 +1399,7 @@ class TestClearanceObstacles:
 
         assert got.point.tolist() == [0, 1]
         np.testing.assert_allclose(
-            got.distance, [0.1 - JOINT_INFLATION] * 2, atol=EXACT, rtol=0.0
+            got.distance, [0.1 - JOINT_INFLATION] * 2, atol=POSITION_ROUND_OFF, rtol=0.0
         )
 
     def test_a_board_s_tracks_meeting_at_a_width_change_are_one(self) -> None:

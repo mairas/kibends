@@ -16,7 +16,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
-from typing import cast
+from typing import NamedTuple, cast
 
 import kipy.board
 import kipy.board_types as kbt
@@ -69,6 +69,7 @@ from kibends.energy import (
     DistanceField,
     EnergyParams,
     FloatArray,
+    IntArray,
     ObstacleField,
     TermValue,
     attraction_integrand,
@@ -259,8 +260,11 @@ SUM_ORDER_ROUNDING = 1e-12
 """Error, relative or near zero absolute, of summing the same energy terms
 in another order."""
 POSITION_ROUND_OFF = 1e-9
-"""mm of float rounding between a position and the same position computed
-another way."""
+"""Float rounding between a position or a distance (mm), or a unit
+direction, and the same one computed another way."""
+NM_TOLERANCE = 1e-6
+"""mm: KiCad's coordinate step. Distances within it are the same clearance
+on the board."""
 
 STRAIGHT_TOLERANCE = DEFAULT_CHORD_TOLERANCE
 """mm from the line between its ends within which a route is straight:
@@ -1217,3 +1221,31 @@ def neutral_distance(params: EnergyParams, apart: float) -> float:
         else:
             low = middle
     return (low + high) / 2
+
+
+JUDGED_NEAR = 1.0
+"""mm: the obstacles nearer a point than this are those whose clearance it
+lies in, not the next track over."""
+
+
+class StaticDistances(NamedTuple):
+    """(point, obstacle) pairs, by point then obstacle, and each point's
+    exact signed distance to its obstacle."""
+
+    point: IntArray
+    obstacle: IntArray
+    distance: FloatArray
+
+
+def static_distances(
+    field: Obstacles, points: FloatArray, below: float
+) -> StaticDistances:
+    """Each point's exact distance to each obstacle of `field` nearer than
+    `below`, as a clearance check judges it (`StaticEdges.distances`)."""
+    return StaticDistances(*field.static_edges.distances(points, below))
+
+
+def judged_obstacles(field: Obstacles, at: FloatArray) -> int:
+    """How many obstacles a clearance check judges the single point `at`
+    against within JUDGED_NEAR."""
+    return len(static_distances(field, at, JUDGED_NEAR).obstacle)
