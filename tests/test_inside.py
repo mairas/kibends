@@ -17,12 +17,14 @@ from conftest import (
     kipy_via,
     layer_snapshot,
     refused,
+    violations,
 )
 from distance_fields import Disc, FreeSpace
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from scenarios import PAIR_CLEARANCE, PAIR_WIDTH, selected
 from shapely.geometry import LineString, Point, Polygon, box
 
+import kibends.optimize as optimize_module
 from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE
 from kibends.chain import NM_PER_MM, Point2
 from kibends.coords import UserFrame
@@ -47,8 +49,10 @@ from kibends.obstacles import (
 )
 from kibends.optimize import optimize_chains
 from kibends.pair_blocks import PairInput
+from kibends.polylines import measure
 from kibends.results import RunResult, Termination
 from kibends.snapshot import Arc
+from kibends.via_moves import MovingVias
 from kibends.vias import ViaInput
 
 SETTINGS = DEFAULT_SETTINGS
@@ -124,14 +128,24 @@ def test_an_arc_s_chords_inside_its_obstacle_by_their_sagitta_are_refused() -> N
     assert refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
 
 
-def test_an_arc_s_chords_within_their_sagitta_start() -> None:
+def test_an_arc_s_chords_within_their_sagitta_start_and_end_clear() -> None:
     chain, arc = hugging(0.0)
+    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+        [chain], [], MovingVias([chain], [], 0.0, 0.0), scenarios.PARAMS, SETTINGS
+    )
 
     result = optimize_chains(
         [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
     )
 
-    assert result.termination is not Termination.ABNORMAL
+    # A start the guard measures inside a clearance, chord by chord, which
+    # it holds the run to (`_core.ProblemState.allowed`).
+    assert placed.problem.allowed[0] > 0
+    assert result.termination is Termination.CONVERGED
+    (got,) = result.chains
+    assert violations(got.polyline, got.fixed, chain.field) == 0
+    drawn = measure(chain.centreline.points, SETTINGS.spacing).length
+    assert measure(got.polyline, SETTINGS.spacing).length < drawn
 
 
 def test_an_arc_inside_its_obstacle_beyond_its_sagitta_is_refused() -> None:
