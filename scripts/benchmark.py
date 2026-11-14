@@ -1,7 +1,9 @@
 """Measure the optimizer: wall and CPU time, the seconds of setup and those
 after it outside L-BFGS, outer iterations, bursts, energy evaluations, the
-times a layer's neighbour list found its pairs (`seen.NeighbourList`), both
-from the Rust statistics (`kibends._core.statistics`), and
+times a layer's neighbour list found its pairs (`seen.NeighbourList`), the
+bursts L-BFGS ended abnormally, the line searches that failed and the
+trials the bursts' checks rejected, all from the Rust statistics
+(`kibends._core.statistics`), and
 the farthest move in one burst on stitched ground planes, on the synthetic
 scenarios and on buses of parallel tracks, how a lone track settles in one
 problem with a cluster of others, and where return vias settle.
@@ -284,6 +286,12 @@ class Count:
     `time.perf_counter` reads; None while it has not."""
     minimising: float = 0.0
     """Seconds L-BFGS ran, its energy evaluations included."""
+    abnormal: int = 0
+    """Bursts L-BFGS ended abnormally."""
+    failed_searches: int = 0
+    """Line searches that failed, whatever followed."""
+    rejected: int = 0
+    """Line-search trials the bursts' checks rejected."""
 
 
 @contextmanager
@@ -332,6 +340,9 @@ def counted() -> Generator[Count]:
         ended = _core.statistics()
         count.evaluations = ended.evaluations - started.evaluations
         count.searches = ended.list_searches - started.list_searches
+        count.abnormal = ended.abnormal - started.abnormal
+        count.failed_searches = ended.failed_searches - started.failed_searches
+        count.rejected = ended.rejected - started.rejected
         setattr(optimize_module, "run_burst", real)  # noqa: B010
 
 
@@ -361,7 +372,8 @@ def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
     print(
         f"| {name} | {wall:.2f} | {cpu:.2f} | {setup:.2f} | {outside:.2f} "
         f"| {iterations} | {count.bursts} | {count.evaluations} "
-        f"| {count.searches} | {count.step:.2f} | {note} |",
+        f"| {count.searches} | {count.step:.2f} | {count.abnormal} "
+        f"| {count.failed_searches} | {count.rejected} | {note} |",
         flush=True,
     )
     return measured
@@ -369,8 +381,9 @@ def measure(name: str, work: Callable[[], tuple[int, str]]) -> Measured:
 
 HEADER = (
     "| case | wall s | CPU s | setup s | outside L-BFGS s | iterations | bursts "
-    "| evaluations | list searches | largest step mm | result |\n"
-    "|---|---|---|---|---|---|---|---|---|---|---|"
+    "| evaluations | list searches | largest step mm | abnormal bursts "
+    "| failed searches | rejected trials | result |\n"
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
 )
 
 ROUTE_KEEPOUT = 0.7
@@ -639,10 +652,14 @@ def scenarios_table() -> None:
         total.evaluations += m.count.evaluations
         total.searches += m.count.searches
         total.step = max(total.step, m.count.step)
+        total.abnormal += m.count.abnormal
+        total.failed_searches += m.count.failed_searches
+        total.rejected += m.count.rejected
     print(
         f"| **all {len(scenario_cases())}** | {wall:.2f} | {cpu:.2f} | {setup:.2f} "
         f"| {outside:.2f} | {iterations} | {total.bursts} | {total.evaluations} "
-        f"| {total.searches} | {total.step:.2f} | |"
+        f"| {total.searches} | {total.step:.2f} | {total.abnormal} "
+        f"| {total.failed_searches} | {total.rejected} | |"
     )
 
 
