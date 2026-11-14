@@ -61,7 +61,6 @@ import kibends.optimize as optimize_module
 from kibends import cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
-    DEFAULT_CHORD_TOLERANCE,
     DEFAULT_SETTINGS,
     INSIDE_TOLERANCE,
     Burst,
@@ -164,10 +163,13 @@ SPACING_MEASURED = 1e-3
 """Relative difference between a reported bend radius and the committed
 tracks' own at the same spacing, from their rounding to nanometres; a
 different spacing scales the radius of a corner with it."""
-RETURN_SETTLED = DEFAULT_CHORD_TOLERANCE
+RETURN_SETTLED = 0.01
 """mm from where their push and pull balance within which a via and its
-return via settle: the chord tolerance, below which a committed route counts
-as straight, so no nearer placement would show."""
+return via settle, and by more than which the default's pull must bring
+them nearer for "nearer" to be told apart from where they settle. A
+measured margin, not a placement a user needs: on `return_via_board` they
+settle within 0.005 mm of the balance, and the default brings them over
+0.2 mm nearer."""
 BALANCED = "--attraction=0.25"
 """The argument for a weight whose pull stays below the push beyond the
 clearance and standoff of `return_via_board`'s vias, so that they balance
