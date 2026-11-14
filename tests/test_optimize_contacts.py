@@ -70,8 +70,7 @@ def test_an_end_in_a_pad_slides_toward_the_route_and_stays_inside(
     coarse: tuple[float, ...],
 ) -> None:
     # The end comes to rest on the pad's corner, a kink of its stop where
-    # every burst fails its first line search; with levels, each handover
-    # starts one such burst.
+    # bursts fail their first line search: the run must still converge.
     chain = end_in_pad()
 
     result = optimize_chains(
@@ -105,9 +104,7 @@ def test_a_vertex_kept_partway_along_stays_inside_and_the_rest_is_free() -> None
     assert got.fixed.sum() == 3
 
 
-def test_a_vertex_the_stop_cannot_hold_moves_back_inside() -> None:
-    # Too weak to hold it, the stop lets each burst end with the vertex
-    # outside, and the burst moves it back.
+def test_a_vertex_stays_inside_its_contact_where_the_stop_cannot_hold_it() -> None:
     weak = replace(scenarios.PARAMS, clearance_weight=WEAK_STOP)
 
     result = optimize_chains([passing_over()], weak, SETTINGS)
@@ -115,6 +112,7 @@ def test_a_vertex_the_stop_cannot_hold_moves_back_inside() -> None:
     (got,) = result.chains
     (vertex,) = kept(got)
     assert OVER.covers(Point(vertex))
+    # The case needs the check: bursts end with the vertex outside.
     assert got.rejected_edges > 0
 
 
