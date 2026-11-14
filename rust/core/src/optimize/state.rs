@@ -699,7 +699,7 @@ fn lay_out_member(
     finest: f64,
 ) -> (Vec<V2>, Vec<bool>, Vec<Option<usize>>) {
     let anchors = anchors(mask, contact_of, loose);
-    let (points, source) = subdivide(points, &anchors, spacing, minimum_free, finest);
+    let (points, source) = subdivide(points, &anchors, spacing, minimum_free, finest, None);
     let fixed = source.iter().map(|s| s.is_some_and(|k| mask[k])).collect();
     let moved = source
         .iter()
