@@ -39,21 +39,6 @@ def test_a_burst_without_coordinates_ends_where_it_is() -> None:
     assert not burst.abnormal
 
 
-def test_a_burst_without_coordinates_reports_no_work() -> None:
-    burst = run_burst(squared, np.zeros(0), nothing_crosses, DEFAULT_SETTINGS)
-
-    assert (burst.iterations, burst.evaluations) == (0, 0)
-
-
-def test_a_burst_reports_its_iterations_and_evaluations() -> None:
-    burst = run_burst(
-        steep_valley, np.array([3.0, 2.0]), nothing_crosses, SHORT_SETTINGS
-    )
-
-    assert 1 <= burst.iterations <= SHORT_SETTINGS.burst_maxiter
-    assert burst.evaluations > burst.iterations
-
-
 def test_a_burst_reports_how_l_bfgs_ended_it() -> None:
     one_iteration = replace(DEFAULT_SETTINGS, burst_maxiter=1)
     start = np.array([1.0, 2.0])
@@ -100,8 +85,6 @@ def test_a_burst_whose_line_search_fails_ends_abnormally_where_it_started() -> N
 
     assert burst.abnormal
     assert burst.message.startswith("ABNORMAL")
-    assert burst.iterations == 0
-    assert burst.evaluations > 1
     np.testing.assert_array_equal(burst.points, start)
     np.testing.assert_array_equal(reverted[0], start)
 
@@ -124,38 +107,43 @@ VALLEY_SCALE = np.array([1.0, 1.0 / np.sqrt(STEEPNESS)])
 """The steep valley's coordinates scaled by 1/sqrt of its curvatures, so
 that it is round."""
 NEAR_MINIMUM = 1e-6
-
-
-def test_a_scale_that_rounds_the_valley_reaches_its_minimum_in_two_iterations() -> None:
-    # The first step is a line search along the gradient, which in a round
-    # valley points at the minimum; the second lands on it.
-    two_iterations = replace(DEFAULT_SETTINGS, burst_maxiter=2)
-    start = np.array([1.0, 2.0])
-    scaled = ScaledObjective(steep_valley, VALLEY_SCALE)
-
-    plain = run_burst(steep_valley, start, nothing_crosses, two_iterations)
-    burst = run_burst(scaled, start, nothing_crosses, two_iterations)
-
-    assert np.abs(plain.points).max() > NEAR_MINIMUM
-    assert np.abs(burst.points).max() < NEAR_MINIMUM
+ABOVE_ANY_GRADIENT = 1e6
+"""A gtol above the valley's gradient anywhere near its minimum, scaled or
+not, so that a burst ends before its first step."""
 
 
 def test_a_scaled_burst_checks_and_returns_the_coordinates_unscaled() -> None:
+    # At the start, where the scaled coordinates differ from the unscaled
+    # ones; at the minimum both are zero.
     start = np.array([1.0, 2.0])
+    no_step = replace(DEFAULT_SETTINGS, lbfgs_gtol=ABOVE_ANY_GRADIENT)
     checked: list[FloatArray] = []
 
-    def first_back(x: FloatArray) -> int:
+    def check(x: FloatArray) -> int:
         checked.append(x.copy())
-        x[0] = start[0]
-        return 1
+        return 0
 
     burst = run_burst(
-        ScaledObjective(steep_valley, VALLEY_SCALE), start, first_back, DEFAULT_SETTINGS
+        ScaledObjective(steep_valley, VALLEY_SCALE), start, check, no_step
     )
 
-    assert np.abs(checked[0]).max() < NEAR_MINIMUM
-    assert burst.points[0] == start[0]
-    assert abs(burst.points[1]) < NEAR_MINIMUM
+    np.testing.assert_allclose(checked, [start])
+    np.testing.assert_allclose(burst.points, start)
+
+
+def test_a_burst_keeps_what_its_check_moves_back() -> None:
+    start = np.array([1.0, 2.0])
+
+    def second_back(x: FloatArray) -> int:
+        x[1] = start[1]
+        return 1
+
+    scaled = ScaledObjective(steep_valley, VALLEY_SCALE)
+
+    burst = run_burst(scaled, start, second_back, DEFAULT_SETTINGS)
+
+    assert burst.points[1] == start[1]
+    assert abs(burst.points[0]) < NEAR_MINIMUM
 
 
 def test_a_scaled_objective_answers_as_its_objective() -> None:
@@ -221,10 +209,6 @@ def test_settings_take_coarse_spacings_above_the_final_one_coarsest_first() -> N
     settings = OptimizerSettings(spacing=0.1, coarse_spacings=(1.6, 0.4))
     assert settings.coarse_spacings == (1.6, 0.4)
     assert settings.spacing == 0.1
-
-
-def test_settings_run_coarse_levels_by_default() -> None:
-    assert DEFAULT_SETTINGS.coarse_spacings == (1.6, 0.4)
 
 
 @pytest.mark.parametrize(

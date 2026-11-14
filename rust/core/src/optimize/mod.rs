@@ -184,7 +184,10 @@ pub struct NotFinite(pub f64);
 /// gain away. The length side keeps that share from stopping routes that
 /// still get shorter as the vias spread, and holds for the whole problem:
 /// per member, it let a stitched plane's routes end 17 µm longer. So two
-/// copies of a problem may run longer than one, never stop sooner.
+/// copies of a problem may run longer than one; optimized together they
+/// may also settle a burst sooner, since their joint steps differ, and end
+/// within micrometres of it (the tent: 6 bursts against 7, about 2 µm
+/// longer).
 /// Measured in https://github.com/mairas/kibends/issues/138 and
 /// https://github.com/mairas/kibends/issues/114.
 pub fn stalled(

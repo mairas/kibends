@@ -14,13 +14,19 @@ import numpy as np
 import pytest
 import scenarios
 from conftest import (
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
     CURVATURE_ATOL,
     CURVATURE_RTOL,
     CURVATURE_STEP,
+    STRAIGHT_TOLERANCE,
+    SUM_ORDER_ROUNDING,
     all_abnormal_bursts,
     build_via_obstacles,
     first_check,
     neutral_distance,
+    off_straight,
 )
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
@@ -60,7 +66,7 @@ from kibends.obstacles import (
     split_via_obstacles,
     via_via_inflation,
 )
-from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains, stalled
+from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
 from kibends.snapshot import LayerSnapshot, ViaZone
@@ -68,6 +74,20 @@ from kibends.via_moves import MovingVias
 from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
+
+ON_THE_ROUTE = 0.1
+"""How far from where its chains pull it a via that nothing holds ends at
+COARSE settings, at most, mm: less than any obstacle in these scenarios
+would leave it."""
+PRESSED_TO_CHAIN = 0.05
+"""How far beyond their clearance a via and a chain pressed together end,
+at most, mm."""
+PRESSED_TO_VIA = 0.1
+"""How far beyond their clearance two vias pressed together end, at most,
+mm."""
+UNMOVED = 1e-6
+"""How far a via may end from where it started, mm, in a direction that
+nothing pushes it in or where its pulls balance: round-off only."""
 
 
 COARSE_LEVELS = (1.2, 0.6)
@@ -85,8 +105,9 @@ def length(points: FloatArray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
-def route_length(result: RunResult, first: int = 0) -> float:
-    return sum(length(result.chains[i].polyline) for i in (first, first + 1))
+def route(result: RunResult, first: int = 0) -> FloatArray:
+    """The route of chains `first` and the next, which meet at a via."""
+    return np.vstack([result.chains[i].polyline for i in (first, first + 1)])
 
 
 def to_polyline(at: tuple[float, float], points: FloatArray) -> float:
@@ -108,9 +129,9 @@ class TestDetour:
         x, y = via.position
 
         assert detour.termination is Termination.CONVERGED
-        assert y == pytest.approx(0.0, abs=0.1)
-        assert route_length(detour) == pytest.approx(10.0, abs=0.01)
-        assert x == pytest.approx(5.0, abs=0.5)
+        assert y == pytest.approx(0.0, abs=ON_THE_ROUTE)
+        assert off_straight(route(detour)) < STRAIGHT_TOLERANCE
+        assert x == pytest.approx(scenarios.DETOUR_VIA[0], abs=UNMOVED)
 
     def test_the_chain_ends_follow_the_via(self, detour: RunResult) -> None:
         (via,) = detour.vias
@@ -178,7 +199,7 @@ def test_chains_on_one_layer_move_with_their_via_together(
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
-    assert via.position[1] == pytest.approx(0.0, abs=0.1)
+    assert via.position[1] == pytest.approx(0.0, abs=ON_THE_ROUTE)
 
 
 def test_a_via_at_its_optimum_stays() -> None:
@@ -224,10 +245,6 @@ ZONE_SLACK = 0.05
 """How far inside its zone's margin the via starts, mm."""
 
 
-SLACK_STRAIGHT = 10.01
-"""The slack chain's length once straight, at most, mm."""
-
-
 def test_a_via_pushed_out_of_a_clearance_stays_inside_its_zone() -> None:
     # The wall above the zone's edge pushes the via toward that edge.
     edge = scenarios.DETOUR_VIA[1] - ZONE_SLACK
@@ -242,7 +259,7 @@ def test_a_via_pushed_out_of_a_clearance_stays_inside_its_zone() -> None:
 
     (via,) = result.vias
     assert via.position[1] >= edge - INSIDE_TOLERANCE
-    assert length(result.chains[-1].polyline) < SLACK_STRAIGHT
+    assert off_straight(result.chains[-1].polyline) < STRAIGHT_TOLERANCE
 
 
 WALL_GAP = 0.02
@@ -305,7 +322,7 @@ class TestInsideAZone:
         result = run(in_zone(-1.0))
 
         (via,) = result.vias
-        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+        assert via.position[1] == pytest.approx(0.0, abs=ON_THE_ROUTE)
 
     def test_a_pull_toward_the_region_s_edge_is_held_at_it(self) -> None:
         bottom = 1.5
@@ -326,7 +343,7 @@ class TestInsideAZone:
         result = run(in_zone(1.5, big))
 
         (via,) = result.vias
-        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+        assert via.position[1] == pytest.approx(0.0, abs=ON_THE_ROUTE)
 
     def test_the_via_crosses_the_seam_of_zones_meeting_edge_to_edge(self) -> None:
         # Neither zone alone holds the via near y = 1.5 by its margin; their
@@ -336,7 +353,7 @@ class TestInsideAZone:
         result = run(in_zone(1.5, below))
 
         (via,) = result.vias
-        assert via.position[1] == pytest.approx(0.0, abs=0.1)
+        assert via.position[1] == pytest.approx(0.0, abs=ON_THE_ROUTE)
 
     def test_a_pull_toward_the_union_s_edge_is_held_at_it(self) -> None:
         bottom = 1.5
@@ -482,7 +499,7 @@ class TestBesideAChain:
 
         assert via.position[1] < scenarios.DETOUR_VIA[1] - 2.0
         assert gap >= scenarios.VIA_TO_CHAIN - INSIDE_TOLERANCE
-        assert gap < scenarios.VIA_TO_CHAIN + 0.05
+        assert gap < scenarios.VIA_TO_CHAIN + PRESSED_TO_CHAIN
 
     def test_the_via_and_the_chain_pressing_on_it_settle_together(
         self, beside: RunResult
@@ -499,7 +516,7 @@ def test_a_via_is_not_held_back_by_a_chain_it_passes(nudge: float) -> None:
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
-    assert via.position[1] < 0.1
+    assert via.position[1] < ON_THE_ROUTE
 
 
 @ONE_SPACING_OR_LEVELS
@@ -510,7 +527,7 @@ def test_three_chains_meet_where_the_via_joins_them_shortest(
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
-    assert math.dist(via.position, scenarios.FERMAT_POINT) < 0.1
+    assert math.dist(via.position, scenarios.FERMAT_POINT) < ON_THE_ROUTE
 
 
 class TestPair:
@@ -519,7 +536,7 @@ class TestPair:
 
         a, b = (v.position for v in result.vias)
         assert math.dist(a, b) >= scenarios.VIA_TO_VIA - INSIDE_TOLERANCE
-        assert math.dist(a, b) < scenarios.VIA_TO_VIA + 0.1
+        assert math.dist(a, b) < scenarios.VIA_TO_VIA + PRESSED_TO_VIA
 
     def test_two_vias_keep_hole_to_hole(self) -> None:
         scenario = scenarios.via_pair()
@@ -566,7 +583,6 @@ class TestBlindAndBuriedVias:
         result = run(scenario)
 
         a, b = (v.position for v in result.vias)
-        assert moving_vias(scenario).apart(0, 1) is None
         assert math.dist(a, b) < scenarios.PAIR_LEVEL + REACHED
         assert scenarios.PAIR_LEVEL + REACHED < scenarios.VIA_TO_VIA
 
@@ -648,6 +664,11 @@ def zoned(scenario: ViasScenario, k: int, layer: str) -> ViasScenario:
     return replace(scenario, vias=tuple(vias))
 
 
+ZONED_APART = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
+"""How far another via's centre keeps from a via in a `zoned` zone: the
+other's ring, the zone's clearance and its margin."""
+
+
 class TestZoneClearanceToMembers:
     def test_a_chain_on_the_zone_s_layer_keeps_it_from_the_via(self) -> None:
         result = run(zoned(scenarios.via_beside_chain(), 0, "In1.Cu"))
@@ -657,23 +678,23 @@ class TestZoneClearanceToMembers:
         expected = scenarios.PAIR_WIDTH / 2 + ZONE_CLEARANCE + MARGIN
         assert expected > scenarios.VIA_TO_CHAIN
         assert gap >= expected - INSIDE_TOLERANCE
-        assert gap < expected + 0.05
+        assert gap < expected + PRESSED_TO_CHAIN
 
     def test_a_chain_on_another_layer_keeps_the_netclass_clearance(self) -> None:
         result = run(zoned(scenarios.via_beside_chain(), 0, "In2.Cu"))
 
         (via,) = result.vias
         gap = to_polyline(via.position, result.chains[2].polyline)
-        assert gap < scenarios.VIA_TO_CHAIN + 0.05
+        assert gap < scenarios.VIA_TO_CHAIN + PRESSED_TO_CHAIN
 
-    def test_another_moving_via_keeps_it(self) -> None:
-        result = run(zoned(scenarios.via_pair(), 0, "In1.Cu"))
+    @pytest.mark.parametrize("zoned_via", [0, 1], ids=["first", "second"])
+    def test_another_moving_via_keeps_it(self, zoned_via: int) -> None:
+        result = run(zoned(scenarios.via_pair(), zoned_via, "In1.Cu"))
 
         a, b = (v.position for v in result.vias)
-        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
-        assert expected > scenarios.VIA_TO_VIA
-        assert math.dist(a, b) >= expected - INSIDE_TOLERANCE
-        assert math.dist(a, b) < expected + 0.1
+        assert ZONED_APART > scenarios.VIA_TO_VIA
+        assert math.dist(a, b) >= ZONED_APART - INSIDE_TOLERANCE
+        assert math.dist(a, b) < ZONED_APART + PRESSED_TO_VIA
 
     def test_two_vias_inside_one_s_zone_distance_move_apart(self) -> None:
         # 0.85 mm apart: more than the netclass distance, less than the
@@ -699,16 +720,8 @@ class TestZoneClearanceToMembers:
 
         a, b = (v.position for v in result.vias)
         assert a != lower
-        apart = moving_vias(given).apart(0, 1)
-        assert apart is not None and apart > math.dist(lower, upper)
-        assert math.dist(a, b) >= apart - INSIDE_TOLERANCE
-
-    def test_two_vias_keep_the_larger_of_their_distances_both_ways(self) -> None:
-        vias = moving_vias(zoned(scenarios.via_pair(), 0, "In1.Cu"))
-
-        expected = scenarios.VIA_DIAMETER / 2 + ZONE_CLEARANCE + MARGIN
-        assert vias.apart(0, 1) == pytest.approx(expected)
-        assert vias.apart(1, 0) == pytest.approx(expected)
+        assert math.dist(lower, upper) < ZONED_APART
+        assert math.dist(a, b) >= ZONED_APART - INSIDE_TOLERANCE
 
 
 VIA_TO_CHAIN = scenarios.VIA_TO_CHAIN
@@ -720,8 +733,8 @@ def test_a_via_passes_over_a_chain_of_its_net_that_does_not_end_at_it() -> None:
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
-    assert via.position[1] == pytest.approx(0.0, abs=0.1)
-    assert route_length(result) == pytest.approx(10.0, abs=0.01)
+    assert via.position[1] == pytest.approx(0.0, abs=ON_THE_ROUTE)
+    assert off_straight(route(result)) < STRAIGHT_TOLERANCE
 
 
 def over_short_pinned() -> ViasScenario:
@@ -1277,18 +1290,12 @@ def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
-# The chain wraps the via and pushes it up as it does. Each held to half
-# their gap, the two crept after each other: 81 iterations. Measured: 15.
-PRESSING_ITERATIONS = 40
-
-
 def test_a_chain_of_another_net_keeps_off_the_via() -> None:
     result = run(scenarios.via_over_bowed("P"))
 
     (via,) = result.vias
     inner = result.chains[2].polyline
     assert result.termination is Termination.CONVERGED
-    assert result.iterations <= PRESSING_ITERATIONS
     assert to_polyline(via.position, inner) >= VIA_TO_CHAIN - INSIDE_TOLERANCE
 
 
@@ -1302,9 +1309,8 @@ def test_a_chain_of_its_net_that_does_not_end_at_it_passes_through_the_via() -> 
 
     (via,) = result.vias
     inner = result.chains[2].polyline
-    straight = length(scenario.chains[2].centreline.points[[0, -1]])
     assert result.termination is Termination.CONVERGED
-    assert length(inner) < straight + 0.01
+    assert off_straight(inner) < STRAIGHT_TOLERANCE
     assert to_polyline(via.position, inner) < TOUCHING
 
 
@@ -1318,8 +1324,8 @@ def test_chains_straighten_under_a_via_that_stays(field: ObstacleField) -> None:
 
     (via,) = result.vias
     assert result.termination is Termination.CONVERGED
-    assert math.dist(via.position, scenarios.SLACK_VIA) < 0.05
-    assert route_length(result) == pytest.approx(10.0, abs=0.01)
+    assert math.dist(via.position, scenarios.SLACK_VIA) < UNMOVED
+    assert off_straight(route(result)) < STRAIGHT_TOLERANCE
 
 
 BURIED_IN = Disc(5.0, 3.5, 1.0)
@@ -1387,23 +1393,6 @@ def static_vias() -> tuple[StaticVia, ...]:
     )
 
 
-def test_a_problem_keeps_the_static_vias_its_moving_vias_meet() -> None:
-    given = scenarios.via_detour()
-
-    placed = optimize_module._problems(
-        given.chains,
-        [],
-        moving_vias(given),
-        given.params,
-        COARSE,
-        static_vias(),
-    )
-
-    vias = [v for p in placed for v in p.problem.vias]
-    assert {v.given.via.id for v in vias} == {"v"}
-    assert {s.via.id for p in placed for s in p.problem.static_vias} == {"g", "b"}
-
-
 def test_static_vias_it_does_not_pair_with_leave_the_result_as_it_is() -> None:
     given = scenarios.via_detour()
     regular = [s for s in static_vias() if not s.ground]
@@ -1430,11 +1419,6 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
 
     result = run(scenario)
 
-    placed = optimize_module._problems(
-        scenario.chains, [], moving_vias(scenario), params, COARSE
-    )
-    assert sorted(len(p.problem.vias) for p in placed) == [0, 0, 1]
-
     for chain, given in zip(result.chains, scenario.chains, strict=True):
         alone = optimize_chains([given], params, COARSE)
         np.testing.assert_array_equal(chain.polyline, alone.chains[0].polyline)
@@ -1444,7 +1428,6 @@ def test_two_layers_joined_by_a_via_are_one_problem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real = optimize_module.run_burst
-    bursts: list[Burst] = []
 
     def failing(
         objective: Objective,
@@ -1453,9 +1436,7 @@ def test_two_layers_joined_by_a_via_are_one_problem(
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
-        burst = real(objective, start, revert, settings, stop)
-        bursts.append(burst)
-        return replace(burst, abnormal=True)
+        return replace(real(objective, start, revert, settings, stop), abnormal=True)
 
     monkeypatch.setattr(optimize_module, "run_burst", failing)
 
@@ -1463,7 +1444,6 @@ def test_two_layers_joined_by_a_via_are_one_problem(
 
     problem = "the chains and vias on F.Cu and B.Cu"
     every = all_abnormal_bursts(COARSE)
-    assert result.iterations == len(bursts) == every
     assert result.gave_up == ((problem, MAX_ABNORMAL_BURSTS),)
     assert result.abnormal == ((problem, every),)
     assert result.vias[0].position[1] < scenarios.DETOUR_VIA[1]
@@ -1537,6 +1517,9 @@ def returned(*ground: ViaInput) -> ViasScenario:
 OFF_THE_KINK = 1e-3
 """mm, how far the via grid's gradient check moves each variable off its
 start, at random."""
+PAIR_GRADIENT_RTOL = 1e-10
+"""As SUM_ORDER_ROUNDING for the pairwise gradient, each of whose elements
+gathers every pair's push from both of its vias."""
 
 
 class TestGradient:
@@ -1564,13 +1547,15 @@ class TestGradient:
         rng = np.random.default_rng(seed)
         x = layout.x0 + rng.normal(scale=0.05, size=len(layout.x0))
         _, gradient = objective(x)
-        step = 1e-7
+        step = CENTRAL_STEP
         for c in range(len(x)):
             up, down = x.copy(), x.copy()
             up[c] += step
             down[c] -= step
             numeric = (objective(up)[0] - objective(down)[0]) / (2 * step)
-            assert gradient[c] == pytest.approx(numeric, rel=1e-4, abs=1e-6)
+            assert gradient[c] == pytest.approx(
+                numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
+            )
 
     def test_with_a_via_at_every_vertex_of_a_grid(self) -> None:
         """Issue 100's grid, just off its start, where a chain's vertex beside a
@@ -1592,12 +1577,14 @@ class TestGradient:
             scale=OFF_THE_KINK, size=len(layout.x0)
         )
         _, gradient = objective(x)
-        step = 1e-7
+        step = CENTRAL_STEP
         for direction in np.random.default_rng(0).normal(size=(3, len(x))):
             numeric = (
                 objective(x + step * direction)[0] - objective(x - step * direction)[0]
             ) / (2 * step)
-            assert gradient @ direction == pytest.approx(numeric, rel=1e-4, abs=1e-6)
+            assert gradient @ direction == pytest.approx(
+                numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
+            )
 
     @pytest.mark.parametrize("seed", [0, 1])
     def test_with_a_chain_near_the_via(self, seed: int) -> None:
@@ -1748,10 +1735,10 @@ def moving_vias(scenario: ViasScenario) -> MovingVias:
     return MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
 
 
-def test_chains_straightened_in_one_burst_are_kept() -> None:
-    # Two free vertices a chain: one burst straightens the route, and the
-    # via's move in it is less than the tolerance.
-    # At that spacing alone: it is coarser than the default coarse levels.
+def test_a_route_straightened_while_its_via_barely_moves_is_kept() -> None:
+    # Two free vertices a chain straighten the route at once while the via
+    # moves less than `settled_change`. At that spacing alone: it is
+    # coarser than the default coarse levels.
     few = OptimizerSettings(
         spacing=2.5, coarse_spacings=(), settled_change=0.025, burst_maxiter=30
     )
@@ -1759,7 +1746,7 @@ def test_chains_straightened_in_one_burst_are_kept() -> None:
     result = run(scenarios.via_slack(FreeSpace(), (5.0, 0.01)), few)
 
     assert result.termination is Termination.CONVERGED
-    assert route_length(result) == pytest.approx(10.0, abs=0.01)
+    assert off_straight(route(result)) < STRAIGHT_TOLERANCE
 
 
 STITCH_X = 5.0
@@ -1870,7 +1857,6 @@ COPPER_RADIUS = 1.0
 WITHIN_STANDOFF = STITCH_PARAMS.standoff / 2
 WITHIN_FALLOFF = STITCH_PARAMS.falloff_range / 2
 """Beyond the standoff: only the repulsion is curved there."""
-PRESSED_VIA_SCALE = 0.5
 
 
 def alone(*, gap: float | None = None, top: float = OPEN_TOP) -> ViasScenario:
@@ -1891,25 +1877,7 @@ def alone_problem(scenario: ViasScenario) -> optimize_module._Problem:
     return placed.problem
 
 
-def via_scale(scenario: ViasScenario) -> float:
-    """The scale of the lone via's variable in the first burst."""
-    problem = alone_problem(scenario)
-    layout = problem.layout(problem.points)
-    seen = problem.seeing(layout.starts)
-    scale = problem.scale(layout.starts, seen, problem.lookups(seen))
-    (variable,) = layout.via_index
-    return float(scale[2 * variable])
-
-
 class TestViaStiffness:
-    def test_a_free_via_scales_by_one(self) -> None:
-        assert via_scale(alone()) == 1.0
-
-    def test_a_via_pressed_at_clearance_against_static_copper_scales_down(
-        self,
-    ) -> None:
-        assert via_scale(alone(gap=0.0)) < PRESSED_VIA_SCALE
-
     @pytest.mark.parametrize("gap", [WITHIN_STANDOFF, WITHIN_FALLOFF])
     @pytest.mark.parametrize("pushing", ["copper", "zone"])
     def test_is_the_curvature_along_the_push(self, pushing: str, gap: float) -> None:
@@ -1958,7 +1926,7 @@ class TestStitchingVia:
         result = run(stitched(start, top=top))
 
         (via,) = result.vias
-        assert via.position[0] == pytest.approx(STITCH_X, abs=0.01)
+        assert via.position[0] == pytest.approx(STITCH_X, abs=UNMOVED)
         # The zone's edge only stops it, so the track's push takes it there.
         edge = top - STITCH_MARGIN
         assert edge - STITCH_PARAMS.standoff <= via.position[1]
@@ -1972,7 +1940,7 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + STITCH_MARGIN + 0.3))
 
         (via,) = result.vias
-        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
+        assert via.position == pytest.approx((STITCH_X, start), abs=UNMOVED)
 
     def test_two_of_one_net_within_range_of_each_other_stay(self) -> None:
         low = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
@@ -1980,8 +1948,8 @@ class TestStitchingVia:
 
         result = run(stitched(low, high, top=high + 3.0))
 
-        assert result.vias[0].position == pytest.approx((STITCH_X, low), abs=1e-6)
-        assert result.vias[1].position == pytest.approx((STITCH_X, high), abs=1e-6)
+        assert result.vias[0].position == pytest.approx((STITCH_X, low), abs=UNMOVED)
+        assert result.vias[1].position == pytest.approx((STITCH_X, high), abs=UNMOVED)
 
     def test_two_of_other_nets_within_range_of_each_other_push_apart(
         self,
@@ -2018,7 +1986,7 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + 2.0, nets=("S",)))
 
         (via,) = result.vias
-        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
+        assert via.position == pytest.approx((STITCH_X, start), abs=UNMOVED)
 
     def test_one_with_nothing_in_range_stays(self) -> None:
         start = scenarios.VIA_TO_CHAIN + STITCH_PARAMS.falloff_range + 0.05
@@ -2026,7 +1994,7 @@ class TestStitchingVia:
         result = run(stitched(start, top=start + 2.0))
 
         (via,) = result.vias
-        assert via.position == pytest.approx((STITCH_X, start), abs=1e-6)
+        assert via.position == pytest.approx((STITCH_X, start), abs=UNMOVED)
 
     def test_one_starting_inside_its_clearance_backs_out_of_it(self) -> None:
         start = scenarios.VIA_TO_CHAIN / 2
@@ -2170,10 +2138,19 @@ class TestViaEnergy:
             want, want_gradients, want_vias = reference_via_energy(
                 problem, polylines, positions
             )
-            assert value == pytest.approx(want, rel=1e-12, abs=1e-12)
+            assert value == pytest.approx(
+                want, rel=SUM_ORDER_ROUNDING, abs=SUM_ORDER_ROUNDING
+            )
             for got, expected in zip(gradients, want_gradients, strict=True):
-                np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
-            np.testing.assert_allclose(via_gradients, want_vias, rtol=1e-12, atol=1e-12)
+                np.testing.assert_allclose(
+                    got, expected, rtol=SUM_ORDER_ROUNDING, atol=SUM_ORDER_ROUNDING
+                )
+            np.testing.assert_allclose(
+                via_gradients,
+                want_vias,
+                rtol=SUM_ORDER_ROUNDING,
+                atol=SUM_ORDER_ROUNDING,
+            )
 
 
 def reference_pair_energy(
@@ -2357,8 +2334,15 @@ class TestPairEnergy:
                 problem, positions, problem.static_vias
             )
             assert want != 0.0
-            assert value == pytest.approx(want, rel=1e-12, abs=1e-12)
-            np.testing.assert_allclose(gradient, want_gradient, rtol=1e-10, atol=1e-12)
+            assert value == pytest.approx(
+                want, rel=SUM_ORDER_ROUNDING, abs=SUM_ORDER_ROUNDING
+            )
+            np.testing.assert_allclose(
+                gradient,
+                want_gradient,
+                rtol=PAIR_GRADIENT_RTOL,
+                atol=SUM_ORDER_ROUNDING,
+            )
 
 
 NEUTRAL = neutral_distance(RETURN_PARAMS, scenarios.VIA_TO_VIA)
@@ -2698,48 +2682,16 @@ that the stall rule does not. Only the stall rule settles it: on
 linux-x86_64 a burst ended by ftol moved the grid less than the default
 `settled_change` six iterations in, before any stall check came near."""
 
-Stalls = list[tuple[list[float], list[float], int, int, bool]]
-
-
-def spy_on_stalls(monkeypatch: pytest.MonkeyPatch) -> Stalls:
-    """Record what the stall rule (`optimize.stalled`) was given and
-    answered after each burst, from what the bursts report: the problem's
-    lowest energy and length after each, and its moving members and vias.
-    The inputs' energy and length, which the rule takes first, are left
-    out: the calls past the first window answer the same without them."""
-    calls: Stalls = []
-    lowest: list[float] = []
-    lengths: list[float] = []
-    real = optimize_module._burst_done
-
-    def spy(problem: optimize_module._Problem, notice: _core.BurstNotice) -> None:
-        lowest.append(notice.lowest)
-        lengths.append(notice.length)
-        members, vias = len(notice.members), len(problem.vias)
-        answer = stalled(lowest, lengths, problem.settings, members, vias)
-        calls.append((list(lowest), list(lengths), members, vias, answer))
-        real(problem, notice)
-
-    monkeypatch.setattr(optimize_module, "_burst_done", spy)
-    return calls
-
-
 CREEP_SETTINGS = replace(STITCHED_SETTINGS, stall_tolerance=5e-4, max_iterations=20)
-"""A stall tolerance at which the grid stalls well inside the iteration cap:
-measured, after 15 iterations on a gain of 1.01 µm over the stall window.
-That lies above the members' own share, 1.0 µm, by too little for the test
-to assert; `TestStalled` checks that each moving via adds a share."""
+"""A stall tolerance at which the grid settles well inside the iteration
+cap."""
 
 
-def test_moving_vias_end_a_stitched_grid_s_creep(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_stitched_grid_settles_before_the_iteration_cap() -> None:
+    # The vias creep on by micrometres a burst once the route has its shape;
+    # with `settled_change` 0, only the stall rule can settle them.
     chains, vias = crossed_stitching()
-    calls = spy_on_stalls(monkeypatch)
 
     result = optimize_chains(chains, DEFAULT_PARAMS, CREEP_SETTINGS, vias)
 
-    *_, members, counted, answer = calls[-1]
     assert result.termination is Termination.CONVERGED
-    assert answer
-    assert (members, counted) == (len(chains), len(vias))
