@@ -376,8 +376,10 @@ def _violation(
         return _via_and_member(other_via, member, run, rules, clearance_of)
     if via is not None and other_via is not None:
         return _two_vias(via, other_via, rules, clearance_of)
+    if via is not None and inside.against is _core.InsideOf.STOPS:
+        return _via_and_stops(via, rules, clearance_of)
     if via is not None:
-        return _via_and_static(via, stops=inside.against is _core.InsideOf.STOPS)
+        return _via_and_static(via)
     assert member is not None
     if other_member is not None:
         return _two_members(member, other_member, run, rules)
@@ -451,22 +453,45 @@ def _two_vias(
     )
 
 
-def _via_and_static(via: ViaInput, *, stops: bool) -> Violation | None:
-    """A via inside static copper's clearance, judged by its field without
-    its zones, or outside a stop, of which only its net's holes keep a rule,
-    hole-to-hole."""
+def _via_and_stops(
+    via: ViaInput, rules: Rules, clearance_of: Callable[[str], float]
+) -> Violation | None:
+    """A via outside a stop, of which only its net's holes keep a rule:
+    each hole of its net's pads that `own_net` holds, and each via of its
+    net standing still (`ViaInput.own_vias`), judged for hole-to-hole; its
+    net's pads only stop it."""
     centre = Point(via.via.position)
-    if stops:
-        # A hole is a point, whose distance shapely measures exactly.
-        found = _nearest(_statics(via.own_net), centre)
-        if found is None or found[1] >= -START_TOLERANCE:
-            return None
-        item, gap = found
-        if item.kind is not ObstacleKind.HOLE:
-            return None
-        return Violation(
-            _via_name(via.via), item.description, via.via.position, -gap, None
+    worst: tuple[float, str] | None = None
+    for static in _statics(via.own_net):
+        for item in static.items:
+            if item.kind is not ObstacleKind.HOLE:
+                continue
+            depth = item.inflation - float(item.geometry.distance(centre))
+            if worst is None or depth > worst[0]:
+                worst = (depth, item.description)
+    for other in via.own_vias:
+        keep = via_via_inflation(
+            via.via,
+            other,
+            clearance_of,
+            hole_clearance=rules.hole_clearance,
+            hole_to_hole=rules.hole_to_hole,
         )
+        if keep is None:
+            continue
+        depth = keep - math.dist(via.via.position, other.position)
+        if worst is None or depth > worst[0]:
+            worst = (depth, _via_name(other))
+    if worst is None or worst[0] <= START_TOLERANCE:
+        return None
+    depth, obstacle = worst
+    return Violation(_via_name(via.via), obstacle, via.via.position, depth, None)
+
+
+def _via_and_static(via: ViaInput) -> Violation | None:
+    """A via inside static copper's clearance, judged by its field without
+    its zones."""
+    centre = Point(via.via.position)
     field = via.rules_copper or via.copper
     distance, _ = field.signed_distance(np.array([via.via.position], dtype=float))
     depth = -float(distance[0])

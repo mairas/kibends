@@ -806,6 +806,26 @@ def own_net_stops(
     return parts[0] if len(parts) == 1 else CompositeField(parts)
 
 
+def own_net_vias(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    *,
+    moving: Collection[str] = frozenset(),
+) -> tuple[Via, ...]:
+    """The vias of `via`'s net on the layers of `layers` it spans that
+    stand still, as `own_net_stops` keeps their holes: but `via` itself and
+    those in `moving`, each once by its id, its last record."""
+    found: dict[str, Via] = {}
+    for snapshot in layers:
+        if not via.reaches(snapshot.layer):
+            continue
+        for other in snapshot.vias:
+            if other.id == via.id or other.id in moving or other.net != via.net:
+                continue
+            found[other.id] = other
+    return tuple(found.values())
+
+
 def containment(zones: Iterable[ViaZone]) -> ObstacleField | None:
     """The outside of where `zones` connect a via, as one field for its
     centre, or None without zones: on each layer where they reach the via's

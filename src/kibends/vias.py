@@ -118,6 +118,10 @@ class ViaInput:
     `field` as `static_via_obstacles` gives them: they limit where it may
     go, and the optimizer's pairwise term (`via_pairs`) gives their
     energy."""
+    own_vias: tuple[Via, ...] = ()
+    """The vias of its net that stand still, whose holes `own_net` keeps
+    hole-to-hole from its own (`obstacles.own_net_vias`): the start check
+    names them."""
     rules_copper: ObstacleField | None = None
     """`copper` built without `zones`, by the netclass, hole and edge rules
     alone: what the start check judges the via by (`inside`), since the

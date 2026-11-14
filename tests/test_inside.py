@@ -38,9 +38,12 @@ from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_TO_HOLE,
     Obstacle,
+    ObstacleKind,
     Obstacles,
     build_obstacles,
     build_pair_obstacles,
+    own_net_stops,
+    own_net_vias,
 )
 from kibends.optimize import optimize_chains
 from kibends.results import RunResult, Termination
@@ -693,3 +696,83 @@ def test_two_chains_keep_the_larger_of_their_clearances() -> None:
     found = refused(lambda: optimize_chains([wide, near], scenarios.PARAMS, SETTINGS))
 
     assert [v.required for v in found] == pytest.approx([WIDER_CLEARANCE] * len(found))
+
+
+STILL_APART = 0.5
+"""mm between the centres of a moving via and an unselected via of its net,
+inside their hole-to-hole."""
+
+
+def via_beside_its_net(apart: float) -> Callable[[], RunResult]:
+    """A moving via of G and an unselected via of G `apart` above it."""
+    via = scenarios.through_via("v", "G", (5.0, 1.5))
+    board = FakeBoard(vias=[kipy_via("u", "G", 5.0, 1.5 + apart)])
+    layers = [layer_snapshot(board, name) for name in via.span]
+    given = ViaInput(
+        via,
+        (),
+        FreeSpace(),
+        PAIR_CLEARANCE,
+        own_net=own_net_stops(layers, via),
+        own_vias=own_net_vias(layers, via),
+    )
+    return lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+
+def test_a_via_inside_hole_to_hole_of_a_still_via_of_its_net_is_refused() -> None:
+    required = HOLE_TO_HOLE + scenarios.VIA_DRILL
+
+    (violation,) = refused(via_beside_its_net(STILL_APART))
+
+    assert (violation.subject, violation.obstacle) == ("via v", "via u")
+    assert violation.depth == pytest.approx(required - STILL_APART)
+
+
+def test_a_via_clear_of_hole_to_hole_of_a_still_via_of_its_net_starts() -> None:
+    clear = HOLE_TO_HOLE + scenarios.VIA_DRILL + 0.05
+
+    result = via_beside_its_net(clear)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+PAD_DRILL = 1.0
+"""mm, the drill of a pad of the via's net."""
+OWN_PAD_HALF = 0.8
+"""mm, half the size of that pad: the via's ring overlaps it."""
+DRILL_INSIDE = 0.02
+"""mm the via's hole is inside hole-to-hole of the pad's drill."""
+
+
+def via_over_its_pad(*, drilled: bool) -> Callable[[], RunResult]:
+    """A moving via of G whose ring overlaps a pad of G; with `drilled`, its
+    hole DRILL_INSIDE inside hole-to-hole of the pad's drill."""
+    keep = HOLE_TO_HOLE + PAD_DRILL / 2 + scenarios.VIA_DRILL / 2
+    x = keep - DRILL_INSIDE
+    stop = Obstacle(
+        "pad 1",
+        box(-OWN_PAD_HALF, -OWN_PAD_HALF, OWN_PAD_HALF, OWN_PAD_HALF),
+        scenarios.VIA_DIAMETER / 2,
+    )
+    hole = Obstacle(
+        "hole of pad 1", Point(0.0, 0.0), keep, kind=ObstacleKind.HOLE, owner="G"
+    )
+    items = [stop, hole] if drilled else [stop]
+    via = scenarios.through_via("v", "G", (x, 0.0))
+    given = ViaInput(via, (), FreeSpace(), PAIR_CLEARANCE, own_net=Obstacles(items))
+    return lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+
+def test_a_via_inside_hole_to_hole_of_its_net_s_pad_drill_is_refused() -> None:
+    # The pad's own stop is deeper than its drill: a stop, no rule.
+    (violation,) = refused(via_over_its_pad(drilled=True))
+
+    assert violation.obstacle == "hole of pad 1"
+    assert violation.depth == pytest.approx(DRILL_INSIDE)
+
+
+def test_a_via_overlapping_a_pad_of_its_net_starts() -> None:
+    # The pad stops it moving onto the pad; no rule keeps it apart.
+    result = via_over_its_pad(drilled=False)()
+
+    assert result.termination is not Termination.ABNORMAL

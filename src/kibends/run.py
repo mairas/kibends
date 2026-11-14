@@ -87,6 +87,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     own_net_stops,
+    own_net_vias,
     split_via_obstacles,
 )
 from kibends.optimize import Progress, optimize_chains
@@ -1018,6 +1019,7 @@ def _via_inputs(
                 ),
                 ground=grounded,
                 static_vias=static_vias,
+                own_vias=own_net_vias(layers, m.via, moving=moving),
                 rules_copper=rules_copper,
             )
         )
