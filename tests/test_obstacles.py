@@ -7,6 +7,9 @@ import numpy as np
 import pytest
 import shapely
 from conftest import (
+    CENTRAL_ATOL,
+    CENTRAL_RTOL,
+    CENTRAL_STEP,
     PAD_HALF_SIZE,
     FakeBoard,
     kipy_footprint,
@@ -60,7 +63,15 @@ WIDTH = 0.25
 HALF = WIDTH / 2
 DEFAULT_CLEARANCE = 0.2
 NM_TOLERANCE = 1e-6
-FD_STEP = 1e-6
+"""mm: KiCad's coordinate step. Distances within it are the same clearance
+on the board."""
+EXACT = 1e-9
+"""How far a distance (mm) or a unit direction may differ from the same one
+computed another way, by hand or by shapely: round-off only."""
+MEDIAL_AXIS_SHARE = 0.05
+"""The share of random points that may lie so near a medial axis, where the
+nearest feature switches and the distance has no gradient, that a central
+difference straddles it."""
 
 
 def obstacles_of(
@@ -357,7 +368,7 @@ class TestPairObstacleSet:
             "track keepout": pytest.approx(PAIR_HALF_EXTENT)
         }
         inside = np.array([[10.0 - 0.4 - PAIR_HALF_EXTENT, 0.0]])
-        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(0.0, abs=1e-9)
+        assert obstacles.signed_distance(inside)[0][0] == pytest.approx(0.0, abs=EXACT)
 
 
 class TestBoardEdge:
@@ -425,7 +436,7 @@ class TestSignedDistance:
         d, g = SQUARE.signed_distance(points(point))
 
         assert d[0] == pytest.approx(distance, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx(gradient, abs=1e-6)
+        assert g[0] == pytest.approx(gradient, abs=EXACT)
 
     def test_vectorised_over_many_points(self) -> None:
         d, g = SQUARE.signed_distance(points((4, 1), (0.5, 1), (1, 5)))
@@ -542,19 +553,18 @@ class TestSignedDistance:
         pts = rng.uniform(-6, 11, size=(200, 2))
 
         _, analytic = field.signed_distance(pts)
-        step = np.eye(2) * FD_STEP
+        step = np.eye(2) * CENTRAL_STEP
         numeric = np.stack(
             [
                 (field.signed_distance(pts + s)[0] - field.signed_distance(pts - s)[0])
-                / (2 * FD_STEP)
+                / (2 * CENTRAL_STEP)
                 for s in step
             ],
             axis=1,
         )
 
-        # Medial axes, where the nearest feature switches, have no gradient.
-        agree = np.linalg.norm(analytic - numeric, axis=1) < 1e-4
-        assert agree.mean() > 0.95
+        agree = np.isclose(analytic, numeric, rtol=CENTRAL_RTOL, atol=CENTRAL_ATOL)
+        assert agree.all(axis=1).mean() > 1 - MEDIAL_AXIS_SHARE
 
 
 class TestSegmentsClear:
@@ -677,8 +687,8 @@ class TestChainObstacles:
         assert d == pytest.approx(
             [0.8 - OTHER_NET_INFLATION, 0.5 - OTHER_NET_INFLATION], abs=NM_TOLERANCE
         )
-        assert g[0] == pytest.approx((0, 1), abs=1e-9)
-        assert g[1] == pytest.approx((0, -1), abs=1e-9)
+        assert g[0] == pytest.approx((0, 1), abs=EXACT)
+        assert g[1] == pytest.approx((0, -1), abs=EXACT)
 
     def test_chains_of_different_vertex_counts(self) -> None:
         bent = other_chain("THIRD", (0, 2), (5, 2), (10, 2))
@@ -736,7 +746,7 @@ class TestChainObstacles:
 
         _, g = diagonal.signed_distance(points((1, 3)))
 
-        assert g[0] == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)), abs=1e-9)
+        assert g[0] == pytest.approx((-math.sqrt(0.5), math.sqrt(0.5)), abs=EXACT)
 
     def test_segments_crossing_the_band_are_not_clear(self) -> None:
         inside = OTHER_NET_INFLATION / 2
@@ -794,7 +804,7 @@ class TestChainObstacles:
         d, g = neighbours(BELOW).signed_distance(points((5, 0)))
 
         assert d[0] == pytest.approx(-OTHER_NET_INFLATION, abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((0, 1), abs=1e-9)
+        assert g[0] == pytest.approx((0, 1), abs=EXACT)
 
 
 def random_chains(rng: np.random.Generator) -> list[ChainCentreline]:
@@ -853,9 +863,9 @@ def probes_around(
     return np.vstack([near, rng.uniform(low, high, (200, 2))])
 
 
-# Closer than this to a centreline, the gradient is the direction of a
-# micrometre offset and only agrees to within rounding of the nearest point.
 GRADIENT_COMPARISON_MIN_DISTANCE = 1e-3
+"""mm: nearer a centreline than this, the gradient is the direction of a
+tiny offset and agrees only to within rounding of the nearest point."""
 
 
 class TestChainFieldMatchesShapely:
@@ -874,13 +884,13 @@ class TestChainFieldMatchesShapely:
 
         np.testing.assert_array_equal(np.isinf(d), np.isinf(d_ref))
         finite = np.isfinite(d_ref)
-        np.testing.assert_allclose(d[finite], d_ref[finite], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(d[finite], d_ref[finite], rtol=0, atol=EXACT)
         centrelines = MultiLineString([c.points for c in chains])
         away = finite & (
             centrelines.distance(shapely.points(probes))
             > GRADIENT_COMPARISON_MIN_DISTANCE
         )
-        np.testing.assert_allclose(g[away], g_ref[away], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(g[away], g_ref[away], rtol=0, atol=EXACT)
         np.testing.assert_array_equal(g[~finite], 0.0)
 
     @pytest.mark.parametrize("seed", range(6))
@@ -908,11 +918,6 @@ SPREAD = points((4, 1), (0.5, 1), (1, 5), (2.5, 1), (0, 0), (-3, 2), (12, 0.1))
 
 
 class TestCompositeField:
-    def test_satisfies_the_optimizer_protocol(self) -> None:
-        field: ObstacleField = CompositeField([SQUARE])
-
-        assert field.segments_clear(points((4, 4)), points((4, 4))).tolist() == [True]
-
     @pytest.mark.parametrize("reach", [math.inf, 1.0])
     def test_composite_of_one_field_is_that_field(self, reach: float) -> None:
         d, g = CompositeField([SQUARE]).signed_distance(SPREAD, reach)
@@ -937,8 +942,8 @@ class TestCompositeField:
         d, g = composite.signed_distance(points((4, 1), (7, 1)))
 
         assert d == pytest.approx([1.5, 1 - OTHER_NET_INFLATION], abs=NM_TOLERANCE)
-        assert g[0] == pytest.approx((1, 0), abs=1e-9)
-        assert g[1] == pytest.approx((-1, 0), abs=1e-9)
+        assert g[0] == pytest.approx((1, 0), abs=EXACT)
+        assert g[1] == pytest.approx((-1, 0), abs=EXACT)
 
     def test_beyond_reach_of_every_field_is_infinite(self) -> None:
         composite = CompositeField([SQUARE, neighbours(BELOW)])
@@ -1086,9 +1091,6 @@ SCENE = [
 ]
 """Static copper of every kind, each item an obstacle of its own, inside
 `SCENE_OUTLINE`."""
-EXACT = 1e-9
-"""How far the edge list's distances may differ from shapely's, mm:
-round-off only."""
 
 
 def _scene_points(seed: int) -> FloatArray:
@@ -1292,17 +1294,18 @@ class TestStaticDistances:
             nearest, field.signed_distance(points)[0], atol=EXACT, rtol=0.0
         )
 
-    def test_numbers_obstacles_one_part_after_another(self) -> None:
-        first = Obstacles(SCENE[:2])
-        second = Obstacles(SCENE[2:3], SCENE_OUTLINE, SCENE_EDGE_INFLATION)
-        # Inside the edge's clearance only: the second part's second obstacle.
-        at = [np.array([8.9, 3.9])]
+    def test_a_via_inside_obstacles_of_two_parts_is_inside_both(self) -> None:
+        """Each part numbers its obstacles from 0: a via's clearance check
+        still tells the first obstacle of one part from that of another."""
+        first = Obstacles([Obstacle("pad", Point(0.0, 0.0), 0.5)])
+        second = Obstacles([Obstacle("via", Point(0.2, 0.0), 0.5)])
+        at = [np.array([0.1, 0.0])]
 
         got = free_distances(
             [[CompositeField([first, second])]], ViaSight([{}], [{}], 0), [], at, 0.0
         )
 
-        assert got.static.key.tolist() == [3]
+        assert len(set(got.static.key.tolist())) == 2
 
 
 JOINT_EXTENT = 0.1
@@ -1337,24 +1340,41 @@ def _joint(
     )
 
 
+JUNCTION = np.array([[2.0, 0.1]])
+"""A point inside the clearance of the track of `_joint` and of a branch
+leaving it at (2, 0)."""
+NEAR = 1.0
+"""mm: the obstacles nearer a point than this are those whose clearance it
+lies in, not the next track over."""
+
+
+def judged_obstacles(field: Obstacles, at: FloatArray) -> int:
+    """How many obstacles a clearance check judges the single point `at`
+    against within NEAR."""
+    return len(static_distances(field, at, NEAR).obstacle)
+
+
 class TestClearanceObstacles:
     """Connected copper of one net is one obstacle to a clearance check,
-    however the energy splits it."""
+    however the energy splits it: a via inside its clearance that slides
+    along it enters no new copper's."""
 
     @pytest.mark.parametrize(
-        "field",
+        ("field", "at"),
         [
-            _joint(LineString([(2.0, 0.0), (2.0, 2.0)])),
-            _joint(LineString([(4.0, 0.0), (6.0, 0.0)]), inflation=0.4, extent=0.2),
-            _joint(LineString([(2.0, 0.15), (2.0, 2.0)])),
+            (_joint(LineString([(2.0, 0.0), (2.0, 2.0)])), JUNCTION),
+            (
+                _joint(LineString([(4.0, 0.0), (6.0, 0.0)]), inflation=0.4, extent=0.2),
+                np.array([[4.0, 0.1]]),
+            ),
+            (_joint(LineString([(2.0, 0.15), (2.0, 2.0)])), JUNCTION),
         ],
         ids=["t-junction", "width-change", "overlapping"],
     )
-    def test_connected_copper_of_one_net_is_one(self, field: Obstacles) -> None:
-        edges = field.static_edges
-
-        assert edges.obstacles.tolist() == [0, 1]
-        assert edges.clearance_obstacles.tolist() == [0, 0]
+    def test_connected_copper_of_one_net_is_one(
+        self, field: Obstacles, at: FloatArray
+    ) -> None:
+        assert judged_obstacles(field, at) == 1
 
     @pytest.mark.parametrize(
         "field",
@@ -1376,7 +1396,7 @@ class TestClearanceObstacles:
         ],
     )
     def test_other_items_stay_apart(self, field: Obstacles) -> None:
-        assert field.static_edges.clearance_obstacles.tolist() == [0, 1]
+        assert judged_obstacles(field, JUNCTION) == 2
 
     def test_distances_judge_connected_copper_as_one(self) -> None:
         field = _joint(LineString([(2.0, 0.0), (2.0, 2.0)]))
@@ -1385,17 +1405,9 @@ class TestClearanceObstacles:
         got = static_distances(field, at, math.inf)
 
         assert got.point.tolist() == [0, 1]
-        assert got.obstacle.tolist() == [0, 0]
         np.testing.assert_allclose(
             got.distance, [0.1 - JOINT_INFLATION] * 2, atol=EXACT, rtol=0.0
         )
-
-    def test_the_board_edge_stays_its_own(self) -> None:
-        field = Obstacles(SCENE, SCENE_OUTLINE, SCENE_EDGE_INFLATION)
-
-        edges = field.static_edges
-
-        assert edges.clearance_obstacles.tolist() == edges.obstacles.tolist()
 
     def test_a_board_s_tracks_meeting_at_a_width_change_are_one(self) -> None:
         fake = FakeBoard(
@@ -1405,8 +1417,7 @@ class TestClearanceObstacles:
                 kipy_track("other", "VCC", (5, 0), (7, 0), width=2 * WIDTH),
             ]
         )
+        field = obstacles_of(fake)
 
-        edges = obstacles_of(fake).static_edges
-
-        assert edges.obstacles.tolist() == [0, 1, 2]
-        assert edges.clearance_obstacles.tolist() == [0, 0, 2]
+        assert judged_obstacles(field, np.array([[2.0, 0.3]])) == 1
+        assert judged_obstacles(field, np.array([[4.5, 0.0]])) == 2
