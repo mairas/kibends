@@ -18,14 +18,19 @@ Arguments after `--` go to `kibends smooth` for the runs through a fake
 KiCad and give the crossed grids' energy parameters and optimizer settings
 and the buses' and joint cases' optimizer settings, a `--time-limit` among
 them overriding TIME_LIMIT, so a run can be measured at other settings:
-`-- --spacing 0.1`, for one, runs those without coarse levels. The
+`-- --spacing 0.1`, for one, runs those without coarse levels. The time
+limit counts again at each spacing a problem reaches, so a run at the
+default spacings may optimize for up to three times it. The
 scenarios and return vias take none and run at the library defaults,
 coarse levels included. Each table row is one run.
 
 `--tree` gives TREE the same arguments, so `--spacing` there needs a
 `kibends smooth` that takes it. To compare one spacing here with a checkout
 from before coarse levels, run `./run bench -- --spacing 0.1` here and
-`./run bench` in that checkout, and compare their tables.
+`./run bench` in that checkout, and compare their tables. A checkout from
+before the time limit counted at each spacing takes it for the whole run,
+so with coarse levels its rows and this checkout's stop at different
+budgets: the limit once against the limit at each spacing.
 
 `--tree` compares this checkout with TREE, another checkout such as an
 older commit from `git worktree add`, on one machine. It brings TREE's
@@ -48,14 +53,15 @@ around each burst, the guard and, through a fake KiCad, simplifying.
   them a 30 mm plane with 194 vias at 1.72 mm pitch, with and without three
   signal routes that change layers through a via inside it, run end to end
   through a fake KiCad as `kibends smooth --dry-run` runs, setup included,
-  each stopped after TIME_LIMIT seconds unless it converges first.
+  each stopped after TIME_LIMIT seconds at each spacing unless it
+  converges first.
 - crossed: GND stitching grids in a GND zone that signal routes cross,
   each through the optimizer at default settings, stopped after TIME_LIMIT
-  seconds unless it converges first.
+  seconds at each spacing unless it converges first.
 - scenarios: the cases of `tests/scenarios.py`, each through the optimizer
   at default settings (`OptimizerSettings()`, coarse levels included).
 - bus: tracks of different nets side by side, each case stopped after
-  TIME_LIMIT seconds unless it ends first. Five go through the optimizer
+  TIME_LIMIT seconds at each spacing unless it ends first. Five go through the optimizer
   in free space with the scenarios' energy parameters and a repulsion of
   0.5: ten Z-shaped tracks at 0.6 mm pitch, each as far from one neighbour
   as from the other; the same with each track up to 0.03 mm off its pitch;
@@ -378,9 +384,11 @@ ROUTE_DROP = 0.2
 """How far a route runs down to its via, as a fraction of the plane's size."""
 FAR = -5.0
 """The height of the track selected with no signal route, mm."""
-TIME_LIMIT = 25.0
-"""Seconds after which a plane run stops, keeping each measurement under
-30 s; a later `--time-limit` overrides it."""
+TIME_LIMIT = 8.0
+"""Seconds each spacing of a plane, crossed or bus run may optimize, so
+that at the three default spacings each measurement stays under 30 s,
+besides the overrun of the bursts running when the limit runs out; a later
+`--time-limit` overrides it."""
 B_CU = BoardLayer.BL_B_Cu
 
 
