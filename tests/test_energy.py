@@ -565,6 +565,12 @@ class TestSmoothMinimum:
         np.testing.assert_allclose(toward, exact_toward, atol=EXACT)
 
 
+ONE_SIDED_STEP = 1e-7
+"""mm of a one-sided difference of an energy, for its slope to one side.
+Its error grows with the step, as the curvature times it, so the bound it
+is compared to scales with this."""
+
+
 def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
     """A straight track midway between two walls: the energy's slope across
     it, to either side, is the gradient's, 0, where the nearest wall alone
@@ -578,11 +584,10 @@ def test_a_point_between_two_walls_has_the_slope_its_gradient_gives() -> None:
         return total_energy(at, fixed, walls, PARAMS)[0]
 
     step = np.zeros_like(points)
-    step[2, 1] = CENTRAL_STEP
-    up = (energy(points + step) - energy(points)) / CENTRAL_STEP
-    down = (energy(points) - energy(points - step)) / CENTRAL_STEP
-    # One-sided differences err by the curvature times the step.
-    scale = abs(energy(points)) * CENTRAL_STEP / SMOOTH_WIDTH
+    step[2, 1] = ONE_SIDED_STEP
+    up = (energy(points + step) - energy(points)) / ONE_SIDED_STEP
+    down = (energy(points) - energy(points - step)) / ONE_SIDED_STEP
+    scale = abs(energy(points)) * ONE_SIDED_STEP / SMOOTH_WIDTH
     assert gradient[2, 1] == pytest.approx(0.0, abs=EXACT)
     assert up == pytest.approx(gradient[2, 1], abs=scale)
     assert down == pytest.approx(gradient[2, 1], abs=scale)
