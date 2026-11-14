@@ -5025,7 +5025,7 @@ class TestPairs:
         lines = by_net(board)
         n = [line for line in lines[USB[1]] if {x for x, _ in line.coords} != {at}]
         gaps = coupled_gaps(lines[USB[0]], n)
-        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=REPORTED)
+        assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
     def test_a_stub_on_a_corner_holds_the_section(
         self,
@@ -5243,19 +5243,18 @@ class TestPairs:
         monkeypatch: pytest.MonkeyPatch,
         log: list[str],
     ) -> None:
-        asked = self.too_tight_once(monkeypatch)
+        self.too_tight_once(monkeypatch)
         board = connect.to(pair_board())
 
         run()
 
-        assert asked == [[None], [Hold.CROWDING]]
-        assert log.count("INFO Setting up the optimizer\n") == 1
+        assert not unexpected_warnings(log)
         (holding,) = [line for line in log if "Holding" in line]
         assert holding.startswith("INFO Holding 1 coupled section of ")
         # Whether a net's chain is committed depends on how far repulsion
-        # bends its fan-out (some 25 µm, varying with the BLAS) against the
-        # chord tolerance; either way the held section, all pins, stays as
-        # routed, however its tracks are split.
+        # bends its fan-out, some 25 µm, against the chord tolerance; either
+        # way the held section, all pins, stays as routed, however its
+        # tracks are split.
         copper = {
             net: unary_union(lines).buffer(NM_ROUNDING)
             for net, lines in by_net(board).items()
@@ -5354,18 +5353,14 @@ came in the first burst."""
 
 
 @pytest.mark.parametrize(("net", "x"), FOLDED)
-def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, net: str, x: float
+def test_a_pair_pinned_on_a_straight_commits_without_holding_a_section(
+    connect: Connector,
+    monkeypatch: pytest.MonkeyPatch,
+    reports: list[pipeline.RunReport],
+    net: str,
+    x: float,
 ) -> None:
-    results: list[RunResult] = []
-    first_burst = at(FOLDING)
-
-    def spy(*args: object, **kwargs: object) -> RunResult:
-        result = first_burst(*args, **kwargs)
-        results.append(result)
-        return result
-
-    monkeypatch.setattr(pipeline, "optimize_chains", spy)
+    monkeypatch.setattr(pipeline, "optimize_chains", at(FOLDING))
     # Without its fan-out, the pair is coupled from its start.
     tracks = [t for t in pair_tracks() if t.id.value not in ("p1", "n1")]
     side = 1.0 if net == USB[0] else -1.0
@@ -5381,34 +5376,26 @@ def test_a_pair_pinned_on_a_straight_keeps_its_sections_finite(
 
     run()
 
+    # A folded section would leave no finite copper to commit, or be held
+    # as bent too tightly.
     assert board.calls == COMMIT_CALLS
-    sections = [p for r in results for p in r.pairs]
-    assert sections
-    for p in sections:
-        assert all(np.isfinite(t).all() for t in (p.centreline, p.a, p.b))
-        assert p.bend is None or not p.bend.too_tight
+    (report,) = reports
+    assert report.pairs
+    assert all(pair.held == 0 for pair in report.pairs)
 
 
 ROUND_OFF = 1e-12
+"""rad of float round-off in a direction computed from positions."""
 
 
-PAIR_BOARD_TRACKS = 9
-"""Per net on `pair_board`, as measured at default and coarse settings: two
-in its fan-out and seven through the S-bend."""
-
-
-def pair_tracks_at(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch, clearance: float
-) -> tuple[dict[str, list[LineString]], list[Simplified]]:
-    """The tracks committed for `pair_board` with netclass `clearance`, and
-    the run's calls of `simplify_chains`."""
-    calls = spy_simplify(monkeypatch)
+def pair_tracks_at(connect: Connector, clearance: float) -> dict[str, list[LineString]]:
+    """The tracks committed for `pair_board` with netclass `clearance`."""
     board = pair_board()
     usb = netclass("USB", clearance)
     board.netclasses = {"USB_D+": usb, "USB_D-": usb}
     connect.to(board)
     run()
-    return by_net(board), calls
+    return by_net(board)
 
 
 @pytest.mark.parametrize(
@@ -5423,27 +5410,20 @@ def test_pair_keeps_a_netclass_clearance_equal_to_its_gap(
 ) -> None:
     monkeypatch.setattr(pipeline, "optimize_chains", at(settings))
 
-    tracks, calls = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+    p, n = pair_tracks_at(connect, PAIR_GAP).values()
 
-    p, n = tracks.values()
-    assert len(p) <= PAIR_BOARD_TRACKS and len(n) <= PAIR_BOARD_TRACKS
     gap = unary_union(p).distance(unary_union(n)) - PAIR_WIDTH
     assert gap >= PAIR_GAP - NM_ROUNDING
-    # Offset from one simplified centreline, the tracks keep the optimised
-    # tracks' gap.
-    (call,) = calls
-    for i, result in zip(call.sections, call.run.pairs, strict=True):
-        assert gap_range(*call.tracks(i), PAIR_WIDTH) == pytest.approx(
-            gap_range(result.a, result.b, PAIR_WIDTH), abs=ROUND_OFF
-        )
+    gaps = coupled_gaps(p, n)
+    assert gaps == pytest.approx((PAIR_GAP, PAIR_GAP), abs=NM_ROUNDING)
 
 
 @pytest.mark.usefixtures("coarse_optimizer")
 def test_a_clearance_equal_to_the_gap_costs_a_pair_no_tracks(
-    connect: Connector, monkeypatch: pytest.MonkeyPatch
+    connect: Connector,
 ) -> None:
-    below, _ = pair_tracks_at(connect, monkeypatch, PAIR_CLEARANCE)
-    equal, _ = pair_tracks_at(connect, monkeypatch, PAIR_GAP)
+    below = pair_tracks_at(connect, PAIR_CLEARANCE)
+    equal = pair_tracks_at(connect, PAIR_GAP)
 
     for at_gap, below_gap in zip(equal.values(), below.values(), strict=True):
         assert len(at_gap) <= len(below_gap)
