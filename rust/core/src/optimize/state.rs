@@ -109,7 +109,9 @@
 //! inputs'; else it takes the inputs (`State::final_state`). So the coarse
 //! levels never leave more energy than the inputs had, and a run none of
 //! whose coarse bursts ended normally does not end at a layout of its
-//! inputs that no burst reached.
+//! inputs that no burst reached. A burst ends normally here when L-BFGS
+//! did not end it abnormally and, if a stop or the time limit cut it, it
+//! accepted an iteration first: one cut before that is where it started.
 //!
 //! At a coarse level each unit is kept apart: after a burst, a unit that
 //! fails the guard goes back to its best shape and the others keep theirs
@@ -905,7 +907,8 @@ pub struct State {
     /// Whether the current level descended: one of its bursts ended
     /// normally, or its first burst settled it after a handover.
     descended: bool,
-    /// Whether some burst at a coarse level ended normally, without which
+    /// Whether some burst at a coarse level ended normally (as the module
+    /// docs count it), without which
     /// the coarse levels' best state is only a layout of what they started
     /// from.
     coarse_descended: bool,
@@ -1656,8 +1659,11 @@ impl State {
                             self.free.len(),
                             shared.setup.vias.len(),
                         ))));
-        self.descended |= !ran.abnormal || (handed_over && self.settled);
-        self.coarse_descended |= self.coarse() && !ran.abnormal;
+        // A burst a stop or the time limit cut before it accepted an
+        // iteration has not descended: it is where it started.
+        let descended = !ran.abnormal && !(ran.cut && ran.iterations == 0);
+        self.descended |= descended || (handed_over && self.settled);
+        self.coarse_descended |= self.coarse() && descended;
         let rest = began.elapsed().as_secs_f64() - ran.evaluating;
         report(Notice::Burst(BurstReport {
             problem: n,
@@ -2010,13 +2016,14 @@ mod tests {
 
     /// Bursts that end where they start, at `point` if given, reporting
     /// `rejected` edges per member and `moved_back` per via, cut if `cut`,
-    /// abnormal if `abnormal`.
+    /// abnormal if `abnormal`, after `iterations` accepted iterations.
     struct Still {
         rejected: usize,
         moved_back: usize,
         point: Option<Vec<f64>>,
         cut: bool,
         abnormal: bool,
+        iterations: u64,
     }
 
     impl Bursts<NotFinite> for Still {
@@ -2034,7 +2041,7 @@ mod tests {
                 Ran {
                     point: self.point.clone().unwrap_or(start),
                     abnormal: self.abnormal,
-                    iterations: 1,
+                    iterations: self.iterations,
                     evaluations: 1,
                     message: String::new(),
                     cut: self.cut,
@@ -2055,6 +2062,7 @@ mod tests {
             point: None,
             cut: false,
             abnormal: false,
+            iterations: 1,
         }
     }
 
@@ -2141,6 +2149,7 @@ mod tests {
                 point: Some(straight(&p)),
                 cut: true,
                 abnormal: false,
+                iterations: 1,
             };
             assert_eq!(run(&mut p, &mut cut, 1), Outcome::IterationCap);
             assert!(p.energy < p.input_energy);
@@ -2792,6 +2801,44 @@ mod tests {
     /// A rise whose chain the coarsest level lays out with fewer vertices
     /// than its inputs have, mm.
     const CUT_RISE: f64 = 4.0;
+
+    /// A burst that a stop or the time limit cut after `iterations`
+    /// accepted iterations, where it started.
+    fn cut_after(iterations: u64) -> Still {
+        Still {
+            cut: true,
+            iterations,
+            ..still(0, 0)
+        }
+    }
+
+    #[test]
+    fn a_burst_cut_before_any_iteration_does_not_descend() {
+        for (iterations, at_inputs) in [(0, true), (1, false)] {
+            let mut p = coarse_problem(Arc::new(FreeSpace), CUT_RISE, &LEVELS);
+            p.step(0, None, &mut cut_after(iterations), &mut |_| Ok(()))
+                .expect("finite");
+
+            p.finish().expect("finite");
+
+            // A burst that descended leaves the coarsest layout, subdivided,
+            // with more vertices than the inputs have.
+            assert_eq!(p.best == p.input, at_inputs, "after {iterations}");
+        }
+    }
+
+    #[test]
+    fn a_handover_after_a_burst_cut_before_any_iteration_hands_no_descent() {
+        for (iterations, descended) in [(0, false), (1, true)] {
+            let mut p = coarse_problem(Arc::new(FreeSpace), CUT_RISE, &LEVELS);
+            p.step(0, None, &mut cut_after(iterations), &mut |_| Ok(()))
+                .expect("finite");
+
+            assert_eq!(p.hand_over().expect("finite"), Some(0));
+
+            assert_eq!(p.handed_over, descended, "after {iterations}");
+        }
+    }
 
     #[test]
     fn abnormal_bursts_that_move_nothing_give_up_at_the_final_level() {
