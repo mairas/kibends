@@ -1693,3 +1693,71 @@ def test_an_arc_just_inside_an_unselected_concentric_arc_s_clearance_is_refused(
     found = refused(beside_an_outer_arc(2 * START_TOLERANCE))
 
     assert {v.obstacle for v in found} == {"track o"}
+
+
+TWO_ARCS_RADIUS = 30.0
+"""mm, of the inner of two selected concentric quarter arcs."""
+
+
+def test_two_selected_concentric_arcs_at_clearance_start() -> None:
+    # Their chord counts differ: each chord is allowed toward the other on
+    # its own concave side, the outer arc's toward the inner.
+    arcs: list[Arc] = []
+    chains: list[ChainInput] = []
+    for name, net, radius in (
+        ("inner", "A", TWO_ARCS_RADIUS),
+        ("outer", "B", TWO_ARCS_RADIUS + PAIR_CLEARANCE + PAIR_WIDTH + 1e-6),
+    ):
+        r = round(radius * NM_PER_MM)
+        d = round(radius * NM_PER_MM / math.sqrt(2))
+        arc = Arc(
+            name, (r, 0), (d, d), (0, r), round(PAIR_WIDTH * NM_PER_MM), "F.Cu", net
+        )
+        ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+        points = [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+        arcs.append(arc)
+        chains.append(selected(name, net, FreeSpace(), *points))
+    inner, outer = (len(c.centreline.points) for c in chains)
+    assert inner != outer
+
+    result = optimize_chains(
+        chains, scenarios.PARAMS, SETTINGS, arc_chords=arc_chords(arcs)
+    )
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+BEYOND_DEPTH = 0.005
+"""mm a notch of the board edge beyond the arc's last chord reaches into
+the chord's end."""
+NOTCH_SMALL = 0.1
+"""mm, the radius of that notch."""
+
+
+def test_the_board_edge_beyond_a_chord_s_end_is_judged_without_its_allowance() -> None:
+    # The notch lies past the end of the arc's last chord, on its convex
+    # side, beside the chord's line; the chain turns back toward the arc's
+    # centre there, away from it.
+    arc, points = round_arc()
+    end = points[-1]
+    reach = EDGE_INFLATION - BEYOND_DEPTH + NOTCH_SMALL
+    beyond = NOTCH_SMALL + 0.01
+    across = math.sqrt(reach * reach - beyond * beyond)
+    notch = Point(end[0] - beyond, end[1] + across).buffer(NOTCH_SMALL, 256)
+    board = box(-5.0, -5.0, 5.0, 5.0).difference(notch)
+    chain = selected(
+        "arc",
+        "SIG",
+        Obstacles([], board, EDGE_INFLATION),
+        (RADIUS + LEAD, 0.0),
+        *points,
+        (0.0, 0.0),
+    )
+
+    found = refused(
+        lambda: optimize_chains(
+            [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert {v.obstacle for v in found} == {"the board edge"}
