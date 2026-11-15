@@ -262,7 +262,11 @@ Ctrl-C while the run reads the board, builds the obstacles or optimizes
 stops it at once, at whatever spacing each problem runs: it prints "Stopping; press Ctrl-C again
 to abort" at once, the optimizer ends the running burst, and the run simplifies and
 commits the best result found. Stopped before optimizing, the
-optimizer's setup included, it commits nothing. A second Ctrl-C, or one
+optimizer's setup included, it commits nothing. The setup stops only
+between the problems it builds, one for the layers that moving vias tie
+together and one for each other layer, so a selection that forms one
+problem, such as a whole board with vias, waits for its whole setup:
+about 10 s on a large board. A second Ctrl-C, or one
 after optimizing, ends the run with
 "nothing committed"; one while KiCad applies the commit may leave it
 landed, and the run says to check KiCad's undo history.

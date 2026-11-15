@@ -198,9 +198,10 @@ def optimize_chains(
     vias that are none of `vias`; each problem keeps those its moving vias
     share a layer with.
 
-    `stop` is asked as setup builds each problem, after it, and raises
-    `StoppedInSetupError` if it answers true there, since setup runs no
-    burst whose state could be kept.
+    `stop` is asked in setup after building each problem and after
+    checking where the copper starts, and raises `StoppedInSetupError` if
+    it answers true there, since setup runs no burst whose state could be
+    kept. A problem's build is not stopped within.
 
     Before any burst it raises `inside.InsideClearanceError` naming each
     place where the copper of a problem that moves starts inside a
@@ -289,18 +290,19 @@ def optimize_chains(
     everything = [*chains, *(block.chain for block in blocks)]
     moving_vias = MovingVias(everything, vias, hole_clearance, hole_to_hole)
 
-    def built() -> None:
+    def stopped_in_setup() -> None:
         if stop is not None and stop():
             raise StoppedInSetupError
 
     placed = _problems(
-        chains, blocks, moving_vias, params, settings, static_vias, built
+        chains, blocks, moving_vias, params, settings, static_vias, stopped_in_setup
     )
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
     unclean = [v for p in moving for v in p.start_violations(arc_chords)]
     if unclean:
         raise InsideClearanceError(unclean)
+    stopped_in_setup()
     # A problem given up on before a hold stays given up on, though the
     # problem that replaces it converges.
     gave_up: dict[str, int] = {}

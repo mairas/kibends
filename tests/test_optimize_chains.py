@@ -58,6 +58,7 @@ from kibends.optimize import (
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
     Progress,
+    StoppedInSetupError,
     optimize_chains,
 )
 from kibends.results import RunResult, Termination
@@ -643,9 +644,10 @@ def test_time_limit_counts_from_when_optimizing_starts(
     assert burst.evaluations == STOPPED_AFTER
 
 
-SET_UP = 1
-"""The questions a stop is asked as setup builds the problems of `bumps`,
-which has one, before the run asks the time limit too."""
+SET_UP = 2
+"""The questions a stop is asked in the setup of `bumps`, before the run
+asks the time limit too: after building its one problem, and after checking
+where its copper starts."""
 
 
 class Countdown:
@@ -706,14 +708,28 @@ def test_a_stop_in_a_line_search_ends_the_burst_before_its_next_trial(
         assert length(chain.polyline) < chain.before.length
 
 
+def test_a_stop_after_the_last_problem_is_built_ends_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+
+    with pytest.raises(StoppedInSetupError):
+        optimize_chains(
+            scenario.chains, scenario.params, COARSE, stop=Countdown(SET_UP)
+        )
+
+    assert bursts == []
+
+
 def test_a_stop_before_a_step_s_burst_runs_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
 
-    # Its first question comes as setup builds the one problem, its
-    # second as the first step begins.
+    # Its first SET_UP questions come in setup, the next as the first
+    # step begins.
     result = optimize_chains(
         scenario.chains, scenario.params, COARSE, stop=Countdown(SET_UP + 1)
     )
