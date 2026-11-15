@@ -132,6 +132,9 @@ class Track:
     net: str
     width: float
     centreline: LineString
+    arc_centre: Point2 | None = None
+    """For a track read from an arc, the arc's centre: its centreline is
+    the arc's chords (`arc_points`). None for a straight track."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -918,13 +921,34 @@ def _read_pads(
     return tuple(out)
 
 
+def circle_centre(a: Point2, b: Point2, c: Point2) -> Point2 | None:
+    """The centre of the circle through `a`, `b` and `c`, None where they
+    are collinear."""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if d == 0.0:
+        return None
+    sa, sb, sc = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+    return (
+        (sa * (by - cy) + sb * (cy - ay) + sc * (ay - by)) / d,
+        (sa * (cx - bx) + sb * (ax - cx) + sc * (bx - ax)) / d,
+    )
+
+
 def _read_track(t: kbt.Track | kbt.ArcTrack) -> Track:
+    centre = None
     if isinstance(t, kbt.ArcTrack):
-        line = LineString(arc_points(_mm(t.start), _mm(t.mid), _mm(t.end)))
+        start, mid, end = _mm(t.start), _mm(t.mid), _mm(t.end)
+        line = LineString(arc_points(start, mid, end))
+        centre = circle_centre(start, mid, end)
     else:
         line = LineString([_mm(t.start), _mm(t.end)])
     return Track(
-        id=t.id.value, net=t.net.name, width=t.width / NM_PER_MM, centreline=line
+        id=t.id.value,
+        net=t.net.name,
+        width=t.width / NM_PER_MM,
+        centreline=line,
+        arc_centre=centre,
     )
 
 

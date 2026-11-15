@@ -33,9 +33,11 @@ which sit inside the arc by up to their sagitta, about 1 µm on a 1 mm
 radius: nearer than the arc to copper on its concave side. The start check
 does not judge them: a place whose nearest edge is an arc chord is skipped,
 neither judged nor refused (`ArcChords`), and KiCad's DRC judges the drawn
-arc. So is a hole that is not round, such as a plated slot, which the
-fields hold as a circle of its long axis (`Obstacle.oval`): neither the
-copper beside it nor a via of its net is judged against it. Nor is a place
+arc. So is an unselected arc, which the fields hold as its chords
+(`Obstacle.arc_centre`), and a hole that is not round, such as a plated
+slot, which they hold as a circle of its long axis (`Obstacle.oval`):
+nothing beside them is judged against them, nor a via of its net against
+such a hole. Nor is a place
 refused that is inside by no more than KiCad's grid rounds copper at
 exactly a clearance (`START_TOLERANCE`).
 
@@ -502,13 +504,19 @@ def _via_and_static(via: ViaInput) -> Violation | None:
         return None
     statics = _statics(field)
     found = _nearest(statics, centre)
-    if found is not None and found[0].oval and -found[1] >= depth - START_TOLERANCE:
-        # A hole that is not round explains the depth: judge what else
+    if (
+        found is not None
+        and _skipped(found[0])
+        and -found[1] >= depth - START_TOLERANCE
+    ):
+        # What the start check skips explains the depth: judge what else
         # there is.
         rounds = [
             _Static(
-                tuple(i for i in s.items if not i.oval),
-                np.array([i.geometry for i in s.items if not i.oval], dtype=object),
+                tuple(i for i in s.items if not _skipped(i)),
+                np.array(
+                    [i.geometry for i in s.items if not _skipped(i)], dtype=object
+                ),
             )
             for s in statics
         ]
@@ -528,6 +536,13 @@ def _via_and_static(via: ViaInput) -> Violation | None:
         if item.net is not None:
             required = item.inflation - via.via.diameter / 2 - item.extent
     return Violation(_via_name(via.via), obstacle, via.via.position, depth, required)
+
+
+def _skipped(item: Obstacle) -> bool:
+    """Whether the start check leaves `item` to KiCad's DRC: a hole that is
+    not round, or a track read from an arc, which the fields hold as a
+    circle of its long axis or as its chords."""
+    return item.oval or item.arc_centre is not None
 
 
 def _edge_depth_at(field: ObstacleField | None, at: Point2) -> float:
@@ -700,7 +715,7 @@ def _insides(
         depths = keeps - _distances(static, copper)
         for k in np.flatnonzero(depths > START_TOLERANCE):
             item = static.items[int(k)]
-            if item.oval or (own_net_skipped and _same_net(item, track)):
+            if _skipped(item) or (own_net_skipped and _same_net(item, track)):
                 continue
             required = (
                 None

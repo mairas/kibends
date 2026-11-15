@@ -443,6 +443,18 @@ class TestCopperOnLayer:
         assert back.shape is None
         assert back.drill == 0
 
+    def test_an_unselected_arc_reads_as_its_chords_about_its_centre(self) -> None:
+        tracks = [
+            kipy_arc("arc", "GND", (3, 0), (2, 1), (1, 0)),
+            kipy_track("line", "GND", (0, 5), (4, 5)),
+        ]
+
+        arc, line = snapshot(FakeBoard(tracks=tracks)).tracks
+
+        assert arc.arc_centre == pytest.approx((2.0, 0.0))
+        assert len(arc.centreline.coords) > 2
+        assert line.arc_centre is None
+
     def test_a_slot_reads_as_its_long_axis_and_not_round(self) -> None:
         slot = kipy_pad(
             "slot",

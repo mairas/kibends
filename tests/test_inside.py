@@ -11,7 +11,10 @@ import pytest
 import scenarios
 from conftest import (
     NM_ROUNDING,
+    PAD_HALF_SIZE,
     FakeBoard,
+    build_via_obstacles,
+    kipy_arc,
     kipy_pad,
     kipy_rectangle,
     kipy_via,
@@ -990,3 +993,78 @@ def test_a_run_inside_two_chains_names_both() -> None:
     found = refused(lambda: optimize_chains(chains, scenarios.PARAMS, SETTINGS))
 
     assert {v.obstacle for v in found if v.subject == "x"} == {"above", "below"}
+
+
+STATIC_RADIUS = 30.0
+"""mm, of an unselected quarter arc of another net about the origin."""
+STATIC_WIDTH = 0.25
+"""mm, its width."""
+
+
+def static_arc_layer(*pads: kbt.Pad) -> LayerSnapshot:
+    """F.Cu with the unselected arc of OTHER and `pads`."""
+    d = STATIC_RADIUS / math.sqrt(2)
+    arc = kipy_arc(
+        "o", "OTHER", (STATIC_RADIUS, 0.0), (d, d), (0.0, STATIC_RADIUS), STATIC_WIDTH
+    )
+    return layer_snapshot(FakeBoard(tracks=[arc], pads=list(pads)), "F.Cu")
+
+
+def test_a_via_at_clearance_inside_an_unselected_arc_starts() -> None:
+    # The arc is held as its chords, which sit nearer the via than the arc
+    # by up to their sagitta.
+    snap = static_arc_layer()
+    angle = chord_middle(snap)
+    keep = PAIR_CLEARANCE + scenarios.VIA_DIAMETER / 2 + STATIC_WIDTH / 2
+    at = (
+        (STATIC_RADIUS - keep) * math.cos(angle),
+        (STATIC_RADIUS - keep) * math.sin(angle),
+    )
+    via = scenarios.through_via("v", "V", at)
+    given = ViaInput(
+        via, (), build_via_obstacles([snap], via), PAIR_CLEARANCE, own_vias=()
+    )
+
+    result = optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+ROUND_INSIDE = 0.02
+"""mm copper starts inside the clearance of a round pad."""
+
+
+def chord_middle(snap: LayerSnapshot) -> float:
+    """The angle of the middle of the unselected arc's middle chord."""
+    coords = list(snap.tracks[0].centreline.coords)
+    k = len(coords) // 2
+    (ax, ay), (bx, by) = coords[k], coords[k + 1]
+    return (math.atan2(ay, ax) + math.atan2(by, bx)) / 2
+
+
+def test_a_chain_beside_an_unselected_arc_inside_a_pad_s_clearance_is_refused() -> None:
+    # The chain's free tip reaches the arc's clearance at a chord's middle,
+    # where the chords are nearer; the arc is skipped, the pad beside the
+    # tip is not.
+    angle = chord_middle(static_arc_layer())
+    ux, uy = math.cos(angle), math.sin(angle)
+    keep = scenarios.PAIR_INFLATION + (STATIC_WIDTH - PAIR_WIDTH) / 2
+    tx, ty = (STATIC_RADIUS - keep) * ux, (STATIC_RADIUS - keep) * uy
+    # The square pad's support toward the tip, which meets it slanted.
+    support = PAD_HALF_SIZE * (abs(ux) + abs(uy))
+    reach = PAIR_WIDTH / 2 + PAIR_CLEARANCE + support - ROUND_INSIDE
+    snap = static_arc_layer(kipy_pad("q", "GND", tx - reach * ux, ty - reach * uy))
+    field = build_obstacles(snap, "SIG", PAIR_WIDTH)
+    side = 2.0
+    chain = selected(
+        "chain",
+        "SIG",
+        field,
+        (tx - side * (ux - uy), ty - side * (uy + ux)),
+        (tx, ty),
+        (tx - side * (ux + uy), ty - side * (uy - ux)),
+    )
+
+    found = refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
+
+    assert {v.obstacle for v in found} == {"pad q"}

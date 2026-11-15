@@ -164,6 +164,10 @@ class Obstacle:
     oval: bool = False
     """Whether it is a hole that is not round, held as a circle of its long
     axis: the start check leaves it to KiCad's DRC."""
+    arc_centre: Point2 | None = None
+    """For a track read from an arc, held as the arc's chords, the arc's
+    centre (`snapshot.Track.arc_centre`): the start check leaves it to
+    KiCad's DRC. None for any other obstacle."""
 
 
 class Obstacles:
@@ -622,7 +626,13 @@ def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
             case _Source.TRACK:
                 t = s.tracks[index]
                 item = Obstacle(
-                    f"track {t.id}", t.centreline, inflation, t.net, t.width / 2, on
+                    f"track {t.id}",
+                    t.centreline,
+                    inflation,
+                    t.net,
+                    t.width / 2,
+                    on,
+                    arc_centre=t.arc_centre,
                 )
             case _Source.VIA_RING:
                 v = s.vias[index]
