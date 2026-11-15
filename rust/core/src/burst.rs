@@ -1099,7 +1099,8 @@ mod tests {
             // At the last accepted point: where a burst capped at its
             // iterations ends.
             let accepted = if b.iterations == 0 {
-                start.to_vec()
+                let energy = rosenbrock(&start).expect("finite").0;
+                (start.to_vec(), energy)
             } else {
                 let capped = Settings {
                     max_iterations: b.iterations,
@@ -1107,9 +1108,9 @@ mod tests {
                 };
                 let c = burst(&mut rosenbrock, &start, &capped);
                 mid_search += u64::from(c.evaluations < evaluations);
-                c.point
+                (c.point, c.energy)
             };
-            assert_eq!(b.point, accepted, "after {evaluations}");
+            assert_eq!((b.point, b.energy), accepted, "after {evaluations}");
         }
         assert!(mid_search > 0, "no stop fell inside a line search");
     }
@@ -1150,6 +1151,41 @@ mod tests {
         // The rejected trial's probe, and nothing after.
         assert_eq!(guarded.get(), guards + 1);
         assert_eq!(evaluated.get(), evaluations);
+    }
+
+    #[test]
+    fn a_stop_during_a_guard_that_admits_the_trial_evaluates_no_energy_for_it() {
+        let guarded = Cell::new(0_u64);
+        let evaluated = Cell::new(0_u64);
+        // The stop answers true from the first guard call on, which admits
+        // the burst's first trial, short of the wall.
+        let mut entered = |x: &[f64]| {
+            guarded.set(guarded.get() + 1);
+            let named = below_wall(x);
+            assert!(named.is_none(), "the first trial reached the wall");
+            named
+        };
+        let mut objective = |x: &[f64]| {
+            evaluated.set(evaluated.get() + 1);
+            falling(x)
+        };
+        let mut stop = || Ok::<_, ()>(guarded.get() > 0);
+
+        let b = run(
+            &mut objective,
+            &[0.0, 0.0],
+            None,
+            &SETTINGS,
+            &mut stop,
+            Some(&mut entered),
+        )
+        .unwrap();
+
+        assert_eq!(b.ending, Ending::Stopped);
+        assert_eq!(guarded.get(), 1);
+        // The start's evaluation alone.
+        assert_eq!(evaluated.get(), 1);
+        assert_eq!(b.point, vec![0.0, 0.0]);
     }
 
     #[test]
