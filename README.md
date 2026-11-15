@@ -340,12 +340,13 @@ arc: on its inner side a chord is allowed the arc's offset from it, and
 on its outer side an arc that bulges into a clearance between chords that
 are clear of it starts. The run replaces the arc with straight tracks;
 if it leaves the chain unchanged, KiCad's DRC still sees the drawn arc.
-Nor is an unselected arc checked, which kibends reads as its chords, nor a
-hole that is not round, such as a slot, which it reads as a circle of its
-long axis: KiCad's DRC judges them.
-Arcs of copper graphics and the board edge's arcs and circles are judged
-by their chords, though, so copper inside their bend at exactly its
-clearance may be refused by up to a chord's offset from the arc.
+An unselected arc, which kibends reads as its chords, is judged the same
+way: copper on its inner side is allowed the arc's offset from its chords.
+Arcs of copper graphics and the board edge's arcs and circles get no such
+allowance: they are judged by their chords, so copper inside their bend at
+exactly its clearance may be refused by up to a chord's offset from the
+arc. A hole that is not round, such as a slot, which kibends reads as a
+circle of its long axis, is not checked: KiCad's DRC judges it.
 What kibends keeps beyond those rules does not stop a run: a
 moving via inside a zone's clearance and margin, which it keeps so that
 the refill reconnects the via, moves out of it as the optimizer runs.

@@ -41,11 +41,13 @@ the chord is farther than the arc and is judged as it is: an arc inside a
 clearance only between chords that are clear starts, since the run
 replaces it with straight tracks, and KiCad's DRC sees the drawn arc
 where the chain is left unchanged. An unselected arc, which the fields
-hold as its chords (`Obstacle.arc_centre`), and a hole that is not round,
-such as a plated slot, which they hold as a circle of its long axis
-(`Obstacle.oval`), are skipped: nothing beside them is judged against
-them, nor a via of its net against such a hole, and KiCad's DRC judges
-them. Nor is a place
+hold as its chords (`Obstacle.arc_centre`), is judged by the same rule:
+copper on its concave side is allowed the arc's offset from the chord
+nearest it (`_static_allowance`), on its convex side none. A hole that is
+not round, such as a plated slot, which the fields hold as a circle of its
+long axis (`Obstacle.oval`), is skipped: nothing beside it is judged
+against it, nor a via of its net, and KiCad's DRC judges it. Nor is a
+place
 refused that is inside by no more than KiCad's grid rounds copper at
 exactly a clearance (`START_TOLERANCE`).
 
@@ -81,7 +83,7 @@ from kibends.obstacles import (
     via_via_inflation,
 )
 from kibends.pair_blocks import PairBlock
-from kibends.snapshot import Arc, Via
+from kibends.snapshot import Arc, Via, circle_centre
 from kibends.vias import ViaInput
 
 INSIDE_MESSAGE = (
@@ -218,20 +220,6 @@ def sagitta(radius: float, chord: float) -> float:
     """How far a chord of length `chord` sits inside its arc of `radius`."""
     half = min(chord / 2, radius)
     return radius - math.sqrt(radius * radius - half * half)
-
-
-def circle_centre(a: Point2, b: Point2, c: Point2) -> Point2 | None:
-    """The centre of the circle through `a`, `b` and `c`, None where they
-    are collinear."""
-    (ax, ay), (bx, by), (cx, cy) = a, b, c
-    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    if d == 0.0:
-        return None
-    sa, sb, sc = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
-    return (
-        (sa * (by - cy) + sb * (cy - ay) + sc * (ay - by)) / d,
-        (sa * (cx - bx) + sb * (ax - cx) + sc * (bx - ax)) / d,
-    )
 
 
 def arc_chords(arcs: Iterable[Arc]) -> ArcChords:
@@ -575,26 +563,43 @@ def _via_and_static(via: ViaInput) -> Violation | None:
     found = _nearest(statics, centre)
     if (
         found is not None
-        and _skipped(found[0])
+        and (_skipped(found[0]) or found[0].arc_centre is not None)
         and -found[1] >= depth - START_TOLERANCE
     ):
-        # What the start check skips explains the depth: judge what else
-        # there is.
-        rounds = [
+        # What the start check skips, or an unselected arc's chords, which
+        # it allows the arc's offset, explains the depth: judge them so, and
+        # what else there is.
+        plain = [
             _Static(
-                tuple(i for i in s.items if not _skipped(i)),
+                tuple(i for i in s.items if not _skipped(i) and i.arc_centre is None),
                 np.array(
-                    [i.geometry for i in s.items if not _skipped(i)], dtype=object
+                    [
+                        i.geometry
+                        for i in s.items
+                        if not _skipped(i) and i.arc_centre is None
+                    ],
+                    dtype=object,
                 ),
             )
             for s in statics
         ]
-        rounds = [s for s in rounds if s.items]
-        found = _nearest(rounds, centre)
+        found = _nearest([s for s in plain if s.items], centre)
         depth = max(
             -found[1] if found is not None else -math.inf,
             _edge_depth_at(field, via.via.position),
         )
+        for s in statics:
+            for item in s.items:
+                if item.arc_centre is None:
+                    continue
+                there = _point(shapely.ops.nearest_points(item.geometry, centre)[0])
+                allowed = (
+                    item.inflation
+                    - math.dist(there, via.via.position)
+                    - _static_allowance(item, there, via.via.position)
+                )
+                if allowed > depth:
+                    depth, found = allowed, (item, -allowed)
         if depth <= START_TOLERANCE:
             return None
     obstacle = _unnamed(field, statics)
@@ -609,9 +614,25 @@ def _via_and_static(via: ViaInput) -> Violation | None:
 
 def _skipped(item: Obstacle) -> bool:
     """Whether the start check leaves `item` to KiCad's DRC: a hole that is
-    not round, or a track read from an arc, which the fields hold as a
-    circle of its long axis or as its chords."""
-    return item.oval or item.arc_centre is not None
+    not round, which the fields hold as a circle of its long axis."""
+    return item.oval
+
+
+def _static_allowance(item: Obstacle, at: Point2, toward: Point2) -> float:
+    """How much nearer than its arc an unselected arc's chord is to `toward`
+    at `at`, the item's point nearest it (`Chord.allowance`): the chord of
+    the item's edge nearest `at`, about the arc's centre. Nothing for any
+    other item."""
+    centre = item.arc_centre
+    if centre is None:
+        return 0.0
+    coords = _vertices(np.asarray(shapely.get_coordinates(item.geometry), dtype=float))  # pyright: ignore[reportUnknownMemberType]
+    edges = list(pairwise(coords))
+    if not edges:
+        return 0.0
+    a, b = min(edges, key=lambda e: LineString(e).distance(Point(at)))
+    chord = Chord(sagitta(math.dist(a, centre), math.dist(a, b)), centre)
+    return chord.allowance(a, b, at, toward)
 
 
 def _edge_depth_at(field: ObstacleField | None, at: Point2) -> float:
@@ -758,13 +779,16 @@ def _measured(
     within: BoolArray,
     track: ChainCentreline,
     chords: ArcChords,
+    item: Obstacle | None = None,
 ) -> list[Sample]:
     """How deep each of `samples` is inside the clearance `keep` of
     `target`, the boundary of an obstacle, with its nearest point on it.
     Inside the obstacle's area (`within`) the depth runs on into it. A
     sample on an arc chord of `track` is measured against the target's
     part on each side of the chord on its own, so that the allowance
-    (`Chord.allowance`) of the concave side does not cover the convex."""
+    (`Chord.allowance`) of the concave side does not cover the convex. An
+    unselected arc `item`'s chords are allowed their own toward the sample
+    (`_static_allowance`)."""
     distances = np.asarray(
         shapely.distance(shapely.points(samples), target),  # pyright: ignore[reportUnknownMemberType]
         dtype=float,
@@ -786,8 +810,10 @@ def _measured(
                 split[(a, b)] = _sides(target, a, b, chord)
             parts = split[(a, b)]
         for part in parts:
-            there = shapely.ops.nearest_points(Point(at), part)[1]
-            found.append((keep - float(part.distance(Point(at))), at, _point(there)))
+            there = _point(shapely.ops.nearest_points(Point(at), part)[1])
+            allowance = 0.0 if item is None else _static_allowance(item, there, at)
+            depth = keep - float(part.distance(Point(at))) - allowance
+            found.append((depth, at, there))
     return [s for s in found if s[0] > START_TOLERANCE]
 
 
@@ -801,8 +827,9 @@ def _item_samples(
 ) -> list[Sample]:
     """Where `copper` of `track` is inside `item`'s clearance `keep`: its
     nearest point to the item, and each of its `samples` inside."""
-    here, there = shapely.ops.nearest_points(copper, item.geometry)
-    nearest: Sample = (keep - float(here.distance(there)), _point(here), _point(there))
+    here, there = (_point(p) for p in shapely.ops.nearest_points(copper, item.geometry))
+    allowance = _static_allowance(item, there, here)
+    nearest: Sample = (keep - math.dist(here, there) - allowance, here, there)
     area = item.geometry.area > 0.0
     within = (
         np.asarray(shapely.contains_xy(item.geometry, samples[:, 0], samples[:, 1]))  # pyright: ignore[reportUnknownMemberType]
@@ -810,7 +837,7 @@ def _item_samples(
         else np.zeros(len(samples), dtype=bool)
     )
     target = item.geometry.boundary if area else item.geometry
-    found = _measured(target, keep, samples, within, track, chords)
+    found = _measured(target, keep, samples, within, track, chords, item)
     if nearest[0] > START_TOLERANCE and not within.any():
         found.append(nearest)
     return found

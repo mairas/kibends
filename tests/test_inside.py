@@ -1501,24 +1501,27 @@ STATIC_WIDTH = 0.25
 """mm, its width."""
 
 
-def static_arc_layer(*pads: kbt.Pad) -> LayerSnapshot:
-    """F.Cu with the unselected arc of OTHER and `pads`."""
-    d = STATIC_RADIUS / math.sqrt(2)
-    arc = kipy_arc(
-        "o", "OTHER", (STATIC_RADIUS, 0.0), (d, d), (0.0, STATIC_RADIUS), STATIC_WIDTH
-    )
+def static_arc_layer(
+    *pads: kbt.Pad, radius: float = STATIC_RADIUS, width: float = STATIC_WIDTH
+) -> LayerSnapshot:
+    """F.Cu with an unselected quarter arc of OTHER of `radius` about the
+    origin, and `pads`."""
+    d = radius / math.sqrt(2)
+    arc = kipy_arc("o", "OTHER", (radius, 0.0), (d, d), (0.0, radius), width)
     return layer_snapshot(FakeBoard(tracks=[arc], pads=list(pads)), "F.Cu")
 
 
-def test_a_via_at_clearance_inside_an_unselected_arc_starts() -> None:
+@pytest.mark.parametrize("radius", [3.0, 10.0, 30.0, 100.0])
+def test_a_via_at_clearance_inside_an_unselected_arc_starts(radius: float) -> None:
     # The arc is held as its chords, which sit nearer the via than the arc
-    # by up to their sagitta.
-    snap = static_arc_layer()
+    # by up to their sagitta: on its concave side a chord is allowed the
+    # arc's offset from it.
+    snap = static_arc_layer(radius=radius)
     angle = chord_middle(snap)
     keep = PAIR_CLEARANCE + scenarios.VIA_DIAMETER / 2 + STATIC_WIDTH / 2
     at = (
-        (STATIC_RADIUS - keep) * math.cos(angle),
-        (STATIC_RADIUS - keep) * math.sin(angle),
+        (radius - keep) * math.cos(angle),
+        (radius - keep) * math.sin(angle),
     )
     via = scenarios.through_via("v", "V", at)
     given = ViaInput(
@@ -1652,3 +1655,41 @@ def test_a_via_beside_a_slot_and_clear_of_the_edge_starts() -> None:
     result = via_beside_slot_and(shapes=[board_edge_beyond_the_via(ROUND_INSIDE)])()
 
     assert result.termination is not Termination.ABNORMAL
+
+
+OUTER_RADIUS = 100.0
+"""mm, of a selected quarter arc beside an unselected concentric one of
+another net outside it."""
+
+
+def beside_an_outer_arc(nearer: float) -> Callable[[], RunResult]:
+    """The selected arc of OUTER_RADIUS, and the unselected one outside it at
+    their clearance but `nearer`: their chords 18 and 19."""
+    r = round(OUTER_RADIUS * NM_PER_MM)
+    d = round(OUTER_RADIUS * NM_PER_MM / math.sqrt(2))
+    arc = Arc("a", (r, 0), (d, d), (0, r), round(PAIR_WIDTH * NM_PER_MM), "F.Cu", "SIG")
+    ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+    points = [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+    outer = OUTER_RADIUS + PAIR_CLEARANCE + PAIR_WIDTH / 2 + STATIC_WIDTH / 2 - nearer
+    snap = static_arc_layer(radius=outer)
+    assert (len(points) - 1, len(snap.tracks[0].centreline.coords) - 1) == (18, 19)
+    chain = selected("arc", "SIG", build_obstacles(snap, "SIG", PAIR_WIDTH), *points)
+    return lambda: optimize_chains(
+        [chain], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+    )
+
+
+def test_an_arc_at_clearance_inside_an_unselected_concentric_arc_starts() -> None:
+    # Each arc's chords sit inside it: the selected one's farther from the
+    # outer arc, the unselected one's nearer, allowed on its concave side.
+    result = beside_an_outer_arc(0.0)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+def test_an_arc_just_inside_an_unselected_concentric_arc_s_clearance_is_refused() -> (
+    None
+):
+    found = refused(beside_an_outer_arc(2 * START_TOLERANCE))
+
+    assert {v.obstacle for v in found} == {"track o"}
