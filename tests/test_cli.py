@@ -1670,6 +1670,12 @@ def noting_handler[**P, R](seen: list[object], real: Callable[P, R]) -> Callable
     return noting
 
 
+SIGNAL_AT = 10
+"""The question of a burst's stop at which SIGINT is sent: past the first
+L-BFGS iteration of the first burst on `l_board`, so that the stop keeps a
+state that moved."""
+
+
 @pytest.mark.usefixtures("sigint_handler")
 class TestCtrlC:
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -1690,9 +1696,10 @@ class TestCtrlC:
             stop = cast(Callable[[], bool], args[4])
 
             def asked() -> bool:
-                # Asked first, it sends SIGINT from C and answers no; the
-                # burst's next ask runs the handler, then the run's stop.
-                sent = not answers and libc_raise(signal.SIGINT) == 0
+                # Asked for the SIGNAL_AT-th time, past the first iteration,
+                # it sends SIGINT from C and answers no; the burst's next
+                # ask runs the handler, then the run's stop.
+                sent = len(answers) == SIGNAL_AT - 1 and libc_raise(signal.SIGINT) == 0
                 answers.append(False if sent else stop())
                 return answers[-1]
 
@@ -1702,7 +1709,9 @@ class TestCtrlC:
 
         run()
 
-        assert answers[:2] == [False, True], "the burst ran on past the signal"
+        assert answers[SIGNAL_AT - 1 : SIGNAL_AT + 1] == [False, True], (
+            "the burst ran on past the signal"
+        )
         (report,) = reports
         assert report.termination is Termination.STOPPED
         assert report.committed

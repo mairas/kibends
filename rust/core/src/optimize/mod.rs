@@ -69,8 +69,9 @@
 //! tolerance, so one still gaining energy while its length grows may stop
 //! sooner beside them. The run converges when every problem has settled,
 //! none of them on abnormal bursts, and otherwise stops at the iteration
-//! cap or at the time limit, which ends the running burst at its next
-//! L-BFGS iteration; that burst's state goes through the checks and the
+//! cap or at the time limit, which ends the running burst before its next
+//! line-search trial, at its last accepted point (`burst`); that burst's
+//! state goes through the checks and the
 //! guard as any, and it settles nothing. The run reports whether some
 //! problem owes a burst at its level (`Notice::Owing`,
 //! `state::State::owes_burst`), so that the caller's time limit waits for

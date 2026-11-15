@@ -226,7 +226,8 @@ def optimize_chains(
     settled and has run none at a level a handover took it to. So an owed
     burst runs past the limit, as a long one does, and the problems after
     it in the outer iteration step too. Once the limit has run out, the
-    running burst ends at its next L-BFGS iteration, and its state goes
+    running burst ends before its next line-search trial, at its last
+    accepted point (`bursts.run_burst`), and its state goes
     through the checks and the guard as any burst's. Each problem then
     still before the final level goes on at its next level as if it had
     settled where it runs, one that has taken no step leaving level 0, and

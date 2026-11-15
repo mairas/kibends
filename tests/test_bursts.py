@@ -180,7 +180,7 @@ def ask_until(answers: int) -> Callable[[], bool]:
     return stop
 
 
-def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
+def test_stop_ends_the_burst_before_the_trial_it_answers_true_for() -> None:
     start = np.array([3.0, 2.0])
     whole = run_burst(steep_valley, start, nothing_crosses, SHORT_SETTINGS)
 
@@ -188,8 +188,10 @@ def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
         steep_valley, start, nothing_crosses, SHORT_SETTINGS, ask_until(2)
     )
 
-    assert whole.iterations > 2
-    assert burst.iterations == 2
+    # It is asked before each line-search trial: the start's evaluation and
+    # one trial ran.
+    assert whole.evaluations > 2
+    assert burst.evaluations == 2
     assert burst.cut
     assert not burst.abnormal
 

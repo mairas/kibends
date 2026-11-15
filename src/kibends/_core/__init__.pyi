@@ -327,7 +327,8 @@ class BurstResult:
     @property
     def cut(self) -> builtins.bool:
         r"""
-        Whether `stop` ended it before its iteration cap.
+        Whether `stop` ended it: in a line search, or after an iteration
+        before its cap.
         """
     @property
     def points(self) -> numpy.typing.NDArray[numpy.float64]:
@@ -1593,9 +1594,11 @@ def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], 
     r"""
     Minimises `objective` from `start` with L-BFGS, over y with x =
     `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
-    `gtol` ends it (`kibends_core::burst`). After each iteration it checks
-    for signals and asks `stop`, if given, which ends the burst by
-    answering true before the cap. With a `check`, its line searches take
+    `gtol` ends it (`kibends_core::burst`). Before each line search's trial
+    and after each iteration it checks for signals and asks `stop`, if
+    given, which ends the burst at its last accepted point by answering
+    true, after an iteration only before the cap. With a `check`, its line
+    searches take
     only points that enter no clearance by the check. An exception
     raised there or by the objective ends the burst and propagates.
     """
