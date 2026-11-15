@@ -76,6 +76,7 @@ from kibends.energy import (
     EnergyParams,
     FloatArray,
 )
+from kibends.inside import INSIDE_MESSAGE
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     EDGE_CLEARANCE,
@@ -2189,31 +2190,21 @@ class TestSeveralChains:
         assert "abnormally" in exit_message(log)
         assert board.calls == []
 
-    def test_chains_starting_inside_each_other_s_clearance_commit_unwarned(
-        self,
-        connect: Connector,
-        log: list[str],
-        reports: list[pipeline.RunReport],
+    def test_chains_starting_inside_each_other_s_clearance_are_refused(
+        self, connect: Connector, log: list[str]
     ) -> None:
         # 0.3 mm from the L's corner, inside clearance plus both half widths.
         across = [kipy_track("x", "SIG2", (4.3, -1), (4.3, 1), width=WIDTH)]
         board = connect.to(off_grid(two_l_board(inner=across)))
 
-        run()
+        message = exit_message(log)
 
-        (report,) = reports
-        assert report.termination is Termination.CONVERGED
-        # Only the board's missing outline warns.
-        assert not [
-            line
-            for line in log
-            if line.startswith("WARNING") and "Edge.Cuts" not in line
-        ]
-        assert "push_commit" in board.calls
-        lines = by_net(board, ("SIG", "SIG2"))
-        sig2 = lines["SIG2"] or [segment(t) for t in across]
-        apart = unary_union(lines["SIG"]).distance(unary_union(sig2))
-        assert apart >= CLEARANCE + WIDTH - NM_ROUNDING
+        assert board.calls == []
+        assert message.startswith(f"ERROR {INSIDE_MESSAGE}")
+        apart = 0.3 - WIDTH
+        assert "overlaps SIG2" not in message
+        assert f" is {apart:.3f} mm from SIG2 on F.Cu" in message
+        assert f"{CLEARANCE:.3f} mm required" in message
 
     def test_run_function_reports_each_chain(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
@@ -3020,6 +3011,13 @@ def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
     )
 
 
+STILL_APART = 0.52
+"""mm from the via at VIA to an unselected 0.4 mm via of its net: their rings
+apart, so that it does not hold the via, their 0.3 mm holes 0.03 mm inside
+hole-to-hole."""
+STILL_DIAMETER = 0.4
+
+
 PUSHED_STITCHING = (2.0, 3.0)
 
 
@@ -3499,7 +3497,8 @@ class TestMovingVias:
     ) -> None:
         # The selected OTHER route bends 0.625 mm from the via, at the
         # netclass spacing and inside the plane's 0.5 mm zone clearance plus
-        # margin.
+        # margin, which only the optimizer keeps: the run starts, and the
+        # bursts move the via out to the zone's clearance and margin.
         board = moving_via_board()
         bend = (VIA[0], VIA[1] + 0.3 + 0.2 + 0.25 / 2)
         route = [
@@ -3687,11 +3686,8 @@ class TestMovingVias:
         for chain in report.chains:
             assert chain.after.segment_count == 1
 
-    def test_a_via_starting_inside_its_clearance_moves_out_of_it(
-        self,
-        connect: Connector,
-        log: list[str],
-        reports: list[pipeline.RunReport],
+    def test_a_via_starting_inside_its_clearance_is_refused_naming_it(
+        self, connect: Connector, log: list[str]
     ) -> None:
         # The pad's edge is 0.1 mm from the via's ring, inside its clearance,
         # and clear of both chains.
@@ -3699,18 +3695,32 @@ class TestMovingVias:
         board.pads = [kipy_pad("p", "GND", *INSIDE_PAD, layers=(BL.BL_F_Cu,))]
         connect.to(board)
 
-        run()
+        message = exit_message(log)
 
-        assert "push_commit" in board.calls
-        assert sorted(board.deleted) == ["a", "b", "e", "f", "v"]
-        assert len(created_vias(board)) == 1
-        (report,) = reports
-        (via,) = report.vias
-        assert (via.id, via.start, via.moved) == ("v", VIA, True)
+        assert board.calls == []
         x, y, h = *INSIDE_PAD, PAD_HALF_SIZE
-        pad = box(x - h, y - h, x + h, y + h)
-        ring = pad.distance(Point(via.end)) - VIA_DIAMETER / 2
-        assert ring >= CLEARANCE - INSIDE_TOLERANCE - NM_ROUNDING
+        ring = box(x - h, y - h, x + h, y + h).distance(Point(VIA)) - VIA_DIAMETER / 2
+        where = UserFrame(GRID_ORIGIN).point(VIA)
+        assert (
+            f"via v is {ring:.3f} mm from pad p at {where} mm, "
+            f"{CLEARANCE:.3f} mm required"
+        ) in message
+
+    def test_a_via_inside_hole_to_hole_of_a_still_via_of_its_net_is_refused(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # An unselected via of SIG beside the moving one, their holes closer
+        # than hole-to-hole; their copper, of one net, may touch.
+        board = moving_via_board()
+        x, y = VIA
+        still = kipy_via("u", "SIG", x, y + STILL_APART, diameter=STILL_DIAMETER)
+        board.vias = [*board.vias, still]
+        connect.to(board)
+
+        message = exit_message(log)
+
+        assert board.calls == []
+        assert "via v is 0.030 mm inside its clearance of via u" in message
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())
@@ -4008,7 +4018,7 @@ class TestViaClasses:
         assert via_ids(given.static_vias) == {"g"}
 
     def test_a_selected_via_starting_inside_its_clearance_is_no_static_via(
-        self, connect: Connector, optimized: Optimized
+        self, connect: Connector, optimized: Optimized, log: list[str]
     ) -> None:
         # As in `test_a_via_starting_inside_its_clearance_moves_out_of_it`,
         # with the route and its via of GND.
@@ -4022,8 +4032,8 @@ class TestViaClasses:
         )
         connect.to(board)
 
-        run("--dry-run")
-
+        # The optimizer refuses to start; the classes are what it was given.
+        assert "via v" in exit_message(log, "--dry-run")
         assert classes(optimized.vias) == {"v": True}
         assert classes(optimized.static_vias) == {"u": True}
 
@@ -4074,7 +4084,7 @@ class TestViaClasses:
 
     @pytest.mark.parametrize(
         ("ground", "stitching"),
-        [((5.0, 1.5), False), ((6.06, 1.06), False), ((5.0, 2.5), True)],
+        [((5.0, 1.5), False), ((6.15, 1.15), False), ((5.0, 2.5), True)],
         ids=["across", "diagonal", "stitching"],
     )
     def test_a_return_via_settles_at_the_neutral_distance_and_nearer_by_default(
@@ -5910,7 +5920,7 @@ V_REPULSION = "0.5"
 
 def v_board(turn: float) -> CommitBoard:
     """Pair USB_D+/USB_D- turning back by `turn` degrees, with a GND pad
-    inside the V halfway along its legs."""
+    inside the V (`scenarios.turning_back`)."""
     centre, pad = scenarios.turning_back(turn)
     tracks = [
         kipy_track(f"{net}{k}", net, start, end, width=PAIR_WIDTH)
@@ -6208,3 +6218,57 @@ def anchored_board(
     pads = [kipy_pad("p", "SIG", *at)] if kind == "pad" else []
     vias = [kipy_via("v", "SIG", *at)] if kind == "via" else []
     return CommitBoard(selection=list(route), tracks=list(route), pads=pads, vias=vias)
+
+
+def test_a_rounded_track_hugging_a_via_at_its_clearance_runs(
+    connect: Connector, log: list[str]
+) -> None:
+    # A selected arc round an unselected GND via at exactly their clearance:
+    # its chords sit inside the arc, nearer the via by their sagitta, which
+    # the run excuses as the arc's (`inside.arc_chords`).
+    x, y = VIA
+    reach = VIA_DIAMETER / 2 + CLEARANCE + WIDTH / 2
+    diagonal = reach / math.sqrt(2)
+    arc = kipy_arc(
+        "arc",
+        "SIG",
+        (x + reach, y),
+        (x + diagonal, y + diagonal),
+        (x, y + reach),
+        width=WIDTH,
+    )
+    board = CommitBoard(
+        selection=[arc], tracks=[arc], vias=[kipy_via("g", "GND", x, y)]
+    )
+    connect.to(board)
+
+    run("--dry-run")
+
+    assert not [line for line in log if line.startswith("ERROR")]
+
+
+def test_a_via_inside_only_a_zone_s_margin_of_static_copper_moves_out(
+    connect: Connector, reports: list[pipeline.RunReport]
+) -> None:
+    # An unselected OTHER pad on In1 at the netclass spacing from the via's
+    # ring, inside the SIG plane's 0.5 mm zone clearance plus margin, which
+    # only the optimizer keeps: the run starts, and the via moves away.
+    board = moving_via_board()
+    x, y = VIA
+    pad_y = y + VIA_DIAMETER / 2 + CLEARANCE + PAD_HALF_SIZE
+    board.pads = [kipy_pad("p", "OTHER", x, pad_y, layers=(BL.BL_In1_Cu,))]
+    plane = kipy_copper_zone(
+        "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu], min_width=0.25
+    )
+    plane.clearance = nm(0.5)
+    board.zones = [plane]
+    board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+    connect.to(board)
+
+    run("--dry-run")
+
+    (report,) = reports
+    (via,) = report.vias
+    h = PAD_HALF_SIZE
+    pad = box(x - h, pad_y - h, x + h, pad_y + h)
+    assert pad.distance(Point(via.end)) > pad.distance(Point(VIA))

@@ -94,6 +94,12 @@ impl Obstacles {
         }
     }
 
+    /// How far the board edge keeps from the copper's centreline, mm; None
+    /// without an outline.
+    pub fn edge_inflation(&self) -> Option<f64> {
+        self.outline.then_some(self.edge_inflation)
+    }
+
     /// The field as edges, its items in order, then the board edge.
     pub fn edges(&self) -> &Arc<StaticEdges> {
         &self.edges

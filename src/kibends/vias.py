@@ -23,7 +23,9 @@ One whose centre does not start so, and may be connected only now, stays
 fixed, with a debug line naming the zones and layers. One that starts
 closer to other nets' copper than the zone's clearance and the
 margin is left to the optimizer, which moves it out as it moves any via
-starting inside its clearance. Every other selected via stays fixed,
+starting inside the clearances it keeps; it refuses only a start inside
+the netclass, hole and edge rules (`inside`). Every other selected via
+stays fixed,
 with a debug line naming the reason, and holds the chains it touches like
 an unselected via: a chain vertex on its centre stays there, and a chain
 with none there keeps a vertex inside it.
@@ -39,6 +41,7 @@ net stay in its stops, which keep hole-to-hole, and the pairwise term also
 has them repel each other.
 """
 
+import dataclasses
 import enum
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -116,6 +119,16 @@ class ViaInput:
     `field` as `static_via_obstacles` gives them: they limit where it may
     go, and the optimizer's pairwise term (`via_pairs`) gives their
     energy."""
+    own_vias: tuple[Via, ...] = dataclasses.field(kw_only=True)
+    """The vias of its net that stand still, whose holes `own_net` keeps
+    hole-to-hole from its own (`obstacles.own_net_vias`): the start check
+    names them. Required, so that whoever builds the via says which."""
+    rules_copper: ObstacleField | None = None
+    """`copper` built without `zones`, by the netclass, hole and edge rules
+    alone: what the start check judges the via by (`inside`), since the
+    zones' clearance and margin are the optimizer's, for the refill to
+    reconnect the via, and no rule KiCad's DRC checks. None where it is
+    `copper`."""
 
     @cached_property
     def stop_parts(self) -> tuple[ObstacleField | None, ObstacleField | None]:

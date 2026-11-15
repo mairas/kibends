@@ -212,6 +212,13 @@ impl Obstacles {
         Ok(Self { inner, edges })
     }
 
+    /// How far the board edge keeps from the copper's centreline, mm; None
+    /// without an outline.
+    #[getter]
+    fn edge_inflation(&self) -> Option<f64> {
+        self.inner.edge_inflation()
+    }
+
     /// The field as edges, its items in order, then the board edge.
     #[getter]
     fn static_edges(&self, py: Python<'_>) -> Py<StaticEdges> {

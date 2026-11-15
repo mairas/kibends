@@ -1040,6 +1040,7 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
         DEFAULT_CLEARANCE,
         zones,
         own,
+        own_vias=(),
     )
     apart = ViaInput(
         via,
@@ -1050,6 +1051,7 @@ def split_inputs(net: str) -> tuple[ViaInput, ViaInput]:
         own,
         ground=via.net in SPLIT_GROUND,
         static_vias=static_vias,
+        own_vias=(),
     )
     return whole, apart
 

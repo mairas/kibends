@@ -65,9 +65,17 @@
 //! energy and passes that guard, at a coarse level unit by unit. Laying
 //! out renumbers the edges, so the guard compares counts, not edges.
 //!
-//! A vertex or via that starts inside its clearance moves like any other:
-//! the clearance hinge pushes it out, and the check after a burst moves
-//! back only what was clear at the burst's start.
+//! The run refuses inputs inside a clearance by the rules a user can see
+//! (`Shared::insides`, judged again by Python's `kibends.inside`), but for
+//! a run inside that holds an anchor, which `count_violations` does not
+//! count, an arc's chords on its concave side within the arc's offset
+//! from them, and what is inside only the optimizer's own keep-outs: a
+//! section's widened stand-in, a via's zone clearance and margin. What
+//! starts inside so moves like any other: the clearance hinge pushes it
+//! out. No burst takes another member or a via newly or deeper inside
+//! than it starts, and no burst takes an edge newly across static copper;
+//! one that starts across static copper may go deeper into it, which only
+//! the guard, measured at the inputs, then limits (`checks`).
 //!
 //! A section held within the run (`State::go_on_from`) builds its problem
 //! again, which measures its guard, its energy and its inputs' energy with
@@ -158,6 +166,61 @@ use crate::seen::Seen;
 use crate::simplify::{Merging, Optimised, simplified_vertices};
 use crate::vias::free::{FreeDistances, free_distances, newly_inside};
 use crate::vias::sight::ViaSight;
+
+/// Whose copper is inside a clearance (`Shared::insides`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Member(usize),
+    Via(usize),
+}
+
+/// Each distinct `Against` of `entered` with its deepest depth, in the
+/// order first met.
+fn deepest_of_each<'a>(
+    entered: impl IntoIterator<Item = &'a (f64, Against)>,
+) -> Vec<(f64, Against)> {
+    let mut out: Vec<(f64, Against)> = Vec::new();
+    for &(d, against) in entered {
+        match out.iter_mut().find(|(_, a)| *a == against) {
+            Some(seen) if d < seen.0 => seen.0 = d,
+            Some(_) => {}
+            None => out.push((d, against)),
+        }
+    }
+    out
+}
+
+/// What copper is inside the clearance of (`Shared::insides`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Against {
+    /// The static copper, holes and keepouts of its field, or the board
+    /// edge.
+    Static,
+    Member(usize),
+    Via(usize),
+    /// What only stops a via: outside where its zones connect it, or its
+    /// net's stops.
+    Stops,
+}
+
+/// A place where copper is inside a clearance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inside {
+    pub subject: Subject,
+    /// The member's vertex, `from` and `to` alike, or its edge; a via's
+    /// centre.
+    pub from: V2,
+    pub to: V2,
+    /// The member's copper the place stands for, from its first point to
+    /// its last along it: a vertex's run inside with the clear vertex on
+    /// either side, or the edge; a via's centre.
+    pub run_from: V2,
+    pub run_to: V2,
+    /// Its signed distance, below the tolerance; NaN for an edge
+    /// cutting into static copper, which the field does not measure.
+    pub depth: f64,
+    pub against: Against,
+}
 
 /// A member of a problem as the run takes it, beside what its energy takes
 /// (`problem::Problem::members`).
@@ -577,6 +640,197 @@ impl Shared {
         counts
     }
 
+    /// Each place where the copper of a member at `polylines` or of a via
+    /// at `positions` is inside a clearance: for each violation
+    /// `violations` counts, a run inside at its deepest vertex or an edge
+    /// cutting in, one for each class of copper it enters, static copper and
+    /// each member or via its edges enter, each with its own depth; then one
+    /// for each obstacle a via is inside or each of its stops it is outside
+    /// of, a crossing of a member and a via, or of two vias, once. A run
+    /// that holds a pinned vertex counts as no violation, as in
+    /// `violations`: the pin cannot move, and a pin on copper of its own
+    /// nets that its field holds, such as a section's end on its pair's
+    /// via, lies inside that copper's clearance by design. Inside means by
+    /// more than `tolerance`. `seen` is what the members see at
+    /// `polylines`.
+    pub fn insides(
+        &self,
+        polylines: &[Vec<V2>],
+        masks: &[Vec<bool>],
+        positions: &[V2],
+        seen: &Seen,
+        tolerance: f64,
+    ) -> Vec<Inside> {
+        let count = self.count();
+        let flat = self.flat(polylines, positions);
+        let queries = refs(polylines);
+        let near = seen.distances(&queries, &flat, -tolerance);
+        let clear = seen.segments_clear(&queries, &flat, tolerance);
+        let (member_of, _) = self.shown_vertices(polylines);
+        let vias_from = flat.len() - 2 * positions.len();
+        // A via's piece is its first vertex in `flat`.
+        let piece = |v: usize| {
+            if v >= vias_from {
+                Against::Via((v - vias_from) / 2)
+            } else {
+                Against::Member(member_of[v])
+            }
+        };
+        let mut found = Vec::new();
+        for (i, (((member, points), mask), (distance, others))) in self
+            .setup
+            .energy
+            .members
+            .members
+            .iter()
+            .zip(polylines)
+            .zip(masks)
+            .zip(near.iter().zip(&clear))
+            .enumerate()
+        {
+            let field = &member.field;
+            let (fixed, _) = field.signed_distance(points, f64::INFINITY);
+            let depth: Vec<f64> = fixed
+                .iter()
+                .zip(distance)
+                .map(|(&d, &n)| python_min(d, n))
+                .collect();
+            let inside: Vec<bool> = depth.iter().map(|&d| d < -tolerance).collect();
+            let mut entering: Vec<Vec<(f64, Against)>> = vec![Vec::new(); points.len() - 1];
+            for ((&e, &v), &d) in others.edge.iter().zip(&others.vertex).zip(&others.depth) {
+                entering[e].push((d, piece(v)));
+            }
+            let mut k = 0;
+            while k < inside.len() {
+                if !inside[k] {
+                    k += 1;
+                    continue;
+                }
+                let first = k;
+                let mut anchored = false;
+                while k < inside.len() && inside[k] {
+                    anchored |= mask[k];
+                    k += 1;
+                }
+                if anchored {
+                    continue;
+                }
+                let at = (first..k)
+                    .reduce(|a, b| if depth[b] < depth[a] { b } else { a })
+                    .unwrap_or(first);
+                let run_from = points[first.saturating_sub(1)];
+                let run_to = points[k.min(points.len() - 1)];
+                let place = |depth: f64, against: Against| Inside {
+                    subject: Subject::Member(i),
+                    from: points[at],
+                    to: points[at],
+                    run_from,
+                    run_to,
+                    depth,
+                    against,
+                };
+                // Static copper by its deepest vertex in the run, and each
+                // member or via the run's edges enter by its deepest, so
+                // that no one hides another.
+                let fixed_at = (first..k)
+                    .reduce(|a, b| if fixed[b] < fixed[a] { b } else { a })
+                    .unwrap_or(first);
+                if fixed[fixed_at] < -tolerance {
+                    found.push(place(fixed[fixed_at], Against::Static));
+                }
+                let edges = first.saturating_sub(1)..k.min(points.len() - 1);
+                for (d, against) in deepest_of_each(edges.flat_map(|e| &entering[e])) {
+                    found.push(place(d, against));
+                }
+            }
+            let ends_clear: Vec<usize> = (0..points.len() - 1)
+                .filter(|&k| !inside[k] && !inside[k + 1])
+                .collect();
+            let starts: Vec<V2> = ends_clear.iter().map(|&k| points[k]).collect();
+            let ends: Vec<V2> = ends_clear.iter().map(|&k| points[k + 1]).collect();
+            let static_clear = field.segments_clear(&starts, &ends, tolerance);
+            for (&k, &c) in ends_clear.iter().zip(&static_clear) {
+                let mut classes = Vec::new();
+                if !c {
+                    classes.push((f64::NAN, Against::Static));
+                }
+                if !others.clear[k] {
+                    classes.extend(deepest_of_each(&entering[k]));
+                }
+                for (depth, against) in classes {
+                    found.push(Inside {
+                        subject: Subject::Member(i),
+                        from: points[k],
+                        to: points[k + 1],
+                        run_from: points[k],
+                        run_to: points[k + 1],
+                        depth,
+                        against,
+                    });
+                }
+            }
+        }
+        let mut crossed: BTreeSet<(usize, usize)> = found
+            .iter()
+            .filter_map(|f| match (f.subject, f.against) {
+                (Subject::Member(i), Against::Via(k)) => Some((i, count + k)),
+                _ => None,
+            })
+            .collect();
+        for (stops, now) in [
+            (false, self.via_distances(polylines, positions, -tolerance)),
+            (true, self.stop_distances(polylines, positions, -tolerance)),
+        ] {
+            for (&k, &d) in now.fixed.via.iter().zip(&now.fixed.distance) {
+                if d < -tolerance {
+                    found.push(Inside {
+                        subject: Subject::Via(k),
+                        from: positions[k],
+                        to: positions[k],
+                        run_from: positions[k],
+                        run_to: positions[k],
+                        depth: d,
+                        against: if stops {
+                            Against::Stops
+                        } else {
+                            Against::Static
+                        },
+                    });
+                }
+            }
+            let judged = &now.by_obstacle;
+            for ((&k, &o), &d) in judged
+                .via
+                .iter()
+                .zip(&judged.obstacle)
+                .zip(&judged.distance)
+            {
+                let pair = if o < count {
+                    (o, count + k)
+                } else {
+                    (count + k.min(o - count), count + k.max(o - count))
+                };
+                if d >= -tolerance || !crossed.insert(pair) {
+                    continue;
+                }
+                found.push(Inside {
+                    subject: Subject::Via(k),
+                    from: positions[k],
+                    to: positions[k],
+                    run_from: positions[k],
+                    run_to: positions[k],
+                    depth: d,
+                    against: if o < count {
+                        Against::Member(o)
+                    } else {
+                        Against::Via(o - count)
+                    },
+                });
+            }
+        }
+        found
+    }
+
     /// Each (member, member or via) whose clearance the member's edges at
     /// `polylines` enter, the vias at `positions`, numbered after the
     /// members. `seen` is what the members see at `polylines`.
@@ -805,6 +1059,20 @@ impl State {
 
     pub fn shared(&self) -> &Shared {
         &self.shared
+    }
+
+    /// Where its inputs, the drawn copper, are inside a clearance by more
+    /// than `tolerance` (`Shared::insides`).
+    pub fn start_inside(&self, tolerance: f64) -> Vec<Inside> {
+        let input = &self.input;
+        let seen = self.shared.seeing(&input.points);
+        self.shared.insides(
+            &input.points,
+            &input.masks,
+            &input.positions,
+            &seen,
+            tolerance,
+        )
     }
 
     /// The spacing of the level it runs at.

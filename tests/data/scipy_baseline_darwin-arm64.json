@@ -58,17 +58,6 @@
         }
       ]
     },
-    "starts-inside": {
-      "termination": "converged",
-      "iterations": 7,
-      "evaluations": 386,
-      "chains": [
-        {
-          "length": 10.000000688602524,
-          "clearance": 0.9984687194257125
-        }
-      ]
-    },
     "detour": {
       "termination": "converged",
       "iterations": 9,
@@ -157,19 +146,19 @@
     },
     "crowded": {
       "termination": "converged",
-      "iterations": 5,
-      "evaluations": 222,
+      "iterations": 6,
+      "evaluations": 272,
       "chains": [
         {
           "length": 10.0,
           "clearance": null
         },
         {
-          "length": 10.000000074628343,
+          "length": 10.0,
           "clearance": null
         }
       ],
-      "gap": 0.5997165275746272
+      "gap": 0.6000000000000001
     },
     "drape": {
       "termination": "converged",
@@ -883,16 +872,16 @@
     "pair-turning-back-150": {
       "termination": "converged",
       "iterations": 3,
-      "evaluations": 205,
+      "evaluations": 201,
       "chains": [],
       "gap": null,
       "pairs": [
         {
           "lengths": [
-            6.210524183365182,
-            7.125241834857099
+            4.638499843886884,
+            5.554235393625983
           ],
-          "clearance": 0.019718569924174756
+          "clearance": 0.019598897583229746
         }
       ]
     },

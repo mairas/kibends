@@ -171,16 +171,11 @@ and the static copper of its net. Nor do the selected tracks of the two
 nets of a differential pair keep clearance from each other (below). Only
 selected chains and vias move. A moving via keeps its clearances on every copper layer it spans,
 including layers no selected chain is on, stays out of rule areas that keep
-out vias on those layers, and the chains it joins move with it. A moving
-via that starts inside its clearance or inside such a rule area moves out
-of it where there is room, and never ends deeper inside than it started.
-Starting inside the clearance of one chain or via does not let it into
-another's: each chain and each via is judged on its own, and so is each
-piece of static copper around it, the outside of its zones and each of its
-net's pads and holes. Static copper of one net that overlaps on one
-layer, such as two tracks meeting at a width change or a T-junction, is
-one piece, judged by the via's depth in the whole of it: inside one track
-of a piece, the via may move into another of its tracks no deeper. The
+out vias on those layers, and the chains it joins move with it. Each chain
+and each via is judged on its own, and so is each piece of static copper
+around it, the outside of its zones and each of its net's pads and holes.
+Static copper of one net that overlaps on one layer, such as two tracks
+meeting at a width change or a T-junction, is one piece. The
 optimizer keeps vias so while it runs; kibends does not check the result
 again before the commit, and KiCad's DRC reports any clearance violation
 left after the run.
@@ -330,17 +325,39 @@ junction of branching tracks. An end whose copper reaches another selected
 track of its net stays where it is too, since that track keeps it there. The tracks of a differential pair keep the
 vertex inside it where it is.
 
-A vertex that starts inside another item's clearance moves like any other,
-and the clearance pushes it out where there is room, another selected
-chain moving aside too if it must. Where there is none, as in a channel
-narrower than the track's clearance asks, the result has no more clearance
-violations than the selection had, and KiCad's DRC reports what remains.
-No step of the optimizer takes copper newly inside a clearance, nor deeper
-inside another selected chain's or moving via's than its burst started:
-such a trial step is not taken, and the step stops short of it. Static
-copper is the exception: an edge is judged against all of it at once,
-clear or not, so an edge that starts inside static copper's clearance may
-move deeper into it, or to where it is inside another piece's.
+The selection must start clear by its rules. Before optimizing, kibends
+checks the selected copper as drawn by the rules it reads (the netclass
+clearances, the edge and hole clearances and hole-to-hole) and if any of
+it is inside one it stops, commits nothing and lists each place: the
+chain or via, what it is too close to, how far apart they are and what is
+required, and where, in the coordinates of the board's grid origin. Move
+the copper apart or relax the rules, then run again. A chain end pinned on
+a pad or via of its own net is no violation, nor is a stretch inside a
+clearance that holds a vertex that cannot move, nor copper within √2 nm
+of a clearance, as KiCad's grid rounds it. A selected arc is
+judged as the straight chords kibends smooths it as, which sit inside the
+arc: on its inner side a chord is allowed the arc's offset from it, and
+on its outer side an arc that bulges into a clearance between chords that
+are clear of it starts. The run replaces the arc with straight tracks;
+if it leaves the chain unchanged, KiCad's DRC still sees the drawn arc.
+An unselected arc, which kibends reads as its chords, is judged the same
+way: copper on its inner side is allowed the arc's offset from its chords.
+Arcs of copper graphics and the board edge's arcs and circles get no such
+allowance: they are judged by their chords, so copper inside their bend at
+exactly its clearance may be refused by up to a chord's offset from the
+arc. A hole that is not round, such as a slot, which kibends reads as a
+circle of its long axis, is not checked: KiCad's DRC judges it.
+What kibends keeps beyond those rules does not stop a run: a
+moving via inside a zone's clearance and margin, which it keeps so that
+the refill reconnects the via, moves out of it as the optimizer runs.
+Once started, no step of the optimizer takes copper newly inside a
+clearance, nor deeper inside another selected chain's or moving via's
+than its burst started: such a trial step is not taken, and the step
+stops short of it. Static copper is the exception: an edge is judged
+against all of it at once, clear or not, so a stretch that starts inside
+static copper's clearance, holding a vertex that cannot move, may move
+deeper into it, or to where it is inside another piece's. Check such a
+run with KiCad's DRC.
 
 ### Differential pairs
 

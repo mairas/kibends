@@ -79,6 +79,7 @@ from kibends.energy import (
     obstacle_reach,
     quadrature_points,
 )
+from kibends.inside import InsideClearanceError, Violation
 from kibends.members import Member, members_energy, seen_parts
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
@@ -227,6 +228,27 @@ def no_burst_moved_back_whole(request: pytest.FixtureRequest) -> Iterator[None]:
     reached = warned or _uses_a_fallback_fixture(request.node)
     if reached and request.node.get_closest_marker("fallback") is None:
         pytest.fail("a burst reached the fallback that moves it all back")
+
+
+@pytest.fixture
+def unrefused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lets runs start inside a clearance, for tests of how the bursts and
+    the guard judge copper that starts inside, which the start check
+    (`inside`) refuses but for a stretch inside that holds a pinned vertex,
+    copper within START_TOLERANCE of a clearance, a selected arc's chords
+    on its concave side within the arc's offset from them and on its convex
+    side where they are clear, a pinned end on copper of its own net and
+    what is inside only the optimizer's own keep-outs, a section's
+    stand-in or a via's zone clearance and margin."""
+
+    def nothing_inside(_problem: object, _chords: object) -> list[Violation]:
+        return []
+
+    monkeypatch.setattr(
+        optimize_module._Problem,  # pyright: ignore[reportPrivateUsage]
+        "start_violations",
+        nothing_inside,
+    )
 
 
 @pytest.fixture
@@ -458,6 +480,14 @@ def violations(points: FloatArray, anchors: BoolArray, field: ObstacleField) -> 
         points[:-1][ends_clear], points[1:][ends_clear], INSIDE_TOLERANCE
     )
     return count_violations(inside, cut, anchors)
+
+
+def refused(run: Callable[[], object]) -> tuple[Violation, ...]:
+    """The places `run` refuses to start from for being inside a clearance
+    (`inside.InsideClearanceError`)."""
+    with pytest.raises(InsideClearanceError) as raised:
+        run()
+    return raised.value.violations
 
 
 def extract_chains(

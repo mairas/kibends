@@ -25,9 +25,11 @@ moved. A selected arc thus stays an arc only in a chain left exactly as
 drawn; simplification merges its pieces and the optimizer shortens it, so it
 is nearly always replaced.
 
+Before optimizing, the optimizer refuses a selection whose drawn copper
+starts inside a clearance (`inside`), which raises with nothing committed.
 The run checks no clearance of its own after optimizing: what the
 optimizer and simplification leave is committed, and the user's KiCad DRC
-reports any violation. It refuses only an abnormal optimizer stop.
+reports any violation. It refuses only an abnormal optimizer stop then.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
@@ -76,6 +78,7 @@ from kibends.energy import (
     ObstacleField,
     arc_lengths,
 )
+from kibends.inside import InsideClearanceError, arc_chords
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
     ChainCentreline,
@@ -84,6 +87,7 @@ from kibends.obstacles import (
     build_obstacles,
     build_pair_obstacles,
     own_net_stops,
+    own_net_vias,
     split_via_obstacles,
 )
 from kibends.optimize import Progress, optimize_chains
@@ -113,6 +117,7 @@ from kibends.snapshot import (
     GroundSource,
     LayerSnapshot,
     Via,
+    ViaZone,
     read_board,
     read_selection,
     read_user_frame,
@@ -412,8 +417,10 @@ def run_smooth(
 
     `on_optimized` gets the optimizer's report before the commit, which may
     raise. Raises on failures that leave nothing to report (no board, a bad
-    selection, a refused commit); an abnormal optimizer stop comes back as
-    the report's `refusal`, with nothing committed.
+    selection, a selection that starts inside a clearance, which
+    `inside.InsideClearanceError` names in the run's frame, a refused
+    commit); an abnormal optimizer stop comes back as the report's
+    `refusal`, with nothing committed.
 
     `on_stage` hears each `Stage` as it begins, committing only when there
     is something to commit. `stop` is asked after reading and after
@@ -721,21 +728,25 @@ def _optimize(
         _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
     )
     started = monotonic()
-    run = optimize_chains(
-        layout.inputs,
-        options.params,
-        options.settings,
-        vias=_laid_out_vias(layout, built.via_inputs),
-        hole_clearance=read.clearances.hole,
-        hole_to_hole=read.clearances.hole_to_hole,
-        pairs=layout.sections,
-        clock=monotonic,
-        started=started,
-        static_vias=tuple(built.static.values()),
-        to_hold=_bent_too_tightly,
-        stop=stop,
-        on_progress=on_progress,
-    )
+    try:
+        run = optimize_chains(
+            layout.inputs,
+            options.params,
+            options.settings,
+            vias=_laid_out_vias(layout, built.via_inputs),
+            hole_clearance=read.clearances.hole,
+            hole_to_hole=read.clearances.hole_to_hole,
+            pairs=layout.sections,
+            clock=monotonic,
+            started=started,
+            static_vias=tuple(built.static.values()),
+            to_hold=_bent_too_tightly,
+            stop=stop,
+            on_progress=on_progress,
+            arc_chords=arc_chords(read.arcs),
+        )
+    except InsideClearanceError as e:
+        raise e.in_frame(read.frame) from None
     _log_gave_up(run.gave_up)
     elapsed = monotonic() - started
     return _Optimized(built, run, elapsed)
@@ -980,16 +991,17 @@ def _via_inputs(
             for via_id, standing in static.items()
             if pairs_with(m.via, grounded, standing)
         }
-        field, static_vias = split_via_obstacles(
-            layers,
-            m.via,
-            split,
-            moving=moving,
-            edge_clearance=clearances.edge,
-            hole_clearance=clearances.hole,
-            hole_to_hole=clearances.hole_to_hole,
-            zones=m.zones,
+        field, static_vias = _via_field(
+            layers, m.via, split, moving, clearances, m.zones
         )
+        rules_copper = None
+        if m.zones:
+            plain, plain_static = _via_field(
+                layers, m.via, split, moving, clearances, ()
+            )
+            rules_copper = (
+                plain if plain_static is None else CompositeField([plain, plain_static])
+            )
         inputs.append(
             ViaInput(
                 m.via,
@@ -1007,9 +1019,33 @@ def _via_inputs(
                 ),
                 ground=grounded,
                 static_vias=static_vias,
+                own_vias=own_net_vias(layers, m.via, moving=moving),
+                rules_copper=rules_copper,
             )
         )
     return inputs
+
+
+def _via_field(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    split: Collection[str],
+    moving: Collection[str],
+    clearances: Clearances,
+    zones: Sequence[ViaZone],
+) -> tuple[ObstacleField, Obstacles | None]:
+    """`via`'s field over `layers` and the vias of `split` apart, keeping
+    `zones`' clearance and margin (`obstacles.split_via_obstacles`)."""
+    return split_via_obstacles(
+        layers,
+        via,
+        split,
+        moving=moving,
+        edge_clearance=clearances.edge,
+        hole_clearance=clearances.hole,
+        hole_to_hole=clearances.hole_to_hole,
+        zones=zones,
+    )
 
 
 def _static_vias(

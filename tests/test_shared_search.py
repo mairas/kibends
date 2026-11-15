@@ -178,6 +178,7 @@ def _stitching(via_id: str, net: str, at: tuple[float, float]) -> ViaInput:
         FreeSpace(),
         scenarios.PAIR_CLEARANCE,
         ground=net.endswith("GND"),
+        own_vias=(),
     )
 
 

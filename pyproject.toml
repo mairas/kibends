@@ -65,8 +65,10 @@ cache-keys = [
 testpaths = ["tests"]
 # The baseline test runs its cases as scripts/record_baseline.py recorded them.
 pythonpath = ["scripts"]
-# Parallel by default; pass `-n 0` to run serially (e.g. for pdb).
-addopts = "-n auto"
+# Parallel by default; pass `-n 0` to run serially (e.g. for pdb). Idle
+# workers steal queued tests, which ends the run sooner than handing each
+# worker its share up front.
+addopts = "-n auto --dist worksteal"
 markers = [
     "slow: takes several seconds; deselect with -m 'not slow'",
     "fallback: reaches the fallback that moves a whole burst back on purpose",

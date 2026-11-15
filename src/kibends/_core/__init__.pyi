@@ -3,6 +3,7 @@
 
 import builtins
 import collections.abc
+import enum
 from kibends import bursts
 from kibends import energy
 import numpy
@@ -27,6 +28,8 @@ __all__ = [
     "FreeDistances",
     "INDEXED_EDGES",
     "INSIDE_TOLERANCE",
+    "Inside",
+    "InsideOf",
     "Integrand",
     "LINE",
     "Lookups",
@@ -459,6 +462,57 @@ class FreeDistances:
         """
 
 @typing.final
+class Inside:
+    r"""
+    A place where a problem's copper is inside a clearance
+    (`kibends_core::optimize::state::Inside`).
+    """
+    @property
+    def member(self) -> typing.Optional[builtins.int]:
+        r"""
+        The member whose copper is inside, None for a via.
+        """
+    @property
+    def via(self) -> typing.Optional[builtins.int]:
+        r"""
+        The via whose copper is inside, None for a member.
+        """
+    @property
+    def start(self) -> tuple[builtins.float, builtins.float]:
+        r"""
+        The member's vertex, `start` and `end` alike, or its edge; a via's
+        centre.
+        """
+    @property
+    def end(self) -> tuple[builtins.float, builtins.float]: ...
+    @property
+    def run_start(self) -> tuple[builtins.float, builtins.float]:
+        r"""
+        The member's copper the place stands for, from its first point to
+        its last along it: a vertex's run inside with the clear vertex on
+        either side, or the edge; a via's centre.
+        """
+    @property
+    def run_end(self) -> tuple[builtins.float, builtins.float]: ...
+    @property
+    def depth(self) -> builtins.float:
+        r"""
+        Its signed distance, mm, negative; NaN for an edge cutting into
+        static copper, which the field does not measure.
+        """
+    @property
+    def against(self) -> InsideOf:
+        r"""
+        What it is inside the clearance of.
+        """
+    @property
+    def other(self) -> typing.Optional[builtins.int]:
+        r"""
+        The member or via of `InsideOf.MEMBER` and `InsideOf.VIA`, else
+        None.
+        """
+
+@typing.final
 class Integrand:
     r"""
     A function of the distance to an obstacle: called with distances, it
@@ -604,6 +658,12 @@ class Obstacles:
     Signed distance to the nearest inflated obstacle, and segment checks:
     the board's items and its edge (`kibends_core::field::obstacles`).
     """
+    @property
+    def edge_inflation(self) -> typing.Optional[builtins.float]:
+        r"""
+        How far the board edge keeps from the copper's centreline, mm; None
+        without an outline.
+        """
     @property
     def static_edges(self) -> StaticEdges:
         r"""
@@ -874,6 +934,11 @@ class ProblemState:
         r"""
         Each moving via's free distance below `below` to each obstacle of
         the copper of other nets at `polylines` and `positions`.
+        """
+    def start_inside(self, tolerance: builtins.float) -> builtins.list[Inside]:
+        r"""
+        Where its inputs, the drawn copper, are inside a clearance by more
+        than `tolerance` (`kibends_core::optimize::state::Shared::insides`).
         """
     def layout(self, starts: typing.Sequence[numpy.typing.NDArray[numpy.float64]]) -> BurstLayout:
         r"""
@@ -1232,6 +1297,24 @@ class Zone:
     ordinals of the layers on which it reaches the via's ring.
     """
     def __new__(cls, clearance: builtins.float, margin: builtins.float, layers: typing.Sequence[builtins.int]) -> Zone: ...
+
+@typing.final
+class InsideOf(enum.Enum):
+    r"""
+    What a place is inside the clearance of
+    (`kibends_core::optimize::state::Against`).
+    """
+    STATIC = ...
+    r"""
+    Static copper, holes, keepouts or the board edge.
+    """
+    MEMBER = ...
+    VIA = ...
+    STOPS = ...
+    r"""
+    What only stops a via: where its zones do not connect it, or its
+    net's stops.
+    """
 
 def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""

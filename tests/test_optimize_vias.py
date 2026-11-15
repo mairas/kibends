@@ -27,6 +27,7 @@ from conftest import (
     first_check,
     neutral_distance,
     off_straight,
+    refused,
 )
 from distance_fields import BoolArray, Box, Disc, FloatArray, FreeSpace, Walls
 from scenarios import ViasScenario, selected
@@ -245,6 +246,7 @@ ZONE_SLACK = 0.05
 """How far inside its zone's margin the via starts, mm."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_via_pushed_out_of_a_clearance_stays_inside_its_zone() -> None:
     # The wall above the zone's edge pushes the via toward that edge.
     edge = scenarios.DETOUR_VIA[1] - ZONE_SLACK
@@ -407,6 +409,10 @@ def below_keepout(top: float, on: str = "B.Cu") -> ViasScenario:
     )
 
 
+KEEPOUT_DEPTH = 0.1
+"""How far above the via's centre a keepout below it reaches, mm."""
+
+
 class TestViaKeepout:
     def test_a_pull_toward_it_stops_at_its_edge(self) -> None:
         top = 1.5
@@ -421,15 +427,16 @@ class TestViaKeepout:
         assert edge - INSIDE_TOLERANCE <= via.position[1]
         assert via.position[1] <= edge + scenarios.PARAMS.standoff
 
-    def test_a_via_starting_inside_one_ends_outside_it(self) -> None:
-        top = scenarios.DETOUR_VIA[1] + 0.1
+    def test_a_via_starting_inside_one_is_refused(self) -> None:
+        top = scenarios.DETOUR_VIA[1] + KEEPOUT_DEPTH
 
-        result = run(below_keepout(top))
+        (violation,) = refused(lambda: run(below_keepout(top)))
 
-        (via,) = result.vias
-        edge = top + scenarios.VIA_DIAMETER / 2
-        assert edge - INSIDE_TOLERANCE <= via.position[1]
-        assert via.position[1] <= edge + scenarios.PARAMS.standoff
+        assert (violation.subject, violation.obstacle) == ("via v", "via keepout")
+        assert violation.at == scenarios.DETOUR_VIA
+        assert violation.depth == pytest.approx(
+            KEEPOUT_DEPTH + scenarios.VIA_DIAMETER / 2
+        )
 
 
 def test_a_move_cutting_an_edge_across_a_corner_is_not_taken() -> None:
@@ -699,7 +706,7 @@ class TestZoneClearanceToMembers:
 
     def test_two_vias_inside_one_s_zone_distance_move_apart(self) -> None:
         # 0.85 mm apart: more than the netclass distance, less than the
-        # zoned via's.
+        # zoned via's, which only the optimizer keeps: the run starts.
         lower = (5.0, -2.0)
         upper = (5.0, -2.0 + 0.85)
         level = scenarios.PAIR_LEVEL
@@ -776,6 +783,7 @@ PUSHING_DOWN = Disc(5.0, 3.9, 1.0)
 from above, so that it pushes the via toward the pinned chain."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_via_starting_inside_one_obstacle_is_checked_against_the_others() -> None:
     scenario = over_short_pinned()
     (given,) = scenario.vias
@@ -828,6 +836,7 @@ SIDEWAYS = (scenarios.DETOUR_VIA[0] - 0.1 - INTO_WALL, scenarios.DETOUR_VIA[1])
 """Into the wall's clearance, as deep inside the pinned chain's as before."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_burst_moves_back_a_via_newly_inside_one_obstacle_while_inside_another(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -929,6 +938,7 @@ BRANCH_IDS = ["same-net", "other-net", "other-layer"]
 @pytest.mark.parametrize(
     ("branch_net", "branch_layer", "back"), BRANCHES, ids=BRANCH_IDS
 )
+@pytest.mark.usefixtures("unrefused")
 def test_a_burst_judges_a_via_against_a_track_and_its_branch_as_one(
     monkeypatch: pytest.MonkeyPatch,
     log: list[str],
@@ -949,6 +959,7 @@ def test_a_burst_judges_a_via_against_a_track_and_its_branch_as_one(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_burst_moves_back_a_via_newly_inside_one_static_item_inside_another(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -990,6 +1001,7 @@ def stitching_inside(chain: ChainInput) -> ViasScenario:
                 (),
                 FreeSpace(),
                 scenarios.PAIR_CLEARANCE,
+                own_vias=(),
             ),
         ),
     )
@@ -1006,6 +1018,7 @@ def reverted_by(
     return revert.reverted
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_via_whose_ring_a_pinned_edge_newly_enters_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1062,6 +1075,7 @@ def across_and_beside() -> ViasScenario:
     )
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_an_edge_across_one_member_moved_into_another_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1080,6 +1094,7 @@ def test_an_edge_across_one_member_moved_into_another_moves_back(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_an_edge_slid_along_a_pinned_member_it_crosses_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1200,6 +1215,7 @@ def test_an_edge_slid_along_an_oblique_chain_inside_a_member_s_clearance_stays(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_member_edge_beside_the_nearest_moved_deeper_into_a_via_s_ring_stays(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1234,6 +1250,7 @@ def test_a_member_edge_beside_the_nearest_moved_deeper_into_a_via_s_ring_stays(
 @pytest.mark.parametrize(
     "away", [0.0, INSIDE_PINNED / 4], ids=["at-the-same-depth", "shallower"]
 )
+@pytest.mark.usefixtures("unrefused")
 def test_a_via_slid_along_inside_a_pinned_chain_s_clearance_stays(
     monkeypatch: pytest.MonkeyPatch, log: list[str], away: float
 ) -> None:
@@ -1264,6 +1281,7 @@ def test_a_via_slid_along_inside_a_pinned_chain_s_clearance_stays(
     assert not any(FALLBACK_WARNING in line for line in log)
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_member_edge_moved_deeper_into_a_via_s_ring_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1333,20 +1351,21 @@ BURIED_IN = Disc(5.0, 3.5, 1.0)
 """Static copper whose clearance the detour's via starts 0.5 mm deep in."""
 
 
-def test_a_via_starting_deep_in_its_clearance_moves_out_with_its_ends() -> None:
+def test_a_via_starting_deep_in_its_clearance_is_refused_where_it_stands() -> None:
     scenario = scenarios.via_detour()
     (given,) = scenario.vias
+    buried = replace(scenario, vias=(replace(given, field=BURIED_IN),))
 
-    result = run(replace(scenario, vias=(replace(given, field=BURIED_IN),)))
+    (violation,) = refused(lambda: run(buried))
 
-    (via,) = result.vias
-    top, bottom = (c.polyline for c in result.chains)
-    assert math.dist(via.position, (BURIED_IN.cx, BURIED_IN.cy)) >= (
-        BURIED_IN.radius - INSIDE_TOLERANCE
+    assert violation.subject == "via v"
+    assert violation.at == scenarios.DETOUR_VIA
+    assert violation.depth == pytest.approx(
+        BURIED_IN.radius - math.dist(scenarios.DETOUR_VIA, (BURIED_IN.cx, BURIED_IN.cy))
     )
-    assert tuple(top[-1]) == tuple(bottom[0]) == via.position
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_junction_at_a_via_starting_inside_its_clearance_moves_with_it() -> None:
     at = (5.0, 3.0)
 
@@ -1367,6 +1386,7 @@ def test_a_junction_at_a_via_starting_inside_its_clearance_moves_with_it() -> No
         (*ends, ChainEnd(3, False)),
         BURIED_IN,
         scenarios.PAIR_CLEARANCE,
+        own_vias=(),
     )
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE, [via])
@@ -1414,7 +1434,9 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
         scenarios.through_via("s", "G", (5.0, 6.0)),
         span=("In1.Cu", "In2.Cu"),
     )
-    stitching = ViaInput(buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE)
+    stitching = ViaInput(
+        buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE, own_vias=()
+    )
     scenario = replace(scenarios.via_detour(), vias=(stitching,))
     params = scenario.params
 
@@ -1499,6 +1521,7 @@ def grounded(via_id: str, at: tuple[float, float], net: str = "GND") -> ViaInput
         FreeSpace(),
         scenarios.PAIR_CLEARANCE,
         ground=True,
+        own_vias=(),
     )
 
 
@@ -1676,6 +1699,7 @@ class TestGradient:
             FreeSpace(),
             scenarios.PAIR_CLEARANCE,
             (ViaZone("h-plane", plane, 0.2, 0.0),),
+            own_vias=(),
         )
         vias = (
             inside,
@@ -1774,6 +1798,7 @@ def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScena
                 FreeSpace(),
                 scenarios.PAIR_CLEARANCE,
                 (zone,),
+                own_vias=(),
             )
             for k, y in enumerate(heights)
         ),
@@ -1997,13 +2022,13 @@ class TestStitchingVia:
         (via,) = result.vias
         assert via.position == pytest.approx((STITCH_X, start), abs=UNMOVED)
 
-    def test_one_starting_inside_its_clearance_backs_out_of_it(self) -> None:
+    def test_one_starting_inside_its_clearance_is_refused(self) -> None:
         start = scenarios.VIA_TO_CHAIN / 2
 
-        result = run(stitched(start, top=1.3))
+        (violation,) = refused(lambda: run(stitched(start, top=1.3)))
 
-        (via,) = result.vias
-        assert via.position[1] >= scenarios.VIA_TO_CHAIN - INSIDE_TOLERANCE
+        assert violation.subject == "via g0"
+        assert violation.depth == pytest.approx(scenarios.VIA_TO_CHAIN - start)
 
 
 def reference_via_energy(
@@ -2077,7 +2102,7 @@ def stitched_grid() -> ViasScenario:
     scenario = stitched(*heights, INSIDE_X_ABOVE, top=top)
     still = scenarios.through_via("u", "G", (STITCH_X + HOLES_APART + 0.005, 0.9))
     inside = scenarios.through_via("f", "H", (INSIDE_X, 0.2))
-    vias = [ViaInput(inside, (), FreeSpace(), scenarios.PAIR_CLEARANCE)]
+    vias = [ViaInput(inside, (), FreeSpace(), scenarios.PAIR_CLEARANCE, own_vias=())]
     for k, given in enumerate(scenario.vias):
         x = STITCH_X + (0.6 if k % 2 else 0.0)
         if given.via.position[1] == INSIDE_X_ABOVE:
@@ -2645,7 +2670,8 @@ ROUTE_RISE = 1.0
 def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
     """A route through a signal via amid a selected grid of GND stitching
     vias in a GND zone on both layers, which spread and creep once the
-    route has its shape."""
+    route has its shape; the grid leaves out the vias the drawn route's
+    clearance reaches."""
     size = (STITCHING_COUNT - 1) * STITCHING_PITCH
     region = box(-1.0, -1.0, size + 1.0, size + 1.0)
     zone = ViaZone("GND", dict.fromkeys(("F.Cu", "B.Cu"), region), 0.2, 0.0)
@@ -2655,11 +2681,13 @@ def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
     start = (-ROUTE_SPAN, middle - ROUTE_RISE)
     end = (size + ROUTE_SPAN, middle + ROUTE_RISE)
     chains = list(scenarios.route("S", at, start, end))
+    drawn = LineString([start, at, end])
     vias = [scenarios.joining(signal, 0)]
     for i in range(STITCHING_COUNT):
         for j in range(STITCHING_COUNT):
             where = (i * STITCHING_PITCH, j * STITCHING_PITCH)
-            if math.dist(where, at) > SIGNAL_KEEPOUT:
+            clear = drawn.distance(Point(where)) >= VIA_TO_CHAIN
+            if clear and math.dist(where, at) > SIGNAL_KEEPOUT:
                 via = scenarios.through_via(f"g{i}_{j}", "GND", where)
                 vias.append(
                     ViaInput(
@@ -2669,6 +2697,7 @@ def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
                         scenarios.PAIR_CLEARANCE,
                         zones=(zone,),
                         ground=True,
+                        own_vias=(),
                     )
                 )
     return chains, vias
