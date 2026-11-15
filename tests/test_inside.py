@@ -48,8 +48,9 @@ from kibends.obstacles import (
     split_via_obstacles,
 )
 from kibends.optimize import optimize_chains
+from kibends.pair_blocks import PairInput
 from kibends.results import RunResult, Termination
-from kibends.snapshot import Arc, LayerSnapshot, Pad, PadKind
+from kibends.snapshot import Arc, LayerSnapshot, Pad, PadKind, Via
 from kibends.vias import ViaInput
 
 SETTINGS = DEFAULT_SETTINGS
@@ -865,3 +866,127 @@ def test_a_via_beside_a_slot_of_another_net_starts() -> None:
     result = optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
 
     assert result.termination is not Termination.ABNORMAL
+
+
+def test_own_net_vias_are_the_still_vias_of_its_net_on_its_layers() -> None:
+    via = Via("v", "G", (0.0, 0.0), 0.6, 0.3, ("F.Cu", "In1.Cu"))
+    kept = scenarios.through_via("kept", "G", (2.0, 0.0))
+    other_net = scenarios.through_via("other", "H", (3.0, 0.0))
+    moving = scenarios.through_via("moving", "G", (4.0, 0.0))
+    below = Via("below", "G", (5.0, 0.0), 0.6, 0.3, ("B.Cu", "B.Cu"))
+    layers = [
+        replace(
+            layer_snapshot(FakeBoard(), "F.Cu"), vias=(via, kept, other_net, moving)
+        ),
+        replace(layer_snapshot(FakeBoard(), "B.Cu"), vias=(below,)),
+    ]
+
+    found = own_net_vias(layers, via, moving=frozenset({"moving"}))
+
+    assert [v.id for v in found] == ["kept"]
+
+
+def test_a_flat_inside_beside_an_arc_is_refused_where_the_arc_s_run_is_pinned() -> None:
+    # B's run inside holds its pinned end, so only A's run is judged: its
+    # one drawn edge is nearest B at the arc, whose chords are skipped; its
+    # samples reach the flat.
+    nm = round(NM_PER_MM)
+    arc = Arc("arc", (0, 0), (nm, nm // 5), (2 * nm, 0), nm // 5, "F.Cu", "B")
+    ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+    points = [(x / NM_PER_MM, y / NM_PER_MM) for x, y in ends]
+    b = selected("B", "B", FreeSpace(), (-4.0, 0.0), *points, (4.0, 0.0), (10.0, -3.0))
+    h = scenarios.PAIR_INFLATION - FLAT_DEPTH
+    a = selected("A", "A", FreeSpace(), (-5.0, h), (5.0, h))
+
+    found = refused(
+        lambda: optimize_chains(
+            [b, a], scenarios.PARAMS, SETTINGS, arc_chords=arc_chords([arc])
+        )
+    )
+
+    assert {v.subject for v in found} == {"A"}
+    assert max(v.depth for v in found) == pytest.approx(FLAT_DEPTH)
+
+
+def u_section(depth: float) -> PairInput:
+    """A section from a pinned start at the origin round a U back along
+    y = -depth to x = -7, where it is pinned again."""
+    return scenarios.coupled(
+        FreeSpace(), (0.0, 0.0), (3.0, 0.0), (3.0, -depth), (-7.0, -depth)
+    )
+
+
+START_ONLY = replace(SETTINGS, coarse_spacings=(), max_iterations=1)
+"""Settings for a test of whether a run starts, which need not optimize."""
+BESIDE_START = 0.3
+"""mm between a chain's pinned start and another chain's pinned end: inside
+their clearance."""
+ARC_DIP = 0.35
+"""mm an arc of the chain dips to from the other chain: inside their
+clearance."""
+
+
+def test_a_chain_inside_where_it_is_pinned_and_along_its_arc_starts() -> None:
+    # X's start and Y's end, both pinned, lie inside each other's clearance;
+    # further on X's arc dips inside Y's, where its chords are skipped.
+    # Judged along that run, not as its whole track, X starts.
+    nm = round(NM_PER_MM)
+    y = -BESIDE_START
+    bottom = y + ARC_DIP
+    arc = Arc(
+        "arc",
+        (4 * nm, 2 * nm),
+        (5 * nm, round(bottom * nm)),
+        (6 * nm, 2 * nm),
+        nm // 20,
+        "F.Cu",
+        "X",
+    )
+    ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
+    points = [(px / NM_PER_MM, py / NM_PER_MM) for px, py in ends]
+    x = selected("x", "X", FreeSpace(), (0.0, 0.0), (0.0, 2.0), *points, (10.0, 2.0))
+    other = selected("y", "Y", FreeSpace(), (0.0, y), (8.0, y))
+
+    result = optimize_chains(
+        [x, other], scenarios.PARAMS, START_ONLY, arc_chords=arc_chords([arc])
+    )
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+def test_a_via_beside_a_section_s_pinned_start_and_past_its_run_starts() -> None:
+    # As for the chain, a moving via inside the clearance of the section's
+    # pinned start, and past its run just beyond its tracks' clearance.
+    at = VIA_BEYOND - 0.125
+    section = u_section(at + VIA_BEYOND + NEAR)
+    via = ViaInput(
+        scenarios.through_via("v", "V", (0.0, -at)),
+        (),
+        FreeSpace(),
+        PAIR_CLEARANCE,
+        own_vias=(),
+    )
+
+    result = optimize_chains(
+        [], scenarios.PARAMS, START_ONLY, vias=[via], pairs=[section]
+    )
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+BETWEEN_GAP = 0.15
+"""mm between a chain's copper and each of two chains on either side of it:
+inside their clearance."""
+
+
+def test_a_run_inside_two_chains_names_both() -> None:
+    y = PAIR_WIDTH + BETWEEN_GAP
+    chains = [
+        selected("x", "X", FreeSpace(), (0.0, 0.0), (10.0, 0.0)),
+        selected("above", "A", FreeSpace(), (4.0, y), (6.0, y)),
+        selected("below", "B", FreeSpace(), (4.0, -y), (6.0, -y)),
+    ]
+
+    found = refused(lambda: optimize_chains(chains, scenarios.PARAMS, SETTINGS))
+
+    assert {v.obstacle for v in found if v.subject == "x"} == {"above", "below"}
