@@ -1070,6 +1070,36 @@ def test_a_chain_beside_an_unselected_arc_inside_a_pad_s_clearance_is_refused() 
     assert {v.obstacle for v in found} == {"pad q"}
 
 
+def tip_by_the_arc(inside: float) -> Callable[[], RunResult]:
+    """A straight chain's free tip `inside` the clearance of the unselected
+    arc, on its concave side at a chord's middle."""
+    snap = static_arc_layer()
+    radius = STATIC_RADIUS
+    angle = chord_middle(snap)
+    ux, uy = math.cos(angle), math.sin(angle)
+    keep = scenarios.PAIR_INFLATION + (STATIC_WIDTH - PAIR_WIDTH) / 2
+    tx = (radius - keep + inside) * ux
+    ty = (radius - keep + inside) * uy
+    field = build_obstacles(snap, "SIG", PAIR_WIDTH)
+    side = 2.0
+    chain = selected(
+        "chain",
+        "SIG",
+        field,
+        (tx - side * (ux - uy), ty - side * (uy + ux)),
+        (tx, ty),
+        (tx - side * (ux + uy), ty - side * (uy - ux)),
+    )
+    return lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS)
+
+
+def test_a_chain_at_clearance_inside_an_unselected_arc_starts() -> None:
+    # Its chords sit nearer the tip than the arc.
+    result = tip_by_the_arc(0.0)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
 def via_beside_slot_and(
     *, pads: Sequence[kbt.Pad] = (), shapes: Sequence[kbt.BoardRectangle] = ()
 ) -> Callable[[], RunResult]:
