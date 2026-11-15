@@ -12,7 +12,8 @@
 //! Its smooth distance is the smooth minimum over every edge of every
 //! obstacle, a chain or a via, less the vertex each two consecutive edges
 //! of one obstacle share (`pairs::smooth_of_pairs`): exact beside a
-//! straight run and outside a bend, smooth inside one.
+//! straight run and outside a bend, smooth inside one, where it reads
+//! nearer, by up to nearly τ·ln n near the centre of a curve of n edges.
 
 use std::sync::{Arc, OnceLock};
 

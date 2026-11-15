@@ -18,8 +18,13 @@
 //! the vertex two consecutive edges share (`field::pairs::smooth_of_pairs`),
 //! so a straight neighbour made of many edges reads as one, and so does the
 //! outside of a bend; inside a bend, where two edges are equally near, the
-//! distance has a slope, and reads at most τ·ln 2 nearer than it is. Two arms
-//! of one track, as in a U or a meander, read as two obstacles do. Static
+//! distance has a slope. It is never farther than the exact distance and
+//! nearer by at most τ·ln m, of the m edges within SMOOTH_REACH of the
+//! nearest: τ·ln 2 inside one bend, but nearly τ·ln n near the centre of a
+//! curve resampled into n edges, whose shared vertices lie hardly farther
+//! than the edges, some 10 µm for a half circle of 1 mm radius at 0.1 mm
+//! spacing. Two arms of one track, as in a U or a meander, read as two
+//! obstacles do. Static
 //! copper takes each obstacle's nearest edge alone, so the kink of the
 //! nearest-only distance remains inside its corners, between two arms of
 //! one obstacle, and on copper that one obstacle joins elsewhere. Every

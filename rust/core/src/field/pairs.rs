@@ -132,6 +132,13 @@ pub fn nearest_of_pairs(
 /// the vertex's term, and both are left out of the sum: the same sum, but
 /// beside a straight run of many segments one term instead of two per
 /// segment.
+///
+/// A vertex is no nearer than either of its segments, so the sum is at
+/// least its largest segment's term and the distance never farther than
+/// the exact one; it is nearer by at most τ·ln m, of the m segments that
+/// have a share. Inside one bend that is τ·ln 2, but near the centre of a
+/// curve resampled into n segments, whose vertices lie hardly farther than
+/// the segments and take little off, nearly τ·ln n.
 pub fn smooth_of_pairs(
     query: &[V2],
     point: &[usize],
@@ -581,6 +588,11 @@ mod tests {
     /// The smooth distance from `query` to one obstacle, the polyline
     /// through `vertices` inflated by `inflation`.
     fn to_polyline(query: V2, vertices: &[V2], inflation: f64) -> SmoothAnswer {
+        to_widened(query, vertices, &vec![inflation; vertices.len() - 1])
+    }
+
+    /// `to_polyline` with each edge inflated by its own of `inflations`.
+    fn to_widened(query: V2, vertices: &[V2], inflations: &[f64]) -> SmoothAnswer {
         let edges = vertices.len() - 1;
         let along: Vec<V2> = vertices.windows(2).map(|w| w[1] - w[0]).collect();
         smooth_of_pairs(
@@ -588,10 +600,26 @@ mod tests {
             &vec![0; edges],
             &vertices[..edges],
             &along,
-            &vec![inflation; edges],
+            inflations,
             &vec![LOOK; edges],
             &vec![0; edges],
         )
+    }
+
+    /// The exact distance from `query` to the polyline through `vertices`,
+    /// each edge inflated by its own of `inflations`.
+    fn exact(query: V2, vertices: &[V2], inflations: &[f64]) -> f64 {
+        vertices
+            .windows(2)
+            .zip(inflations)
+            .map(|(w, &inflation)| offset(query, w[0], w[1] - w[0]).hypot() - inflation)
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// How much nearer than the exact distance the smooth one reads at
+    /// `query`, with each edge inflated by its own of `inflations`.
+    fn nearer(query: V2, vertices: &[V2], inflations: &[f64]) -> f64 {
+        exact(query, vertices, inflations) - to_widened(query, vertices, inflations).distance[0]
     }
 
     #[test]
@@ -666,6 +694,23 @@ mod tests {
             &[0, 0],
         );
         assert_eq!(found.vertex, vec![false, false, true]);
+    }
+
+    #[test]
+    fn the_centre_of_a_resampled_curve_reads_at_most_tau_ln_n_nearer() {
+        // A half circle in edges of about 0.1 mm, whose vertices lie only
+        // s²/8R farther from the centre than its edges, so that they take
+        // little off and every edge has a share.
+        let radius = 1.0;
+        let edges = 31;
+        let arc: Vec<V2> = (0..=edges)
+            .map(|k| {
+                let angle = core::f64::consts::PI * k as f64 / edges as f64;
+                V2::new(radius * libm::cos(angle), radius * libm::sin(angle))
+            })
+            .collect();
+        let by = nearer(V2::new(0.0, 0.0), &arc, &vec![0.1; edges]);
+        assert!(by >= 0.0 && by <= SMOOTH_WIDTH * libm::log(edges as f64));
     }
 
     #[test]
