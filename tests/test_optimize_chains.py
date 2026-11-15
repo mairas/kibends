@@ -581,8 +581,9 @@ iterations, where the search would take four more trials."""
 
 TIMED_QUESTIONS = 2
 """The questions the run asks of the time limit before a clock that ticks a
-second a reading, from 0, passes a limit half a second beyond: the run reads
-it when setup begins and ends, then at each question."""
+second a reading, from 0, passes a limit half a second short of them: the
+run reads it when setup begins and ends, from when the limit counts, then at
+each question."""
 
 
 def test_a_time_limit_in_a_line_search_ends_the_burst_before_its_next_trial(
@@ -611,20 +612,35 @@ def test_a_time_limit_in_a_line_search_ends_the_burst_before_its_next_trial(
         assert length(chain.polyline) < chain.before.length
 
 
-def test_time_limit_counts_from_when_the_stage_started() -> None:
-    scenario = bumps()
-    limited = replace(ONE_SPACING, time_limit=5.0)
+SLOW_SETUP = 100.0
+"""Seconds a setup takes, far past a limit of STOPPED_AFTER seconds."""
+
+
+def test_time_limit_counts_from_when_optimizing_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.drape()
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+    read: list[float] = []
+
+    def slow_setup() -> float:
+        """A clock that reads 0 when setup begins, SLOW_SETUP when it has
+        ended, and then moves only as the energy is evaluated."""
+        evaluated = _core.statistics().evaluations - start
+        read.append(0.0 if not read else SLOW_SETUP + evaluated)
+        return read[-1]
+
+    limited = replace(ONE_SPACING, time_limit=float(STOPPED_AFTER))
 
     result = optimize_chains(
-        scenario.chains,
-        scenario.params,
-        limited,
-        clock=Ticking(now=10.0, step=0.0),
-        started=0.0,
+        scenario.chains, scenario.params, limited, clock=slow_setup, started=0.0
     )
 
     assert result.termination is Termination.TIME_LIMIT
-    assert result.iterations == 1
+    (burst,) = bursts
+    assert burst.cut
+    assert burst.evaluations == STOPPED_AFTER
 
 
 class Countdown:
@@ -700,7 +716,7 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     stop_at: int, first: Termination
 ) -> None:
     scenario = bumps()
-    limited = replace(ONE_SPACING, time_limit=TIMED_QUESTIONS + 0.5)
+    limited = replace(ONE_SPACING, time_limit=TIMED_QUESTIONS - 0.5)
     clock = Ticking()
 
     result = optimize_chains(
@@ -713,7 +729,7 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     )
 
     assert result.termination is first
-    assert clock.now > TIMED_QUESTIONS + 0.5
+    assert clock.now > TIMED_QUESTIONS - 0.5
 
 
 def test_a_stop_after_a_problem_gave_up_without_improving_is_abnormal(

@@ -221,7 +221,7 @@ def optimize_chains(
     and whose best states sum to no less energy than its inputs ends
     `Termination.ABNORMAL`, whatever stopped it. With a
     time limit in `settings`, the limit runs out once `clock` reads it or
-    more past `started`, by default when the run starts, and no problem owes
+    more past the end of setup, when optimizing starts, and no problem owes
     a burst at its level (`_core.OwingNotice`): one that has not
     settled and has run none at a level a handover took it to. So an owed
     burst runs past the limit, as a long one does, and the problems after
@@ -267,8 +267,9 @@ def optimize_chains(
     and at each hold what it put back. Each
     outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
-    passed since `started` or the last INFO line, and goes to `on_progress`
-    as a `Progress`. Each burst logs what it cost at DEBUG only
+    passed since optimizing started or the last INFO line, and goes to
+    `on_progress` as a `Progress`, its seconds counted from `started`, by
+    default when optimizing starts. Each burst logs what it cost at DEBUG only
     (`_burst_done`).
     """
     logger.info("Setting up the optimizer")
@@ -330,7 +331,7 @@ def optimize_chains(
     logger.info(_starting(moving, begun - set_up))
     origin = begun if started is None else started
     limit = settings.time_limit
-    deadline = None if limit is None else origin + limit
+    deadline = None if limit is None else begun + limit
 
     # Which of `stop` and the time limit answered true first, once one has.
     # Cast, as the checker would otherwise take it as None where `ended`
