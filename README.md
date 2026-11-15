@@ -339,7 +339,10 @@ kibends smooths it as straight chords, which sit inside the arc, and the
 check skips places along them, leaving the drawn arc to KiCad's DRC. Nor
 is an unselected arc, which kibends reads as its chords, nor a hole that is
 not round, such as a slot, which it reads as a circle of its long axis:
-KiCad's DRC judges them.
+KiCad's DRC judges them. Arcs of copper graphics and the board edge's arcs
+and circles are judged by their chords, though, so copper inside their
+bend at exactly its clearance may be refused by up to a chord's offset
+from the arc.
 What kibends keeps beyond those rules does not stop a run: a
 moving via inside a zone's clearance and margin, which it keeps so that
 the refill reconnects the via, moves out of it as the optimizer runs.
