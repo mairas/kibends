@@ -166,8 +166,9 @@ class Obstacle:
     axis: the start check leaves it to KiCad's DRC."""
     arc_centre: Point2 | None = None
     """For a track read from an arc, held as the arc's chords, the arc's
-    centre (`snapshot.Track.arc_centre`): the start check leaves it to
-    KiCad's DRC. None for any other obstacle."""
+    centre (`snapshot.Track.arc_centre`): the start check allows copper on
+    its concave side the arc's offset from the chord nearest it, as for a
+    selected arc. None for any other obstacle."""
 
 
 class Obstacles:
