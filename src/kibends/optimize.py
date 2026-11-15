@@ -238,7 +238,8 @@ def optimize_chains(
     besides the overrun of the bursts running when it runs out, owed ones
     included, and the holds. Should it run out in the outer iteration that
     reaches the iteration cap with some problem before the final level,
-    the cap ends the run.
+    the cap ends the run; after a hold the limit is still out, so the run
+    goes on as when it runs out, with no burst first.
     `stop`, asked whenever the time limit is, ends the running burst the
     same way and the run at once, `Termination.STOPPED`, if it answered
     true before the limit ran out. A run that `stop` or the iteration cap

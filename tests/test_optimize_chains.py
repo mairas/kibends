@@ -701,6 +701,20 @@ def test_a_stop_in_a_line_search_ends_the_burst_before_its_next_trial(
         assert length(chain.polyline) < chain.before.length
 
 
+def test_a_stop_before_a_step_s_burst_runs_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, COARSE, stop=lambda: True
+    )
+
+    assert bursts == []
+    assert result.termination is Termination.STOPPED
+
+
 @pytest.mark.parametrize(
     ("stop_at", "first"),
     [

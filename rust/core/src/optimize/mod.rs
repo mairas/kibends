@@ -70,7 +70,8 @@
 //! sooner beside them. The run converges when every problem has settled,
 //! none of them on abnormal bursts, and otherwise stops at the iteration
 //! cap or at the time limit, which ends the running burst before its next
-//! line-search trial, at its last accepted point (`burst`); that burst's
+//! line-search trial, at its last accepted point (`burst`), or a step
+//! before its burst (`state::State::step`); a cut burst's
 //! state goes through the checks and the
 //! guard as any, and it settles nothing. The run reports whether some
 //! problem owes a burst at its level (`Notice::Owing`,
@@ -307,6 +308,14 @@ pub trait Bursts<E> {
     ) -> Result<(Ran, Option<Round>), E>;
 }
 
+/// What the run asks whether to end: the caller's stop or time limit.
+pub type Expired<'a, E> = dyn FnMut() -> Result<bool, E> + 'a;
+
+/// Whether `expired`, if given, answers true.
+pub(crate) fn asked<E>(expired: &mut Option<&mut Expired<'_, E>>) -> Result<bool, E> {
+    expired.as_mut().map_or(Ok(false), |e| e())
+}
+
 /// How an `advance` ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -319,13 +328,14 @@ pub enum Outcome {
     /// before.
     GaveUp,
     IterationCap,
-    /// `expired` answered true after a burst.
+    /// `expired` answered true.
     TimeLimit,
 }
 
 /// Outer iterations of `problems` from `iteration` until `cap`, each giving
 /// every problem that has not settled one burst, until every problem has
-/// settled or `expired`, asked after each burst, answers true. `gave_up`
+/// settled or `expired` answers true, asked after each step and within it
+/// (`State::step`). `gave_up`
 /// says some problem was given up on before. After each outer iteration it
 /// reports its progress.
 pub fn advance<E: From<NotFinite>>(
@@ -333,7 +343,7 @@ pub fn advance<E: From<NotFinite>>(
     iteration: &mut u64,
     cap: u64,
     gave_up: bool,
-    mut expired: Option<&mut dyn FnMut() -> Result<bool, E>>,
+    mut expired: Option<&mut Expired<'_, E>>,
     bursts: &mut dyn Bursts<E>,
     report: &mut dyn FnMut(Notice) -> Result<(), E>,
 ) -> Result<Outcome, E> {
@@ -348,14 +358,15 @@ pub fn advance<E: From<NotFinite>>(
             if problems[n].settled {
                 continue;
             }
-            change = python_max(change, problems[n].step(n, bursts, report)?);
+            let stepped = problems[n].step(n, expired.as_deref_mut(), bursts, report)?;
+            if let Some(stepped) = stepped {
+                change = python_max(change, stepped);
+            }
             if owing_of(problems) != owing {
                 owing = !owing;
                 report(Notice::Owing { owing })?;
             }
-            if let Some(expired) = expired.as_mut()
-                && expired()?
-            {
+            if stepped.is_none() || asked(&mut expired)? {
                 out_of_time = true;
                 break;
             }

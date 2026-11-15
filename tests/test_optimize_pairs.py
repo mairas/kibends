@@ -997,7 +997,8 @@ def test_a_hold_after_the_cap_ended_a_timed_run_goes_on_as_after_a_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The limit runs out in the cap's one outer iteration, at the coarsest
-    # level: the cap ends the run, and each hold gives it another.
+    # level: the cap ends the run, and each hold gives it another outer
+    # iteration.
     scenario = two_tents()
     clock = BurstClock(monkeypatch)
     one_burst = 0.5
@@ -1018,8 +1019,10 @@ def test_a_hold_after_the_cap_ended_a_timed_run_goes_on_as_after_a_cap(
 
     assert result.termination is Termination.ITERATION_CAP
     assert result.before_final_spacing
-    # A burst after each hold, as the cap counts again from it.
-    assert asked_after == [1, 2, 3]
+    # No burst after a hold: the limit, run out with the cap, ends the
+    # run's next step before its burst, and the cap, one outer iteration
+    # from the hold, ends the run again.
+    assert asked_after == [1, 1, 1]
     assert_held_as_drawn(result, scenario)
 
 

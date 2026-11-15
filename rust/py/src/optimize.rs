@@ -972,7 +972,8 @@ impl Bursts<Failure> for PythonBursts<'_, '_> {
 
 /// Outer iterations of `problems` from `iteration` until `cap`, each giving
 /// every problem that has not settled one burst, until every problem has
-/// settled or `expired`, asked after each burst, answers true. Each burst
+/// settled or `expired` answers true, asked after each step and before
+/// its long parts (`kibends_core::optimize::state::State::step`). Each burst
 /// runs through `burst`, called with its objective, start, per-coordinate
 /// scale and check; `report` hears each notice as it comes. `gave_up` says
 /// some problem was given up on before. Returns how the run ended, as
