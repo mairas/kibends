@@ -793,7 +793,7 @@ def test_capped_runs_return_one_state_that_never_gets_worse(
     # may lengthen the route and raise the energy its samples give.
     energies: list[float] = []
     for cap in range(1, 5):
-        result = run(scenario, replace(COARSE, max_iterations=cap, coarse_spacings=()))
+        result = run(scenario, replace(ONE_SPACING, max_iterations=cap))
         a, b = (c.polyline for c in result.chains)
 
         assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE

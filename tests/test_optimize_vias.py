@@ -1596,17 +1596,16 @@ class TestGradient:
         value, gradient = objective(x)
         step = CENTRAL_STEP
         for direction in np.random.default_rng(0).normal(size=(3, len(x))):
-
-            def at(steps: int, direction: FloatArray = direction) -> float:
-                return objective(x + steps * step * direction)[0]
-
+            down2, down, up, up2 = (
+                objective(x + steps * step * direction)[0] for steps in (-2, -1, 1, 2)
+            )
             # One-sided differences of second order, as exact as the central
             # one, so that only a kink parts them.
-            ahead = (4 * at(1) - at(2) - 3 * value) / (2 * step)
-            behind = (3 * value - 4 * at(-1) + at(-2)) / (2 * step)
+            ahead = (4 * up - up2 - 3 * value) / (2 * step)
+            behind = (3 * value - 4 * down + down2) / (2 * step)
             assert ahead == pytest.approx(behind, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL)
             assert gradient @ direction == pytest.approx(
-                (at(1) - at(-1)) / (2 * step), rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
+                (up - down) / (2 * step), rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
             )
 
     @pytest.mark.parametrize("seed", [0, 1])
