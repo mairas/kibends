@@ -39,6 +39,7 @@ from conftest import (
 )
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
+from kipy.geometry import Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
@@ -441,6 +442,33 @@ class TestCopperOnLayer:
         assert tht.shape.area == pytest.approx((2 * PAD_HALF_SIZE) ** 2)
         assert back.shape is None
         assert back.drill == 0
+
+    def test_a_slot_reads_as_its_long_axis_and_not_round(self) -> None:
+        slot = kipy_pad(
+            "slot",
+            "GND",
+            2,
+            3,
+            layers=(BL.BL_F_Cu, BL.BL_B_Cu),
+            pad_type=PadType.PT_PTH,
+            drill=0.6,
+        )
+        slot.padstack.drill.diameter = Vector2.from_xy(nm(0.6), nm(1.7))
+        round_hole = kipy_pad(
+            "round",
+            "GND",
+            5,
+            5,
+            layers=(BL.BL_F_Cu, BL.BL_B_Cu),
+            pad_type=PadType.PT_PTH,
+            drill=0.8,
+        )
+
+        read_slot, read_round = snapshot(FakeBoard(pads=[slot, round_hole])).pads
+
+        assert read_slot.drill == pytest.approx(1.7)
+        assert read_slot.oval_drill
+        assert not read_round.oval_drill
 
     def test_pad_shapes_are_read_for_the_snapshot_layer(self) -> None:
         pads = [

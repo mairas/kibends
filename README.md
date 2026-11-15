@@ -336,7 +336,9 @@ a pad or via of its own net is no violation, nor is a stretch inside a
 clearance that holds a vertex that cannot move, nor copper within √2 nm
 of a clearance, as KiCad's grid rounds it. Nor is a selected arc checked:
 kibends smooths it as straight chords, which sit inside the arc, and the
-check skips places along them, leaving the drawn arc to KiCad's DRC.
+check skips places along them, leaving the drawn arc to KiCad's DRC. Nor
+is a hole that is not round, such as a slot: kibends reads it as a circle
+of its long axis, and leaves it to KiCad's DRC too.
 What kibends keeps beyond those rules does not stop a run: a
 moving via inside a zone's clearance and margin, which it keeps so that
 the refill reconnects the via, moves out of it as the optimizer runs.

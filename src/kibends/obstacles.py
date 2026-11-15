@@ -161,6 +161,9 @@ class Obstacle:
     """The net of the copper a plated hole is drilled through, its pad's or
     via's; None for an unplated hole, which keeps the hole clearance from
     copper of any net, and for any other obstacle."""
+    oval: bool = False
+    """Whether it is a hole that is not round, held as a circle of its long
+    axis: the start check leaves it to KiCad's DRC."""
 
 
 class Obstacles:
@@ -656,6 +659,7 @@ def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
                     inflation,
                     kind=ObstacleKind.HOLE,
                     owner=None if pad.kind is PadKind.NPTH else pad.net,
+                    oval=pad.oval_drill,
                 )
             case _Source.VIA_HOLE:
                 v = s.vias[index]

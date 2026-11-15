@@ -22,6 +22,7 @@ from distance_fields import FreeSpace
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType
 from scenarios import PAIR_CLEARANCE, PAIR_WIDTH, selected
+from shapely import affinity
 from shapely.geometry import Point, Polygon, box
 
 from kibends.bursts import DEFAULT_SETTINGS, INSIDE_TOLERANCE
@@ -44,10 +45,11 @@ from kibends.obstacles import (
     build_pair_obstacles,
     own_net_stops,
     own_net_vias,
+    split_via_obstacles,
 )
 from kibends.optimize import optimize_chains
 from kibends.results import RunResult, Termination
-from kibends.snapshot import Arc
+from kibends.snapshot import Arc, LayerSnapshot, Pad, PadKind
 from kibends.vias import ViaInput
 
 SETTINGS = DEFAULT_SETTINGS
@@ -781,5 +783,85 @@ def test_a_via_inside_hole_to_hole_of_its_net_s_pad_drill_is_refused() -> None:
 def test_a_via_overlapping_a_pad_of_its_net_starts() -> None:
     # The pad stops it moving onto the pad; no rule keeps it apart.
     result = via_over_its_pad(drilled=False)()
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+SLOT_LENGTH = 1.7
+"""mm, the long axis of a 0.6 mm wide plated slot, which the snapshot reads
+as a circle of it."""
+SLOT_PAD = affinity.scale(Point(0.0, 0.0).buffer(1.0), 0.5, 1.05)
+"""The slot's pad: copper 1.0 x 2.1 mm round it, long axis along y."""
+
+
+def slotted(net: str) -> tuple[LayerSnapshot, ...]:
+    """The layers of a through via, each holding a plated slot of `net` at
+    the origin."""
+    pad = Pad(
+        "p",
+        "J1:S1",
+        net,
+        PadKind.PTH,
+        (0.0, 0.0),
+        SLOT_LENGTH,
+        SLOT_PAD,
+        oval_drill=True,
+    )
+    return tuple(
+        replace(layer_snapshot(FakeBoard(), name), pads=(pad,))
+        for name in ("F.Cu", "B.Cu")
+    )
+
+
+SLOT_SIDE = 1.0
+"""mm from the slot's centre to a via's beside its narrow side: its hole
+0.55 mm from the slot's edge, inside hole-to-hole of the circle the slot
+reads as."""
+
+
+def test_a_via_beside_a_slot_of_its_net_starts() -> None:
+    # The start check leaves a hole that is not round to KiCad's DRC.
+    layers = slotted("G")
+    via = scenarios.through_via("v", "G", (SLOT_SIDE, 0.0))
+    given = ViaInput(
+        via,
+        (),
+        FreeSpace(),
+        PAIR_CLEARANCE,
+        own_net=own_net_stops(layers, via),
+        own_vias=own_net_vias(layers, via),
+    )
+
+    result = optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+def test_a_chain_beside_a_slot_of_another_net_starts() -> None:
+    # Clear of the slot's copper, inside the hole clearance of the circle
+    # it reads as.
+    (snap, _) = slotted("GND")
+    field = build_obstacles(snap, "SIG", PAIR_WIDTH)
+    x = 0.5 + PAIR_CLEARANCE + PAIR_WIDTH / 2 + 0.1
+    chain = selected("chain", "SIG", field, (x, -5.0), (x, 5.0))
+
+    result = optimize_chains([chain], scenarios.PARAMS, SETTINGS)
+
+    assert result.termination is not Termination.ABNORMAL
+
+
+SLOT_CLEAR = 0.05
+"""mm a via beside another net's slot stands beyond SLOT_SIDE: its ring
+clear of the slot's copper, inside the hole clearance of the circle the
+slot reads as."""
+
+
+def test_a_via_beside_a_slot_of_another_net_starts() -> None:
+    layers = slotted("GND")
+    via = scenarios.through_via("v", "S", (SLOT_SIDE + SLOT_CLEAR, 0.0))
+    field, _ = split_via_obstacles(layers, via, frozenset())
+    given = ViaInput(via, (), field, PAIR_CLEARANCE, own_vias=())
+
+    result = optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
 
     assert result.termination is not Termination.ABNORMAL

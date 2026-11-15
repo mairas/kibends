@@ -33,8 +33,11 @@ which sit inside the arc by up to their sagitta, about 1 µm on a 1 mm
 radius: nearer than the arc to copper on its concave side. The start check
 does not judge them: a place whose nearest edge is an arc chord is skipped,
 neither judged nor refused (`ArcChords`), and KiCad's DRC judges the drawn
-arc. Nor is a place refused that is inside by no more than KiCad's grid
-rounds copper at exactly a clearance (`START_TOLERANCE`).
+arc. So is a hole that is not round, such as a plated slot, which the
+fields hold as a circle of its long axis (`Obstacle.oval`): neither the
+copper beside it nor a via of its net is judged against it. Nor is a place
+refused that is inside by no more than KiCad's grid rounds copper at
+exactly a clearance (`START_TOLERANCE`).
 
 `optimize.optimize_chains` raises `InsideClearanceError` naming each place
 (`Violation`); `run.run_smooth` gives it the run's frame, in which its
@@ -464,7 +467,7 @@ def _via_and_stops(
     worst: tuple[float, str] | None = None
     for static in _statics(via.own_net):
         for item in static.items:
-            if item.kind is not ObstacleKind.HOLE:
+            if item.kind is not ObstacleKind.HOLE or item.oval:
                 continue
             depth = item.inflation - float(item.geometry.distance(centre))
             if worst is None or depth > worst[0]:
@@ -499,6 +502,24 @@ def _via_and_static(via: ViaInput) -> Violation | None:
         return None
     statics = _statics(field)
     found = _nearest(statics, centre)
+    if found is not None and found[0].oval and -found[1] >= depth - START_TOLERANCE:
+        # A hole that is not round explains the depth: judge what else
+        # there is.
+        rounds = [
+            _Static(
+                tuple(i for i in s.items if not i.oval),
+                np.array([i.geometry for i in s.items if not i.oval], dtype=object),
+            )
+            for s in statics
+        ]
+        rounds = [s for s in rounds if s.items]
+        found = _nearest(rounds, centre)
+        depth = max(
+            -found[1] if found is not None else -math.inf,
+            _edge_depth_at(field, via.via.position),
+        )
+        if depth <= START_TOLERANCE:
+            return None
     obstacle = _unnamed(field, statics)
     required: float | None = None
     if found is not None and found[1] < -START_TOLERANCE:
@@ -507,6 +528,19 @@ def _via_and_static(via: ViaInput) -> Violation | None:
         if item.net is not None:
             required = item.inflation - via.via.diameter / 2 - item.extent
     return Violation(_via_name(via.via), obstacle, via.via.position, depth, required)
+
+
+def _edge_depth_at(field: ObstacleField | None, at: Point2) -> float:
+    """How deep `at` is inside the clearance of the board edges of
+    `field`'s parts; -inf where it has none."""
+    if isinstance(field, CompositeField):
+        return max((_edge_depth_at(f, at) for f in field.fields), default=-math.inf)
+    if not isinstance(field, Obstacles) or field.edge is None:
+        return -math.inf
+    outline, inflation = field.edge
+    distance = float(outline.boundary.distance(Point(at)))
+    inside = bool(outline.contains(Point(at)))
+    return inflation - distance if inside else inflation + distance
 
 
 def _two_members(
@@ -666,7 +700,7 @@ def _insides(
         depths = keeps - _distances(static, copper)
         for k in np.flatnonzero(depths > START_TOLERANCE):
             item = static.items[int(k)]
-            if own_net_skipped and _same_net(item, track):
+            if item.oval or (own_net_skipped and _same_net(item, track)):
                 continue
             required = (
                 None

@@ -121,6 +121,9 @@ class Pad:
     drill: float
     shape: BaseGeometry | None
     clearance_override: float | None = None
+    oval_drill: bool = False
+    """Whether its drill is not round, which `drill` reads as a circle of
+    its long axis."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -909,6 +912,7 @@ def _read_pads(
                 drill=max(drill.x, drill.y) / NM_PER_MM,
                 shape=None,
                 clearance_override=override,
+                oval_drill=drill.x != drill.y,
             )
         )
     return tuple(out)
