@@ -466,11 +466,17 @@ pub fn nearest_edge(edges: &[(V2, V2)], p: V2) -> Option<(usize, f64)> {
 /// The vector to `p` from the nearest point of the segment from `start`
 /// along `along`.
 pub fn offset(p: V2, start: V2, along: V2) -> V2 {
+    foot(p, start, along).0
+}
+
+/// `offset`, and where along the segment its nearest point lies, from 0 at
+/// `start` to 1 at its end.
+pub fn foot(p: V2, start: V2, along: V2) -> (V2, f64) {
     let relative = p - start;
     let projection = relative.x * along.x + relative.y * along.y;
     let squared = along.x * along.x + along.y * along.y;
     let t = (projection / if squared > 0.0 { squared } else { 1.0 }).clamp(0.0, 1.0);
-    relative - t * along
+    (relative - t * along, t)
 }
 
 /// The distance between the segment from `a` along `ab` and the one from

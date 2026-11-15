@@ -336,9 +336,10 @@ mod tests {
         let above = [V2::new(0.0, 1.0), V2::new(2.0, 1.0)];
         let field = ChainField::from_polylines([(&below[..], 0.5, 0), (&above[..], 0.5, 1)]);
         let found = field.smooth_answers(&[V2::new(1.0, 0.0)], f64::INFINITY);
-        // Each chain's two halves, less the vertex they share at the point.
-        assert_eq!(found.share, vec![0.5, 0.5, -0.5, 0.5, 0.5, -0.5]);
-        assert_eq!(found.vertex, vec![false, false, true, false, false, true]);
+        // Of each chain's two halves, the first: the second's nearest point
+        // is the vertex they share, which cancels it.
+        assert_eq!(found.share, vec![0.5, 0.5]);
+        assert_eq!(found.vertex, vec![false, false]);
         assert!(found.gradient[0].hypot() < 1e-15);
     }
 
