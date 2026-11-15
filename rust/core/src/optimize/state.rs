@@ -2540,40 +2540,53 @@ mod tests {
         }
     }
 
+    /// The questions a started problem's step asks `expired` before its
+    /// burst: as it begins, after the layout, and before and after building
+    /// the check.
+    const PRELUDE_QUESTIONS: usize = 4;
+
     #[test]
     fn a_step_expired_before_its_burst_runs_none() {
-        let asked = std::cell::Cell::new(0);
-        let mut whole = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        let change = whole
-            .step(
-                0,
-                Some(&mut expiring(usize::MAX, &asked)),
-                &mut toward(0.5),
-                &mut |_| Ok(()),
-            )
-            .expect("finite");
-        assert!(change.is_some());
-        let questions = asked.get();
-        assert!(questions > 1, "{questions}");
-        for from in 1..=questions {
-            asked.set(0);
-            let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-            let mut bursts = toward(0.5);
-
-            let change = p
+        // An unstarted problem asks once more, after entering level 0.
+        for (started, questions) in [(false, PRELUDE_QUESTIONS + 1), (true, PRELUDE_QUESTIONS)] {
+            let fresh = || {
+                let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
+                if started {
+                    p.enter(0).expect("finite");
+                }
+                p
+            };
+            let asked = std::cell::Cell::new(0);
+            let change = fresh()
                 .step(
                     0,
-                    Some(&mut expiring(from, &asked)),
-                    &mut bursts,
+                    Some(&mut expiring(usize::MAX, &asked)),
+                    &mut toward(0.5),
                     &mut |_| Ok(()),
                 )
                 .expect("finite");
+            assert!(change.is_some());
+            assert_eq!(asked.get(), questions, "started: {started}");
+            for from in 1..=questions {
+                asked.set(0);
+                let mut p = fresh();
+                let mut bursts = toward(0.5);
 
-            assert_eq!(change, None, "from question {from}");
-            assert_eq!(asked.get(), from);
-            assert!(bursts.counts.is_empty());
-            assert!(!p.ran && !p.settled);
-            assert_eq!(p.now, p.best);
+                let change = p
+                    .step(
+                        0,
+                        Some(&mut expiring(from, &asked)),
+                        &mut bursts,
+                        &mut |_| Ok(()),
+                    )
+                    .expect("finite");
+
+                assert_eq!(change, None, "from question {from}");
+                assert_eq!(asked.get(), from);
+                assert!(bursts.counts.is_empty());
+                assert!(!p.ran && !p.settled);
+                assert_eq!(p.now, p.best);
+            }
         }
     }
 
