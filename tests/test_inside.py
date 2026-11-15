@@ -2,7 +2,7 @@
 clearance as drawn, naming each place (`inside`)."""
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import kipy.board_types as kbt
@@ -1068,3 +1068,57 @@ def test_a_chain_beside_an_unselected_arc_inside_a_pad_s_clearance_is_refused() 
     found = refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
 
     assert {v.obstacle for v in found} == {"pad q"}
+
+
+def via_beside_slot_and(
+    *, pads: Sequence[kbt.Pad] = (), shapes: Sequence[kbt.BoardRectangle] = ()
+) -> Callable[[], RunResult]:
+    """A via of S beside a slot of GND, inside the circle the slot reads as,
+    with `pads` and `shapes` on its layers."""
+    extra = layer_snapshot(FakeBoard(pads=list(pads), shapes=list(shapes)), "F.Cu")
+    layers = [
+        replace(extra, layer=slot.layer, pads=(*slot.pads, *extra.pads))
+        for slot in slotted("GND")
+    ]
+    via = scenarios.through_via("v", "S", (SLOT_SIDE + SLOT_CLEAR, 0.0))
+    field, _ = split_via_obstacles(layers, via, frozenset())
+    given = ViaInput(via, (), field, PAIR_CLEARANCE, own_vias=())
+    return lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+
+VIA_BESIDE_SLOT = SLOT_SIDE + SLOT_CLEAR
+"""Where the via beside the slot stands, mm along x."""
+
+
+def test_a_via_beside_a_slot_and_inside_a_pad_s_clearance_is_refused() -> None:
+    reach = scenarios.VIA_DIAMETER / 2 + PAIR_CLEARANCE + PAD_HALF_SIZE
+    pad = kipy_pad("q", "X", VIA_BESIDE_SLOT + reach - ROUND_INSIDE, 0.0)
+
+    (violation,) = refused(via_beside_slot_and(pads=[pad]))
+
+    assert violation.obstacle == "pad q"
+    assert violation.depth == pytest.approx(ROUND_INSIDE)
+
+
+def board_edge_beyond_the_via(gap: float) -> kbt.BoardRectangle:
+    """An outline whose edge stands `gap` beyond the edge clearance of the
+    via beside the slot."""
+    reach = scenarios.VIA_DIAMETER / 2 + EDGE_CLEARANCE
+    return kipy_rectangle(
+        (-10.0, -10.0), (VIA_BESIDE_SLOT + reach + gap, 10.0), layer=BL.BL_Edge_Cuts
+    )
+
+
+def test_a_via_beside_a_slot_and_inside_the_edge_s_clearance_is_refused() -> None:
+    (violation,) = refused(
+        via_beside_slot_and(shapes=[board_edge_beyond_the_via(-ROUND_INSIDE)])
+    )
+
+    assert violation.obstacle == "the board edge"
+    assert violation.depth == pytest.approx(ROUND_INSIDE)
+
+
+def test_a_via_beside_a_slot_and_clear_of_the_edge_starts() -> None:
+    result = via_beside_slot_and(shapes=[board_edge_beyond_the_via(ROUND_INSIDE)])()
+
+    assert result.termination is not Termination.ABNORMAL
