@@ -12,12 +12,14 @@
 //! Every field answers two questions. `signed_distance` is the exact
 //! distance to the nearest inflated obstacle, which every clearance
 //! judgement takes. `smooth_distance` is what the energy takes: the smooth
-//! minimum over the field's obstacles (`smooth::smooth_minimum`), each
-//! obstacle's own distance the exact one to the nearest of its parts. What
-//! one obstacle is depends on the field: in `Obstacles`, the items of one
-//! geometry, every connected run of centrelines of one inflation that meet
-//! end to end, and the board edge (`obstacles::obstacle_ids`); in a chain
-//! field, the edges its caller groups, a chain or a via.
+//! minimum (`smooth::smooth_minimum`). In `Obstacles` it is over the
+//! field's obstacles, each obstacle's own distance the exact one to the
+//! nearest of its parts; an obstacle is the items of one geometry, every
+//! connected run of centrelines of one inflation that meet end to end, or
+//! the board edge (`obstacles::obstacle_ids`). In a chain field it is over
+//! every edge, less the vertex two consecutive edges of one obstacle share,
+//! an obstacle being the edges its caller groups, a chain or a via
+//! (`pairs::smooth_of_pairs`).
 //!
 //! `Obstacles` answers `signed_distance` and every segment check item by
 //! item, and `smooth_distance` from its items as edges (`StaticEdges`): a

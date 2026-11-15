@@ -272,7 +272,13 @@ impl ViaSight {
             member: answering.iter().map(|&e| view.member[e]).collect(),
             vertex: answering.iter().map(|&e| view.vertex[e]).collect(),
             starts: answering.iter().map(|&e| view.a[e]).collect(),
-            ends: answering.iter().map(|&e| view.b[e]).collect(),
+            // A shared vertex as an edge of no length, which `pull_answers`
+            // pulls at its start alone.
+            ends: answering
+                .iter()
+                .zip(&found.vertex)
+                .map(|(&e, &shared)| if shared { view.a[e] } else { view.b[e] })
+                .collect(),
             share: found.share,
             direction: found.direction,
         }

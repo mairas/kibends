@@ -15,8 +15,8 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pyme
 
 use crate::arrays::{
     BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, Points, Polyline, check_count, check_rows,
-    floats, indices, invalid, masks_of, not_finite, optional_indices, points_of, polylines_of,
-    refs, vectors, vectors_list,
+    flags, floats, indices, invalid, masks_of, not_finite, optional_indices, points_of,
+    polylines_of, refs, vectors, vectors_list,
 };
 use crate::energy::Params;
 
@@ -369,8 +369,9 @@ impl EdgesClear {
 }
 
 /// The smooth distance at each point and its gradient, and what answers
-/// it: per obstacle that has a share at a point, the point, the piece
-/// nearest it of that obstacle, its share and its unit gradient.
+/// it: per piece that has a share at a point, the point, the piece, its
+/// share, its unit gradient, and whether it is the piece's first vertex
+/// alone, which it shares with the piece before it.
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct SmoothAnswer {
@@ -408,6 +409,11 @@ impl SmoothAnswer {
     #[getter]
     fn direction<'py>(&self, py: Python<'py>) -> PyResult<Points<'py>> {
         vectors(py, &self.inner.direction)
+    }
+
+    #[getter]
+    fn vertex<'py>(&self, py: Python<'py>) -> Flags<'py> {
+        flags(py, &self.inner.vertex)
     }
 }
 

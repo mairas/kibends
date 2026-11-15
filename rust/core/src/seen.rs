@@ -454,6 +454,7 @@ impl Seen {
             found.edge.extend(part.edge.iter().map(|e| e + pairs.start));
             found.share.extend(part.share);
             found.direction.extend(part.direction);
+            found.vertex.extend(part.vertex);
         }
         found
     }
@@ -536,6 +537,7 @@ impl Seen {
                         .collect(),
                     share: found.share[low..high].to_vec(),
                     direction: found.direction[low..high].to_vec(),
+                    vertex: found.vertex[low..high].to_vec(),
                 };
             }
         }

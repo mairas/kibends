@@ -359,13 +359,15 @@ class ChainField:
     def smooth_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
         r"""
         `signed_distance` as the energy takes it: the smooth minimum over
-        the obstacles of each one's nearest edge.
+        the edges, less the vertices consecutive edges share.
         """
-    def smooth_answers(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+    def smooth_answers(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.bool_]]:
         r"""
-        `smooth_distance`, and what answers it: per obstacle that has a
-        share at a point, the point, its nearest edge by index, its share
-        and its unit gradient.
+        `smooth_distance`, and what answers it: per edge that has a share at
+        a point, the point, the edge by index, its share, its unit gradient,
+        and whether it is the edge's first vertex alone, which it shares
+        with the edge before it (`kibends_core::field::pairs::
+        smooth_of_pairs`).
         """
     def segments_clear(self, starts: numpy.typing.NDArray[numpy.float64], ends: numpy.typing.NDArray[numpy.float64], tolerance: builtins.float = 0.0) -> numpy.typing.NDArray[numpy.bool_]:
         r"""
@@ -1086,8 +1088,9 @@ class Shapes:
 class SmoothAnswer:
     r"""
     The smooth distance at each point and its gradient, and what answers
-    it: per obstacle that has a share at a point, the point, the piece
-    nearest it of that obstacle, its share and its unit gradient.
+    it: per piece that has a share at a point, the point, the piece, its
+    share, its unit gradient, and whether it is the piece's first vertex
+    alone, which it shares with the piece before it.
     """
     @property
     def distance(self) -> numpy.typing.NDArray[numpy.float64]: ...
@@ -1101,6 +1104,8 @@ class SmoothAnswer:
     def share(self) -> numpy.typing.NDArray[numpy.float64]: ...
     @property
     def direction(self) -> numpy.typing.NDArray[numpy.float64]: ...
+    @property
+    def vertex(self) -> numpy.typing.NDArray[numpy.bool_]: ...
 
 @typing.final
 class StageNotice:

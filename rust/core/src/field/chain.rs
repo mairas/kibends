@@ -9,9 +9,10 @@
 //! those edges are measured over (point, edge) pairs (`pairs`), as the
 //! members' view of each other measures them for many members at once.
 //!
-//! Its smooth distance takes the edges of one obstacle, a chain or a via,
-//! as one: the nearest of them, then the smooth minimum over the obstacles
-//! (`pairs::smooth_of_pairs`).
+//! Its smooth distance is the smooth minimum over every edge of every
+//! obstacle, a chain or a via, less the vertex each two consecutive edges
+//! of one obstacle share (`pairs::smooth_of_pairs`): exact beside a
+//! straight run and outside a bend, smooth inside one.
 
 use std::sync::{Arc, OnceLock};
 
@@ -223,7 +224,7 @@ impl Field for ChainField {
     }
 
     /// `signed_distance` as the energy takes it: the smooth minimum over
-    /// the obstacles of each one's nearest edge.
+    /// the edges, less the vertices consecutive edges share.
     fn smooth_distance(&self, points: &[V2], reach: f64) -> (Vec<f64>, Vec<V2>) {
         let found = self.smooth_answers(points, reach);
         (found.distance, found.gradient)
@@ -335,8 +336,9 @@ mod tests {
         let above = [V2::new(0.0, 1.0), V2::new(2.0, 1.0)];
         let field = ChainField::from_polylines([(&below[..], 0.5, 0), (&above[..], 0.5, 1)]);
         let found = field.smooth_answers(&[V2::new(1.0, 0.0)], f64::INFINITY);
-        assert_eq!(found.share, vec![0.5, 0.5]);
-        assert_eq!(found.edge.len(), 2);
+        // Each chain's two halves, less the vertex they share at the point.
+        assert_eq!(found.share, vec![0.5, 0.5, -0.5, 0.5, 0.5, -0.5]);
+        assert_eq!(found.vertex, vec![false, false, true, false, false, true]);
         assert!(found.gradient[0].hypot() < 1e-15);
     }
 

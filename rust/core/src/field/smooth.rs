@@ -4,7 +4,10 @@
 //! Where n obstacles are equally near, the smooth minimum sees the point
 //! τ·ln n nearer than it is, τ = SMOOTH_WIDTH. Obstacles farther than the
 //! nearest by more than SMOOTH_REACH have no share, so that a search can
-//! leave them out and give the same.
+//! leave them out and give the same. A term may be taken off the sum, its
+//! share negative, where it is the part two others share
+//! (`signed_smooth_minimum`), as a vertex is of the two edges that meet at
+//! it.
 
 use crate::geometry::V2;
 use crate::numeric::minimum;
@@ -27,6 +30,19 @@ pub fn smooth_reach(reach: f64) -> f64 {
 /// the sum, the shares of a point summing to 1. A point with one obstacle
 /// gets its distance and a share of 1.
 pub fn smooth_minimum(point: &[usize], distance: &[f64], count: usize) -> (Vec<f64>, Vec<f64>) {
+    signed_smooth_minimum(point, distance, &vec![false; point.len()], count)
+}
+
+/// `smooth_minimum` with the terms `taken_off` marks subtracted from the
+/// sum and their shares negative: each the part two others share, so that
+/// it counts once. Each must be no nearer its point than either of the two,
+/// which keeps the sum at least its largest term.
+pub fn signed_smooth_minimum(
+    point: &[usize],
+    distance: &[f64],
+    taken_off: &[bool],
+    count: usize,
+) -> (Vec<f64>, Vec<f64>) {
     let mut lowest = vec![f64::INFINITY; count];
     for (&p, &d) in point.iter().zip(distance) {
         lowest[p] = lowest[p].min(d);
@@ -40,13 +56,15 @@ pub fn smooth_minimum(point: &[usize], distance: &[f64], count: usize) -> (Vec<f
     let mut share: Vec<f64> = point
         .iter()
         .zip(distance)
-        .map(|(&p, &d)| {
+        .zip(taken_off)
+        .map(|((&p, &d), &off)| {
             let above = d - base[p];
-            if above <= SMOOTH_REACH {
+            let term = if above <= SMOOTH_REACH {
                 libm::exp(-above / SMOOTH_WIDTH)
             } else {
                 0.0
-            }
+            };
+            if off { -term } else { term }
         })
         .collect();
     let mut total = vec![0.0; count];
