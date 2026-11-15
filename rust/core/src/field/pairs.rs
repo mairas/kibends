@@ -679,21 +679,28 @@ mod tests {
     }
 
     #[test]
-    fn a_vertex_inflated_less_than_the_segment_nearest_at_it_stays() {
-        // A width change: the wider segment's term is nearer than the
-        // vertex's, so the two do not cancel.
+    fn at_a_width_change_the_distance_is_no_farther_and_within_tau_ln_2() {
+        // Beside the vertex of a straight run, with both feet on it or one
+        // inside an edge, and around a bend, inside with both feet inside
+        // its edges and outside with both on its vertex; narrower first and
+        // wider first, so that each cancellation, and its refusal where the
+        // segment is inflated more than the vertex, is taken.
         let straight = [V2::new(-1.0, 0.0), V2::new(0.0, 0.0), V2::new(1.0, 0.0)];
-        let along = [V2::new(1.0, 0.0), V2::new(1.0, 0.0)];
-        let found = smooth_of_pairs(
-            &[V2::new(-0.01, 1.0)],
-            &[0, 0],
-            &straight[..2],
-            &along,
-            &[0.25, 0.26],
-            &[LOOK, LOOK],
-            &[0, 0],
-        );
-        assert_eq!(found.vertex, vec![false, false, true]);
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let beside = [V2::new(0.0, 1.0), V2::new(-0.01, 1.0), V2::new(0.01, 1.0)];
+        let around = [V2::new(0.0, 2.0), V2::new(0.05, 2.0), V2::new(0.0, 0.0)];
+        let two = SMOOTH_WIDTH * libm::log(2.0);
+        for inflations in [[0.25, 0.26], [0.26, 0.25]] {
+            for (vertices, points) in [(&straight, &beside), (&bend, &around)] {
+                for &query in points {
+                    let by = nearer(query, vertices, &inflations);
+                    assert!(
+                        by >= -ROUND_OFF && by <= two,
+                        "{query:?} {inflations:?} {by}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
