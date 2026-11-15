@@ -142,6 +142,7 @@ def beside_section(off: float) -> Callable[[], RunResult]:
         (),
         FreeSpace(),
         PAIR_CLEARANCE,
+        own_vias=(),
     )
     return lambda: optimize_chains(
         [], scenarios.PARAMS, SETTINGS, vias=[via], pairs=[section]
@@ -232,7 +233,11 @@ def two_vias(net: str, apart: float) -> Callable[[], RunResult]:
     """A stitching via of net A and one of `net`, `apart` between centres."""
     vias = [
         ViaInput(
-            scenarios.through_via(name, of, (5.0, y)), (), FreeSpace(), PAIR_CLEARANCE
+            scenarios.through_via(name, of, (5.0, y)),
+            (),
+            FreeSpace(),
+            PAIR_CLEARANCE,
+            own_vias=(),
         )
         for name, of, y in (("a", "A", 0.0), ("b", net, apart))
     ]
@@ -759,7 +764,9 @@ def via_over_its_pad(*, drilled: bool) -> Callable[[], RunResult]:
     )
     items = [stop, hole] if drilled else [stop]
     via = scenarios.through_via("v", "G", (x, 0.0))
-    given = ViaInput(via, (), FreeSpace(), PAIR_CLEARANCE, own_net=Obstacles(items))
+    given = ViaInput(
+        via, (), FreeSpace(), PAIR_CLEARANCE, own_net=Obstacles(items), own_vias=()
+    )
     return lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
 
 

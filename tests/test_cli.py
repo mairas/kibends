@@ -3011,6 +3011,13 @@ def moving_via_board(*, refuse_create_vias: bool = False) -> CommitBoard:
     )
 
 
+STILL_APART = 0.52
+"""mm from the via at VIA to an unselected 0.4 mm via of its net: their rings
+apart, so that it does not hold the via, their 0.3 mm holes 0.03 mm inside
+hole-to-hole."""
+STILL_DIAMETER = 0.4
+
+
 PUSHED_STITCHING = (2.0, 3.0)
 
 
@@ -3698,6 +3705,22 @@ class TestMovingVias:
             f"via v is {ring:.3f} mm from pad p at {where} mm, "
             f"{CLEARANCE:.3f} mm required"
         ) in message
+
+    def test_a_via_inside_hole_to_hole_of_a_still_via_of_its_net_is_refused(
+        self, connect: Connector, log: list[str]
+    ) -> None:
+        # An unselected via of SIG beside the moving one, their holes closer
+        # than hole-to-hole; their copper, of one net, may touch.
+        board = moving_via_board()
+        x, y = VIA
+        still = kipy_via("u", "SIG", x, y + STILL_APART, diameter=STILL_DIAMETER)
+        board.vias = [*board.vias, still]
+        connect.to(board)
+
+        message = exit_message(log)
+
+        assert board.calls == []
+        assert "via v is 0.030 mm inside its clearance of via u" in message
 
     def test_reads_each_board_wide_kind_once(self, connect: Connector) -> None:
         board = connect.to(moving_via_board())

@@ -708,7 +708,12 @@ def crossed_grid(count: int, pitch: float, routes: int) -> ViasScenario:
             if clear and all(math.dist(at, s) > SIGNAL_KEEPOUT for s in signals):
                 via = scenarios.through_via(f"g{i}_{j}", "GND", at)
                 stitching = ViaInput(
-                    via, (), FreeSpace(), scenarios.PAIR_CLEARANCE, zones=(zone,)
+                    via,
+                    (),
+                    FreeSpace(),
+                    scenarios.PAIR_CLEARANCE,
+                    zones=(zone,),
+                    own_vias=(),
                 )
                 vias.append(replace(stitching, ground=bool(params.attraction)))
     return ViasScenario("crossed", tuple(chains), tuple(vias), params)

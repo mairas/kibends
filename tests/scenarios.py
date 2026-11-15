@@ -436,6 +436,7 @@ def joining(via: Via, first: int, field: ObstacleField | None = None) -> ViaInpu
         (ChainEnd(first, True), ChainEnd(first + 1, False)),
         field or FreeSpace(),
         PAIR_CLEARANCE,
+        own_vias=(),
     )
 
 
@@ -486,6 +487,7 @@ def via_fermat() -> ViasScenario:
                 (ChainEnd(0, True), ChainEnd(1, False), ChainEnd(2, False)),
                 FreeSpace(),
                 PAIR_CLEARANCE,
+                own_vias=(),
             ),
         ),
     )

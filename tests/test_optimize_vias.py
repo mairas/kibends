@@ -1001,6 +1001,7 @@ def stitching_inside(chain: ChainInput) -> ViasScenario:
                 (),
                 FreeSpace(),
                 scenarios.PAIR_CLEARANCE,
+                own_vias=(),
             ),
         ),
     )
@@ -1385,6 +1386,7 @@ def test_a_junction_at_a_via_starting_inside_its_clearance_moves_with_it() -> No
         (*ends, ChainEnd(3, False)),
         BURIED_IN,
         scenarios.PAIR_CLEARANCE,
+        own_vias=(),
     )
 
     result = optimize_chains(chains, scenarios.PARAMS, COARSE, [via])
@@ -1432,7 +1434,9 @@ def test_layers_without_a_moving_via_stay_independent() -> None:
         scenarios.through_via("s", "G", (5.0, 6.0)),
         span=("In1.Cu", "In2.Cu"),
     )
-    stitching = ViaInput(buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE)
+    stitching = ViaInput(
+        buried_via, (), FreeSpace(), scenarios.PAIR_CLEARANCE, own_vias=()
+    )
     scenario = replace(scenarios.via_detour(), vias=(stitching,))
     params = scenario.params
 
@@ -1517,6 +1521,7 @@ def grounded(via_id: str, at: tuple[float, float], net: str = "GND") -> ViaInput
         FreeSpace(),
         scenarios.PAIR_CLEARANCE,
         ground=True,
+        own_vias=(),
     )
 
 
@@ -1694,6 +1699,7 @@ class TestGradient:
             FreeSpace(),
             scenarios.PAIR_CLEARANCE,
             (ViaZone("h-plane", plane, 0.2, 0.0),),
+            own_vias=(),
         )
         vias = (
             inside,
@@ -1792,6 +1798,7 @@ def stitched(*heights: float, top: float, nets: Sequence[str] = ()) -> ViasScena
                 FreeSpace(),
                 scenarios.PAIR_CLEARANCE,
                 (zone,),
+                own_vias=(),
             )
             for k, y in enumerate(heights)
         ),
@@ -2095,7 +2102,7 @@ def stitched_grid() -> ViasScenario:
     scenario = stitched(*heights, INSIDE_X_ABOVE, top=top)
     still = scenarios.through_via("u", "G", (STITCH_X + HOLES_APART + 0.005, 0.9))
     inside = scenarios.through_via("f", "H", (INSIDE_X, 0.2))
-    vias = [ViaInput(inside, (), FreeSpace(), scenarios.PAIR_CLEARANCE)]
+    vias = [ViaInput(inside, (), FreeSpace(), scenarios.PAIR_CLEARANCE, own_vias=())]
     for k, given in enumerate(scenario.vias):
         x = STITCH_X + (0.6 if k % 2 else 0.0)
         if given.via.position[1] == INSIDE_X_ABOVE:
@@ -2690,6 +2697,7 @@ def crossed_stitching() -> tuple[list[ChainInput], list[ViaInput]]:
                         scenarios.PAIR_CLEARANCE,
                         zones=(zone,),
                         ground=True,
+                        own_vias=(),
                     )
                 )
     return chains, vias
