@@ -373,9 +373,9 @@ class ChainField:
 
     The same answers as `Obstacles` with each centreline as an obstacle,
     except that zero-length edges and zero-length query segments count like
-    any other. Its smooth distance takes the edges of one obstacle, a chain
-    or a via, as one: the nearest of them, then the smooth minimum over the
-    obstacles.
+    any other. Its smooth distance is the smooth minimum over every edge of
+    every obstacle, a chain or a via, less the vertex each two consecutive
+    edges of one obstacle share.
     """
 
     def __init__(
@@ -424,7 +424,7 @@ class ChainField:
         self, points: FloatArray, reach: float = math.inf
     ) -> tuple[FloatArray, FloatArray]:
         """`signed_distance` as the energy takes it: the smooth minimum over
-        the obstacles of each one's nearest edge."""
+        the edges, less the vertices consecutive edges share."""
         return self.core.smooth_distance(_points(points), reach)
 
     def segments_clear(

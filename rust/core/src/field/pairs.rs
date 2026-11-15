@@ -2,13 +2,17 @@
 //! answered by, each segment inflated by its own amount and part of an
 //! obstacle. A chain field, the members' view of each other and the moving
 //! vias' view search for their pairs and measure them here, all at once.
+//! Their smooth distance blends every segment, less the vertex two
+//! consecutive segments of one obstacle share (`smooth_of_pairs`), so that
+//! it has no kink where a point is equally near two segments of one
+//! obstacle.
 
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
 
-use super::smooth::{SMOOTH_REACH, smooth_minimum, weighted_sum};
+use super::smooth::{SMOOTH_REACH, signed_smooth_minimum, smooth_minimum, weighted_sum};
 use super::{DEGENERATE_DISTANCE, ROUND_OFF};
-use crate::geometry::{FALLBACK_DIRECTION, V2, offset, segment_gap};
+use crate::geometry::{FALLBACK_DIRECTION, V2, foot, offset, segment_gap};
 
 /// The nearest inflated segment at each point, and which pair answers it.
 #[derive(Debug, Default)]
@@ -20,9 +24,8 @@ pub struct NearestEdge {
 }
 
 /// The smooth distance at each point and its gradient, and what answers
-/// it: per obstacle that has a share at a point, the point, the pair
-/// nearest it of that obstacle, its share and its unit gradient, in the
-/// order of their points.
+/// it: per pair that has a share at a point, the point, the pair, its share
+/// and its unit gradient, in the order of their points.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SmoothAnswer {
     pub distance: Vec<f64>,
@@ -31,6 +34,10 @@ pub struct SmoothAnswer {
     pub edge: Vec<usize>,
     pub share: Vec<f64>,
     pub direction: Vec<V2>,
+    /// Whether the answer is the first vertex of its pair's segment alone,
+    /// which that segment shares with the one before it in its obstacle,
+    /// its share negative (`smooth_of_pairs`).
+    pub vertex: Vec<bool>,
 }
 
 impl SmoothAnswer {
@@ -108,10 +115,30 @@ pub fn nearest_of_pairs(
 }
 
 /// The smooth distance at each of `query` over (point, segment) pairs, as
-/// `nearest_of_pairs` takes them, pair k's segment part of obstacle[k]: of
-/// each obstacle the nearest segment to a point, of equal ones the first,
-/// then the smooth minimum over the obstacles. The pairs come in the order
-/// `obstacle_order` gives. The edge that answers is its pair's index.
+/// `nearest_of_pairs` takes them, pair k's segment part of obstacle[k]: the
+/// smooth minimum over every segment, less, where two consecutive segments
+/// of one obstacle join, the vertex they share, inflated by the lesser of
+/// their inflations. The pairs come in the order `obstacle_order` gives.
+/// The edge that answers is its pair's index, a shared vertex by the
+/// segment it starts.
+///
+/// Taking the vertex off makes an obstacle's sum the nearest segment's
+/// term wherever both segments' nearest point is that vertex, as outside a
+/// bend or beside a straight join, so that the distance there is exact.
+/// Where a point's nearest points lie inside two segments, as on the
+/// bisector inside a bend, the segments share the point and its distance
+/// has a slope, where the nearest segment's alone has a kink. A segment
+/// whose nearest point is the vertex, inflated as much as the vertex, has
+/// the vertex's term, and both are left out of the sum: the same sum, but
+/// beside a straight run of many segments one term instead of two per
+/// segment.
+///
+/// A vertex is no nearer than either of its segments, so the sum is at
+/// least its largest segment's term and the distance never farther than
+/// the exact one; it is nearer by at most τ·ln m, of the m segments that
+/// have a share. Inside one bend that is τ·ln 2, but near the centre of a
+/// curve resampled into n segments, whose vertices lie hardly farther than
+/// the segments and take little off, nearly τ·ln n.
 pub fn smooth_of_pairs(
     query: &[V2],
     point: &[usize],
@@ -125,9 +152,9 @@ pub fn smooth_of_pairs(
     if point.is_empty() {
         return SmoothAnswer::free(count);
     }
-    let offsets: Vec<V2> = (0..point.len())
-        .map(|k| offset(query[point[k]], starts[k], along[k]))
-        .collect();
+    let (offsets, along_at): (Vec<V2>, Vec<f64>) = (0..point.len())
+        .map(|k| foot(query[point[k]], starts[k], along[k]))
+        .unzip();
     let raw: Vec<f64> = offsets.iter().map(|o| o.hypot()).collect();
     let distance: Vec<f64> = (0..point.len())
         .map(|k| {
@@ -138,19 +165,93 @@ pub fn smooth_of_pairs(
             }
         })
         .collect();
-    let (best, smooth, share) = nearest_then_smooth(point, obstacle, &distance, count);
-    let at: Vec<usize> = best.iter().map(|&k| point[k]).collect();
-    let direction: Vec<V2> = best
-        .iter()
-        .map(|&k| unit_gradient(offsets[k], raw[k], along[k]))
-        .collect();
-    SmoothAnswer {
+    // A segment whose nearest point is the vertex it shares, inflated as
+    // much as the vertex, has the vertex's term, so the two cancel; each
+    // vertex cancels one segment at most, and each segment meets it at one
+    // end only.
+    let mut segment = vec![true; point.len()];
+    let mut shared = vec![false; point.len()];
+    for k in 1..point.len() {
+        let joins = distance[k] < f64::INFINITY
+            && point[k - 1] == point[k]
+            && obstacle[k - 1] == obstacle[k]
+            && distance[k - 1] < f64::INFINITY
+            && (starts[k - 1] + along[k - 1] - starts[k]).hypot() <= ROUND_OFF;
+        if !joins {
+            continue;
+        }
+        let vertex = inflations[k - 1].min(inflations[k]);
+        if along_at[k] == 0.0 && inflations[k] == vertex {
+            segment[k] = false;
+        } else if along_at[k - 1] == 1.0 && inflations[k - 1] == vertex && segment[k - 1] {
+            segment[k - 1] = false;
+        } else {
+            shared[k] = true;
+        }
+    }
+    let mut terms = Terms::default();
+    for k in 0..point.len() {
+        if distance[k] == f64::INFINITY {
+            continue;
+        }
+        if segment[k] {
+            terms.push(
+                point[k],
+                k,
+                distance[k],
+                unit_gradient(offsets[k], raw[k], along[k]),
+                false,
+            );
+        }
+        if shared[k] {
+            let from = query[point[k]] - starts[k];
+            let length = from.hypot();
+            terms.push(
+                point[k],
+                k,
+                length - inflations[k - 1].min(inflations[k]),
+                unit_gradient(from, length, along[k]),
+                true,
+            );
+        }
+    }
+    let (smooth, share) =
+        signed_smooth_minimum(&terms.point, &terms.distance, &terms.vertex, count);
+    let mut found = SmoothAnswer {
         distance: smooth,
-        gradient: weighted_sum(&at, &share, &direction, count),
-        point: at,
-        edge: best,
-        share,
-        direction,
+        gradient: weighted_sum(&terms.point, &share, &terms.direction, count),
+        ..SmoothAnswer::default()
+    };
+    for (n, &s) in share.iter().enumerate() {
+        if s != 0.0 {
+            found.point.push(terms.point[n]);
+            found.edge.push(terms.pair[n]);
+            found.share.push(s);
+            found.direction.push(terms.direction[n]);
+            found.vertex.push(terms.vertex[n]);
+        }
+    }
+    found
+}
+
+/// The terms of `smooth_of_pairs`' sums, segments and the vertices they
+/// share, each by its point and its pair.
+#[derive(Default)]
+struct Terms {
+    point: Vec<usize>,
+    pair: Vec<usize>,
+    distance: Vec<f64>,
+    direction: Vec<V2>,
+    vertex: Vec<bool>,
+}
+
+impl Terms {
+    fn push(&mut self, point: usize, pair: usize, distance: f64, direction: V2, vertex: bool) {
+        self.point.push(point);
+        self.pair.push(pair);
+        self.distance.push(distance);
+        self.direction.push(direction);
+        self.vertex.push(vertex);
     }
 }
 
@@ -449,6 +550,7 @@ pub fn near_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field::smooth::SMOOTH_WIDTH;
     use crate::testing::Random;
 
     #[test]
@@ -477,6 +579,145 @@ mod tests {
             unit_gradient(V2::default(), 0.0, V2::default()),
             FALLBACK_DIRECTION
         );
+    }
+
+    /// How far `to_polyline` looks from its point, mm: beyond every
+    /// polyline its tests take.
+    const LOOK: f64 = 10.0;
+
+    /// The smooth distance from `query` to one obstacle, the polyline
+    /// through `vertices` inflated by `inflation`.
+    fn to_polyline(query: V2, vertices: &[V2], inflation: f64) -> SmoothAnswer {
+        to_widened(query, vertices, &vec![inflation; vertices.len() - 1])
+    }
+
+    /// `to_polyline` with each edge inflated by its own of `inflations`.
+    fn to_widened(query: V2, vertices: &[V2], inflations: &[f64]) -> SmoothAnswer {
+        let edges = vertices.len() - 1;
+        let along: Vec<V2> = vertices.windows(2).map(|w| w[1] - w[0]).collect();
+        smooth_of_pairs(
+            &[query],
+            &vec![0; edges],
+            &vertices[..edges],
+            &along,
+            inflations,
+            &vec![LOOK; edges],
+            &vec![0; edges],
+        )
+    }
+
+    /// The exact distance from `query` to the polyline through `vertices`,
+    /// each edge inflated by its own of `inflations`.
+    fn exact(query: V2, vertices: &[V2], inflations: &[f64]) -> f64 {
+        vertices
+            .windows(2)
+            .zip(inflations)
+            .map(|(w, &inflation)| offset(query, w[0], w[1] - w[0]).hypot() - inflation)
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// How much nearer than the exact distance the smooth one reads at
+    /// `query`, with each edge inflated by its own of `inflations`.
+    fn nearer(query: V2, vertices: &[V2], inflations: &[f64]) -> f64 {
+        exact(query, vertices, inflations) - to_widened(query, vertices, inflations).distance[0]
+    }
+
+    #[test]
+    fn a_point_on_the_bisector_inside_a_bend_has_a_slope() {
+        // Inside the bend, its feet on both edges, so that the nearest
+        // edge's distance has a kink there: its slope along x jumps by
+        // twice the sine of the edges' angle to the x axis.
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let on = V2::new(0.0, 2.0);
+        let inflation = 0.1;
+        let step = 1e-7;
+        let at = |dx: f64| to_polyline(V2::new(on.x + dx, on.y), &bend, inflation).distance[0];
+        let right = (at(step) - at(0.0)) / step;
+        let left = (at(0.0) - at(-step)) / step;
+        let nearest_only_jump = 2.0 * libm::sin(libm::atan(0.25));
+        let curvature_part = 1e-5;
+        assert!((right - left).abs() < curvature_part * nearest_only_jump);
+        let found = to_polyline(on, &bend, inflation);
+        assert!(found.gradient[0].x.abs() < 1e-15);
+        // Nearer than the exact distance, by at most τ·ln 2 of two equal
+        // terms.
+        let exact = 1.0 / libm::hypot(1.0, 0.25) - inflation;
+        let nearer = exact - found.distance[0];
+        assert!(nearer > 0.0 && nearer <= SMOOTH_WIDTH * libm::log(2.0));
+    }
+
+    #[test]
+    fn a_point_nearest_a_shared_vertex_takes_its_distance_alone() {
+        // Outside the bend and beside a straight join, where both edges'
+        // nearest point is the vertex they share.
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let found = to_polyline(V2::new(0.0, 0.0), &bend, 0.25);
+        assert!((found.distance[0] - 0.75).abs() < 1e-15);
+        assert!((found.gradient[0] - V2::new(0.0, -1.0)).hypot() < 1e-15);
+        let straight = [V2::new(-1.0, 0.0), V2::new(0.0, 0.0), V2::new(1.0, 0.0)];
+        let found = to_polyline(V2::new(0.0, 1.0), &straight, 0.25);
+        assert!((found.distance[0] - 0.75).abs() < 1e-15);
+        assert!((found.share.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn a_segment_nearest_at_the_vertex_it_shares_cancels_with_it() {
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let found = to_polyline(V2::new(0.0, 0.0), &bend, 0.25);
+        assert_eq!(found.edge, vec![0]);
+        assert_eq!(found.share, vec![1.0]);
+    }
+
+    #[test]
+    fn a_shared_vertex_inside_a_bend_takes_its_share_off() {
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let found = to_polyline(V2::new(0.0, 2.0), &bend, 0.1);
+        // Both edges and, taken off, the vertex they share.
+        assert_eq!(found.edge, vec![0, 1, 1]);
+        assert_eq!(found.vertex, vec![false, false, true]);
+        assert!(found.share[2] < 0.0);
+    }
+
+    #[test]
+    fn at_a_width_change_the_distance_is_no_farther_and_within_tau_ln_2() {
+        // Beside the vertex of a straight run, with both feet on it or one
+        // inside an edge, and around a bend, inside with both feet inside
+        // its edges and outside with both on its vertex; narrower first and
+        // wider first, so that each cancellation, and its refusal where the
+        // segment is inflated more than the vertex, is taken.
+        let straight = [V2::new(-1.0, 0.0), V2::new(0.0, 0.0), V2::new(1.0, 0.0)];
+        let bend = [V2::new(-2.0, 1.5), V2::new(0.0, 1.0), V2::new(2.0, 1.5)];
+        let beside = [V2::new(0.0, 1.0), V2::new(-0.01, 1.0), V2::new(0.01, 1.0)];
+        let around = [V2::new(0.0, 2.0), V2::new(0.05, 2.0), V2::new(0.0, 0.0)];
+        let two = SMOOTH_WIDTH * libm::log(2.0);
+        for inflations in [[0.25, 0.26], [0.26, 0.25]] {
+            for (vertices, points) in [(&straight, &beside), (&bend, &around)] {
+                for &query in points {
+                    let by = nearer(query, vertices, &inflations);
+                    assert!(
+                        by >= -ROUND_OFF && by <= two,
+                        "{query:?} {inflations:?} {by}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_centre_of_a_resampled_curve_reads_at_most_tau_ln_n_nearer() {
+        // A half circle in edges of about 0.1 mm, whose vertices lie only
+        // s²/8R farther from the centre than its edges, so that they take
+        // little off and every edge has a share.
+        let radius = 1.0;
+        let edges = 31;
+        let arc: Vec<V2> = (0..=edges)
+            .map(|k| {
+                let angle = core::f64::consts::PI * k as f64 / edges as f64;
+                V2::new(radius * libm::cos(angle), radius * libm::sin(angle))
+            })
+            .collect();
+        let by = nearer(V2::new(0.0, 0.0), &arc, &vec![0.1; edges]);
+        assert!(by >= 0.0 && by <= SMOOTH_WIDTH * libm::log(edges as f64));
     }
 
     #[test]

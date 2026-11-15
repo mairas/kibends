@@ -496,7 +496,7 @@ impl Members {
         }
         // Where a member's term pulls on an edge another shows, each
         // answer's share goes to the ends of the edge, by where along it
-        // the point is nearest.
+        // the point is nearest, or a shared vertex's to that vertex.
         let pushes: Vec<Vec<(usize, V2, f64)>> = fields
             .answers
             .par_iter()
@@ -509,9 +509,13 @@ impl Members {
                     if pull != 0.0 {
                         let piece = near.edge[n];
                         let start = seen.vertex()[piece];
-                        let a = flat[start];
-                        let b = a + (flat[start + 1] - a);
-                        let along = parameter(fields.queries[i][near.point[n]], a, b);
+                        let along = if near.vertex[n] {
+                            0.0
+                        } else {
+                            let a = flat[start];
+                            let b = a + (flat[start + 1] - a);
+                            parameter(fields.queries[i][near.point[n]], a, b)
+                        };
                         pushes.push((start, scaled(pull, near.direction[n]), along));
                     }
                 }

@@ -299,9 +299,9 @@ class Pieces(NamedTuple):
 
 class Answer(NamedTuple):
     """A chain field's smooth distance at each point and its gradient, and
-    what answers it: per obstacle that has a share at a point, the point,
-    the edge nearest it of that obstacle, its share and its unit
-    gradient."""
+    what answers it: per edge that has a share at a point, the point, the
+    edge, its share, its unit gradient, and whether it is the edge's first
+    vertex alone, which it shares with the edge before it."""
 
     distance: FloatArray
     gradient: FloatArray
@@ -309,6 +309,7 @@ class Answer(NamedTuple):
     edge: IntArray
     share: FloatArray
     direction: FloatArray
+    vertex: BoolArray
 
 
 def _answers(field: ChainField, points: FloatArray, reach: float) -> Answer:
@@ -438,7 +439,9 @@ def _reference_members(
         point = near.point
         edge = near.edge
         start = part.vertex[edge]
-        along = _parameters(queries[point], starts[edge], ends[edge])
+        along = np.where(
+            near.vertex, 0.0, _parameters(queries[point], starts[edge], ends[edge])
+        )
         push = (slopes * seen_share)[point, None] * near.share[:, None] * near.direction
         np.add.at(at_shown, start, -push * (1 - along)[:, None])
         np.add.at(at_shown, start + 1, -push * along[:, None])
@@ -582,13 +585,15 @@ def _reference_vias(
         weight = via.given.via.diameter * slope[0]
         value += via.given.via.diameter * float(term[0])
         via_gradients[k] += weight * direction
-        for e, share, toward in zip(near.edge, near.share, near.direction, strict=True):
+        for e, share, toward, shared in zip(
+            near.edge, near.share, near.direction, near.vertex, strict=True
+        ):
             push = weight * seen_share[0] * share * toward
             j, first = owner[int(e)]
             if j < 0:
                 via_gradients[first] -= push
                 continue
-            t = _parameters(at, a[e : e + 1], b[e : e + 1])[0]
+            t = 0.0 if shared else _parameters(at, a[e : e + 1], b[e : e + 1])[0]
             gradients[j][first] -= (1 - t) * push
             gradients[j][first + 1] -= t * push
     return value, gradients, via_gradients

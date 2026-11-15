@@ -11,13 +11,23 @@
 //! has a kink, its gradient that of one side, and a track centred between
 //! its neighbours could not move. An obstacle is one chain or one track of
 //! a section, one via, the board edge, or static copper as
-//! `field::obstacles::Obstacles` groups it. Within one obstacle the
-//! distance stays its nearest edge's, so a straight neighbour made of many
-//! edges adds nothing, but where two parts of one obstacle are equally
-//! near, the kink of the nearest-only distance remains: inside the corner
-//! of a bent track, or between two arms of one, as in a U or a meander, or
-//! of copper that one obstacle joins elsewhere. Where n obstacles are
-//! equally near, the energy sees the point τ·ln n nearer than it is. Every
+//! `field::obstacles::Obstacles` groups it. Where n obstacles are equally
+//! near, the energy sees the point τ·ln n nearer than it is.
+//!
+//! Of a chain, a track of a section or a via, every edge takes part, less
+//! the vertex two consecutive edges share (`field::pairs::smooth_of_pairs`),
+//! so a straight neighbour made of many edges reads as one, and so does the
+//! outside of a bend; inside a bend, where two edges are equally near, the
+//! distance has a slope. It is never farther than the exact distance and
+//! nearer by at most τ·ln m, of the m edges within SMOOTH_REACH of the
+//! nearest: τ·ln 2 inside one bend, but nearly τ·ln n near the centre of a
+//! curve resampled into n edges, whose shared vertices lie hardly farther
+//! than the edges, some 10 µm for a half circle of 1 mm radius at 0.1 mm
+//! spacing. Two arms of one track, as in a U or a meander, read as two
+//! obstacles do. Static
+//! copper takes each obstacle's nearest edge alone, so the kink of the
+//! nearest-only distance remains inside its corners, between two arms of
+//! one obstacle, and on copper that one obstacle joins elsewhere. Every
 //! clearance judgement takes the exact distance (a field's
 //! `signed_distance`).
 //!

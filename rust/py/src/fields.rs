@@ -11,8 +11,8 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pyme
 use pyo3_stub_gen::{PyStubType, TypeInfo};
 
 use crate::arrays::{
-    BoolArray, Flags, Floats, Indices, IntpArg, Points, floats, floats_of, indices, indices_of,
-    points_of, same_lengths, vectors,
+    BoolArray, Flags, Floats, Indices, IntpArg, Points, flags, floats, floats_of, indices,
+    indices_of, points_of, same_lengths, vectors,
 };
 use crate::field::{Obstacles, StaticEdges};
 use crate::testing;
@@ -152,7 +152,7 @@ impl ChainField {
     }
 
     /// `signed_distance` as the energy takes it: the smooth minimum over
-    /// the obstacles of each one's nearest edge.
+    /// the edges, less the vertices consecutive edges share.
     #[pyo3(signature = (points, reach = f64::INFINITY))]
     fn smooth_distance<'py>(
         &self,
@@ -163,9 +163,11 @@ impl ChainField {
         smooth_distance(py, self.inner.as_ref(), &points, reach)
     }
 
-    /// `smooth_distance`, and what answers it: per obstacle that has a
-    /// share at a point, the point, its nearest edge by index, its share
-    /// and its unit gradient.
+    /// `smooth_distance`, and what answers it: per edge that has a share at
+    /// a point, the point, the edge by index, its share, its unit gradient,
+    /// and whether it is the edge's first vertex alone, which it shares
+    /// with the edge before it (`kibends_core::field::pairs::
+    /// smooth_of_pairs`).
     #[pyo3(signature = (points, reach = f64::INFINITY))]
     #[allow(clippy::type_complexity)]
     fn smooth_answers<'py>(
@@ -180,6 +182,7 @@ impl ChainField {
         Indices<'py>,
         Floats<'py>,
         Points<'py>,
+        Flags<'py>,
     )> {
         let found = self.inner.smooth_answers(&points_of(&points)?, reach);
         Ok((
@@ -189,6 +192,7 @@ impl ChainField {
             indices(py, &found.edge),
             floats(py, found.share),
             vectors(py, &found.direction)?,
+            flags(py, &found.vertex),
         ))
     }
 

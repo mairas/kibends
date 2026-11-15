@@ -788,9 +788,12 @@ def test_iteration_cap_ends_the_run() -> None:
 def test_capped_runs_return_one_state_that_never_gets_worse(
     scenario: ChainsScenario,
 ) -> None:
+    # At one spacing, so that every cap's energy is measured on samples
+    # alike: across levels, a finer one resolves the repulsion better and
+    # may lengthen the route and raise the energy its samples give.
     energies: list[float] = []
     for cap in range(1, 5):
-        result = run(scenario, replace(COARSE, max_iterations=cap))
+        result = run(scenario, replace(ONE_SPACING, max_iterations=cap))
         a, b = (c.polyline for c in result.chains)
 
         assert gap(a, b) >= scenarios.PAIR_INFLATION - INSIDE_TOLERANCE

@@ -1538,9 +1538,6 @@ def returned(*ground: ViaInput) -> ViasScenario:
     return replace(scenario, vias=(*scenario.vias, *ground), params=RETURN_PARAMS)
 
 
-OFF_THE_KINK = 1e-3
-"""mm, how far the via grid's gradient check moves each variable off its
-start, at random."""
 PAIR_GRADIENT_RTOL = 1e-10
 """As SUM_ORDER_ROUNDING for the pairwise gradient, each of whose elements
 gathers every pair's push from both of its vias."""
@@ -1582,10 +1579,11 @@ class TestGradient:
             )
 
     def test_with_a_via_at_every_vertex_of_a_grid(self) -> None:
-        """Issue 100's grid, just off its start, where a chain's vertex beside a
-        via can lie as near to the vias on either side of it: the slope
-        along random directions is the gradient's, which checks every
-        element at once."""
+        """Issue 100's grid at its start, where a chain's vertex beside a via
+        can lie as near to the vias on either side of it, and a vertex of
+        one row lies on the bisector of the next row's bend: the slopes
+        along random directions on either side agree, and are the
+        gradient's, which checks every element at once."""
         scenario = scenarios.via_grid(3, 3, via_every=1)
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
         vias = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
@@ -1594,20 +1592,20 @@ class TestGradient:
         layout = problem.layout(problem.points)
         seen = problem.seeing(layout.starts)
         objective = problem.objective(layout, seen, problem.lookups(seen))
-        # Just off the start: there, a vertex beside a drawn apex sits where
-        # the repulsion's slope jumps by 7e-4, as main's energy does at the
-        # same shape, so no derivative exists to compare with.
-        x = layout.x0 + np.random.default_rng(1).normal(
-            scale=OFF_THE_KINK, size=len(layout.x0)
-        )
-        _, gradient = objective(x)
+        x = layout.x0
+        value, gradient = objective(x)
         step = CENTRAL_STEP
         for direction in np.random.default_rng(0).normal(size=(3, len(x))):
-            numeric = (
-                objective(x + step * direction)[0] - objective(x - step * direction)[0]
-            ) / (2 * step)
+            down2, down, up, up2 = (
+                objective(x + steps * step * direction)[0] for steps in (-2, -1, 1, 2)
+            )
+            # One-sided differences of second order, as exact as the central
+            # one, so that only a kink parts them.
+            ahead = (4 * up - up2 - 3 * value) / (2 * step)
+            behind = (3 * value - 4 * down + down2) / (2 * step)
+            assert ahead == pytest.approx(behind, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL)
             assert gradient @ direction == pytest.approx(
-                numeric, rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
+                (up - down) / (2 * step), rel=CENTRAL_RTOL, abs=CENTRAL_ATOL
             )
 
     @pytest.mark.parametrize("seed", [0, 1])
