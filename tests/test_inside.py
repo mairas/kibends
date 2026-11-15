@@ -1761,3 +1761,116 @@ def test_the_board_edge_beyond_a_chord_s_end_is_judged_without_its_allowance() -
     )
 
     assert {v.obstacle for v in found} == {"the board edge"}
+
+
+DEEP_INSIDE = 0.02
+"""mm a via or a chain stands inside an unselected arc's clearance."""
+OFF_MIDDLE = math.radians(46.25)
+"""The angle a via beside the unselected arc stands at: off its chords'
+middles and ends."""
+
+
+def via_by_the_arc(radius: float, at: float) -> Callable[[], RunResult]:
+    """A moving via of V at `at` from the centre of an unselected arc of
+    `radius`, at OFF_MIDDLE."""
+    snap = static_arc_layer(radius=radius)
+    via = scenarios.through_via(
+        "v", "V", (at * math.cos(OFF_MIDDLE), at * math.sin(OFF_MIDDLE))
+    )
+    given = ViaInput(
+        via, (), build_via_obstacles([snap], via), PAIR_CLEARANCE, own_vias=()
+    )
+    return lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+
+
+VIA_TO_ARC = PAIR_CLEARANCE + scenarios.VIA_DIAMETER / 2 + STATIC_WIDTH / 2
+"""mm from a via's centre to the unselected arc's centreline at their
+clearance."""
+
+
+@pytest.mark.parametrize(
+    ("radius", "outside"),
+    [(3.0, False), (30.0, False), (3.0, True)],
+    ids=["concave-3", "concave-30", "convex-3"],
+)
+def test_a_via_inside_an_unselected_arc_s_clearance_is_refused(
+    radius: float, outside: bool
+) -> None:
+    # On the convex side of a 30 mm arc its chord stands farther than this
+    # from the arc there, so that the via is clear of it and starts.
+    at = (
+        radius + VIA_TO_ARC - DEEP_INSIDE
+        if outside
+        else radius - VIA_TO_ARC + DEEP_INSIDE
+    )
+
+    (violation,) = refused(via_by_the_arc(radius, at))
+
+    assert violation.obstacle == "track o"
+
+
+CHORD_INSIDE = 0.01
+"""mm copper on an unselected arc's convex side stands inside its chord's
+clearance at the chord's middle."""
+
+
+def outside_a_chord(radius: float, keep: float) -> tuple[Point2, Point2]:
+    """Where what keeps `keep` from the unselected arc's chords stands on
+    their convex side, CHORD_INSIDE inside it at a middle chord's middle, and
+    the unit direction out from the arc's centre there."""
+    coords = list(static_arc_layer(radius=radius).tracks[0].centreline.coords)
+    k = len(coords) // 2
+    (ax, ay), (bx, by) = coords[k], coords[k + 1]
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    n = math.hypot(mx, my)
+    out = (mx / n, my / n)
+    reach = n + keep - CHORD_INSIDE
+    return (reach * out[0], reach * out[1]), out
+
+
+@pytest.mark.parametrize("radius", [30.0, 100.0])
+def test_a_via_outside_an_unselected_arc_inside_its_chord_s_clearance_is_refused(
+    radius: float,
+) -> None:
+    # On the convex side the chord stands farther than the arc: no allowance.
+    at, _ = outside_a_chord(radius, VIA_TO_ARC)
+    snap = static_arc_layer(radius=radius)
+    via = scenarios.through_via("v", "V", at)
+    given = ViaInput(
+        via, (), build_via_obstacles([snap], via), PAIR_CLEARANCE, own_vias=()
+    )
+
+    (violation,) = refused(
+        lambda: optimize_chains([], scenarios.PARAMS, SETTINGS, vias=[given])
+    )
+
+    assert violation.obstacle == "track o"
+    assert violation.depth == pytest.approx(CHORD_INSIDE, abs=NM_ROUNDING)
+
+
+@pytest.mark.parametrize("radius", [30.0, 100.0])
+def test_a_chain_outside_an_unselected_arc_inside_its_chord_s_clearance_is_refused(
+    radius: float,
+) -> None:
+    keep = scenarios.PAIR_INFLATION + (STATIC_WIDTH - PAIR_WIDTH) / 2
+    (tx, ty), (ux, uy) = outside_a_chord(radius, keep)
+    snap = static_arc_layer(radius=radius)
+    side = 2.0
+    chain = selected(
+        "chain",
+        "SIG",
+        build_obstacles(snap, "SIG", PAIR_WIDTH),
+        (tx + side * (ux - uy), ty + side * (uy + ux)),
+        (tx, ty),
+        (tx + side * (ux + uy), ty + side * (uy - ux)),
+    )
+
+    found = refused(lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS))
+
+    assert {v.obstacle for v in found} == {"track o"}
+
+
+def test_a_chain_inside_an_unselected_arc_beyond_its_allowance_is_refused() -> None:
+    found = refused(tip_by_the_arc(DEEP_INSIDE))
+
+    assert {v.obstacle for v in found} == {"track o"}
