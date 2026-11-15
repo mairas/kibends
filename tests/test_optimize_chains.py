@@ -643,6 +643,11 @@ def test_time_limit_counts_from_when_optimizing_starts(
     assert burst.evaluations == STOPPED_AFTER
 
 
+SET_UP = 1
+"""The questions a stop is asked as setup builds the problems of `bumps`,
+which has one, before the run asks the time limit too."""
+
+
 class Countdown:
     """A stop that answers true from its `calls`-th question on."""
 
@@ -707,8 +712,10 @@ def test_a_stop_before_a_step_s_burst_runs_none(
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
 
+    # Its first question comes as setup builds the one problem, its
+    # second as the first step begins.
     result = optimize_chains(
-        scenario.chains, scenario.params, COARSE, stop=lambda: True
+        scenario.chains, scenario.params, COARSE, stop=Countdown(SET_UP + 1)
     )
 
     assert bursts == []
@@ -720,10 +727,10 @@ def test_a_stop_before_a_step_s_burst_runs_none(
     [
         # The clock passes the limit at the second question, after the stop
         # has said no twice; it says yes at the next.
-        (3, Termination.TIME_LIMIT),
+        (SET_UP + 3, Termination.TIME_LIMIT),
         # The stop says yes at the second question, before the clock has
         # passed the limit; the clock passes it when the run reports.
-        (2, Termination.STOPPED),
+        (SET_UP + 2, Termination.STOPPED),
     ],
 )
 def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(

@@ -160,6 +160,11 @@ def stalled(
     )
 
 
+class StoppedInSetupError(Exception):
+    """`stop` answered true while the optimizer set its problems up:
+    nothing optimized."""
+
+
 End = tuple[int, int]
 """A chain end: the chain's index and 0 or -1."""
 
@@ -192,6 +197,10 @@ def optimize_chains(
     `hole_to_hole` where holes are involved. `static_vias` are the board's
     vias that are none of `vias`; each problem keeps those its moving vias
     share a layer with.
+
+    `stop` is asked as setup builds each problem, after it, and raises
+    `StoppedInSetupError` if it answers true there, since setup runs no
+    burst whose state could be kept.
 
     Before any burst it raises `inside.InsideClearanceError` naming each
     place where the copper of a problem that moves starts inside a
@@ -279,7 +288,14 @@ def optimize_chains(
     blocks = [pair_block(pair, settings.spacing) for pair in pairs]
     everything = [*chains, *(block.chain for block in blocks)]
     moving_vias = MovingVias(everything, vias, hole_clearance, hole_to_hole)
-    placed = _problems(chains, blocks, moving_vias, params, settings, static_vias)
+
+    def built() -> None:
+        if stop is not None and stop():
+            raise StoppedInSetupError
+
+    placed = _problems(
+        chains, blocks, moving_vias, params, settings, static_vias, built
+    )
     problems = [p.problem for p in placed]
     moving = [p for p in problems if p.moving]
     unclean = [v for p in moving for v in p.start_violations(arc_chords)]
@@ -644,10 +660,12 @@ def _problems(
     params: EnergyParams,
     settings: OptimizerSettings,
     static_vias: Sequence[StaticVia] = (),
+    built: Callable[[], None] = lambda: None,
 ) -> list[_Placed]:
     """The run's problems: the layers that the vias tie together, with
     every via and the `static_vias` they share a layer with, and each other
-    layer alone. `vias` holds the chains, then the sections' centrelines."""
+    layer alone, `built` called after each. `vias` holds the chains, then
+    the sections' centrelines."""
     layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
     tied = [
         layer for layer in layers if any(via.via.reaches(layer) for via in vias.vias)
@@ -679,6 +697,7 @@ def _problems(
             joined=joined,
         )
         placed.append(_Placed(problem, group, on, sections, joined))
+        built()
     return placed
 
 

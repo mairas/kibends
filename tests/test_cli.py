@@ -1246,6 +1246,35 @@ class TestStop:
         assert optimized == []
         assert "begin_commit" not in board.calls
 
+    def test_a_stop_while_the_optimizer_sets_up_ends_the_run_with_nothing_changed(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        board = connect.to(l_board())
+        built: list[object] = []
+        real = cast(
+            Callable[..., object],
+            optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        def building(*args: object, **kwargs: object) -> object:
+            built.append(real(*args, **kwargs))
+            return built[-1]
+
+        monkeypatch.setattr(optimize_module, "_problem", building)
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(
+            options, optimized.append, stop=lambda: bool(built)
+        )
+
+        assert built
+        assert report.termination is Termination.STOPPED
+        assert report.iterations == 0
+        assert not report.changes and not report.committed
+        assert optimized == []
+        assert "begin_commit" not in board.calls
+
     def test_a_stop_before_anything_changed_says_so(
         self,
         connect: Connector,

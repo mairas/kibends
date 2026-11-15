@@ -5,9 +5,10 @@ of `tests/scenarios.py`."""
 import json
 import math
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn, cast
 
 import numpy as np
 import pytest
@@ -49,7 +50,7 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import optimize, optimize_chains
+from kibends.optimize import StoppedInSetupError, optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, RunResult, Termination
 from kibends.via_moves import MovingVias
@@ -775,6 +776,32 @@ def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
         "INFO Time limit reached at 1.2 mm spacing; going on at 0.6 mm spacing "
         "with the chains on F.Cu",
     ]
+
+
+def test_a_stop_while_problems_are_built_ends_before_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[object] = []
+    real = cast(
+        Callable[..., object],
+        optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    def building(*args: object, **kwargs: object) -> object:
+        built.append(real(*args, **kwargs))
+        return built[-1]
+
+    def bursting(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("a burst ran after a stop in setup")
+
+    monkeypatch.setattr(optimize_module, "_problem", building)
+    monkeypatch.setattr(optimize_module, "run_burst", bursting)
+
+    with pytest.raises(StoppedInSetupError):
+        optimize_chains(on_two_layers(*BOWED), PARAMS, COARSE, stop=lambda: bool(built))
+
+    # Two problems, F.Cu's and B.Cu's: the stop came after the first.
+    assert len(built) == 1
 
 
 def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(

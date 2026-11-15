@@ -90,7 +90,7 @@ from kibends.obstacles import (
     own_net_vias,
     split_via_obstacles,
 )
-from kibends.optimize import Progress, optimize_chains
+from kibends.optimize import Progress, StoppedInSetupError, optimize_chains
 from kibends.pair_blocks import Hold, PairInput
 from kibends.pair_layout import (
     ChainPair,
@@ -425,8 +425,9 @@ def run_smooth(
     `on_stage` hears each `Stage` as it begins, committing only when there
     is something to commit. `stop` is asked after reading and after
     building the obstacles, and through the optimizer
-    (`optimize.optimize_chains`): answering true before optimizing ends the
-    run there, `Termination.STOPPED` with nothing changed; while optimizing
+    (`optimize.optimize_chains`): answering true before optimizing, the
+    optimizer's setup included, ends the run there, `Termination.STOPPED`
+    with nothing changed; while optimizing
     it ends the optimizer with its best state, which the run simplifies and
     commits as any other. `on_progress` hears where the optimizer stands
     after each outer iteration, its seconds counted from the optimize
@@ -460,6 +461,8 @@ def run_smooth(
         return _stopped(read)
     on_stage(Stage.OPTIMIZING)
     optimized = _optimize(read, built, options, stop, on_progress)
+    if optimized is None:
+        return _stopped(read)
     on_stage(Stage.SIMPLIFYING)
     outcome = _simplify_and_report(read, optimized, options)
     run = optimized.run
@@ -721,8 +724,9 @@ def _optimize(
     options: SmoothOptions,
     stop: Callable[[], bool] | None,
     on_progress: Callable[[Progress], None] | None,
-) -> _Optimized:
-    """Optimize the chains of `read` from what `_build` made of them."""
+) -> _Optimized | None:
+    """Optimize the chains of `read` from what `_build` made of them; None
+    if `stop` ended the optimizer's setup."""
     layout = built.layout
     logger.info(
         _optimizing(len(read.chains), len(layout.diff_pairs), len(read.movable))
@@ -747,6 +751,8 @@ def _optimize(
         )
     except InsideClearanceError as e:
         raise e.in_frame(read.frame) from None
+    except StoppedInSetupError:
+        return None
     _log_gave_up(run.gave_up)
     elapsed = monotonic() - started
     return _Optimized(built, run, elapsed)
