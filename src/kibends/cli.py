@@ -55,6 +55,7 @@ from kibends.present import (
 )
 from kibends.results import Termination
 from kibends.run import (
+    STOPPABLE_STAGES,
     OptimizerReport,
     ScopeOption,
     SmoothOptions,
@@ -74,9 +75,6 @@ GUI_EXTRA_MESSAGE = (
     "uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'"
 )
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
-# Until simplifying, a stop keeps the best result so far; from then on
-# nothing is left to stop.
-STOPPABLE_STAGES = frozenset({Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING})
 
 DEFAULT_LOG_LEVEL = "INFO"
 VERBOSE_LOG_LEVEL = "DEBUG"

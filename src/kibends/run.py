@@ -213,6 +213,11 @@ class Stage(Enum):
     COMMITTING = "committing"
 
 
+STOPPABLE_STAGES = frozenset({Stage.READING, Stage.OBSTACLES, Stage.OPTIMIZING})
+"""The stages a caller's `stop` can still end: until simplifying, a stop
+keeps the best result so far; from then on nothing is left to stop."""
+
+
 class ScopeKind(Enum):
     """What a run reads from the board."""
 

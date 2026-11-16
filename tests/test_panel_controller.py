@@ -588,7 +588,8 @@ class TestRun:
         p.scripted.during = during
         p.controller.run()
 
-        assert buttons == [("Stop", True)] * 4 + [("Stop", False)]
+        # Disabled from simplifying on, when nothing is left to stop.
+        assert buttons == [("Stop", True)] * 3 + [("Stop", False)] * 2
         assert (p.controller.button_label, p.controller.button_enabled) == (
             "Run",
             True,
@@ -696,6 +697,23 @@ class TestStop:
 
         assert p.seen[-1] == (State.DONE, "Stopped; nothing changed")
         assert State.COMMITTING not in [s for s, _ in p.seen]
+
+    def test_stop_while_simplifying_does_nothing(self) -> None:
+        p = opened()
+        states: list[State] = []
+
+        def during(stage: Stage) -> None:
+            if stage is Stage.SIMPLIFYING:
+                p.controller.stop()
+                states.append(p.controller.state)
+
+        run = p.scripted
+        run.during = during
+        p.controller.run()
+
+        assert states == [State.RUNNING]
+        assert run.stop is not None and not run.stop()
+        assert p.controller.status.startswith("Settled after")
 
     def test_stop_outside_a_run_does_nothing(self) -> None:
         c = opened().controller

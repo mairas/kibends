@@ -3,7 +3,9 @@
 The states (`State`) run Reading board → Idle → Running → (Stopping) →
 Committing → Done or Failed; Run starts Running again from Idle, Done or
 Failed, which behave alike for editing and running. An invalid field is no
-state of its own: it disables Run in those three.
+state of its own: it disables Run in those three. Stop works only while
+the run can still stop (`run.STOPPABLE_STAGES`); from simplifying on it is
+disabled.
 
 All methods run on one thread, the controller's. Workers report back
 through the injected `post`, which runs a callable on that thread; the
@@ -44,7 +46,14 @@ from kibends.present import (
     smooth_options,
     summary,
 )
-from kibends.run import OptimizerReport, RunReport, SmoothOptions, Stage, run_smooth
+from kibends.run import (
+    STOPPABLE_STAGES,
+    OptimizerReport,
+    RunReport,
+    SmoothOptions,
+    Stage,
+    run_smooth,
+)
 from kibends.snapshot import GroundSource
 
 PROBE_INTERVAL = 1.0
@@ -211,7 +220,7 @@ class Controller:
     def button_enabled(self) -> bool:
         match self._state:
             case State.RUNNING:
-                return True
+                return self._stoppable
             case State.IDLE | State.DONE | State.FAILED:
                 return not isinstance(self._read, Invalid)
             case _:
@@ -333,8 +342,14 @@ class Controller:
 
         self._spawn(work)
 
+    @property
+    def _stoppable(self) -> bool:
+        """Whether the run can still stop: before its first stage, or in
+        one of `STOPPABLE_STAGES`."""
+        return self._stage is None or self._stage in STOPPABLE_STAGES
+
     def stop(self) -> None:
-        if self._state is not State.RUNNING:
+        if self._state is not State.RUNNING or not self._stoppable:
             return
         self._stop.set()
         self._state = State.STOPPING
