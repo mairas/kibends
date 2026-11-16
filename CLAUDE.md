@@ -23,7 +23,7 @@ The design reference is the module docs in both languages: the Python module doc
 
 ## Pipeline
 
-`run.run_smooth` runs the stages in order and prints nothing; `cli.smooth` presents its reports. A GUI is meant to call the same function.
+`run.run_smooth` runs the stages in order and prints nothing. `cli.smooth` and the panel (`kibends panel`, `panel.controller` on worker threads) both call it and word its reports and errors through `present`.
 
 1. Read: `snapshot` reads the selection and the board once per run; nothing after it uses kipy until the commit.
 2. Extract: `chain` splits the selection into chains and pins them (contacts, junctions, stubs joining tracks); `vias` judges which selected vias move, stitching vias and zone containment included.
@@ -56,7 +56,7 @@ Segment endpoints and widths from KiCad are integer nanometres, so endpoint matc
 
 - kicad-python 0.8.0 cannot read board design rules: no minimum clearance, no custom rules, no edge, hole or hole-to-hole clearance. The optimizer uses netclass clearances plus the edge, hole and hole-to-hole clearance it reads from the project file (`.kicad_pro`, `rules`), which `--edge-clearance`, `--hole-clearance` and `--hole-to-hole` override; the user's KiCad DRC checks everything else. Recheck newer kicad-python releases for a rules getter.
 - An intermittent "KiCad is busy" error (`AS_BUSY`) means the user has a tool or dialog open in the PCB editor. It is not a code regression.
-- Every IPC failure ends the run with one log line through `cli._exit_on_failure`, except a copper-text render KiCad refuses for another reason, which only warns and leaves the text to KiCad's DRC, and the selection after a push (`commit._select`), which is logged at debug since the commit has landed.
+- Every IPC failure ends the run: in the CLI with one log line through `cli._exit_on_failure`, in the panel as its status, after which Run can retry. The exceptions are a copper-text render KiCad refuses for another reason, which only warns and leaves the text to KiCad's DRC, and the selection after a push (`commit._select`), which is logged at debug since the commit has landed.
 
 ## Provenance
 
