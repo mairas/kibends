@@ -649,16 +649,16 @@ impl Shared {
     /// each member or via its edges enter, each with its own depth; then one
     /// for each obstacle a via is inside or each of its stops it is outside
     /// of, a crossing of a member and a via, or of two vias, once. A run
-    /// that holds a pinned vertex counts as no violation, as in
-    /// `violations`: the pin cannot move, and a pin on copper of its own
-    /// nets that its field holds, such as a section's end on its pair's
-    /// via, lies inside that copper's clearance by design. Inside means by
-    /// more than `tolerance`. `seen` is what the members see at
-    /// `polylines`.
+    /// that holds a pinned vertex counts as any other, though `violations`
+    /// lets it be in a burst: a run that starts inside a clearance would be
+    /// free to move into another. A pin on copper of its own nets that its
+    /// field holds, such as a section's end on its pair's via, lies inside
+    /// that copper's clearance by design, and is no violation by the rules
+    /// the caller judges each place by. Inside means by more than
+    /// `tolerance`. `seen` is what the members see at `polylines`.
     pub fn insides(
         &self,
         polylines: &[Vec<V2>],
-        masks: &[Vec<bool>],
         positions: &[V2],
         seen: &Seen,
         tolerance: f64,
@@ -679,14 +679,13 @@ impl Shared {
             }
         };
         let mut found = Vec::new();
-        for (i, (((member, points), mask), (distance, others))) in self
+        for (i, ((member, points), (distance, others))) in self
             .setup
             .energy
             .members
             .members
             .iter()
             .zip(polylines)
-            .zip(masks)
             .zip(near.iter().zip(&clear))
             .enumerate()
         {
@@ -709,13 +708,8 @@ impl Shared {
                     continue;
                 }
                 let first = k;
-                let mut anchored = false;
                 while k < inside.len() && inside[k] {
-                    anchored |= mask[k];
                     k += 1;
-                }
-                if anchored {
-                    continue;
                 }
                 let at = (first..k)
                     .reduce(|a, b| if depth[b] < depth[a] { b } else { a })
@@ -1069,13 +1063,8 @@ impl State {
     pub fn start_inside(&self, tolerance: f64) -> Vec<Inside> {
         let input = &self.input;
         let seen = self.shared.seeing(&input.points);
-        self.shared.insides(
-            &input.points,
-            &input.masks,
-            &input.positions,
-            &seen,
-            tolerance,
-        )
+        self.shared
+            .insides(&input.points, &input.positions, &seen, tolerance)
     }
 
     /// The spacing of the level it runs at.

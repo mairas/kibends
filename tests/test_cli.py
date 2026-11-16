@@ -4962,6 +4962,7 @@ class TestPairs:
         ((pair,),) = (r.pairs for r in reports)
         assert (pair.sections, pair.held) == (1, 0)
 
+    @pytest.mark.usefixtures("unrefused")
     def test_pins_inside_a_section_hold_it_there_and_let_its_turn_round(
         self, connect: Connector, log: list[str], reports: list[pipeline.RunReport]
     ) -> None:
@@ -5183,6 +5184,7 @@ class TestPairs:
             [y] * len(beside.coords), abs=NM_ROUNDING
         )
 
+    @pytest.mark.usefixtures("unrefused")
     def test_a_pattern_s_short_straights_pair_against_a_push(
         self,
         connect: Connector,

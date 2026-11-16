@@ -789,14 +789,14 @@ start."""
     ],
     ids=["alone", "beside-own-net-pad", "beside-own-net-pad-near-the-end"],
 )
-def test_a_section_s_pinned_end_inside_a_clearance_starts(
+def test_a_section_s_pinned_end_inside_a_clearance_is_refused(
     elsewhere: tuple[SectionPad, ...],
 ) -> None:
-    # A pad of track P's net mid-route is a place the optimizer reports,
-    # judged near it alone: the pinned end stays exempt.
-    result = section_pads(PINNED_END_PAD, *elsewhere)()
+    # A pinned end is no exemption; a pad of track P's net mid-route is a
+    # place the optimizer reports, judged near it alone: no violation.
+    found = refused(section_pads(PINNED_END_PAD, *elsewhere))
 
-    assert result.termination is not Termination.ABNORMAL
+    assert {v.obstacle for v in found} == {"pad g"}
 
 
 def test_a_section_s_other_net_pad_is_found_past_a_deeper_own_net_one() -> None:
@@ -1132,7 +1132,7 @@ the optimizer's measure than the chain."""
 
 def test_a_chain_beside_a_section_past_a_pad_of_its_net_is_refused() -> None:
     # The section's run inside is deepest at the pad of its net, which is no
-    # violation; the chain in the same run is.
+    # violation; the chain beside it is, from either side.
     straight = scenarios.coupled(FreeSpace(), (0.0, 0.0), (10.0, 0.0))
     p_y = float(straight.a.points[0][1])
     side = math.copysign(1.0, p_y)
@@ -1152,7 +1152,7 @@ def test_a_chain_beside_a_section_past_a_pad_of_its_net_is_refused() -> None:
         lambda: optimize_chains([chain], scenarios.PARAMS, SETTINGS, pairs=[section])
     )
 
-    assert {v.obstacle for v in found} == {"g"}
+    assert {v.obstacle for v in found} == {"g", "the section of P and N"}
     assert min(v.distance or 0.0 for v in found) == pytest.approx(PRESSED_GAP)
 
 
@@ -1387,10 +1387,10 @@ def test_own_net_vias_are_the_still_vias_of_its_net_on_its_layers() -> None:
     assert [v.id for v in found] == ["kept"]
 
 
-def test_a_flat_inside_beside_an_arc_is_refused_where_the_arc_s_run_is_pinned() -> None:
-    # B's run inside holds its pinned end, so only A's run is judged: its
-    # one drawn edge is nearest B at the arc, on whose convex side A lies,
-    # where the chords are judged as they are, deeper than the flat.
+def test_a_flat_inside_beside_an_arc_is_refused_on_both_sides() -> None:
+    # A's one drawn edge is nearest B at the arc, on whose convex side A
+    # lies, where the chords are judged as they are, deeper than the flat;
+    # B's run inside, its pinned end included, is refused too.
     nm = round(NM_PER_MM)
     arc = Arc("arc", (0, 0), (nm, nm // 5), (2 * nm, 0), nm // 5, "F.Cu", "B")
     ends = [arc.segments()[0].start, *(s.end for s in arc.segments())]
@@ -1405,8 +1405,8 @@ def test_a_flat_inside_beside_an_arc_is_refused_where_the_arc_s_run_is_pinned() 
         )
     )
 
-    assert {v.subject for v in found} == {"A"}
-    assert max(v.depth for v in found) > FLAT_DEPTH
+    assert {v.subject for v in found} == {"A", "B"}
+    assert max(v.depth for v in found if v.subject == "A") > FLAT_DEPTH
 
 
 def u_section(depth: float) -> PairInput:
@@ -1457,9 +1457,9 @@ def test_a_chain_inside_where_it_is_pinned_is_refused_along_its_arc() -> None:
     assert {v.subject for v in found} == {"x", "y"}
 
 
-def test_a_via_beside_a_section_s_pinned_start_and_past_its_run_starts() -> None:
-    # As for the chain, a moving via inside the clearance of the section's
-    # pinned start, and past its run just beyond its tracks' clearance.
+def test_a_via_beside_a_section_s_pinned_start_is_refused() -> None:
+    # A moving via inside the clearance of the section's pinned start, and
+    # past its run just beyond its tracks' clearance.
     at = VIA_BEYOND - 0.125
     section = u_section(at + VIA_BEYOND + NEAR)
     via = ViaInput(
@@ -1470,11 +1470,13 @@ def test_a_via_beside_a_section_s_pinned_start_and_past_its_run_starts() -> None
         own_vias=(),
     )
 
-    result = optimize_chains(
-        [], scenarios.PARAMS, START_ONLY, vias=[via], pairs=[section]
+    found = refused(
+        lambda: optimize_chains(
+            [], scenarios.PARAMS, START_ONLY, vias=[via], pairs=[section]
+        )
     )
 
-    assert result.termination is not Termination.ABNORMAL
+    assert {v.obstacle for v in found} == {"the section of P and N"}
 
 
 BETWEEN_GAP = 0.15

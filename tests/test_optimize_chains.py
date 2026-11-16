@@ -387,6 +387,7 @@ PRESSED_APART = 0.2
 """How far apart the arches' pins lie, mm: half their inflation."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_arches_pinned_inside_each_others_clearance_go_no_deeper() -> None:
     # Near the pins the arches stay inside each other's clearance however
     # their middles move apart; they must not cut deeper than the pins.
