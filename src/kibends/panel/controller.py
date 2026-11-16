@@ -114,8 +114,8 @@ NO_RUN_YET = "Track length change appears here during a run"
 NO_OPTIMIZATION = "No optimization ran"
 NOTHING_TO_OPTIMIZE = "Nothing to optimize"
 
-UNREACHABLE = "Cannot reach KiCad — is it running with the API server on? " + (
-    "Retrying every second"
+UNREACHABLE = (
+    "Cannot reach KiCad — is it running with the API server on? Retrying every second"
 )
 NO_BOARD = "No board open in KiCad's PCB editor"
 BUSY = " (KiCad is busy)"
@@ -355,9 +355,7 @@ class Controller:
         totals = self._totals
         if totals is None:
             text = (
-                "Connecting to KiCad…"
-                if self._board is None
-                else ("Reading the board…")
+                "Connecting to KiCad…" if self._board is None else "Reading the board…"
             )
             return Line("", text + (BUSY if self._busy else ""))
         busy = BUSY if self._busy else ""
@@ -385,9 +383,7 @@ class Controller:
         off = self._attraction_off
         if self._typed:
             caption = (
-                "Ignored while Attraction is 0"
-                if off
-                else ("Your list, not detection.")
+                "Ignored while Attraction is 0" if off else "Your list, not detection."
             )
             return GroundNets(self._fields.ground_nets, "", caption, not off, not off)
         text = ", ".join(sorted(detected.nets))
@@ -931,9 +927,7 @@ class Controller:
                 return "connecting to KiCad"
             case Stage.READING:
                 return (
-                    "reading the board"
-                    if self._run_board
-                    else ("reading the selection")
+                    "reading the board" if self._run_board else "reading the selection"
                 )
             case Stage.OBSTACLES:
                 return "building obstacles"
