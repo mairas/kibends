@@ -33,6 +33,7 @@ from kibends.commit import (
     BoardChangedError,
     CommitUncertainError,
     CreateItemsError,
+    DeleteItemsError,
 )
 from kibends.coords import UserFrame
 from kibends.inside import InsideClearanceError, Violation
@@ -59,15 +60,17 @@ from kibends.panel.controller import (
     Spawn,
     State,
     duration,
+    failure,
     signed,
 )
 from kibends.panel.probe import BoardId, Probe
-from kibends.present import Field, PanelFields
+from kibends.present import MAPPED_ERRORS, Field, PanelFields, RunRefusedError
 from kibends.results import Termination
 from kibends.run import (
     ABNORMAL_MESSAGE,
     NoBoardError,
     OptimizerReport,
+    PlotUnavailableError,
     RunReport,
     Scope,
     ScopeKind,
@@ -1356,6 +1359,28 @@ VIOLATIONS = (
     Violation("Via /SDA", "track /SCL", (30.02, 18.5), 0.21, 0.2),
 )
 
+NOT_FROM_PANEL_RUNS: frozenset[type[BaseException]] = frozenset(
+    {
+        KeyboardInterrupt,  # the run is on a worker thread
+        PlotUnavailableError,  # the panel never plots
+        RunRefusedError,  # the CLI's; the panel reads the report's refusal
+    }
+)
+"""The mapped errors a panel run never raises."""
+PANEL_FAILURES: tuple[BaseException, ...] = (
+    SelectionError("selection has no tracks or vias"),
+    ChainError("no tracks that can be modified"),
+    BoardChangedError(("t1",)),
+    CommitUncertainError("Lost the connection; it may have landed"),
+    CreateItemsError("KiCad created 0 of 2 tracks"),
+    DeleteItemsError("KiCad deleted 0 of 2 tracks"),
+    InsideClearanceError(VIOLATIONS),
+    NoBoardError("No board is open in KiCad"),
+    ApiError("nope"),
+    KiCadConnectionError("no socket"),
+)
+"""One of each mapped error a panel run can raise."""
+
 
 class TestErrors:
     @pytest.mark.parametrize(
@@ -1448,6 +1473,17 @@ class TestErrors:
         assert c.fields == EDITED
         assert c.run_enabled and not c.stop_enabled
         assert c.editable
+
+    def test_every_mapped_error_a_run_can_raise_is_sampled(self) -> None:
+        sampled = {type(e) for e in PANEL_FAILURES}
+
+        assert sampled == set(MAPPED_ERRORS) - NOT_FROM_PANEL_RUNS
+
+    @pytest.mark.parametrize("error", PANEL_FAILURES, ids=lambda e: type(e).__name__)
+    def test_every_mapped_error_a_run_can_raise_has_its_own_wording(
+        self, error: BaseException
+    ) -> None:
+        assert failure(error).title != failure(RuntimeError("boom")).title
 
     def test_a_commit_that_may_have_landed_does_not_say_nothing_committed(
         self,
