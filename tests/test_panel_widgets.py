@@ -228,6 +228,27 @@ class TestRunning:
         assert run.stop is not None and run.stop()
         assert w.status.text().startswith("Stopped after")
 
+    def test_the_button_stops(self, window: Callable[[Scripted], PanelWindow]) -> None:
+        buttons: list[tuple[str, bool]] = []
+        run = Scripted(outcome=STOPPED)
+        w = window(run)
+
+        def during(stage: Stage) -> None:
+            settle()
+            if stage is Stage.OPTIMIZING:
+                w.button.click()
+                settle()
+                buttons.append((w.button.text(), w.button.isEnabled()))
+
+        run.during = during
+        w.button.click()
+        settle()
+
+        assert buttons == [("Stopping…", False)]
+        assert len(run.options) == 1
+        assert run.stop is not None and run.stop()
+        assert w.status.text().startswith("Stopped after")
+
     def test_close_mid_run_waits_for_the_commit(
         self, window: Callable[[Scripted], PanelWindow]
     ) -> None:

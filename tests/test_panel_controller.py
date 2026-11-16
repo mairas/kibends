@@ -375,6 +375,18 @@ class TestProbing:
         assert len(probes.known) == 3
         assert probes.known[-1] is None  # read again after the second run
 
+    def test_rereads_the_totals_after_a_failed_probe(self) -> None:
+        lost = KiCadConnectionError("no socket")
+        board = ten_tracks_four_vias()
+        probes = Answers([board, lost, board])
+        p = panel(probe=probes, clock=Ticking(step=2.0))
+
+        for _ in range(3):
+            p.controller.tick()
+
+        assert probes.known[1] is not None
+        assert probes.known[2] is None
+
     def test_probes_run_on_daemon_threads_and_runs_do_not(self) -> None:
         # A probe may be out when the window closes, and must not keep the
         # process alive; a run must end before the window closes.
@@ -808,13 +820,17 @@ class TestErrors:
         assert any("Traceback" in line for line in log)
         assert c.close()
 
-    def test_a_panic_in_a_probe_lets_the_next_probe_run(self, log: list[str]) -> None:
-        probes = Answers([Panic("boom"), ten_tracks_four_vias()])
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), Panic("boom")])
+    def test_an_unexpected_probe_failure_is_named_and_the_next_probe_runs(
+        self, error: BaseException, log: list[str]
+    ) -> None:
+        probes = Answers([error, ten_tracks_four_vias()])
         p = panel(probe=probes, clock=Ticking(step=2.0))
 
         p.controller.tick()
         assert p.controller.state is State.IDLE
-        assert p.controller.status == "Unexpected error: Panic: boom"
+        assert p.controller.status == f"Unexpected error: {type(error).__name__}: boom"
+        assert p.controller.button_enabled
         assert any("Traceback" in line for line in log)
         p.controller.tick()
 
