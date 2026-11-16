@@ -1,4 +1,4 @@
-"""The `kibends panel` window: `run.run_smooth` on KiCad's selection, or on
+"""The `kibends-panel` window: `run.run_smooth` on KiCad's selection, or on
 the whole board when nothing is selected, with its progress shown and a
 stop that keeps the result so far.
 

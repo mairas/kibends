@@ -14,9 +14,9 @@ KiCad refuses for another reason, which only warns, and the selection
 after the push (`commit._select`), logged at debug since the commit has
 landed.
 
-`panel` opens the panel (`kibends.panel`), imported only then, since
-PySide6 comes with the `gui` extra; without it the command says how to
-install it.
+`kibends-panel` (`panel_main`) opens the panel (`kibends.panel`), imported
+only then, since PySide6 comes with the `gui` extra; without it the command
+says how to install it. `kibends` never imports it.
 
 `_exit_on`-style error mapping and `configure_logging` follow kistitch's
 cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
@@ -450,22 +450,29 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "vias; by default the nets with copper zones on at least two inner "
         "layers, else GND if it has copper. Ignored with --attraction 0",
     )
-    panel_parser = subparsers.add_parser(
-        "panel",
-        help="Open a window that smooths the selection, or the whole board",
-        description="Open a small window that runs smooth on the PCB editor's "
-        "selection, or on the whole board when nothing is selected, shows its "
-        "progress and can stop it, keeping the result so far. Needs the gui "
-        "extra.",
+    _add_verbose(smooth_parser)
+    return parser.parse_args(argv)
+
+
+def _add_verbose(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help=f"Log at {VERBOSE_LOG_LEVEL}, overriding the level "
+        f"{LOG_LEVEL_VARIABLE} sets",
     )
-    for p in (smooth_parser, panel_parser):
-        p.add_argument(
-            "--verbose",
-            "-v",
-            action="store_true",
-            help=f"Log at {VERBOSE_LOG_LEVEL}, overriding the level "
-            f"{LOG_LEVEL_VARIABLE} sets",
-        )
+
+
+def parse_panel_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="kibends-panel",
+        description="Open a small window that runs kibends smooth on the PCB "
+        "editor's selection, or on the whole board when nothing is selected, "
+        "shows its progress and can stop it, keeping the result so far. Needs "
+        "the gui extra.",
+    )
+    _add_verbose(parser)
     return parser.parse_args(argv)
 
 
@@ -505,7 +512,10 @@ def execute_smooth(args: argparse.Namespace) -> None:
         smooth(options)
 
 
-def execute_panel() -> None:
+def panel_main(argv: Sequence[str] | None = None) -> None:
+    """The `kibends-panel` command."""
+    args = parse_panel_args(argv)
+    configure_logging(verbose=args.verbose)
     try:
         from kibends.panel.window import main as open_panel
     except ImportError as e:
@@ -535,7 +545,5 @@ def main(argv: Sequence[str] | None = None) -> None:
     match args.command:
         case "smooth":
             execute_smooth(args)
-        case "panel":
-            execute_panel()
         case _:
             assert_never(args.command)

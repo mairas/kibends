@@ -23,7 +23,7 @@ The design reference is the module docs in both languages: the Python module doc
 
 ## Pipeline
 
-`run.run_smooth` runs the stages in order and prints nothing. `cli.smooth` and the panel (`kibends panel`, `panel.controller` on worker threads) both call it and word its reports and errors through `present`.
+`run.run_smooth` runs the stages in order and prints nothing. `cli.smooth` and the panel (`kibends-panel`, `panel.controller` on worker threads) both call it and word its reports and errors through `present`.
 
 1. Read: `snapshot` reads the selection and the board once per run; nothing after it uses kipy until the commit.
 2. Extract: `chain` splits the selection into chains and pins them (contacts, junctions, stubs joining tracks); `vias` judges which selected vias move, stitching vias and zone containment included.

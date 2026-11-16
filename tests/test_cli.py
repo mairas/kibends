@@ -4,6 +4,7 @@ import json
 import math
 import re
 import signal
+import subprocess
 import sys
 import types
 from collections import Counter
@@ -6383,7 +6384,7 @@ class TestPanel:
 
         monkeypatch.setitem(sys.modules, "kibends.panel.window", Window("window"))
 
-        cli.main(["panel"])
+        cli.panel_main([])
 
         assert opened == [True]
 
@@ -6393,7 +6394,7 @@ class TestPanel:
         monkeypatch.setitem(sys.modules, "kibends.panel.window", None)
 
         with pytest.raises(SystemExit) as raised:
-            cli.main(["panel"])
+            cli.panel_main([])
 
         assert raised.value.code == 1
         assert [line.rstrip() for line in log if line.startswith("ERROR")] == [
@@ -6401,5 +6402,13 @@ class TestPanel:
             "halted; None in sys.modules)"
         ]
 
+    def test_smooth_never_loads_the_panel(self) -> None:
+        code = (
+            "import sys, kibends.cli; "
+            "sys.exit(any(m.startswith(('PySide6', 'kibends.panel')) "
+            "for m in sys.modules))"
+        )
+        assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
     def test_takes_verbose(self) -> None:
-        assert cli.parse_args(["panel", "-v"]).verbose
+        assert cli.parse_panel_args(["-v"]).verbose

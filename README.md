@@ -594,7 +594,7 @@ only slightly, but still replaces its tracks.
 
 ### The panel
 
-`kibends panel` opens a small window that runs the same smoothing as
+`kibends-panel` opens a small window that runs the same smoothing as
 `kibends smooth` and stays open between runs, for selecting, running,
 looking at the result in KiCad and running again. It needs the `gui`
 extra (see [Installation](#installation)). The window asks to stay above

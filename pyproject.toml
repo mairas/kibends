@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 kibends = "kibends.cli:main"
+kibends-panel = "kibends.cli:panel_main"
 
 [project.urls]
 Homepage = "https://github.com/mairas/kibends"
