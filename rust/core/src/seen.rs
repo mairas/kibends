@@ -495,7 +495,7 @@ impl Seen {
     /// gives it at `flat`; each answer's point is by its place among the
     /// member's queries and its edge is the piece's index. With `listed`,
     /// each layer looks only at the pairs it lists; without, at the pairs
-    /// that can answer here (`candidates`), which a search over every
+    /// that can answer here (`searched`), which a search over every
     /// piece within reach answers alike, as the terms of the others are
     /// exactly zero.
     pub fn smooth_answers(
@@ -515,7 +515,7 @@ impl Seen {
             let pairs = match listed.as_deref_mut() {
                 Some(list) => list.pairs(self, n, &points, &owner, flat),
                 None => {
-                    searched = self.candidates(n, &points, &owner, flat, reach, 0.0);
+                    searched = self.searched(n, &points, &owner, flat, reach);
                     &searched
                 }
             };
@@ -688,6 +688,21 @@ impl Seen {
                 });
             }
         })
+    }
+
+    /// The (point, piece) pairs of layer n with which `smooth_answers`
+    /// with `reach` and no list answers its members' quadrature points
+    /// `points`, each of the member `owner` gives by its place on the
+    /// layer, at `flat`: those that can answer here, with no skin.
+    pub(crate) fn searched(
+        &self,
+        n: usize,
+        points: &[V2],
+        owner: &[usize],
+        flat: &[V2],
+        reach: f64,
+    ) -> Pairs {
+        self.candidates(n, points, owner, flat, reach, 0.0)
     }
 
     /// The (point, piece) pairs of layer n, with its members' quadrature
@@ -1337,6 +1352,66 @@ mod tests {
             found
         };
         assert_eq!(answer(&searched), answer(&everything));
+    }
+
+    /// Tracks of nets 0, 1, ... and kind 0 on one layer, of `vertices`
+    /// each, every one a member, two of them kept `apart`.
+    fn tracks_of(vertices: &[usize], apart: f64) -> Seen {
+        let mut first = 0;
+        let tracks: Vec<Track> = vertices
+            .iter()
+            .enumerate()
+            .map(|(net, &n)| {
+                first += n;
+                Track {
+                    first: first - n,
+                    vertices: n,
+                    layer: "F".into(),
+                    net,
+                    kind: 0,
+                }
+            })
+            .collect();
+        let viewers: Vec<Viewer> = tracks
+            .iter()
+            .map(|t| Viewer {
+                layer: "F".into(),
+                net: t.net,
+                kind: t.kind,
+                exempt: vec![],
+            })
+            .collect();
+        Seen::new(
+            &tracks,
+            &viewers,
+            vec![vec![apart]],
+            &vec![Pieces::default(); tracks.len()],
+        )
+    }
+
+    #[test]
+    fn a_search_lists_the_pieces_within_the_energys_reach_and_no_farther() {
+        const REACH: f64 = 1.0;
+        const APART: f64 = 0.2;
+        let seen = tracks_of(&[2, 2, 2], APART);
+        let layer = &seen.layers[0];
+        let edge = seen.smooth_limit(layer, REACH)[0] + 2.0 * DEGENERATE_DISTANCE;
+        let (inside, past) = (edge - ROUND_OFF, edge + ROUND_OFF);
+        // The first track is a point at the origin; the others cross its
+        // line, one just within the limit, one just past it.
+        let flat = vec![
+            V2::new(0.0, 0.0),
+            V2::new(0.0, 0.0),
+            V2::new(inside, -1.0),
+            V2::new(inside, 1.0),
+            V2::new(-past, -1.0),
+            V2::new(-past, 1.0),
+        ];
+        let queries: Vec<&[V2]> = vec![&flat[..1], &[], &[]];
+        let (points, owner, _) = gathered(&queries, &layer.members);
+        let listed = seen.searched(0, &points, &owner, &flat, REACH);
+        assert_eq!(listed.point, vec![0]);
+        assert_eq!(seen.obstacle[listed.piece[0]], 1);
     }
 
     #[test]
