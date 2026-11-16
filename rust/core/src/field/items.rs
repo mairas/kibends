@@ -37,6 +37,47 @@ pub struct Copper {
     pub extent: Vec<f64>,
 }
 
+/// What an item is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A pad's copper.
+    Pad = 0,
+    /// A track's centreline.
+    Track = 1,
+    /// A via's ring, at its centre.
+    ViaRing = 2,
+    Graphic = 3,
+    TrackKeepout = 4,
+    ViaKeepout = 5,
+    /// A pad's hole, at its position.
+    PadHole = 6,
+    /// A via's hole, at its centre.
+    ViaHole = 7,
+    /// A pad of a via's net, which the via may touch but not overlap.
+    PadStop = 8,
+    /// The board outline, which a field names apart from its items.
+    Outline = 9,
+}
+
+/// Where an item comes from: its kind, the layer whose record it is and
+/// its index there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub source: Source,
+    pub layer: u32,
+    pub index: u32,
+}
+
+/// Where a field's item comes from, as `Record`, and the layer of its
+/// copper in the field, None for what is not copper of one layer there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Picked {
+    pub source: Source,
+    pub layer: usize,
+    pub index: usize,
+    pub copper: Option<usize>,
+}
+
 /// The ids of an item's geometry and, for a line string, of its two ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemIds {
@@ -153,6 +194,7 @@ pub struct ItemSet {
     pieces: Vec<OnceLock<Pieces>>,
     tree: BoxTree,
     copper: Option<Copper>,
+    records: Option<Vec<Record>>,
     ids: Option<Vec<ItemIds>>,
     /// The interner of `ids` and of `copper`'s numbers, 0 for none.
     token: u64,
@@ -207,9 +249,17 @@ impl ItemSet {
             bounds,
             tree,
             copper,
+            records: None,
             ids,
             token,
         }
+    }
+
+    /// The same set, each item from its record.
+    pub fn with_records(mut self, records: Vec<Record>) -> Self {
+        assert_eq!(records.len(), self.len(), "one record per item");
+        self.records = Some(records);
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -256,6 +306,11 @@ impl ItemSet {
 
     pub fn copper(&self) -> Option<&Copper> {
         self.copper.as_ref()
+    }
+
+    /// The item's record; None for a set without them.
+    pub fn record(&self, item: usize) -> Option<Record> {
+        self.records.as_ref().map(|records| records[item])
     }
 
     /// The item's ids; None for a set without them.

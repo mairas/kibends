@@ -6,14 +6,15 @@
 //! overlap, the deepest one counts.
 //!
 //! A field built from its own items (`Obstacles::new`) holds them in a set
-//! of its own (`items::ItemSet`), and numbers its obstacles from the
-//! items' interned ids (`obstacle_ids`).
+//! of its own (`items::ItemSet`); one a builder makes from the board takes
+//! the board's sets (`build::BoardItems`). Either numbers its obstacles
+//! from the items' interned ids (`obstacle_ids`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::edges::{StaticEdges, number};
-use super::items::{Copper, Interner, ItemIds, ItemSet};
+use super::items::{Copper, Interner, ItemIds, ItemSet, Picked};
 use super::search::parts_smooth_distance;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, Field, Kind};
@@ -106,6 +107,14 @@ impl Obstacles {
             edge_inflation,
             max_inflation,
         }
+    }
+
+    /// Where each item comes from, the board edge left out; None for a
+    /// field of items without records.
+    pub fn picked(&self) -> Option<Vec<Picked>> {
+        let mut picked = self.edges.picked()?;
+        picked.truncate(self.items);
+        Some(picked)
     }
 
     /// How far the board edge keeps from the copper's centreline, mm; None

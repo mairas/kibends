@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 pub use super::items::Copper;
-use super::items::ItemSet;
+use super::items::{ItemSet, Picked, Source};
 use super::smooth::SMOOTH_REACH;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, TOUCH_TOLERANCE};
@@ -109,6 +109,15 @@ pub struct Member {
     pub index: u32,
 }
 
+/// How a field takes an item otherwise than its set holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Override {
+    /// Copper counted on the layer of this number rather than its set's.
+    Layer(u32),
+    /// A pad's copper held as no copper, as what only stops a via.
+    Stop,
+}
+
 /// A set's item that is not the field's.
 const ABSENT: u32 = u32::MAX;
 
@@ -129,10 +138,9 @@ pub struct StaticEdges {
     /// The largest inflation of the items but the `Outside` ones.
     inflation: f64,
     outside: Vec<usize>,
-    /// The field's items whose copper is on another layer than their
-    /// set's, ascending: each with its layer, None for an item that is not
-    /// copper in the field.
-    layers: Vec<(u32, Option<u32>)>,
+    /// The field's items it takes otherwise than their sets hold them,
+    /// ascending.
+    overrides: Vec<(u32, Override)>,
     indexed_edges: usize,
     clearance: OnceLock<Vec<u32>>,
 }
@@ -165,15 +173,15 @@ impl StaticEdges {
     }
 
     /// The items `members` of `parts`, in that order, each of its
-    /// inflation and obstacle, and on the copper layer `layers` gives the
-    /// items it names. The parts are sets of one interner, and no item is
+    /// inflation and obstacle, the items `overrides` names taken as it
+    /// says, ascending. The parts are sets of one interner, and no item is
     /// a member twice.
     pub fn view(
         parts: Vec<Arc<ItemSet>>,
         members: Vec<Member>,
         inflations: Vec<f64>,
         obstacles: Vec<u32>,
-        layers: Vec<(u32, Option<u32>)>,
+        overrides: Vec<(u32, Override)>,
     ) -> Self {
         assert!(
             parts.windows(2).all(|w| w[0].token() == w[1].token()),
@@ -185,7 +193,18 @@ impl StaticEdges {
             assert_eq!(*slot, ABSENT, "an item is a member of a field once");
             *slot = number(k);
         }
-        Self::build(parts, members, Some(lookup), inflations, obstacles, layers)
+        assert!(
+            overrides.windows(2).all(|w| w[0].0 < w[1].0),
+            "overrides ascend by item"
+        );
+        Self::build(
+            parts,
+            members,
+            Some(lookup),
+            inflations,
+            obstacles,
+            overrides,
+        )
     }
 
     fn build(
@@ -194,7 +213,7 @@ impl StaticEdges {
         lookup: Option<Vec<Vec<u32>>>,
         inflations: Vec<f64>,
         obstacles: Vec<u32>,
-        layers: Vec<(u32, Option<u32>)>,
+        overrides: Vec<(u32, Override)>,
     ) -> Self {
         let kind = |m: &Member| parts[m.part as usize].kind(m.index as usize);
         let inflation = members
@@ -217,7 +236,7 @@ impl StaticEdges {
             obstacles,
             inflation,
             outside,
-            layers,
+            overrides,
             indexed_edges: INDEXED_EDGES,
             clearance: OnceLock::new(),
         }
@@ -286,6 +305,34 @@ impl StaticEdges {
         self.obstacle_count
     }
 
+    /// Where each item comes from, None for a field of items without
+    /// records.
+    pub fn picked(&self) -> Option<Vec<Picked>> {
+        let mut overrides = self.overrides.iter().peekable();
+        let mut picked = Vec::with_capacity(self.len());
+        for (item, m) in self.members.iter().enumerate() {
+            let set = &self.parts[m.part as usize];
+            let k = m.index as usize;
+            let record = set.record(k)?;
+            let layer = set.copper().and_then(|c| c.layer[k]);
+            let how = overrides
+                .next_if(|(at, _)| *at as usize == item)
+                .map(|&(_, how)| how);
+            let (source, copper) = match how {
+                None => (record.source, layer),
+                Some(Override::Layer(layer)) => (record.source, Some(layer)),
+                Some(Override::Stop) => (Source::PadStop, None),
+            };
+            picked.push(Picked {
+                source,
+                layer: record.layer as usize,
+                index: record.index as usize,
+                copper: copper.map(|c| c as usize),
+            });
+        }
+        Some(picked)
+    }
+
     /// The field's items among the items `found` gives of each of its
     /// sets, ascending.
     fn mapped(&self, found: impl Fn(&ItemSet) -> Vec<usize>) -> Vec<usize> {
@@ -349,8 +396,11 @@ impl StaticEdges {
             layers.push(copper.layer[k]);
             extents.push(copper.extent[k]);
         }
-        for &(item, layer) in &self.layers {
-            layers[item as usize] = layer;
+        for &(item, how) in &self.overrides {
+            layers[item as usize] = match how {
+                Override::Layer(layer) => Some(layer),
+                Override::Stop => None,
+            };
         }
         let is_copper = |k: usize| nets[k].is_some() && layers[k].is_some();
         let widest = (0..self.len())

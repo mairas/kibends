@@ -3,10 +3,16 @@
 //! stops a via.
 //!
 //! Python reads the board's snapshot of each layer into a `Layer`, its
-//! copper, holes, keepouts and board outline as plain shapes; this module
-//! picks the items each field holds and inflates them by the clearance
-//! rules (`rules`). Each field comes with the source of each of its items
-//! (`Picked`), so that Python can name them.
+//! copper, holes, keepouts and board outline as plain shapes. A run's
+//! fields share one `BoardItems`: each layer's items, less the moving
+//! vias, in one item set (`items::ItemSet`) whose items keep their records
+//! (`items::Record`), so that Python can name them. A builder picks the
+//! items each field holds by walking the layers' records and inflates them
+//! by the clearance rules (`rules`); the field is a view of the sets that
+//! holds which items it has, in its order, and their inflations
+//! (`edges::StaticEdges`). A layer's set orders its items as a chain's
+//! field takes them: pads' copper, tracks, vias' rings, graphics, track
+//! keepouts, pads' holes, vias' holes, via keepouts, the board outline.
 //!
 //! A chain's static field is one per (layer, net, width), from other nets'
 //! copper, holes, keepouts and the board edge (`chain_obstacles`); no
@@ -20,13 +26,18 @@
 //! the via also keeps the zone's clearance and margin from other-net copper
 //! where that exceeds the netclass rule (`rules::zone_inflation`). The
 //! vias standing still that a moving via pairs with leave its field and are
-//! built apart, each as the field would count it.
+//! built apart, each as the field would count it. A moving via's fields
+//! hold their items in sets of their own.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use super::TOUCH_TOLERANCE;
 use super::chain::ChainField;
-use super::obstacles::{Item, Obstacles};
+use super::edges::{Member, Override, StaticEdges, number};
+use super::items::{Copper, Interner, ItemIds, ItemSet, Record};
+pub use super::items::{Picked, Source};
+use super::obstacles::{Obstacles, edge_obstacle, obstacle_ids};
+use super::{Kind, TOUCH_TOLERANCE};
 use crate::geometry::{Part, Shape, V2};
 use crate::rules::{HoleRules, Keeper, Via, Zone, via_inflation, zones_on};
 
@@ -94,48 +105,201 @@ impl Layer {
     }
 }
 
-/// What a field's item is made of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// A pad's copper.
-    Pad = 0,
-    /// A track's centreline.
-    Track = 1,
-    /// A via's ring, at its centre.
-    ViaRing = 2,
-    Graphic = 3,
-    TrackKeepout = 4,
-    ViaKeepout = 5,
-    /// A pad's hole, at its position.
-    PadHole = 6,
-    /// A via's hole, at its centre.
-    ViaHole = 7,
-    /// A pad of a via's net, which the via may touch but not overlap.
-    PadStop = 8,
+fn point(p: V2) -> Shape {
+    Shape {
+        parts: vec![Part::Line(vec![p])],
+        type_id: POINT,
+    }
 }
 
-/// Where a field's item comes from: its kind, the layer whose record it
-/// is and its index there, and the layer of its copper, None for what is
-/// not copper of one layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Picked {
-    pub source: Source,
-    pub layer: usize,
-    pub index: usize,
-    pub copper: Option<usize>,
+/// How a field measures to `shape`: to its area, or to its geometry.
+fn kind_of(shape: &Shape) -> Kind {
+    if shape.is_area() {
+        Kind::Area
+    } else {
+        Kind::Line
+    }
 }
 
-/// A field's items as they are picked, with their sources.
+/// Each of a layer's records' items in its set, None for a record that
+/// has none there: a pad without copper on the layer or without a drill,
+/// a moving via.
 #[derive(Default)]
-pub struct Built {
-    pub items: Vec<Item>,
-    pub picked: Vec<Picked>,
+struct Records {
+    pad_copper: Vec<Option<u32>>,
+    pad_holes: Vec<Option<u32>>,
+    tracks: Vec<u32>,
+    via_rings: Vec<Option<u32>>,
+    via_holes: Vec<Option<u32>>,
+    graphics: Vec<u32>,
+    track_keepouts: Vec<u32>,
+    via_keepouts: Vec<u32>,
+    outline: Option<u32>,
 }
 
-/// A static field and the sources of its items in order.
-pub struct BuiltField {
-    pub field: Obstacles,
-    pub picked: Vec<Picked>,
+/// A layer's set as it is gathered.
+struct Gathered {
+    layer: u32,
+    shapes: Vec<Shape>,
+    kinds: Vec<Kind>,
+    copper: Copper,
+    records: Vec<Record>,
+}
+
+impl Gathered {
+    /// Adds `shape` of `kind`, from record `index` of `source`, as copper
+    /// of the net numbered `net` reaching `extent` mm beyond it, or None
+    /// for what is not copper; and gives its index.
+    fn add(
+        &mut self,
+        shape: Shape,
+        kind: Kind,
+        copper: Option<(u32, f64)>,
+        source: Source,
+        index: usize,
+    ) -> u32 {
+        let item = number(self.shapes.len());
+        self.shapes.push(shape);
+        self.kinds.push(kind);
+        self.copper.net.push(copper.map(|(net, _)| net));
+        self.copper.layer.push(copper.map(|_| self.layer));
+        self.copper
+            .extent
+            .push(copper.map_or(0.0, |(_, extent)| extent));
+        self.records.push(Record {
+            source,
+            layer: self.layer,
+            index: number(index),
+        });
+        item
+    }
+}
+
+/// The board's layers' items as a run's fields share them: one set per
+/// layer, without the vias of `moving`, which the optimizer adds at their
+/// current positions. A layer's copper is on the layer of its index.
+pub struct BoardItems {
+    layers: Vec<Arc<Layer>>,
+    sets: Vec<Arc<ItemSet>>,
+    records: Vec<Records>,
+    moving: HashSet<String>,
+}
+
+impl BoardItems {
+    pub fn new(layers: Vec<Arc<Layer>>, moving: HashSet<String>) -> Self {
+        let mut interner = Interner::new();
+        let mut sets = Vec::with_capacity(layers.len());
+        let mut records = Vec::with_capacity(layers.len());
+        for (l, layer) in layers.iter().enumerate() {
+            let (set, found) = gather(layer, number(l), &moving, &mut interner);
+            sets.push(Arc::new(set));
+            records.push(found);
+        }
+        Self {
+            layers,
+            sets,
+            records,
+            moving,
+        }
+    }
+
+    pub fn layers(&self) -> &[Arc<Layer>] {
+        &self.layers
+    }
+
+    fn layer(&self, l: usize) -> &Layer {
+        &self.layers[l]
+    }
+
+    fn is_moving(&self, via: &Via) -> bool {
+        self.moving.contains(&via.id)
+    }
+
+    /// Layer l's vias but the moving ones.
+    fn still_vias(&self, l: usize) -> Vec<ViaRef> {
+        self.layer(l)
+            .vias
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !self.is_moving(v))
+            .map(|(index, _)| ViaRef { layer: l, index })
+            .collect()
+    }
+}
+
+/// Layer `layer`'s items, in the order a chain's field takes them, and
+/// each record's.
+fn gather(
+    from: &Layer,
+    layer: u32,
+    moving: &HashSet<String>,
+    interner: &mut Interner,
+) -> (ItemSet, Records) {
+    let mut set = Gathered {
+        layer,
+        shapes: Vec::new(),
+        kinds: Vec::new(),
+        copper: Copper::default(),
+        records: Vec::new(),
+    };
+    let mut found = Records::default();
+    let mut net = |name: &str, extent: f64| Some((interner.name(name), extent));
+    for (k, pad) in from.pads.iter().enumerate() {
+        let item = pad.shape.as_ref().map(|shape| {
+            set.add(
+                shape.clone(),
+                kind_of(shape),
+                net(&pad.net, 0.0),
+                Source::Pad,
+                k,
+            )
+        });
+        found.pad_copper.push(item);
+    }
+    for (k, track) in from.tracks.iter().enumerate() {
+        let shape = &track.centreline;
+        let copper = net(&track.net, track.width / 2.0);
+        let item = set.add(shape.clone(), kind_of(shape), copper, Source::Track, k);
+        found.tracks.push(item);
+    }
+    for (k, via) in from.vias.iter().enumerate() {
+        let item = (!moving.contains(&via.id)).then(|| {
+            let copper = net(&via.net, via.diameter / 2.0);
+            set.add(point(via.position), Kind::Line, copper, Source::ViaRing, k)
+        });
+        found.via_rings.push(item);
+    }
+    for (k, graphic) in from.graphics.iter().enumerate() {
+        let shape = &graphic.shape;
+        let copper = net(&graphic.net, 0.0);
+        let item = set.add(shape.clone(), kind_of(shape), copper, Source::Graphic, k);
+        found.graphics.push(item);
+    }
+    for (k, shape) in from.track_keepouts.iter().enumerate() {
+        let item = set.add(shape.clone(), kind_of(shape), None, Source::TrackKeepout, k);
+        found.track_keepouts.push(item);
+    }
+    for (k, pad) in from.pads.iter().enumerate() {
+        let item = (pad.drill > 0.0)
+            .then(|| set.add(point(pad.position), Kind::Line, None, Source::PadHole, k));
+        found.pad_holes.push(item);
+    }
+    for (k, via) in from.vias.iter().enumerate() {
+        let item = (!moving.contains(&via.id))
+            .then(|| set.add(point(via.position), Kind::Line, None, Source::ViaHole, k));
+        found.via_holes.push(item);
+    }
+    for (k, shape) in from.via_keepouts.iter().enumerate() {
+        let item = set.add(shape.clone(), kind_of(shape), None, Source::ViaKeepout, k);
+        found.via_keepouts.push(item);
+    }
+    found.outline = from
+        .outline
+        .as_ref()
+        .map(|outline| set.add(outline.clone(), Kind::Outside, None, Source::Outline, 0));
+    let items = ItemSet::new(set.shapes, set.kinds, Some(set.copper), Some(interner))
+        .with_records(set.records);
+    (items, found)
 }
 
 /// A via standing still, by its layer and index there.
@@ -145,60 +309,65 @@ struct ViaRef {
     index: usize,
 }
 
-fn point(p: V2) -> Shape {
-    Shape {
-        parts: vec![Part::Line(vec![p])],
-        type_id: POINT,
-    }
+/// A field's items as they are picked from the board's sets: each by its
+/// layer and index there, with its inflation, and the items taken
+/// otherwise than their sets hold them.
+struct Built<'b> {
+    board: &'b BoardItems,
+    /// The layer of each part.
+    parts: Vec<usize>,
+    members: Vec<Member>,
+    inflations: Vec<f64>,
+    overrides: Vec<(u32, Override)>,
 }
 
-impl Built {
-    fn push(&mut self, item: Item, picked: Picked) {
-        self.items.push(item);
-        self.picked.push(picked);
+impl<'b> Built<'b> {
+    fn new(board: &'b BoardItems) -> Self {
+        Self {
+            board,
+            parts: Vec::new(),
+            members: Vec::new(),
+            inflations: Vec::new(),
+            overrides: Vec::new(),
+        }
     }
 
-    /// Copper of `net` on layer `l`, reaching `extent` mm beyond `shape`,
-    /// with `clearance` its own, as an obstacle to what `keeper` keeps;
-    /// nothing for copper of its own net.
+    /// Item `item` of layer l's set, inflated by `inflation`.
+    fn push(&mut self, l: usize, item: u32, inflation: f64, how: Option<Override>) {
+        let part = match self.parts.iter().position(|&p| p == l) {
+            Some(part) => part,
+            None => {
+                self.parts.push(l);
+                self.parts.len() - 1
+            }
+        };
+        if let Some(how) = how {
+            self.overrides.push((number(self.members.len()), how));
+        }
+        self.members.push(Member {
+            part: number(part),
+            index: item,
+        });
+        self.inflations.push(inflation);
+    }
+
+    /// Copper of `net` on layer l, item `item` of layer r's set, reaching
+    /// `extent` mm beyond its geometry, with `clearance` its own, as an
+    /// obstacle to what `keeper` keeps; nothing for copper of its own net.
     #[allow(clippy::too_many_arguments)]
     fn kept(
         &mut self,
         keeper: &Keeper,
-        layers: &[&Layer],
         l: usize,
-        shape: &Shape,
+        (r, item): (usize, u32),
         net: &str,
         extent: f64,
         clearance: f64,
-        picked: Picked,
     ) {
         if let Some(inflation) = keeper.copper(net, extent, clearance) {
-            self.push(
-                Item {
-                    shape: shape.clone(),
-                    inflation,
-                    net: Some(net.to_owned()),
-                    extent,
-                    layer: Some(layers[l].name.clone()),
-                },
-                picked,
-            );
+            let how = (r != l).then_some(Override::Layer(number(l)));
+            self.push(r, item, inflation, how);
         }
-    }
-
-    /// An item that is not copper of one layer.
-    fn plain(&mut self, shape: Shape, inflation: f64, picked: Picked) {
-        self.push(
-            Item {
-                shape,
-                inflation,
-                net: None,
-                extent: 0.0,
-                layer: None,
-            },
-            picked,
-        );
     }
 
     /// Layer l's copper and track keepouts, with `vias` in place of the
@@ -206,96 +375,64 @@ impl Built {
     /// via's ring. `keep` says which of the layer's items are there.
     fn copper(
         &mut self,
-        layers: &[&Layer],
         l: usize,
         keeper: &Keeper,
         vias: &[ViaRef],
         via_keeper: &dyn Fn(&Via) -> Keeper,
         keep: &Keep,
     ) {
-        let layer = &layers[l];
-        let at = |source, index| Picked {
-            source,
-            layer: l,
-            index,
-            copper: Some(l),
-        };
+        let board = self.board;
+        let layer = board.layer(l);
+        let records = &board.records[l];
         for (k, pad) in layer.pads.iter().enumerate() {
-            if let Some(shape) = &pad.shape
+            if let Some(item) = records.pad_copper[k]
                 && keep.pads.as_ref().is_none_or(|p| p[k])
             {
                 let clearance = pad
                     .clearance_override
                     .unwrap_or_else(|| layer.clearance(&pad.net));
-                self.kept(
-                    keeper,
-                    layers,
-                    l,
-                    shape,
-                    &pad.net,
-                    0.0,
-                    clearance,
-                    at(Source::Pad, k),
-                );
+                self.kept(keeper, l, (l, item), &pad.net, 0.0, clearance);
             }
         }
         for (k, track) in layer.tracks.iter().enumerate() {
             if keep.tracks.as_ref().is_none_or(|t| t[k]) {
                 self.kept(
                     keeper,
-                    layers,
                     l,
-                    &track.centreline,
+                    (l, records.tracks[k]),
                     &track.net,
                     track.width / 2.0,
                     layer.clearance(&track.net),
-                    at(Source::Track, k),
                 );
             }
         }
         for v in vias {
-            let via = &layers[v.layer].vias[v.index];
+            let via = &board.layer(v.layer).vias[v.index];
+            let ring = board.records[v.layer].via_rings[v.index]
+                .expect("a via standing still is in its layer's set");
             self.kept(
                 &via_keeper(via),
-                layers,
                 l,
-                &point(via.position),
+                (v.layer, ring),
                 &via.net,
                 via.diameter / 2.0,
                 layer.clearance(&via.net),
-                Picked {
-                    source: Source::ViaRing,
-                    layer: v.layer,
-                    index: v.index,
-                    copper: Some(l),
-                },
             );
         }
         for (k, graphic) in layer.graphics.iter().enumerate() {
             if keep.graphics.as_ref().is_none_or(|g| g[k]) {
                 self.kept(
                     keeper,
-                    layers,
                     l,
-                    &graphic.shape,
+                    (l, records.graphics[k]),
                     &graphic.net,
                     0.0,
                     layer.clearance(&graphic.net),
-                    at(Source::Graphic, k),
                 );
             }
         }
-        for (k, keepout) in layer.track_keepouts.iter().enumerate() {
-            self.plain(
-                keepout.clone(),
-                keeper.radius,
-                Picked {
-                    source: Source::TrackKeepout,
-                    layer: l,
-                    index: k,
-                    copper: None,
-                },
-            );
+        for &item in &records.track_keepouts {
+            self.push(l, item, keeper.radius, None);
         }
     }
 
@@ -303,51 +440,105 @@ impl Built {
     /// obstacles to `keeper`.
     fn holes(
         &mut self,
-        layers: &[&Layer],
         l: usize,
         pads: &dyn Fn(usize, &Pad) -> bool,
         vias: &[ViaRef],
         keeper: &Keeper,
     ) {
-        for (k, pad) in layers[l].pads.iter().enumerate() {
+        let board = self.board;
+        for (k, pad) in board.layer(l).pads.iter().enumerate() {
             if pad.drill > 0.0
                 && pads(k, pad)
                 && let Some(inflation) = keeper.hole(&pad.net, pad.drill / 2.0, pad.plated)
             {
-                self.plain(
-                    point(pad.position),
-                    inflation,
-                    Picked {
-                        source: Source::PadHole,
-                        layer: l,
-                        index: k,
-                        copper: None,
-                    },
-                );
+                let hole = board.records[l].pad_holes[k].expect("a drilled pad has a hole");
+                self.push(l, hole, inflation, None);
             }
         }
         for v in vias {
-            let via = &layers[v.layer].vias[v.index];
+            let via = &board.layer(v.layer).vias[v.index];
             if let Some(inflation) = keeper.hole(&via.net, via.drill / 2.0, true) {
-                self.plain(
-                    point(via.position),
-                    inflation,
-                    Picked {
-                        source: Source::ViaHole,
-                        layer: v.layer,
-                        index: v.index,
-                        copper: None,
-                    },
-                );
+                let hole = board.records[v.layer].via_holes[v.index]
+                    .expect("a via standing still is in its layer's set");
+                self.push(v.layer, hole, inflation, None);
             }
         }
     }
 
-    fn field(self, outline: Option<Shape>, edge_inflation: f64) -> BuiltField {
-        BuiltField {
-            field: Obstacles::new(self.items, outline, edge_inflation),
-            picked: self.picked,
+    /// The items' obstacles, then the board edge, layer l's outline
+    /// inflated by `edge_inflation`, if it has one.
+    fn with_edge(&mut self, outline: Option<usize>, edge_inflation: f64) -> (Vec<u32>, f64) {
+        let keys: Vec<(ItemIds, f64)> = self
+            .members
+            .iter()
+            .zip(&self.inflations)
+            .map(|(m, &inflation)| {
+                let set = &self.board.sets[self.parts[m.part as usize]];
+                let ids = set.ids(m.index as usize).expect("a board's sets have ids");
+                (ids, inflation)
+            })
+            .collect();
+        let mut ids = obstacle_ids(&keys);
+        match outline.and_then(|l| self.board.records[l].outline.map(|item| (l, item))) {
+            None => (ids, 0.0),
+            Some((l, item)) => {
+                ids.push(edge_obstacle(&ids));
+                self.push(l, item, edge_inflation, None);
+                (ids, edge_inflation)
+            }
         }
+    }
+
+    /// The field of the items, and the board edge as `with_edge` takes it.
+    fn field(mut self, outline: Option<usize>, edge_inflation: f64) -> Obstacles {
+        let (ids, edge_inflation) = self.with_edge(outline, edge_inflation);
+        let parts = self
+            .parts
+            .iter()
+            .map(|&l| self.board.sets[l].clone())
+            .collect();
+        let edges = StaticEdges::view(parts, self.members, self.inflations, ids, self.overrides);
+        Obstacles::of(edges, edge_inflation)
+    }
+
+    /// `field`, its items copied into a set of its own.
+    fn owned(mut self, outline: Option<usize>, edge_inflation: f64) -> Obstacles {
+        let (ids, edge_inflation) = self.with_edge(outline, edge_inflation);
+        let count = self.members.len();
+        let mut shapes = Vec::with_capacity(count);
+        let mut kinds = Vec::with_capacity(count);
+        let mut copper = Copper::default();
+        let mut records = Vec::with_capacity(count);
+        let mut overrides = self.overrides.iter().peekable();
+        for (item, m) in self.members.iter().enumerate() {
+            let set = &self.board.sets[self.parts[m.part as usize]];
+            let k = m.index as usize;
+            let of = set.copper().expect("a board's sets have copper");
+            let mut record = set.record(k).expect("a board's sets have records");
+            let (mut net, mut layer, mut extent) = (of.net[k], of.layer[k], of.extent[k]);
+            match overrides
+                .next_if(|(at, _)| *at as usize == item)
+                .map(|&(_, how)| how)
+            {
+                None => {}
+                Some(Override::Layer(l)) => layer = Some(l),
+                Some(Override::Stop) => {
+                    (net, layer, extent) = (None, None, 0.0);
+                    record.source = Source::PadStop;
+                }
+            }
+            shapes.push(set.shape(k).clone());
+            kinds.push(set.kind(k));
+            copper.net.push(net);
+            copper.layer.push(layer);
+            copper.extent.push(extent);
+            records.push(record);
+        }
+        let set = ItemSet::new(shapes, kinds, Some(copper), None).with_records(records);
+        Obstacles::of(
+            StaticEdges::whole(Arc::new(set), self.inflations, ids),
+            edge_inflation,
+        )
     }
 }
 
@@ -363,59 +554,44 @@ struct Keep {
 /// Layer l's items, those `keep` keeps, as obstacles to `keeper`, and
 /// the board edge `edge_clearance` beyond its half width.
 fn layer_obstacles(
-    layers: &[&Layer],
+    board: &BoardItems,
     l: usize,
     keeper: &Keeper,
     edge_clearance: f64,
     keep: &Keep,
     vias: &[ViaRef],
-) -> BuiltField {
-    let mut built = Built::default();
-    built.copper(layers, l, keeper, vias, &|_| keeper.clone(), keep);
+) -> Obstacles {
+    let mut built = Built::new(board);
+    built.copper(l, keeper, vias, &|_| keeper.clone(), keep);
     let pads = |k: usize, _: &Pad| keep.pads.as_ref().is_none_or(|p| p[k]);
-    built.holes(layers, l, &pads, vias, keeper);
-    let layer = &layers[l];
-    match &layer.outline {
-        None => built.field(None, 0.0),
-        Some(outline) => built.field(Some(outline.clone()), edge_clearance + keeper.radius),
-    }
+    built.holes(l, &pads, vias, keeper);
+    built.field(Some(l), edge_clearance + keeper.radius)
 }
 
-/// Layer l's vias but those in `moving`.
-fn still_vias(layers: &[&Layer], l: usize, moving: &HashSet<&str>) -> Vec<ViaRef> {
-    layers[l]
-        .vias
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| !moving.contains(v.id.as_str()))
-        .map(|(index, _)| ViaRef { layer: l, index })
-        .collect()
-}
-
-/// Obstacles for a track of `net` and `width` mm on the layer.
+/// Obstacles for a track of `net` and `width` mm on the board's layer l.
 ///
 /// Copper clearance is the larger of both items' netclass clearances, with
 /// a pad's own override replacing its netclass. Copper of `net` is never
-/// an obstacle; its holes are not either, except unplated ones. The vias
-/// in `moving`, which the optimizer adds at their current positions, are
-/// left out.
+/// an obstacle; its holes are not either, except unplated ones. The moving
+/// vias, which the optimizer adds at their current positions, are left
+/// out.
 pub fn chain_obstacles(
-    layer: &Layer,
+    board: &BoardItems,
+    l: usize,
     net: &str,
     width: f64,
     edge_clearance: f64,
     hole_clearance: f64,
-    moving: &HashSet<&str>,
-) -> BuiltField {
+) -> Obstacles {
+    let layer = board.layer(l);
     let keeper = Keeper::track(Some(net), width, layer.clearance(net), hole_clearance);
-    let layers = &[layer];
     layer_obstacles(
-        layers,
-        0,
+        board,
+        l,
         &keeper,
         edge_clearance,
         &Keep::default(),
-        &still_vias(layers, 0, moving),
+        &board.still_vias(l),
     )
 }
 
@@ -426,7 +602,8 @@ pub struct PairTrack<'a> {
 }
 
 /// Obstacles for the centreline of a coupled section of a differential
-/// pair, its tracks `a` and `b` of `width` `gap` mm apart, on the layer.
+/// pair, its tracks `a` and `b` of `width` `gap` mm apart, on the board's
+/// layer l.
 ///
 /// The centreline keeps clear as one track as wide as the pair would:
 /// half its outer extent, a track width and half the gap, plus the larger
@@ -439,19 +616,20 @@ pub struct PairTrack<'a> {
 /// net is left out: what the section connects to, at its pinned ends or
 /// between them, where the centreline cannot keep clear of it. Copper that
 /// a fan-out beyond the section connects to stays, as the other track keeps
-/// clear of it in its own fan-out's place. The vias in `moving` are left
-/// out, as for a chain (`chain_obstacles`).
+/// clear of it in its own fan-out's place. The moving vias are left out, as
+/// for a chain (`chain_obstacles`).
 #[allow(clippy::too_many_arguments)]
 pub fn pair_obstacles(
-    layer: &Layer,
+    board: &BoardItems,
+    l: usize,
     a: PairTrack<'_>,
     b: PairTrack<'_>,
     width: f64,
     gap: f64,
     edge_clearance: f64,
     hole_clearance: f64,
-    moving: &HashSet<&str>,
-) -> BuiltField {
+) -> Obstacles {
+    let layer = board.layer(l);
     // A pair of one net keeps the second track's line, as a mapping by net
     // would.
     let mut connected: HashMap<&str, Shape> = HashMap::new();
@@ -486,7 +664,8 @@ pub fn pair_obstacles(
                 .collect(),
         ),
     };
-    let vias: Vec<ViaRef> = still_vias(&[layer], 0, moving)
+    let vias: Vec<ViaRef> = board
+        .still_vias(l)
         .into_iter()
         .filter(|r| {
             let v = &layer.vias[r.index];
@@ -503,7 +682,7 @@ pub fn pair_obstacles(
         hole_to_hole: crate::rules::HOLE_TO_HOLE,
         zones: Vec::new(),
     };
-    layer_obstacles(&[layer], 0, &keeper, edge_clearance, &keep, &vias)
+    layer_obstacles(board, l, &keeper, edge_clearance, &keep, &vias)
 }
 
 /// Python's `max(a, b)`: `a` unless `b` is greater.
@@ -535,12 +714,8 @@ struct Surroundings {
 }
 
 impl Surroundings {
-    fn of(
-        layers: &[&Layer],
-        via: &Via,
-        moving: &HashSet<&str>,
-        holes: HoleRules,
-    ) -> Result<Self, NoLayer> {
+    fn of(board: &BoardItems, via: &Via, holes: HoleRules) -> Result<Self, NoLayer> {
+        let layers = board.layers();
         let spanned: Vec<usize> = (0..layers.len())
             .filter(|&l| via.reaches(layers[l].ordinal))
             .collect();
@@ -561,7 +736,7 @@ impl Surroundings {
         let mut standing: HashMap<&str, ViaRef> = HashMap::new();
         for &l in &spanned {
             for (index, v) in layers[l].vias.iter().enumerate() {
-                if v.id == via.id || moving.contains(v.id.as_str()) {
+                if v.id == via.id || board.is_moving(v) {
                     continue;
                 }
                 if standing.insert(&v.id, ViaRef { layer: l, index }).is_none() {
@@ -584,11 +759,11 @@ impl Surroundings {
 
     /// The keeper of another via's ring: with `zones` on the layers both
     /// span.
-    fn via_keeper(&self, layers: &[&Layer], zones: &[Zone], other: &Via) -> Keeper {
+    fn via_keeper(&self, board: &BoardItems, zones: &[Zone], other: &Via) -> Keeper {
         let on: Vec<i32> = self
             .spanned
             .iter()
-            .map(|&l| layers[l].ordinal)
+            .map(|&l| board.layer(l).ordinal)
             .filter(|&o| other.reaches(o))
             .collect();
         self.keeper.with_zones(zones_on(zones, &on))
@@ -603,9 +778,9 @@ fn plated_of(pad: &Pad, via: &Via) -> bool {
 
 /// A moving via's field, and the vias it pairs with apart.
 pub struct ViaFields {
-    pub field: BuiltField,
+    pub field: Obstacles,
     /// The vias of `split`, as obstacles to the via, None if none is one.
-    pub split: Option<BuiltField>,
+    pub split: Option<Obstacles>,
 }
 
 /// The fabrication rules and clearances a via keeps.
@@ -615,7 +790,7 @@ pub struct ViaRules {
     pub holes: HoleRules,
 }
 
-/// Obstacles for `via` at any position, over every layer of `layers` it
+/// Obstacles for `via` at any position, over every layer of the board it
 /// spans. The outside of the regions of its zones is not among them, nor
 /// is anything of its own net: those only limit where the via may go and
 /// do not repel it (`own_net_stops`).
@@ -630,167 +805,129 @@ pub struct ViaRules {
 /// reaches it. Its hole keeps hole-to-hole from every other hole of
 /// another net the layers hold, and an unplated hole of its own net keeps
 /// the hole clearance. One field over all the layers' items is their
-/// minimum. The via itself and the vias in `moving`, which the caller adds
-/// at their current positions, are left out; so is the copper of zones,
-/// which KiCad refills.
+/// minimum. The via itself and the moving vias, which the caller adds at
+/// their current positions, are left out; so is the copper of zones, which
+/// KiCad refills.
 ///
 /// The vias of other nets whose ids are in `split` are left out of the
 /// field and come back apart, as obstacles to `via`, each as the field
 /// would count it.
 pub fn via_obstacles(
-    layers: &[&Layer],
+    board: &BoardItems,
     via: &Via,
     split: &HashSet<&str>,
-    moving: &HashSet<&str>,
     rules: ViaRules,
     zones: &[Zone],
 ) -> Result<ViaFields, NoLayer> {
-    let found = Surroundings::of(layers, via, moving, rules.holes)?;
-    let is_split = |r: &ViaRef| split.contains(layers[r.layer].vias[r.index].id.as_str());
+    let found = Surroundings::of(board, via, rules.holes)?;
+    let is_split = |r: &ViaRef| split.contains(board.layer(r.layer).vias[r.index].id.as_str());
     let (picked, kept): (Vec<ViaRef>, Vec<ViaRef>) =
         found.others.iter().copied().partition(|r| is_split(r));
-    let field = via_field(layers, &found, via, &kept, rules.edge_clearance, zones);
+    let field = via_field(board, &found, via, &kept, rules.edge_clearance, zones);
     if picked.is_empty() {
         return Ok(ViaFields { field, split: None });
     }
     let first = found.spanned[0];
-    let mut built = Built::default();
+    let mut built = Built::new(board);
     for r in &picked {
-        let other = &layers[r.layer].vias[r.index];
+        let other = &board.layer(r.layer).vias[r.index];
+        let ring = board.records[r.layer].via_rings[r.index]
+            .expect("a via standing still is in its layer's set");
         built.kept(
-            &found.via_keeper(layers, zones, other),
-            layers,
+            &found.via_keeper(board, zones, other),
             first,
-            &point(other.position),
+            (r.layer, ring),
             &other.net,
             other.diameter / 2.0,
-            layers[first].clearance(&other.net),
-            Picked {
-                source: Source::ViaRing,
-                layer: r.layer,
-                index: r.index,
-                copper: Some(first),
-            },
+            board.layer(first).clearance(&other.net),
         );
     }
-    built.holes(layers, first, &|_, _| false, &picked, &found.keeper);
+    built.holes(first, &|_, _| false, &picked, &found.keeper);
     Ok(ViaFields {
         field,
-        split: Some(built.field(None, 0.0)),
+        split: Some(built.owned(None, 0.0)),
     })
 }
 
 fn via_field(
-    layers: &[&Layer],
+    board: &BoardItems,
     found: &Surroundings,
     via: &Via,
     others: &[ViaRef],
     edge_clearance: f64,
     zones: &[Zone],
-) -> BuiltField {
+) -> Obstacles {
     let keeper = &found.keeper;
-    let on = |l: usize| keeper.with_zones(zones_on(zones, &[layers[l].ordinal]));
+    let on = |l: usize| keeper.with_zones(zones_on(zones, &[board.layer(l).ordinal]));
     let first = found.spanned[0];
-    let mut built = Built::default();
+    let mut built = Built::new(board);
     // The via spans every layer here, so another via's ring counts once, as
     // do pads' holes, which are the same on every layer. The copper items
     // include track keepouts, which hold the via back as well, since the
     // chain ends it joins sit at its centre.
-    let via_keeper = |other: &Via| found.via_keeper(layers, zones, other);
-    built.copper(
-        layers,
-        first,
-        &on(first),
-        others,
-        &via_keeper,
-        &Keep::default(),
-    );
+    let via_keeper = |other: &Via| found.via_keeper(board, zones, other);
+    built.copper(first, &on(first), others, &via_keeper, &Keep::default());
     for &l in &found.spanned[1..] {
         let keeper = on(l);
-        built.copper(
-            layers,
-            l,
-            &keeper,
-            &[],
-            &|_| keeper.clone(),
-            &Keep::default(),
-        );
+        built.copper(l, &keeper, &[], &|_| keeper.clone(), &Keep::default());
     }
-    built.holes(layers, first, &|_, p| !plated_of(p, via), others, keeper);
+    built.holes(first, &|_, p| !plated_of(p, via), others, keeper);
     for &l in &found.spanned {
-        for (k, keepout) in layers[l].via_keepouts.iter().enumerate() {
-            built.plain(
-                keepout.clone(),
-                keeper.radius,
-                Picked {
-                    source: Source::ViaKeepout,
-                    layer: l,
-                    index: k,
-                    copper: None,
-                },
-            );
+        for &item in &board.records[l].via_keepouts {
+            built.push(l, item, keeper.radius, None);
         }
     }
-    let outline = layers[first].outline.clone();
-    built.field(outline, edge_clearance + keeper.radius)
+    built.owned(Some(first), edge_clearance + keeper.radius)
 }
 
 /// What of a via's net limits it: its pads and holes, and its vias.
 pub struct OwnNetStops {
-    pub items: Option<BuiltField>,
+    pub items: Option<Obstacles>,
     pub vias: Option<ChainField>,
 }
 
-/// What of `via`'s net on the layers of `layers` it spans limits it, as
+/// What of `via`'s net on the layers of the board it spans limits it, as
 /// obstacles that stop it without repelling it.
 ///
 /// Copper of one net does not interact, but two drilling rules hold: the
-/// holes of its net's vias, but those in `moving`, and of its net's plated
+/// holes of its net's vias, but the moving ones, and of its net's plated
 /// pads keep hole-to-hole from its hole, as two moving vias of one net
 /// keep (`rules::via_via_inflation`); and its ring may touch its net's pads
 /// but not overlap them, since a via in a pad needs the fabricator to fill
 /// and cap it, unless `allow_via_in_pad`, which KiCad's DRC does not check
 /// either.
 pub fn own_net_stops(
-    layers: &[&Layer],
+    board: &BoardItems,
     via: &Via,
-    moving: &HashSet<&str>,
     holes: HoleRules,
     allow_via_in_pad: bool,
 ) -> Result<OwnNetStops, NoLayer> {
-    let found = Surroundings::of(layers, via, moving, holes)?;
+    let found = Surroundings::of(board, via, holes)?;
     let first = found.spanned[0];
-    let mut built = Built::default();
-    built.holes(layers, first, &|_, p| plated_of(p, via), &[], &found.keeper);
+    let mut built = Built::new(board);
+    built.holes(first, &|_, p| plated_of(p, via), &[], &found.keeper);
     if !allow_via_in_pad {
         for &l in &found.spanned {
-            for (k, pad) in layers[l].pads.iter().enumerate() {
+            for (k, pad) in board.layer(l).pads.iter().enumerate() {
                 if pad.net == via.net
-                    && let Some(shape) = &pad.shape
+                    && let Some(item) = board.records[l].pad_copper[k]
                 {
-                    built.plain(
-                        shape.clone(),
-                        found.keeper.radius,
-                        Picked {
-                            source: Source::PadStop,
-                            layer: l,
-                            index: k,
-                            copper: None,
-                        },
-                    );
+                    built.push(l, item, found.keeper.radius, Some(Override::Stop));
                 }
             }
         }
     }
-    let items = (!built.items.is_empty()).then(|| built.field(None, 0.0));
-    let own = found
-        .own
-        .iter()
-        .map(|r| (&layers[r.layer].vias[r.index], found.clearance, Vec::new()));
+    let items = (!built.members.is_empty()).then(|| built.owned(None, 0.0));
+    let own = found.own.iter().map(|r| {
+        (
+            &board.layer(r.layer).vias[r.index],
+            found.clearance,
+            Vec::new(),
+        )
+    });
     let vias = vias_field(&found.keeper, own);
     Ok(OwnNetStops { items, vias })
 }
-
 /// A via at its position as an obstacle to a chain: its netclass
 /// clearance and the zones it stays inside.
 #[derive(Clone, Copy, Debug)]
@@ -853,12 +990,22 @@ fn vias_field<'a>(
 mod tests {
     use super::*;
     use crate::field::Field;
+    use crate::field::obstacles::Item;
     use crate::rules::{HOLE_CLEARANCE, HOLE_TO_HOLE, Span};
+    use crate::testing::Random;
 
     const HOLES: HoleRules = HoleRules {
         hole_clearance: HOLE_CLEARANCE,
         hole_to_hole: HOLE_TO_HOLE,
     };
+    const RULES: ViaRules = ViaRules {
+        edge_clearance: 0.3,
+        holes: HOLES,
+    };
+    /// Points a field is asked at, over the boards below.
+    const POINTS: usize = 300;
+    const SIDE: f64 = 12.0;
+    const REACH: f64 = 0.5;
 
     fn via(id: &str, net: &str, at: (f64, f64)) -> Via {
         Via {
@@ -871,21 +1018,32 @@ mod tests {
         }
     }
 
+    fn square(x: f64, y: f64, half: f64) -> Shape {
+        Shape::polygon(vec![vec![
+            V2::new(x - half, y - half),
+            V2::new(x + half, y - half),
+            V2::new(x + half, y + half),
+            V2::new(x - half, y + half),
+            V2::new(x - half, y - half),
+        ]])
+    }
+
     fn pad(net: &str, at: (f64, f64), plated: bool) -> Pad {
-        let (x, y) = at;
         Pad {
             net: net.into(),
-            position: V2::new(x, y),
+            position: V2::new(at.0, at.1),
             drill: 0.8,
             plated,
-            shape: Some(Shape::polygon(vec![vec![
-                V2::new(x - 1.0, y - 1.0),
-                V2::new(x + 1.0, y - 1.0),
-                V2::new(x + 1.0, y + 1.0),
-                V2::new(x - 1.0, y + 1.0),
-                V2::new(x - 1.0, y - 1.0),
-            ]])),
+            shape: Some(square(at.0, at.1, 1.0)),
             clearance_override: None,
+        }
+    }
+
+    fn track(net: &str, from: (f64, f64), to: (f64, f64), width: f64) -> Track {
+        Track {
+            net: net.into(),
+            width,
+            centreline: Shape::line(vec![V2::new(from.0, from.1), V2::new(to.0, to.1)]),
         }
     }
 
@@ -898,24 +1056,187 @@ mod tests {
         }
     }
 
+    fn board(layers: Vec<Layer>, moving: &[&str]) -> BoardItems {
+        BoardItems::new(
+            layers.into_iter().map(Arc::new).collect(),
+            moving.iter().map(|&id| id.to_owned()).collect(),
+        )
+    }
+
+    /// A layer of copper of several nets: pads of two shapes, tracks
+    /// meeting end to end, at a width change and at a T-junction, vias,
+    /// a keepout and the board outline.
+    fn busy(name: &str, ordinal: i32) -> Layer {
+        let mut busy = layer(name, ordinal);
+        busy.pads = vec![
+            pad("SIG", (2.0, 2.0), true),
+            pad("SIG", (5.0, 2.0), false),
+            pad("GND", (8.0, 2.0), true),
+            Pad {
+                clearance_override: Some(0.4),
+                ..pad("HV", (2.0, 9.0), true)
+            },
+        ];
+        busy.tracks = vec![
+            track("GND", (1.0, 5.0), (4.0, 5.0), 0.25),
+            track("GND", (4.0, 5.0), (6.0, 5.0), 0.25),
+            track("GND", (6.0, 5.0), (8.0, 5.0), 0.4),
+            track("GND", (5.0, 5.0), (5.0, 7.0), 0.25),
+            track("SIG", (1.0, 4.0), (10.0, 4.0), 0.25),
+            track("HV", (3.0, 10.0), (10.0, 10.0), 0.25),
+        ];
+        busy.vias = vec![
+            via("moving", "GND", (7.0, 7.0)),
+            via("still", "GND", (9.0, 7.0)),
+            via("signal", "SIG", (3.0, 7.0)),
+        ];
+        busy.graphics = vec![Graphic {
+            net: String::new(),
+            shape: square(10.0, 2.0, 0.5),
+        }];
+        busy.track_keepouts = vec![square(10.0, 8.0, 0.5)];
+        busy.via_keepouts = vec![square(1.0, 1.0, 0.3)];
+        busy.outline = Some(square(SIDE / 2.0, SIDE / 2.0, SIDE / 2.0));
+        busy.clearances = HashMap::from([("HV".to_owned(), 0.4)]);
+        busy
+    }
+
+    fn sources(field: &Obstacles) -> Vec<(Source, usize)> {
+        field
+            .picked()
+            .unwrap()
+            .iter()
+            .map(|p| (p.source, p.index))
+            .collect()
+    }
+
+    /// `field` built again from copies of its items, as `Obstacles::new`
+    /// builds a field.
+    fn owned(board: &BoardItems, field: &Obstacles) -> Obstacles {
+        let edges = field.edges();
+        let items = field
+            .picked()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let layer = board.layer(p.layer);
+                let (net, extent) = match p.source {
+                    Source::Pad => (layer.pads[p.index].net.clone(), 0.0),
+                    Source::Track => {
+                        let t = &layer.tracks[p.index];
+                        (t.net.clone(), t.width / 2.0)
+                    }
+                    Source::ViaRing => {
+                        let v = &layer.vias[p.index];
+                        (v.net.clone(), v.diameter / 2.0)
+                    }
+                    Source::Graphic => (layer.graphics[p.index].net.clone(), 0.0),
+                    _ => (String::new(), 0.0),
+                };
+                let copper = p.copper.map(|l| board.layer(l).name.clone());
+                Item {
+                    shape: edges.shape(k).clone(),
+                    inflation: edges.inflations()[k],
+                    net: copper.is_some().then_some(net),
+                    extent: if copper.is_some() { extent } else { 0.0 },
+                    layer: copper,
+                }
+            })
+            .collect();
+        let outline = field
+            .edge_inflation()
+            .map(|_| edges.shape(edges.len() - 1).clone());
+        Obstacles::new(items, outline, field.edge_inflation().unwrap_or(0.0))
+    }
+
+    /// Asserts that `field` answers as one built from copies of its items.
+    fn answers_as_owned(board: &BoardItems, field: &Obstacles) {
+        let again = owned(board, field);
+        let (a, b) = (field.edges(), again.edges());
+        assert_eq!(a.obstacles(), b.obstacles());
+        assert_eq!(a.clearance_obstacles(), b.clearance_obstacles());
+        let mut random = Random(195);
+        let points: Vec<V2> = (0..POINTS).map(|_| random.point(SIDE)).collect();
+        let ends: Vec<V2> = (0..POINTS).map(|_| random.point(SIDE)).collect();
+        for reach in [REACH, f64::INFINITY] {
+            assert_eq!(
+                field.signed_distance(&points, reach),
+                again.signed_distance(&points, reach)
+            );
+            assert_eq!(
+                field.smooth_distance(&points, reach),
+                again.smooth_distance(&points, reach)
+            );
+            assert_eq!(a.distances(&points, reach), b.distances(&points, reach));
+            assert_eq!(
+                a.search(&points, reach, REACH),
+                b.search(&points, reach, REACH)
+            );
+        }
+        assert_eq!(
+            field.segments_clear(&points, &ends, 0.0),
+            again.segments_clear(&points, &ends, 0.0)
+        );
+    }
+
     #[test]
     fn same_net_copper_is_no_obstacle_but_an_unplated_hole_is() {
         let mut top = layer("F.Cu", 0);
         top.pads = vec![pad("SIG", (0.0, 0.0), true), pad("SIG", (5.0, 0.0), false)];
-        top.tracks = vec![Track {
-            net: "SIG".into(),
-            width: 0.2,
-            centreline: Shape::line(vec![V2::new(0.0, 3.0), V2::new(5.0, 3.0)]),
-        }];
-        let built = chain_obstacles(&top, "SIG", 0.2, 0.3, HOLE_CLEARANCE, &HashSet::new());
+        top.tracks = vec![track("SIG", (0.0, 3.0), (5.0, 3.0), 0.2)];
+        let board = board(vec![top], &[]);
+        let built = chain_obstacles(&board, 0, "SIG", 0.2, 0.3, HOLE_CLEARANCE);
         // The unplated pad's copper is of the net too; only its hole stays.
-        assert_eq!(
-            built.picked.iter().map(|p| p.source).collect::<Vec<_>>(),
-            vec![Source::PadHole]
+        assert_eq!(sources(&built), vec![(Source::PadHole, 1)]);
+        answers_as_owned(&board, &built);
+        let other = chain_obstacles(&board, 0, "GND", 0.2, 0.3, HOLE_CLEARANCE);
+        assert_eq!(other.picked().unwrap().len(), 5);
+        answers_as_owned(&board, &other);
+    }
+
+    #[test]
+    fn a_chain_s_field_answers_as_one_of_its_own_items() {
+        let board = board(vec![busy("F.Cu", 0), busy("B.Cu", 2)], &["moving"]);
+        for l in 0..2 {
+            for net in ["SIG", "GND", "HV", ""] {
+                for width in [0.25, 0.4] {
+                    let field = chain_obstacles(&board, l, net, width, 0.3, HOLE_CLEARANCE);
+                    assert!(field.picked().unwrap().iter().all(|p| p.layer == l));
+                    answers_as_owned(&board, &field);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_section_s_field_leaves_out_what_overlaps_its_own_track() {
+        let board = board(vec![busy("F.Cu", 0)], &[]);
+        let along = [V2::new(1.0, 4.0), V2::new(10.0, 4.0)];
+        let beside = [V2::new(1.0, 4.4), V2::new(10.0, 4.4)];
+        let field = pair_obstacles(
+            &board,
+            0,
+            PairTrack {
+                net: "SIG",
+                points: &along,
+            },
+            PairTrack {
+                net: "N",
+                points: &beside,
+            },
+            0.25,
+            0.15,
+            0.3,
+            HOLE_CLEARANCE,
         );
-        assert_eq!(built.picked[0].index, 1);
-        let other = chain_obstacles(&top, "GND", 0.2, 0.3, HOLE_CLEARANCE, &HashSet::new());
-        assert_eq!(other.picked.len(), 5);
+        let tracks: Vec<usize> = sources(&field)
+            .into_iter()
+            .filter(|&(source, _)| source == Source::Track)
+            .map(|(_, k)| k)
+            .collect();
+        assert_eq!(tracks, vec![0, 1, 2, 3, 5]);
+        answers_as_owned(&board, &field);
     }
 
     #[test]
@@ -927,27 +1248,22 @@ mod tests {
             via("other", "X", (4.0, 0.0)),
             via("own", "SIG", (6.0, 0.0)),
         ];
-        let rules = ViaRules {
-            edge_clearance: 0.3,
-            holes: HOLES,
-        };
         let me = top.vias[0].clone();
+        let board = board(vec![top], &["me"]);
         let split = HashSet::from(["ground"]);
-        let fields = via_obstacles(&[&top], &me, &split, &HashSet::new(), rules, &[]).unwrap();
-        let rings: Vec<usize> = fields
-            .field
-            .picked
-            .iter()
-            .filter(|p| p.source == Source::ViaRing)
-            .map(|p| p.index)
+        let fields = via_obstacles(&board, &me, &split, RULES, &[]).unwrap();
+        let rings: Vec<usize> = sources(&fields.field)
+            .into_iter()
+            .filter(|&(source, _)| source == Source::ViaRing)
+            .map(|(_, k)| k)
             .collect();
         assert_eq!(rings, vec![2]);
         let apart = fields.split.unwrap();
         assert_eq!(
-            apart.picked.iter().map(|p| p.source).collect::<Vec<_>>(),
-            vec![Source::ViaRing, Source::ViaHole]
+            sources(&apart),
+            vec![(Source::ViaRing, 1), (Source::ViaHole, 1)]
         );
-        let stops = own_net_stops(&[&top], &me, &HashSet::new(), HOLES, false).unwrap();
+        let stops = own_net_stops(&board, &me, HOLES, false).unwrap();
         assert!(stops.items.is_none());
         let vias = stops.vias.unwrap();
         // Hole to hole from the via of its net: 0.15 + 0.15 + 0.25.
@@ -962,16 +1278,13 @@ mod tests {
             via("moving", "GND", (0.0, 0.0)),
             via("still", "GND", (2.0, 0.0)),
         ];
-        let moving = HashSet::from(["moving"]);
-        let built = chain_obstacles(&top, "SIG", 0.2, 0.3, HOLE_CLEARANCE, &moving);
+        let board = board(vec![top], &["moving"]);
+        let built = chain_obstacles(&board, 0, "SIG", 0.2, 0.3, HOLE_CLEARANCE);
         assert_eq!(
-            built
-                .picked
-                .iter()
-                .map(|p| (p.source, p.index))
-                .collect::<Vec<_>>(),
+            sources(&built),
             vec![(Source::ViaRing, 1), (Source::ViaHole, 1)]
         );
+        answers_as_owned(&board, &built);
     }
 
     #[test]
@@ -980,8 +1293,9 @@ mod tests {
             span: Span { low: 3, high: 4 },
             ..via("me", "SIG", (0.0, 0.0))
         };
-        let result = own_net_stops(&[&layer("F.Cu", 0)], &me, &HashSet::new(), HOLES, false);
-        assert_eq!(result.err(), Some(NoLayer("me".into())));
+        let board = board(vec![layer("F.Cu", 0)], &["me"]);
+        let result = own_net_stops(&board, &me, HOLES, false);
+        assert_eq!(result.err().map(|e| e.0), Some("me".to_owned()));
     }
 
     #[test]

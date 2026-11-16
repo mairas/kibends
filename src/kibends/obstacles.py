@@ -6,13 +6,15 @@ Each obstacle is raw geometry (a copper polygon, a track centreline, a via or
 hole centre) plus an inflation: the distance from that geometry at which the
 chain's centreline, or the via's centre, reaches the required clearance.
 This module reads each layer's snapshot into plain records once
-(`core_layer`, with `plain_shapes`), and the Rust builders pick the items
-of each field and inflate them by the clearance rules (`kibends._core`;
-their design is in `kibends_core::field::build` and `kibends_core::rules`).
-Each built field names its items from the snapshot's records
-(`Obstacle`) when they are first read. Python keeps every shapely
-construction: buffers, unions, the board outline, the zones' regions
-(`containment`).
+(`core_layer`, with `plain_shapes`). A run's fields share one `Board`, each
+layer's items held once in Rust (`board_items`), and the Rust builders pick
+the items of each field and inflate them by the clearance rules
+(`kibends._core`; their design is in `kibends_core::field::build` and
+`kibends_core::rules`). A builder given no board builds one of the
+snapshots it is given. Each built field names its items from the board's
+snapshots' records (`Obstacle`) when they are first read. Python keeps
+every shapely construction: buffers, unions, the board outline, the zones'
+regions (`containment`).
 
 A chain's static field is one per (layer, net, width), from other nets'
 copper, holes, keepouts and the board edge (`build_obstacles`); no copper
@@ -616,30 +618,56 @@ class _Source(enum.IntEnum):
     PAD_STOP = 8
 
 
-Sources = tuple[IntArray, IntArray, IntArray, IntArray, FloatArray]
-"""A built field's items' sources: each one's kind, the layer of its record
-and its index there, the layer of its copper, -1 for none, and its
-inflation."""
+@dataclass(frozen=True, eq=False)
+class Board:
+    """The board's layers' items as a run's fields share them, held once in
+    Rust, without the vias of `moving`, which the optimizer adds at their
+    current positions."""
 
-Built = tuple[_core.Obstacles, Sources]
-"""A field the Rust builders built, and its items' sources."""
+    core: _core.BoardItems
+    snapshots: tuple[LayerSnapshot, ...]
+    """The board's layers, in the order the fields name them by."""
+    moving: frozenset[str]
+
+    def index(self, snapshot: LayerSnapshot) -> int:
+        """The index of `snapshot` among the board's layers."""
+        for k, s in enumerate(self.snapshots):
+            if s is snapshot:
+                return k
+        raise ValueError(f"layer {snapshot.layer} is not the board's")
 
 
-def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
-    """The field of `built`, its items named from the records of `layers`
-    when first read."""
-    core, sources = built
+def board_items(snapshots: Iterable[LayerSnapshot], moving: Collection[str]) -> Board:
+    """The items of `snapshots` as a run's fields share them, but the vias
+    of `moving`."""
+    layers = tuple(snapshots)
+    core = _core.BoardItems([core_layer(s) for s in layers], sorted(moving))
+    return Board(core, layers, frozenset(moving))
+
+
+def _board(
+    board: Board | None, snapshots: Sequence[LayerSnapshot], moving: Collection[str]
+) -> Board:
+    """`board`, or without one a board of `snapshots` but the vias of
+    `moving`."""
+    return board_items(snapshots, moving) if board is None else board
+
+
+def _named(core: _core.Obstacles, board: Board, outline_layer: int) -> Obstacles:
+    """The field of `core`, its items named from the records of the board's
+    layers when first read, its board edge the outline of the board's layer
+    `outline_layer`."""
     outline = None
-    if layers and core.edge_inflation is not None:
-        outline = _outline_of(layers[0])
-    return Obstacles.of(core, partial(_items_of, sources, layers), outline)
+    if core.edge_inflation is not None:
+        outline = _outline_of(board.snapshots[outline_layer])
+    return Obstacles.of(core, partial(_items_of, core, board.snapshots), outline)
 
 
 def _items_of(
-    sources: Sources, layers: Sequence[LayerSnapshot]
+    core: _core.Obstacles, layers: Sequence[LayerSnapshot]
 ) -> tuple[Obstacle, ...]:
-    """The obstacles `sources` name from the records of `layers`."""
-    kind_of, owners, indices, coppers, inflations = sources
+    """The obstacles of `core`, named from the records of `layers`."""
+    kind_of, owners, indices, coppers, inflations = core.sources()
     items: list[Obstacle] = []
     kinds: list[int] = kind_of.tolist()
     records: list[int] = owners.tolist()
@@ -739,22 +767,25 @@ def build_obstacles(
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
     moving: Collection[str] = frozenset(),
+    board: Board | None = None,
 ) -> Obstacles:
     """Obstacles for a track of `net` and `width` mm on the snapshot's layer
-    (`kibends_core::field::build::chain_obstacles`).
+    (`kibends_core::field::build::chain_obstacles`), of `board`'s items
+    given one.
 
     Copper clearance is the larger of both items' netclass clearances, with a
     pad's own override replacing its netclass. Copper of `net` is never an
     obstacle; its holes are not either, except unplated ones. The vias in
-    `moving`, which the optimizer adds at their current positions, are left
-    out.
+    `moving`, or the board's moving vias, which the optimizer adds at their
+    current positions, are left out.
     """
-    layer = core_layer(snapshot)
-    _warn_unclosed(layer)
-    built = _core.build_obstacles(
-        layer, net, width, edge_clearance, hole_clearance, list(moving)
+    _warn_unclosed(core_layer(snapshot))
+    board = _board(board, [snapshot], moving)
+    layer = board.index(snapshot)
+    core = _core.build_obstacles(
+        board.core, layer, net, width, edge_clearance, hole_clearance
     )
-    return _named(built, [snapshot])
+    return _named(core, board, layer)
 
 
 def build_pair_obstacles(
@@ -766,19 +797,23 @@ def build_pair_obstacles(
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
     moving: Collection[str] = frozenset(),
+    board: Board | None = None,
 ) -> Obstacles:
     """Obstacles for the centreline of a coupled section of a differential
     pair, its tracks `a` and `b` `gap` mm apart, on the snapshot's layer
-    (`kibends_core::field::build::pair_obstacles`).
+    (`kibends_core::field::build::pair_obstacles`), of `board`'s items
+    given one.
 
     The centreline keeps clear as one track as wide as the pair would.
     Copper of the pair's own nets is an obstacle like any other's, but for
-    copper that overlaps the section's track of its own net. The vias in
-    `moving` are left out, as `build_obstacles` leaves them.
+    copper that overlaps the section's track of its own net. The moving
+    vias are left out, as `build_obstacles` leaves them.
     """
-    layer = core_layer(snapshot)
-    _warn_unclosed(layer)
-    built = _core.build_pair_obstacles(
+    _warn_unclosed(core_layer(snapshot))
+    board = _board(board, [snapshot], moving)
+    layer = board.index(snapshot)
+    core = _core.build_pair_obstacles(
+        board.core,
         layer,
         a.net,
         _points(a.points),
@@ -788,9 +823,8 @@ def build_pair_obstacles(
         gap,
         edge_clearance,
         hole_clearance,
-        list(moving),
     )
-    return _named(built, [snapshot])
+    return _named(core, board, layer)
 
 
 def split_via_obstacles(
@@ -803,28 +837,32 @@ def split_via_obstacles(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     zones: Sequence[ViaZone] = (),
+    board: Board | None = None,
 ) -> tuple[ObstacleField, Obstacles | None]:
-    """Obstacles for `via` at any position, over every layer of `layers` it
-    spans, and the vias of other nets whose ids are in `split` apart, as
-    obstacles to `via`, each as the field would count it, or None if it
-    picks none (`kibends_core::field::build::via_obstacles`).
+    """Obstacles for `via` at any position, over every layer of `layers`,
+    or of `board` given one, it spans, and the vias of other nets whose ids
+    are in `split` apart, as obstacles to `via`, each as the field would
+    count it, or None if it picks none
+    (`kibends_core::field::build::via_obstacles`).
 
     Nothing of its own net is among them, nor is the outside of the regions
     of `zones`: those only limit where the via may go (`containment`,
-    `own_net_stops`). The via itself and the vias in `moving`, which the
-    caller adds at their current positions, are left out.
+    `own_net_stops`). The via itself and the vias in `moving`, or the
+    board's moving vias, which the caller adds at their current positions,
+    are left out.
     """
+    board = _board(board, layers, moving)
     field, apart = _core.split_via_obstacles(
-        [core_layer(s) for s in layers],
+        board.core,
         core_via(via),
         list(split),
-        list(moving),
         edge_clearance,
         hole_clearance,
         hole_to_hole,
         core_zones(zones),
     )
-    return _named(field, layers), None if apart is None else _named(apart, layers)
+    named = _named(field, board, 0)
+    return named, None if apart is None else _named(apart, board, 0)
 
 
 def own_net_stops(
@@ -835,24 +873,25 @@ def own_net_stops(
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     allow_via_in_pad: bool = False,
+    board: Board | None = None,
 ) -> ObstacleField | None:
-    """What of `via`'s net on the layers of `layers` it spans limits it, as
-    obstacles that stop it without repelling it, or None if nothing does
-    (`kibends_core::field::build::own_net_stops`): the holes of its net's
-    vias, but those in `moving`, and of its net's plated pads keep
-    hole-to-hole from its hole, and its ring may touch its net's pads but
-    not overlap them, unless `allow_via_in_pad`."""
+    """What of `via`'s net on the layers of `layers`, or of `board` given
+    one, it spans limits it, as obstacles that stop it without repelling it,
+    or None if nothing does (`kibends_core::field::build::own_net_stops`):
+    the holes of its net's vias, but the moving ones, and of its net's
+    plated pads keep hole-to-hole from its hole, and its ring may touch its
+    net's pads but not overlap them, unless `allow_via_in_pad`."""
+    board = _board(board, layers, moving)
     items, vias = _core.own_net_stops(
-        [core_layer(s) for s in layers],
+        board.core,
         core_via(via),
-        list(moving),
         hole_clearance,
         hole_to_hole,
         allow_via_in_pad,
     )
     parts: list[ObstacleField] = []
     if items is not None:
-        parts.append(_named(items, layers))
+        parts.append(_named(items, board, 0))
     if vias is not None:
         parts.append(ChainField.of(vias))
     if not parts:
