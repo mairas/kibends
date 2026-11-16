@@ -147,10 +147,13 @@ TIPS = {
     "both off, and Ground nets is then ignored.",
     Field.ATTRACTION_RANGE: "Centre-to-centre distance between a ground via and "
     "another via at which the pull fades to zero.",
-    Field.SPACING: "Distances between a chain's vertices that each problem runs "
-    "at, coarsest first. Each level hands over to the next when it settles or the "
-    "time limit runs out. The last value, at most 0.1, is the final spacing; one "
-    "value runs at it alone. At most 8 values, each smaller than the one before.",
+    Field.SPACING: "The optimizer models each track as points joined by straight "
+    "edges no longer than the spacing. It runs at each spacing in turn, coarsest "
+    "first: with few points, long bowed tracks straighten quickly, and the finer "
+    "levels add the detail around pads, vias and other copper. A level hands over "
+    "to the next when the tracks settle or the time limit runs out. The last "
+    "value, at most 0.1 mm, is the final spacing; one value runs at it alone. At "
+    "most 8 values, each smaller than the one before.",
 }
 VIA_IN_PAD_TIP = (
     "Let a moving via settle inside a pad of its own net. KiCad's DRC does not "
@@ -644,7 +647,8 @@ class PanelWindow(QWidget):
             advanced,
             line + 1,
             (Field.SPACING,),
-            "Coarsest first; the last, at most 0.1, is the final spacing.",
+            "Distance between track points: coarse levels straighten long tracks "
+            "fast, the last adds detail.",
         )
         box = QHBoxLayout()
         box.addWidget(self.via_in_pad)
