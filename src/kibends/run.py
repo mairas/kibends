@@ -1014,7 +1014,7 @@ def _via_inputs(
                 layers[0].clearance(m.via.net),
                 m.zones,
                 own_net_stops(
-                    layers,
+                    None,
                     m.via,
                     board=board,
                     hole_clearance=clearances.hole,
@@ -1050,7 +1050,7 @@ def _via_field(
     keeping `zones`' clearance and margin
     (`obstacles.split_via_obstacles`)."""
     return split_via_obstacles(
-        board.snapshots,
+        None,
         via,
         split,
         board=board,

@@ -646,11 +646,26 @@ def board_items(snapshots: Iterable[LayerSnapshot], moving: Collection[str]) -> 
 
 
 def _board(
-    board: Board | None, snapshots: Sequence[LayerSnapshot], moving: Collection[str]
+    board: Board | None,
+    layers: Sequence[LayerSnapshot] | None,
+    moving: Collection[str] | None,
 ) -> Board:
-    """`board`, or without one a board of `snapshots` but the vias of
-    `moving`."""
-    return board_items(snapshots, moving) if board is None else board
+    """`board`, or without one a board of `layers` but the vias of `moving`.
+    Raises ValueError for a board and `moving` or `layers` that are not
+    its own: other moving vias, or other snapshots than the board's, in
+    its order."""
+    if board is None:
+        if layers is None:
+            raise ValueError("a field is built of layers or of a board")
+        return board_items(layers, () if moving is None else moving)
+    if moving is not None and frozenset(moving) != board.moving:
+        raise ValueError("the vias moving are the board's")
+    if layers is not None and (
+        len(layers) != len(board.snapshots)
+        or any(a is not b for a, b in zip(layers, board.snapshots, strict=True))
+    ):
+        raise ValueError("the layers are the board's")
+    return board
 
 
 def _named(core: _core.Obstacles, board: Board, outline_layer: int) -> Obstacles:
@@ -766,7 +781,7 @@ def build_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
-    moving: Collection[str] = frozenset(),
+    moving: Collection[str] | None = None,
     board: Board | None = None,
 ) -> Obstacles:
     """Obstacles for a track of `net` and `width` mm on the snapshot's layer
@@ -780,7 +795,8 @@ def build_obstacles(
     current positions, are left out.
     """
     _warn_unclosed(core_layer(snapshot))
-    board = _board(board, [snapshot], moving)
+    # Given a board, the board places the snapshot (`Board.index`).
+    board = _board(board, None if board else [snapshot], moving)
     layer = board.index(snapshot)
     core = _core.build_obstacles(
         board.core, layer, net, width, edge_clearance, hole_clearance
@@ -796,7 +812,7 @@ def build_pair_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
-    moving: Collection[str] = frozenset(),
+    moving: Collection[str] | None = None,
     board: Board | None = None,
 ) -> Obstacles:
     """Obstacles for the centreline of a coupled section of a differential
@@ -810,7 +826,8 @@ def build_pair_obstacles(
     vias are left out, as `build_obstacles` leaves them.
     """
     _warn_unclosed(core_layer(snapshot))
-    board = _board(board, [snapshot], moving)
+    # Given a board, the board places the snapshot (`Board.index`).
+    board = _board(board, None if board else [snapshot], moving)
     layer = board.index(snapshot)
     core = _core.build_pair_obstacles(
         board.core,
@@ -828,11 +845,11 @@ def build_pair_obstacles(
 
 
 def split_via_obstacles(
-    layers: Sequence[LayerSnapshot],
+    layers: Sequence[LayerSnapshot] | None,
     via: Via,
     split: Collection[str],
     *,
-    moving: Collection[str] = frozenset(),
+    moving: Collection[str] | None = None,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
@@ -840,10 +857,10 @@ def split_via_obstacles(
     board: Board | None = None,
 ) -> tuple[ObstacleField, Obstacles | None]:
     """Obstacles for `via` at any position, over every layer of `layers`,
-    or of `board` given one, it spans, and the vias of other nets whose ids
-    are in `split` apart, as obstacles to `via`, each as the field would
-    count it, or None if it picks none
-    (`kibends_core::field::build::via_obstacles`).
+    or of `board` given one (when `layers`, if given, must be its), it
+    spans, and the vias of other nets whose ids are in `split` apart, as
+    obstacles to `via`, each as the field would count it, or None if it
+    picks none (`kibends_core::field::build::via_obstacles`).
 
     Nothing of its own net is among them, nor is the outside of the regions
     of `zones`: those only limit where the via may go (`containment`,
@@ -866,21 +883,22 @@ def split_via_obstacles(
 
 
 def own_net_stops(
-    layers: Sequence[LayerSnapshot],
+    layers: Sequence[LayerSnapshot] | None,
     via: Via,
     *,
-    moving: Collection[str] = frozenset(),
+    moving: Collection[str] | None = None,
     hole_clearance: float = HOLE_CLEARANCE,
     hole_to_hole: float = HOLE_TO_HOLE,
     allow_via_in_pad: bool = False,
     board: Board | None = None,
 ) -> ObstacleField | None:
     """What of `via`'s net on the layers of `layers`, or of `board` given
-    one, it spans limits it, as obstacles that stop it without repelling it,
-    or None if nothing does (`kibends_core::field::build::own_net_stops`):
-    the holes of its net's vias, but the moving ones, and of its net's
-    plated pads keep hole-to-hole from its hole, and its ring may touch its
-    net's pads but not overlap them, unless `allow_via_in_pad`."""
+    one (when `layers`, if given, must be its), it spans limits it, as
+    obstacles that stop it without repelling it, or None if nothing does
+    (`kibends_core::field::build::own_net_stops`): the holes of its net's
+    vias, but the moving ones, and of its net's plated pads keep
+    hole-to-hole from its hole, and its ring may touch its net's pads but
+    not overlap them, unless `allow_via_in_pad`."""
     board = _board(board, layers, moving)
     items, vias = _core.own_net_stops(
         board.core,

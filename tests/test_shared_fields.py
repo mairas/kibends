@@ -202,23 +202,28 @@ def the_via(snaps: Sequence[LayerSnapshot], via_id: str) -> Via:
 
 
 def built_fields() -> Iterator[Built]:
-    """Every kind of static field a run builds, on the board."""
+    """Every kind of static field a run builds, of one board of every layer
+    as a run builds them, and a chain's field of a board of its layer
+    alone."""
     snaps = snapshots()
+    board = board_items(snaps, MOVING)
     for snap in snaps:
         for net in NETS:
             for width in WIDTHS:
                 yield Built(
                     f"chain {snap.layer} {net} {width}",
-                    build_obstacles(snap, net, width, moving=MOVING),
+                    build_obstacles(snap, net, width, board=board),
                 )
+    yield Built(
+        "chain of its layer alone",
+        build_obstacles(snaps[1], "GND", 0.25, moving=MOVING),
+    )
     a = ChainCentreline("P", "P", PAIR_WIDTH, 0.2, np.array([[1, 0.8], [8, 0.8]]))
     pitch = PAIR_WIDTH + PAIR_GAP
     b = ChainCentreline(
         "N", "N", PAIR_WIDTH, 0.2, np.array([[1, 0.8 + pitch], [8, 0.8 + pitch]])
     )
-    yield Built(
-        "section", build_pair_obstacles(snaps[0], a, b, PAIR_GAP, moving=MOVING)
-    )
+    yield Built("section", build_pair_obstacles(snaps[0], a, b, PAIR_GAP, board=board))
     splits: dict[str, frozenset[str]] = {
         "m-gnd": frozenset({"v-sig", "v-blind"}),
         "m-sig": frozenset({"v-gnd", "v-twin"}),
@@ -230,16 +235,14 @@ def built_fields() -> Iterator[Built]:
             zoned = bool(zones)
             for apart in (frozenset[str](), split):
                 field, static = split_via_obstacles(
-                    snaps, moving_via, apart, moving=MOVING, zones=zones
+                    None, moving_via, apart, zones=zones, board=board
                 )
                 name = f"via {via_id} zoned={zoned} split={sorted(apart)}"
                 yield Built(name, field)
                 if static is not None:
                     yield Built(f"{name} apart", static)
         for allow in (False, True):
-            stops = own_net_stops(
-                snaps, moving_via, moving=MOVING, allow_via_in_pad=allow
-            )
+            stops = own_net_stops(None, moving_via, allow_via_in_pad=allow, board=board)
             if stops is not None:
                 yield Built(f"stops {via_id} allow={allow}", stops)
 
@@ -355,3 +358,41 @@ def test_a_zoned_via_s_rules_copper_built_late_answers_as_built_at_once() -> Non
     field = late()
     for got, want in zip(answers(field), answers(at_once), strict=True):
         np.testing.assert_array_equal(got, want)
+
+
+def test_a_builder_given_a_board_refuses_other_moving_vias_or_layers() -> None:
+    snaps = snapshots()
+    board = board_items(snaps, MOVING)
+    via = the_via(snaps, ZONED)
+    with pytest.raises(ValueError, match="moving"):
+        build_obstacles(snaps[0], "SIG", 0.25, moving={"m-gnd"}, board=board)
+    with pytest.raises(ValueError, match="moving"):
+        own_net_stops(None, via, moving=frozenset(), board=board)
+    with pytest.raises(ValueError, match="layers"):
+        split_via_obstacles(snaps[:2], via, frozenset(), board=board)
+    with pytest.raises(ValueError, match="layers"):
+        own_net_stops(snapshots(), via, board=board)
+    with pytest.raises(ValueError, match="not the board's"):
+        build_obstacles(layer("F.Cu"), "SIG", 0.25, board=board)
+    # Its own moving vias and layers are no conflict.
+    split_via_obstacles(snaps, via, frozenset(), moving=MOVING, board=board)
+
+
+def test_a_via_field_of_the_board_names_its_items_from_their_layers() -> None:
+    snaps = snapshots()
+    board = board_items(snaps, MOVING)
+    field, _ = split_via_obstacles(
+        None, the_via(snaps, ZONED), frozenset(), board=board
+    )
+    assert isinstance(field, Obstacles)
+    by_name = {o.description: o for o in field.items}
+    # Recorded last on B.Cu, the blind via's ring counts on the field's first
+    # layer.
+    assert by_name["via v-blind"].layer == "F.Cu"
+    assert by_name["via v-blind"].net == "HV"
+    stops = own_net_stops(None, the_via(snaps, ZONED), board=board)
+    stop_parts = obstacles_of(stops) if stops is not None else []
+    pads = [o for part in stop_parts for o in part.items if o.description == "pad J1-1"]
+    # The ground pad on each layer stops the via as no copper.
+    assert len(pads) == len(LAYERS)
+    assert all(o.net is None and o.layer is None and o.extent == 0.0 for o in pads)
