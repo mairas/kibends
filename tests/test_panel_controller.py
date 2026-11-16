@@ -457,6 +457,34 @@ class TestProbing:
         assert p.controller.scope_line == line
         assert p.controller.state is State.RUNNING
 
+    def test_a_probe_from_before_a_run_cannot_switch_boards_under_it(
+        self,
+    ) -> None:
+        spawned = Spawned()
+        board = ten_tracks_four_vias()
+        p = panel(board, spawn=spawned)
+        p.controller.tick()
+        spawned.finish()
+        p.controller.tick()  # in flight
+        seen: list[tuple[int, str, str]] = []
+        p.controller.run()
+        probe, run = spawned.waiting
+        spawned.waiting.clear()
+
+        def during(stage: Stage) -> None:
+            if stage is Stage.OPTIMIZING:
+                board.document = DocumentSpecifier(board_filename="other.kicad_pcb")
+                probe()  # answers from the other board, mid-run
+                c = p.controller
+                seen.append((len(c.graph.points), c.title, c.elapsed))
+
+        p.scripted.during = during
+        run()
+
+        assert seen[0][:2] == (len(PROGRESS), f"kibends — {BOARD_FILE}")
+        assert seen[0][2] != ""
+        assert len(p.controller.graph.points) == len(PROGRESS)
+
     def test_a_reread_sent_before_a_run_and_answering_after_it_is_ignored(
         self,
     ) -> None:
