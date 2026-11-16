@@ -25,9 +25,9 @@ export PYO3_PYTHON="$PROJECT_ROOT/.venv/bin/python"
 # Development Commands
 
 function sync {
-  #@ Create or update the virtualenv with dev dependencies and the plot extra, building kibends._core
+  #@ Create or update the virtualenv with dev dependencies and the plot and gui extras, building kibends._core
   #@ Category: Development
-  uv sync --extra plot "$@"
+  uv sync --extra plot --extra gui "$@"
 }
 
 # On Linux, numpy's OpenBLAS starts a thread per core in every xdist worker,

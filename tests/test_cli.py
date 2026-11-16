@@ -4,7 +4,9 @@ import json
 import math
 import re
 import signal
+import subprocess
 import sys
+import types
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -1013,6 +1015,14 @@ class TestSmooth:
         assert raised.value.code == 2
         assert "argument --spacing:" in capsys.readouterr().err
 
+    def test_a_rising_schedule_is_named_as_typed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            cli.parse_args(["smooth", "--spacing", "0.4", "1.6"])
+
+        assert "coarsest first, got 0.4 1.6\n" in capsys.readouterr().err
+
     def test_the_final_spacing_reaches_the_optimizer_and_the_reports(
         self,
         connect: Connector,
@@ -1489,7 +1499,7 @@ class TestScope:
 
 class TestProgress:
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_comes_after_every_iteration_with_the_optimize_stages_clock(
+    def test_comes_at_the_start_and_after_every_iteration_on_the_stages_clock(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         connect.to(l_board())
@@ -1499,7 +1509,7 @@ class TestProgress:
 
         report = pipeline.run_smooth(options, on_progress=records.append)
 
-        assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
+        assert [r.iteration for r in records] == list(range(report.iterations + 1))
         elapsed = [r.elapsed for r in records]
         assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
 
@@ -6369,3 +6379,44 @@ def test_a_zoned_via_s_field_without_zones_is_built_only_when_it_starts_inside(
     run("--dry-run")
 
     assert len(without_zones) == built
+
+
+class TestPanel:
+    def test_opens_the_panel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        opened: list[bool] = []
+
+        class Window(types.ModuleType):
+            @staticmethod
+            def main() -> None:
+                opened.append(True)
+
+        monkeypatch.setitem(sys.modules, "kibends.panel.window", Window("window"))
+
+        cli.panel_main([])
+
+        assert opened == [True]
+
+    def test_without_the_gui_extra_says_how_to_install_it(
+        self, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "kibends.panel.window", None)
+
+        with pytest.raises(SystemExit) as raised:
+            cli.panel_main([])
+
+        assert raised.value.code == 1
+        assert [line.rstrip() for line in log if line.startswith("ERROR")] == [
+            f"ERROR {cli.GUI_EXTRA_MESSAGE} (import of kibends.panel.window "
+            "halted; None in sys.modules)"
+        ]
+
+    def test_smooth_never_loads_the_panel(self) -> None:
+        code = (
+            "import sys, kibends.cli; "
+            "sys.exit(any(m.startswith(('PySide6', 'kibends.panel')) "
+            "for m in sys.modules))"
+        )
+        assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+    def test_takes_verbose(self) -> None:
+        assert cli.parse_panel_args(["-v"]).verbose

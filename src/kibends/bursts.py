@@ -84,7 +84,7 @@ class OptimizerSettings:
     settled_change: float = DEFAULT_CHORD_TOLERANCE / 2
     """A problem whose burst moves no shape and no via's centre by this much,
     mm, settles. Half the chord tolerance, the run's own unless
-    `--settled-change` is given (`cli.smooth_options`): a smaller move
+    a settled change is given (`present.smooth_options`): a smaller move
     cannot change the committed tracks by more than simplification already
     may."""
     max_iterations: int = 200

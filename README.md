@@ -45,6 +45,16 @@ With `--plot` support, which adds matplotlib:
 uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 ```
 
+With the panel (see [The panel](#the-panel)), which adds PySide6:
+
+```sh
+uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'
+```
+
+PySide6 needs macOS 14 or later, or on Linux glibc 2.34 or later on x86_64
+and 2.39 or later on aarch64. Both extras install together as
+`kibends[gui,plot]`.
+
 ## Usage
 
 1. Open the board in KiCad's PCB editor.
@@ -581,6 +591,59 @@ a rule nobody set.
 Change the route by hand or with the router, select the chains again and
 re-run. Re-running on kibends' own output with nothing else changed moves it
 only slightly, but still replaces its tracks.
+
+### The panel
+
+`kibends-panel` opens a small window that runs the same smoothing as
+`kibends smooth` and stays open between runs, for selecting, running,
+looking at the result in KiCad and running again. It needs the `gui`
+extra (see [Installation](#installation)). The window stays above other
+windows; Wayland does not allow that.
+
+The top line says what Run will touch, refreshed about once a second: the
+selection ("**Selection**: 12 of 1567 tracks, 3 of 210 vias", counting
+arcs and the members of selected groups as tracks) or, when nothing is
+selected, the whole board, as `--all` does ("**Whole board**: 1567
+tracks, 210 vias"). It also says when KiCad cannot be reached or has no
+board open; Run is disabled until it can run.
+
+The fields are the command line's options of the same names. Ground nets
+shows the nets detected on the board and says how they were found; typing
+in it makes it your list, which "Use detected" or emptying the field
+gives back to detection, and which is dropped when KiCad shows another
+board. It is ignored while Attraction is 0. Time limit is per spacing
+level, empty for none. Under Advanced are Repulsion and its range,
+Attraction and its range, Spacing and Allow via in pad, with Restore
+defaults for them. Lists take commas or spaces and are shown with ", ".
+The fields start at the defaults each time the panel opens and keep
+their values while it stays open. An invalid value disables Run; its
+message shows under the field once you leave it or try to run, and
+trying to run opens Advanced at the field to fix. The edge, hole and
+hole-to-hole clearances come from the project file, as without their
+options on the command line (see [Clearances](#clearances)).
+
+Run, or Return, starts a run. The progress line names the stage, and
+while optimizing the spacing level (the coarsest any layer still runs
+at), its spacing and the iteration, with the time since Run. The graph
+below plots the summed track length's change from the start against the
+iteration, a dashed line marking where each finer spacing level starts;
+its axis always holds 0, the start, and spans at least 0.1 mm or 1 % of
+the starting length, so that a run that hardly moves the tracks shows as
+a nearly flat line. Its figure is the optimizer's, before simplification,
+so it differs slightly from the committed change in the report. Stop, or
+Esc, ends optimizing and commits the best result so far, as Ctrl-C does
+on the command line; a stop before optimizing commits nothing, and from
+simplifying on Stop is disabled.
+
+When the run ends, the report says how it ended and what it committed:
+the length change of the changed chains, the chains and vias it changed,
+its iterations and time, the edge moves it rejected and its scope, and
+the warnings the run logged, if any. One run is one undo step in KiCad. A
+failure, such as KiCad being busy with an open tool or dialog, says what
+failed and what to do, with any long detail in a box with a Copy button;
+Run tries again. Closing the window while the run can still stop asks
+whether to stop it and close once the commit is done; later in a run the
+window closes when the run ends.
 
 ## Development
 

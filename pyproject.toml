@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 kibends = "kibends.cli:main"
+kibends-panel = "kibends.cli:panel_main"
 
 [project.urls]
 Homepage = "https://github.com/mairas/kibends"
@@ -24,6 +25,9 @@ Homepage = "https://github.com/mairas/kibends"
 [project.optional-dependencies]
 plot = [
     "matplotlib>=3.11.2",
+]
+gui = [
+    "PySide6-Essentials>=6.12.0",
 ]
 
 [dependency-groups]

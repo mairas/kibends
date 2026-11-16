@@ -59,7 +59,15 @@ STRAIGHT_TOLERANCE_NM = 1
 
 
 class BoardChangedError(RuntimeError):
-    """A selected track or via changed in KiCad after it was read."""
+    """Selected tracks or vias changed in KiCad after they were read; their
+    ids are `changed`."""
+
+    def __init__(self, changed: Sequence[str]) -> None:
+        self.changed = tuple(changed)
+        super().__init__(
+            "Selected items changed in KiCad since they were read: "
+            f"{', '.join(self.changed)}; select them again and rerun"
+        )
 
 
 class CreateItemsError(RuntimeError):
@@ -206,10 +214,7 @@ def _unchanged_items(
         or astuple(via_from_kipy(found_vias[m.via.id])) != astuple(m.via)
     ]
     if changed:
-        raise BoardChangedError(
-            "Selected items changed in KiCad since they were read: "
-            f"{', '.join(changed)}; select them again and rerun"
-        )
+        raise BoardChangedError(changed)
     return tracks, found_vias
 
 
