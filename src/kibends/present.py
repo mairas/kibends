@@ -362,7 +362,8 @@ def _ending(termination: Termination) -> str:
             assert_never(termination)
 
 
-def _counted(n: int, noun: str) -> str:
+def counted(n: int, noun: str) -> str:
+    """`n` and `noun`, plural unless `n` is one."""
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
@@ -389,12 +390,12 @@ def summary(report: RunReport) -> str:
     kind = "selection" if scope.kind is ScopeKind.SELECTION else "whole board"
     return (
         f"{_ending(report.termination)} after "
-        f"{_counted(report.iterations, 'iteration')} in {report.elapsed:.1f} s; "
-        f"{_counted(len(changed), 'chain')}, "
-        f"{_counted(sum(v.moved for v in report.vias), 'via')} changed; "
+        f"{counted(report.iterations, 'iteration')} in {report.elapsed:.1f} s; "
+        f"{counted(len(changed), 'chain')}, "
+        f"{counted(sum(v.moved for v in report.vias), 'via')} changed; "
         f"length {change:{'+' if change else ''}.2f} mm; "
-        f"{_counted(rejected, 'rejected edge move')}; "
-        f"{kind} of {_counted(scope.tracks, 'track')}, {_counted(scope.vias, 'via')}"
+        f"{counted(rejected, 'rejected edge move')}; "
+        f"{kind} of {counted(scope.tracks, 'track')}, {counted(scope.vias, 'via')}"
     )
 
 

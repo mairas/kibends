@@ -43,6 +43,7 @@ from kibends.present import (
     PanelFields,
     RunRefusedError,
     SmoothValues,
+    counted,
     error_message,
     read_panel,
     smooth_options,
@@ -105,10 +106,6 @@ class Spawn(Protocol):
     """Runs a callable on a new worker thread, a daemon one if `daemon`."""
 
     def __call__(self, work: Callable[[], None], *, daemon: bool) -> None: ...
-
-
-def _counted(n: int, noun: str) -> str:
-    return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
 class Controller:
@@ -207,12 +204,12 @@ class Controller:
         selected = self._selected
         if selected is None:
             return (
-                f"Whole board: {_counted(totals.tracks, 'track')}, "
-                f"{_counted(totals.vias, 'via')}"
+                f"Whole board: {counted(totals.tracks, 'track')}, "
+                f"{counted(totals.vias, 'via')}"
             )
         return (
-            f"{selected.tracks} of {_counted(totals.tracks, 'track')}, "
-            f"{selected.vias} of {_counted(totals.vias, 'via')}"
+            f"{selected.tracks} of {counted(totals.tracks, 'track')}, "
+            f"{selected.vias} of {counted(totals.vias, 'via')}"
         )
 
     @property
