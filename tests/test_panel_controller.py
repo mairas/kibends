@@ -1144,6 +1144,26 @@ class TestRun:
         assert c.progress_line == Line("Finished")
         assert State.COMMITTING not in [s for s, _ in p.seen]
 
+    @pytest.mark.parametrize(
+        ("termination", "title"),
+        [
+            (Termination.CONVERGED, "Nothing to do"),
+            (Termination.STOPPED, "Stopped; nothing changed"),
+        ],
+    )
+    def test_nothing_changed_after_iterations_says_how_long_it_optimized(
+        self, termination: Termination, title: str
+    ) -> None:
+        unchanged = report(termination=termination)
+        c = opened(run=Scripted(outcome=unchanged)).controller
+
+        c.run()
+
+        o = outcome(c)
+        assert o.title == title
+        assert [key for key, _ in o.rows] == ["Optimized", "Scope"]
+        assert rows(c)["Optimized"].startswith("38 iterations in 12.4 s (")
+
     def test_collects_the_warnings_the_run_logs_on_its_thread(self) -> None:
         p = opened()
 
