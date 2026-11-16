@@ -6310,3 +6310,35 @@ def test_a_via_inside_only_a_zone_s_margin_of_static_copper_moves_out(
     h = PAD_HALF_SIZE
     pad = box(x - h, pad_y - h, x + h, pad_y + h)
     assert pad.distance(Point(via.end)) > pad.distance(Point(VIA))
+
+
+@pytest.mark.parametrize(("spacing", "built"), [(CLEARANCE, 1), (2.0, 0)])
+def test_a_zoned_via_s_field_without_zones_is_built_only_when_it_starts_inside(
+    connect: Connector, monkeypatch: pytest.MonkeyPatch, spacing: float, built: int
+) -> None:
+    # The start check judges a via inside its zoned field by the field
+    # without zones; one starting clear of it never needs that field.
+    board = moving_via_board()
+    x, y = VIA
+    pad_y = y + VIA_DIAMETER / 2 + spacing + PAD_HALF_SIZE
+    board.pads = [kipy_pad("p", "OTHER", x, pad_y, layers=(BL.BL_In1_Cu,))]
+    plane = kipy_copper_zone(
+        "plane", "SIG", kipy_rect(0, 0, 10, 10), [BL.BL_In1_Cu], min_width=0.25
+    )
+    plane.clearance = nm(0.5)
+    board.zones = [plane]
+    board.enabled_layers = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_B_Cu]
+    connect.to(board)
+    without_zones: list[object] = []
+    real_split = cast(Callable[..., object], pipeline.split_via_obstacles)
+
+    def split_spy(*a: object, **kwargs: object) -> object:
+        if not kwargs["zones"]:
+            without_zones.append(a)
+        return real_split(*a, **kwargs)
+
+    monkeypatch.setattr(pipeline, "split_via_obstacles", split_spy)
+
+    run("--dry-run")
+
+    assert len(without_zones) == built

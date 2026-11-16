@@ -123,12 +123,21 @@ class ViaInput:
     """The vias of its net that stand still, whose holes `own_net` keeps
     hole-to-hole from its own (`obstacles.own_net_vias`): the start check
     names them. Required, so that whoever builds the via says which."""
-    rules_copper: ObstacleField | None = None
-    """`copper` built without `zones`, by the netclass, hole and edge rules
-    alone: what the start check judges the via by (`inside`), since the
-    zones' clearance and margin are the optimizer's, for the refill to
-    reconnect the via, and no rule KiCad's DRC checks. None where it is
-    `copper`."""
+    build_rules_copper: Callable[[], ObstacleField] | None = None
+    """What builds `rules_copper` for a via with zones; None for one
+    without, whose `rules_copper` is `copper`."""
+
+    @cached_property
+    def rules_copper(self) -> ObstacleField:
+        """`copper` built without `zones`, by the netclass, hole and edge
+        rules alone: what the start check judges the via by (`inside`),
+        since the zones' clearance and margin are the optimizer's, for the
+        refill to reconnect the via, and no rule KiCad's DRC checks. Built
+        when first read, since only a via starting inside its copper's
+        clearance is judged so."""
+        if self.build_rules_copper is None:
+            return self.copper
+        return self.build_rules_copper()
 
     @cached_property
     def stop_parts(self) -> tuple[ObstacleField | None, ObstacleField | None]:
