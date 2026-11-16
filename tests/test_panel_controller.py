@@ -47,18 +47,18 @@ STAGES = (
     Stage.COMMITTING,
 )
 PROGRESS = (
-    Progress(0.5, 1, 9.0, 0, 1),
-    Progress(1.0, 2, 4.0, 0, 1),
-    Progress(1.5, 3, 3.5, 0, 1),
+    Progress(0.5, 1, 9.0, 18, 0, 1),
+    Progress(1.0, 2, 4.0, 8, 0, 1),
+    Progress(1.5, 3, 3.5, 7, 0, 1),
 )
 """A run at one spacing."""
 LEVELLED = (
-    Progress(0.5, 1, 9.0, 0, 3),
-    Progress(1.0, 2, 4.0, 0, 3),
-    Progress(1.5, 3, 6.0, 1, 3),
-    Progress(2.0, 4, 5.0, 1, 3),
-    Progress(2.5, 5, 5.5, 2, 3),
-    Progress(3.0, 6, 5.2, 2, 3),
+    Progress(0.5, 1, 9.0, 18, 0, 3),
+    Progress(1.0, 2, 4.0, 8, 0, 3),
+    Progress(1.5, 3, 6.0, 12, 1, 3),
+    Progress(2.0, 4, 5.0, 10, 1, 3),
+    Progress(2.5, 5, 5.5, 11, 2, 3),
+    Progress(3.0, 6, 5.2, 10.4, 2, 3),
 )
 """A run through three levels, its energy jumping as it enters each finer
 one."""
@@ -982,7 +982,8 @@ class TestPipeline:
 
         def notify() -> None:
             c = p.controller
-            if c.state is State.RUNNING and c.energies and not stopped:
+            # After the start and the first iteration.
+            if c.state is State.RUNNING and len(c.energies) > 1 and not stopped:
                 stopped.append(True)
                 c.stop()
 

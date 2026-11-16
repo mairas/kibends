@@ -715,7 +715,7 @@ def test_progress_names_the_coarsest_level_a_problem_runs_at(log: list[str]) -> 
             behind.append(min(entered.values()) - 1)
             apart = apart or len(set(entered.values())) > 1
     assert apart
-    assert [r.level for r in records] == behind
+    assert [r.level for r in records] == [0, *behind]
     assert behind[0] == 0
     assert behind[-1] == len(COARSE_LEVELS)
     assert {r.levels for r in records} == {len(COARSE_LEVELS) + 1}
@@ -729,6 +729,41 @@ def test_progress_at_one_spacing_is_at_its_only_level() -> None:
 
     assert records
     assert {(r.level, r.levels) for r in records} == {(0, 1)}
+
+
+LOGGED_LENGTH = re.compile(r"length (\d+\.\d{3}) mm, energy (-?\d+\.\d{3})")
+
+
+def test_progress_starts_at_iteration_0_with_the_starting_length_and_energy(
+    log: list[str],
+) -> None:
+    records: list[Progress] = []
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+
+    optimize_chains(on_two_layers(*BOWED), PARAMS, settings, on_progress=records.append)
+
+    start = next(LOGGED_LENGTH.search(line) for line in log if "set up in" in line)
+    assert start is not None
+    first = records[0]
+    assert (first.iteration, first.level, first.levels) == (
+        0,
+        0,
+        len(COARSE_LEVELS) + 1,
+    )
+    assert (f"{first.length:.3f}", f"{first.energy:.3f}") == (start[1], start[2])
+    assert [r.iteration for r in records[1:]] == list(range(1, len(records)))
+
+
+def test_progress_carries_every_problems_length_summed(log: list[str]) -> None:
+    records: list[Progress] = []
+
+    optimize_chains(on_two_layers(*BOWED), PARAMS, COARSE, on_progress=records.append)
+
+    logged = [LOGGED_LENGTH.search(line) for line in log if " Iteration " in line]
+    assert [f"{r.length:.3f}" for r in records[1:]] == [m[1] for m in logged if m]
+    assert len(logged) == len(records) - 1
+    # The bowed chains straighten.
+    assert records[-1].length < records[0].length
 
 
 def test_a_problem_stopped_before_its_first_step_is_before_the_final_spacing(
@@ -816,8 +851,8 @@ def test_progress_follows_the_levels_the_time_limit_hands_over(
         on_progress=records.append,
     )
 
-    # One burst at each level, each ended by the limit.
-    assert [r.level for r in records] == [0, 1, 2]
+    # The start, then one burst at each level, each ended by the limit.
+    assert [r.level for r in records] == [0, 0, 1, 2]
 
 
 def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(

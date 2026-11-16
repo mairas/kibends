@@ -99,13 +99,17 @@ PROGRESS_INTERVAL = 5.0
 
 @dataclass(frozen=True)
 class Progress:
-    """Where a run stands after an outer iteration."""
+    """Where a run stands after an outer iteration, or at iteration 0 where
+    it starts."""
 
     elapsed: float
     """Seconds by the run's clock since it started."""
     iteration: int
     energy: float
     """Every problem's energy, summed."""
+    length: float
+    """Every problem's track length, summed, mm: the selected tracks at
+    their current shapes, before simplification."""
     level: int
     """The level of the schedule the run stands at, counted from 0: the
     coarsest level some problem still runs at, as problems may run at
@@ -289,8 +293,9 @@ def optimize_chains(
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since optimizing started or the last INFO line, and goes to
     `on_progress` as a `Progress`, its seconds counted from `started`, by
-    default when optimizing starts. Each burst logs what it cost at DEBUG only
-    (`_burst_done`).
+    default when optimizing starts; `on_progress` first hears the start, as
+    iteration 0, once the problems are set up. Each burst logs what it cost
+    at DEBUG only (`_burst_done`).
     """
     logger.info("Setting up the optimizer")
     set_up = clock()
@@ -388,6 +393,7 @@ def optimize_chains(
 
     expired = None if deadline is None and stop is None else ended
     report = _Report(moving, clock, origin, begun, owe, on_progress)
+    report.start()
 
     def burst(
         objective: _core.Objective,
@@ -518,7 +524,8 @@ class _Report:
     `FALLBACK_WARNING`, an abnormal burst and each burst's cost at DEBUG
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
-    `shown`, the last INFO line, and handed to `on_progress`. A problem
+    `shown`, the last INFO line, and handed to `on_progress`, which first
+    hears the start (`start`). A problem
     entering a level is logged at INFO (`_stage`), and whether some problem
     owes a burst at its level goes to `on_owing`, and kept with the levels
     read before the run advances (`read_levels`) to hand on in the
@@ -549,6 +556,39 @@ class _Report:
         reports from then on as `_core.StageNotice`s."""
         self.levels = [p.state.level for p in self.problems]
 
+    def start(self) -> None:
+        """Hand the run's start, at `shown`, to `on_progress` as iteration 0,
+        at level 0: each problem stands at its inputs, laid out at the final
+        spacing, and its first step enters the coarsest level."""
+        self._hand_on(
+            self.shown - self.origin,
+            0,
+            sum(p.energy for p in self.problems),
+            sum(p.length() for p in self.problems),
+            0,
+        )
+
+    def _hand_on(
+        self,
+        elapsed: float,
+        iteration: int,
+        energy: float,
+        length: float,
+        level: int,
+    ) -> None:
+        if self.on_progress is None:
+            return
+        self.on_progress(
+            Progress(
+                elapsed,
+                iteration,
+                energy,
+                length,
+                level,
+                len(self.problems[0].settings.coarse_spacings) + 1,
+            )
+        )
+
     def __call__(self, notice: _Notice) -> None:
         if isinstance(notice, _core.FallbackNotice):
             logger.warning(FALLBACK_WARNING)
@@ -574,17 +614,13 @@ class _Report:
                 self.shown = now
             else:
                 logger.debug(message)
-            if self.on_progress is not None:
-                settings = self.problems[0].settings
-                self.on_progress(
-                    Progress(
-                        elapsed,
-                        notice.iteration,
-                        sum(notice.energies),
-                        min(self.levels),
-                        len(settings.coarse_spacings) + 1,
-                    )
-                )
+            self._hand_on(
+                elapsed,
+                notice.iteration,
+                sum(notice.energies),
+                sum(notice.lengths),
+                min(self.levels),
+            )
 
 
 def _level_spacing(settings: OptimizerSettings, level: int) -> float:

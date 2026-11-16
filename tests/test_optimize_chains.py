@@ -1499,10 +1499,10 @@ def test_progress_is_handed_over_after_every_iteration(
         on_progress=records.append,
     )
 
-    assert [r.iteration for r in records] == list(range(1, result.iterations + 1))
+    assert [r.iteration for r in records] == list(range(result.iterations + 1))
     assert [r.elapsed for r in records] == [float(r.iteration) for r in records]
     logged = [line for line in log if " Iteration " in line]
-    for record, line in zip(records, logged, strict=True):
+    for record, line in zip(records[1:], logged, strict=True):
         energy = LOGGED_ENERGY.search(line)
         assert energy is not None
         assert f"{record.energy:.3f}" == energy[1]

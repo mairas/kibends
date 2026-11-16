@@ -1491,7 +1491,7 @@ class TestScope:
 
 class TestProgress:
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_comes_after_every_iteration_with_the_optimize_stages_clock(
+    def test_comes_at_the_start_and_after_every_iteration_on_the_stages_clock(
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         connect.to(l_board())
@@ -1501,7 +1501,7 @@ class TestProgress:
 
         report = pipeline.run_smooth(options, on_progress=records.append)
 
-        assert [r.iteration for r in records] == list(range(1, report.iterations + 1))
+        assert [r.iteration for r in records] == list(range(report.iterations + 1))
         elapsed = [r.elapsed for r in records]
         assert elapsed == sorted(set(elapsed)) and elapsed[0] > 0
 
