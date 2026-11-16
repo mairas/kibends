@@ -82,9 +82,11 @@ from kibends.energy import (
 from kibends.inside import InsideClearanceError, arc_chords
 from kibends.neighbours import ChainInput
 from kibends.obstacles import (
+    Board,
     ChainCentreline,
     CompositeField,
     Obstacles,
+    board_items,
     build_obstacles,
     build_pair_obstacles,
     own_net_stops,
@@ -688,7 +690,9 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     """The optimizer's inputs for the chains and vias of `read`."""
     moving = {m.via.id for m in read.movable}
     clearances = read.clearances
-    whole = _chain_inputs(read.chains, read.snapshots, clearances, moving, read.frame)
+    # Every field of the run shares the board's items, read once.
+    board = board_items(read.snapshots.values(), moving)
+    whole = _chain_inputs(read.chains, read.snapshots, clearances, board, read.frame)
     # A diff pair's tracks keep their contacts where they are.
     parts = cut_parts(
         [chain.with_slides_pinned() for chain in read.chains], options.chord_tolerance
@@ -705,7 +709,7 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
             gap,
             edge_clearance=clearances.edge,
             hole_clearance=clearances.hole,
-            moving=moving,
+            board=board,
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
@@ -713,7 +717,7 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     # fields and gives the pairwise term its vias.
     static = _static_vias(read.snapshots, moving, read.ground_nets)
     via_inputs = _via_inputs(
-        read.movable, read.snapshots, options, clearances, read.ground_nets, static
+        read.movable, board, options, clearances, read.ground_nets, static
     )
     return _Built(whole, parts, pairs, layout, via_inputs, static)
 
@@ -923,20 +927,20 @@ def _chain_inputs(
     chains: Sequence[Chain],
     snapshots: Mapping[str, LayerSnapshot],
     clearances: Clearances,
-    moving: Collection[str],
+    board: Board,
     frame: UserFrame,
 ) -> list[ChainInput]:
-    """One optimizer input per chain, over its layer's snapshot without the
-    `moving` vias, which the optimizer adds where they are; chains of one
-    layer, net and width share a field. Descriptions give positions in
-    `frame`."""
+    """One optimizer input per chain, over its layer's items in `board`,
+    without the board's moving vias, which the optimizer adds where they
+    are; chains of one layer, net and width share a field. Descriptions
+    give positions in `frame`."""
     fields: dict[tuple[str, str, float], Obstacles] = {}
     inputs: list[ChainInput] = []
     for chain in chains:
         snapshot = snapshots[chain.layer]
         key = (chain.layer, chain.net, chain.width)
         if key not in fields:
-            fields[key] = _static_field(snapshot, chain, clearances, moving)
+            fields[key] = _static_field(snapshot, chain, clearances, board)
         centreline = ChainCentreline(
             f"{chain.net} on {chain.layer} from {frame.point(chain.points[0])}",
             chain.net,
@@ -961,34 +965,35 @@ def _static_field(
     snapshot: LayerSnapshot,
     chain: Chain,
     clearances: Clearances,
-    moving: Collection[str],
+    board: Board,
 ) -> Obstacles:
-    """The obstacles of `chain`'s net and width on `snapshot`'s layer, but
-    the `moving` vias."""
+    """The obstacles of `chain`'s net and width on `snapshot`'s layer, of
+    `board`'s items."""
     return build_obstacles(
         snapshot,
         chain.net,
         chain.width,
         edge_clearance=clearances.edge,
         hole_clearance=clearances.hole,
-        moving=moving,
+        board=board,
     )
 
 
 def _via_inputs(
     movable: Sequence[MovableVia],
-    snapshots: Mapping[str, LayerSnapshot],
+    board: Board,
     options: SmoothOptions,
     clearances: Clearances,
     ground: Collection[str],
     static: Mapping[str, StaticVia],
 ) -> list[ViaInput]:
-    """One optimizer input per movable via, its field over every layer read,
-    without the other movable vias, which the optimizer adds where they are,
-    and without the vias of `static`, by id, that it pairs with among the
-    `ground` nets (`vias.pairs_with`), which are its `static_vias`."""
-    moving = {m.via.id for m in movable}
-    layers = list(snapshots.values())
+    """One optimizer input per movable via, its field over every layer of
+    `board`, without the board's moving vias, which the optimizer adds
+    where they are, and without the vias of `static`, by id, that it pairs
+    with among the `ground` nets (`vias.pairs_with`), which are its
+    `static_vias`."""
+    moving = board.moving
+    layers = board.snapshots
     inputs: list[ViaInput] = []
     for m in movable:
         grounded = m.via.net in ground
@@ -997,14 +1002,10 @@ def _via_inputs(
             for via_id, standing in static.items()
             if pairs_with(m.via, grounded, standing)
         }
-        field, static_vias = _via_field(
-            layers, m.via, split, moving, clearances, m.zones
-        )
+        field, static_vias = _via_field(board, m.via, split, clearances, m.zones)
         build_rules = None
         if m.zones:
-            build_rules = partial(
-                _rules_copper, layers, m.via, split, moving, clearances
-            )
+            build_rules = partial(_rules_copper, board, m.via, split, clearances)
         inputs.append(
             ViaInput(
                 m.via,
@@ -1013,9 +1014,9 @@ def _via_inputs(
                 layers[0].clearance(m.via.net),
                 m.zones,
                 own_net_stops(
-                    layers,
+                    None,
                     m.via,
-                    moving=moving,
+                    board=board,
                     hole_clearance=clearances.hole,
                     hole_to_hole=clearances.hole_to_hole,
                     allow_via_in_pad=options.allow_via_in_pad,
@@ -1030,33 +1031,29 @@ def _via_inputs(
 
 
 def _rules_copper(
-    layers: Sequence[LayerSnapshot],
-    via: Via,
-    split: Collection[str],
-    moving: Collection[str],
-    clearances: Clearances,
+    board: Board, via: Via, split: Collection[str], clearances: Clearances
 ) -> ObstacleField:
-    """`via`'s field over `layers` and the vias of `split` together, by the
-    rules without its zones (`vias.ViaInput.rules_copper`)."""
-    plain, plain_static = _via_field(layers, via, split, moving, clearances, ())
+    """`via`'s field over `board`'s layers and the vias of `split`
+    together, by the rules without its zones (`vias.ViaInput.rules_copper`)."""
+    plain, plain_static = _via_field(board, via, split, clearances, ())
     return plain if plain_static is None else CompositeField([plain, plain_static])
 
 
 def _via_field(
-    layers: Sequence[LayerSnapshot],
+    board: Board,
     via: Via,
     split: Collection[str],
-    moving: Collection[str],
     clearances: Clearances,
     zones: Sequence[ViaZone],
 ) -> tuple[ObstacleField, Obstacles | None]:
-    """`via`'s field over `layers` and the vias of `split` apart, keeping
-    `zones`' clearance and margin (`obstacles.split_via_obstacles`)."""
+    """`via`'s field over `board`'s layers and the vias of `split` apart,
+    keeping `zones`' clearance and margin
+    (`obstacles.split_via_obstacles`)."""
     return split_via_obstacles(
-        layers,
+        None,
         via,
         split,
-        moving=moving,
+        board=board,
         edge_clearance=clearances.edge,
         hole_clearance=clearances.hole,
         hole_to_hole=clearances.hole_to_hole,

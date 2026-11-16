@@ -14,6 +14,7 @@ from . import testing
 __all__ = [
     "AREA",
     "AbnormalNotice",
+    "BoardItems",
     "BoardLayer",
     "BurstLayout",
     "BurstNotice",
@@ -158,6 +159,15 @@ class AbnormalNotice:
         """
     @property
     def streak(self) -> builtins.int: ...
+
+@typing.final
+class BoardItems:
+    r"""
+    The board's layers' items as a run's fields share them, without the
+    vias whose ids are in `moving`
+    (`kibends_core::field::build::BoardItems`).
+    """
+    def __new__(cls, layers: typing.Sequence[BoardLayer], moving: typing.Sequence[builtins.str]) -> BoardItems: ...
 
 @typing.final
 class BoardLayer:
@@ -677,6 +687,13 @@ class Obstacles:
         The items of `shapes`, each with its inflation and, for copper, its
         net, extent and layer; and the outside of `outline`, inflated by
         `edge_inflation`, as the board edge.
+        """
+    def sources(self) -> tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]:
+        r"""
+        Each item's source, the board edge left out: its kind (`Source`),
+        the layer of its record and its index there, the layer of its
+        copper (-1 for none), and its inflation. Raises ValueError for a
+        field not built from a board.
         """
     def signed_distance(self, points: numpy.typing.NDArray[numpy.float64], reach: builtins.float = float('inf')) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
         r"""
@@ -1366,18 +1383,20 @@ def bend_radius_limit(gap: builtins.float, width: builtins.float) -> builtins.fl
     edge still has a radius of at least zero.
     """
 
-def build_obstacles(layer: BoardLayer, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float, moving: typing.Sequence[builtins.str]) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+def build_obstacles(board: BoardItems, layer: builtins.int, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> Obstacles:
     r"""
-    Obstacles for a track of `net` and `width` mm on `layer`, but the vias
-    whose ids are in `moving` (`kibends_core::field::build::chain_obstacles`).
+    Obstacles for a track of `net` and `width` mm on the board's layer of
+    index `layer`, but the moving vias
+    (`kibends_core::field::build::chain_obstacles`).
     """
 
-def build_pair_obstacles(layer: BoardLayer, a_net: builtins.str, a_points: numpy.typing.NDArray[numpy.float64], b_net: builtins.str, b_points: numpy.typing.NDArray[numpy.float64], width: builtins.float, gap: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float, moving: typing.Sequence[builtins.str]) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+def build_pair_obstacles(board: BoardItems, layer: builtins.int, a_net: builtins.str, a_points: numpy.typing.NDArray[numpy.float64], b_net: builtins.str, b_points: numpy.typing.NDArray[numpy.float64], width: builtins.float, gap: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> Obstacles:
     r"""
     Obstacles for the centreline of a coupled section of a differential
-    pair on `layer`, its tracks of `width`, `gap` mm apart, of nets `a_net`
-    and `b_net` at `a_points` and `b_points`, but the vias whose ids are in
-    `moving` (`kibends_core::field::build::pair_obstacles`).
+    pair on the board's layer of index `layer`, its tracks of `width`,
+    `gap` mm apart, of nets `a_net` and `b_net` at `a_points` and
+    `b_points`, but the moving vias
+    (`kibends_core::field::build::pair_obstacles`).
     """
 
 def chains_field(polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> ChainField:
@@ -1554,10 +1573,10 @@ def offset_pair_pullback(centreline: numpy.typing.NDArray[numpy.float64], gap: b
     vertices (`kibends_core::pair_blocks::offset_pair_pullback`).
     """
 
-def own_net_stops(layers: typing.Sequence[BoardLayer], via: Via, moving: typing.Sequence[builtins.str], hole_clearance: builtins.float, hole_to_hole: builtins.float, allow_via_in_pad: builtins.bool) -> tuple[typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]], typing.Optional[ChainField]]:
+def own_net_stops(board: BoardItems, via: Via, hole_clearance: builtins.float, hole_to_hole: builtins.float, allow_via_in_pad: builtins.bool) -> tuple[typing.Optional[Obstacles], typing.Optional[ChainField]]:
     r"""
-    What of `via`'s net on the layers of `layers` it spans stops it: its
-    pads and holes, and its vias, each None if none is one
+    What of `via`'s net on the board's layers it spans stops it: its pads
+    and holes, and its vias, each None if none is one
     (`kibends_core::field::build::own_net_stops`).
     """
 
@@ -1634,9 +1653,9 @@ def smooth_minimum(point: numpy.typing.NDArray[numpy.intp], distance: numpy.typi
     point with none; and each obstacle's share of the gradient there.
     """
 
-def split_via_obstacles(layers: typing.Sequence[BoardLayer], via: Via, split: typing.Sequence[builtins.str], moving: typing.Sequence[builtins.str], edge_clearance: builtins.float, hole_clearance: builtins.float, hole_to_hole: builtins.float, zones: typing.Sequence[Zone]) -> tuple[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]], typing.Optional[tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]]]:
+def split_via_obstacles(board: BoardItems, via: Via, split: typing.Sequence[builtins.str], edge_clearance: builtins.float, hole_clearance: builtins.float, hole_to_hole: builtins.float, zones: typing.Sequence[Zone]) -> tuple[Obstacles, typing.Optional[Obstacles]]:
     r"""
-    A moving via's field over the layers of `layers` it spans, and the vias
+    A moving via's field over the board's layers it spans, and the vias
     whose ids are in `split` apart, None if none is one
     (`kibends_core::field::build::via_obstacles`).
     """

@@ -4921,6 +4921,24 @@ class TestPairs:
         assert any("1 moving via" in line for line in log)
         assert sorted(map(str, read)) == ["B.Cu", "F.Cu"]
 
+    def test_a_run_s_fields_share_one_board(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        built: list[object] = []
+        real = cast(Callable[..., object], _core.BoardItems)
+
+        def spy(*a: object) -> object:
+            built.append(a)
+            return real(*a)
+
+        monkeypatch.setattr(_core, "BoardItems", spy)
+        connect.to(pair_beside_moving_via())
+
+        run("--dry-run")
+
+        assert any("1 moving via" in line for line in log)
+        assert len(built) == 1
+
     def test_a_section_with_copper_between_its_ends_moves_whole(
         self, connect: Connector, reports: list[pipeline.RunReport]
     ) -> None:

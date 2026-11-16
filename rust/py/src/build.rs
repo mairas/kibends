@@ -1,23 +1,20 @@
 //! The clearance rules and the static fields' builders as Python sees
 //! them (`kibends_core::rules`, `kibends_core::field::build`): vias,
 //! zones and a layer's copper read from the snapshot into plain records,
-//! and the builders, which return each field with the sources of its items.
+//! the board's items a run's fields share, and the builders.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use crate::arrays::{
-    BoolArg, Floats, Indices, IntpArg, IntpArray, flags_of, floats, floats_of, points_of,
-    same_lengths,
-};
+use crate::arrays::{BoolArg, IntpArg, flags_of, floats_of, points_of, same_lengths};
 use crate::field::{Obstacles, Shapes};
 use crate::fields::ChainField;
-use kibends_core::field::build::{self, BuiltField, Layer, MovingVia, PairTrack, ViaRules};
+use kibends_core::field::build::{self, Layer, MovingVia, PairTrack, ViaRules};
 use kibends_core::geometry::{Shape, V2};
 use kibends_core::rules::{self, HoleRules, Span};
 
@@ -231,82 +228,79 @@ impl BoardLayer {
     }
 }
 
-/// A built field's items' sources as arrays: each item's kind (`Source`),
-/// the layer of its record and its index there, the layer of its copper
-/// (-1 for none), and its inflation.
-type PickedArrays<'py> = (
-    Indices<'py>,
-    Indices<'py>,
-    Indices<'py>,
-    Indices<'py>,
-    Floats<'py>,
-);
-
-/// A built field and its items' sources.
-type Built<'py> = (Obstacles, PickedArrays<'py>);
-
-fn built<'py>(py: Python<'py>, built: BuiltField) -> PyResult<Built<'py>> {
-    let index = |values: Vec<isize>| IntpArray(values.into_pyarray(py));
-    let picked = &built.picked;
-    // An index into a Rust slice fits an isize, and a source's code is small.
-    let source = picked.iter().map(|p| p.source as isize).collect();
-    let layer = picked.iter().map(|p| p.layer as isize).collect();
-    let item = picked.iter().map(|p| p.index as isize).collect();
-    let copper = picked
-        .iter()
-        .map(|p| p.copper.map_or(-1, |c| c as isize))
-        .collect();
-    let inflations = (0..picked.len())
-        .map(|k| built.field.edges().inflations()[k])
-        .collect();
-    Ok((
-        Obstacles::of(py, built.field)?,
-        (
-            index(source),
-            index(layer),
-            index(item),
-            index(copper),
-            floats(py, inflations),
-        ),
-    ))
+/// The board's layers' items as a run's fields share them, without the
+/// vias whose ids are in `moving`
+/// (`kibends_core::field::build::BoardItems`).
+#[gen_stub_pyclass]
+#[pyclass(frozen, module = "kibends._core")]
+pub struct BoardItems {
+    inner: Arc<build::BoardItems>,
 }
 
-/// Obstacles for a track of `net` and `width` mm on `layer`, but the vias
-/// whose ids are in `moving` (`kibends_core::field::build::chain_obstacles`).
+#[gen_stub_pymethods]
+#[pymethods]
+impl BoardItems {
+    #[new]
+    fn new(layers: Vec<PyRef<'_, BoardLayer>>, moving: Vec<String>) -> Self {
+        Self {
+            inner: Arc::new(build::BoardItems::new(
+                layers.iter().map(|l| l.inner.clone()).collect(),
+                moving.into_iter().collect(),
+            )),
+        }
+    }
+}
+
+impl BoardItems {
+    /// The index of a layer of the board, checked.
+    fn layer(&self, layer: usize) -> PyResult<usize> {
+        if layer < self.inner.layers().len() {
+            Ok(layer)
+        } else {
+            Err(PyValueError::new_err(
+                "the board has no layer of that index",
+            ))
+        }
+    }
+}
+
+/// Obstacles for a track of `net` and `width` mm on the board's layer of
+/// index `layer`, but the moving vias
+/// (`kibends_core::field::build::chain_obstacles`).
 #[gen_stub_pyfunction]
 #[pyfunction]
-fn build_obstacles<'py>(
-    py: Python<'py>,
-    layer: PyRef<'_, BoardLayer>,
+fn build_obstacles(
+    py: Python<'_>,
+    board: PyRef<'_, BoardItems>,
+    layer: usize,
     net: &str,
     width: f64,
     edge_clearance: f64,
     hole_clearance: f64,
-    moving: Vec<String>,
-) -> PyResult<Built<'py>> {
-    built(
-        py,
-        build::chain_obstacles(
-            &layer.inner,
-            net,
-            width,
-            edge_clearance,
-            hole_clearance,
-            &ids(&moving),
-        ),
-    )
+) -> PyResult<Obstacles> {
+    let field = build::chain_obstacles(
+        &board.inner,
+        board.layer(layer)?,
+        net,
+        width,
+        edge_clearance,
+        hole_clearance,
+    );
+    Obstacles::of(py, field)
 }
 
 /// Obstacles for the centreline of a coupled section of a differential
-/// pair on `layer`, its tracks of `width`, `gap` mm apart, of nets `a_net`
-/// and `b_net` at `a_points` and `b_points`, but the vias whose ids are in
-/// `moving` (`kibends_core::field::build::pair_obstacles`).
+/// pair on the board's layer of index `layer`, its tracks of `width`,
+/// `gap` mm apart, of nets `a_net` and `b_net` at `a_points` and
+/// `b_points`, but the moving vias
+/// (`kibends_core::field::build::pair_obstacles`).
 #[gen_stub_pyfunction]
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-fn build_pair_obstacles<'py>(
-    py: Python<'py>,
-    layer: PyRef<'_, BoardLayer>,
+fn build_pair_obstacles(
+    py: Python<'_>,
+    board: PyRef<'_, BoardItems>,
+    layer: usize,
     a_net: &str,
     a_points: PyReadonlyArray2<'_, f64>,
     b_net: &str,
@@ -315,61 +309,52 @@ fn build_pair_obstacles<'py>(
     gap: f64,
     edge_clearance: f64,
     hole_clearance: f64,
-    moving: Vec<String>,
-) -> PyResult<Built<'py>> {
+) -> PyResult<Obstacles> {
     let a = points_of(&a_points)?;
     let b = points_of(&b_points)?;
-    built(
-        py,
-        build::pair_obstacles(
-            &layer.inner,
-            PairTrack {
-                net: a_net,
-                points: &a,
-            },
-            PairTrack {
-                net: b_net,
-                points: &b,
-            },
-            width,
-            gap,
-            edge_clearance,
-            hole_clearance,
-            &ids(&moving),
-        ),
-    )
-}
-
-fn layers_of<'a>(layers: &'a [PyRef<'_, BoardLayer>]) -> Vec<&'a Layer> {
-    layers.iter().map(|l| l.inner.as_ref()).collect()
+    let field = build::pair_obstacles(
+        &board.inner,
+        board.layer(layer)?,
+        PairTrack {
+            net: a_net,
+            points: &a,
+        },
+        PairTrack {
+            net: b_net,
+            points: &b,
+        },
+        width,
+        gap,
+        edge_clearance,
+        hole_clearance,
+    );
+    Obstacles::of(py, field)
 }
 
 fn ids(ids: &[String]) -> HashSet<&str> {
     ids.iter().map(String::as_str).collect()
 }
 
-/// A moving via's field over the layers of `layers` it spans, and the vias
+/// A moving via's field over the board's layers it spans, and the vias
 /// whose ids are in `split` apart, None if none is one
 /// (`kibends_core::field::build::via_obstacles`).
 #[gen_stub_pyfunction]
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-fn split_via_obstacles<'py>(
-    py: Python<'py>,
-    layers: Vec<PyRef<'_, BoardLayer>>,
+fn split_via_obstacles(
+    py: Python<'_>,
+    board: PyRef<'_, BoardItems>,
     via: PyRef<'_, Via>,
     split: Vec<String>,
-    moving: Vec<String>,
     edge_clearance: f64,
     hole_clearance: f64,
     hole_to_hole: f64,
     zones: Vec<PyRef<'_, Zone>>,
-) -> PyResult<(Built<'py>, Option<Built<'py>>)> {
+) -> PyResult<(Obstacles, Option<Obstacles>)> {
     let fields = build::via_obstacles(
-        &layers_of(&layers),
+        &board.inner,
         &via.inner,
         &ids(&split),
-        &ids(&moving),
         ViaRules {
             edge_clearance,
             holes: HoleRules {
@@ -381,29 +366,27 @@ fn split_via_obstacles<'py>(
     )
     .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok((
-        built(py, fields.field)?,
-        fields.split.map(|s| built(py, s)).transpose()?,
+        Obstacles::of(py, fields.field)?,
+        fields.split.map(|s| Obstacles::of(py, s)).transpose()?,
     ))
 }
 
-/// What of `via`'s net on the layers of `layers` it spans stops it: its
-/// pads and holes, and its vias, each None if none is one
+/// What of `via`'s net on the board's layers it spans stops it: its pads
+/// and holes, and its vias, each None if none is one
 /// (`kibends_core::field::build::own_net_stops`).
 #[gen_stub_pyfunction]
 #[pyfunction]
-fn own_net_stops<'py>(
-    py: Python<'py>,
-    layers: Vec<PyRef<'_, BoardLayer>>,
+fn own_net_stops(
+    py: Python<'_>,
+    board: PyRef<'_, BoardItems>,
     via: PyRef<'_, Via>,
-    moving: Vec<String>,
     hole_clearance: f64,
     hole_to_hole: f64,
     allow_via_in_pad: bool,
-) -> PyResult<(Option<Built<'py>>, Option<ChainField>)> {
+) -> PyResult<(Option<Obstacles>, Option<ChainField>)> {
     let stops = build::own_net_stops(
-        &layers_of(&layers),
+        &board.inner,
         &via.inner,
-        &ids(&moving),
         HoleRules {
             hole_clearance,
             hole_to_hole,
@@ -412,7 +395,7 @@ fn own_net_stops<'py>(
     )
     .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok((
-        stops.items.map(|s| built(py, s)).transpose()?,
+        stops.items.map(|s| Obstacles::of(py, s)).transpose()?,
         stops.vias.map(|v| ChainField { inner: Arc::new(v) }),
     ))
 }
@@ -525,6 +508,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Via>()?;
     m.add_class::<Zone>()?;
     m.add_class::<BoardLayer>()?;
+    m.add_class::<BoardItems>()?;
     m.add_function(wrap_pyfunction!(build_obstacles, m)?)?;
     m.add_function(wrap_pyfunction!(build_pair_obstacles, m)?)?;
     m.add_function(wrap_pyfunction!(split_via_obstacles, m)?)?;

@@ -9,13 +9,24 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use crate::arrays::{
-    BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, Points, flags_of, floats, floats_of,
-    indices, indices_of, points_of, same_lengths, vectors,
+    BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, IntpArray, Points, flags_of, floats,
+    floats_of, indices, indices_of, numbers, points_of, same_lengths, vectors,
 };
 use kibends_core::field::edges::StaticDistances;
 use kibends_core::field::obstacles::Item;
 use kibends_core::field::{Kind, edges, obstacles};
 use kibends_core::geometry::{PlainShapes, Shape, zone_depth as core_zone_depth};
+
+/// A built field's items' sources as arrays: each item's kind, the layer
+/// of its record and its index there, the layer of its copper, and its
+/// inflation.
+type Sources<'py> = (
+    Indices<'py>,
+    Indices<'py>,
+    Indices<'py>,
+    Indices<'py>,
+    Floats<'py>,
+);
 
 fn distances_arrays<'py>(
     py: Python<'py>,
@@ -104,7 +115,7 @@ impl StaticEdges {
     /// Each item's obstacle.
     #[getter]
     fn obstacles<'py>(&self, py: Python<'py>) -> Indices<'py> {
-        indices(py, self.inner.obstacles())
+        numbers(py, self.inner.obstacles())
     }
 
     /// Each item's obstacle as a clearance check judges it: its obstacle,
@@ -112,7 +123,7 @@ impl StaticEdges {
     /// layer.
     #[getter]
     fn clearance_obstacles<'py>(&self, py: Python<'py>) -> Indices<'py> {
-        indices(py, self.inner.clearance_obstacles())
+        numbers(py, self.inner.clearance_obstacles())
     }
 
     /// Each point's exact signed distance to each obstacle nearer than
@@ -210,6 +221,35 @@ impl Obstacles {
             },
         )?;
         Ok(Self { inner, edges })
+    }
+
+    /// Each item's source, the board edge left out: its kind (`Source`),
+    /// the layer of its record and its index there, the layer of its
+    /// copper (-1 for none), and its inflation. Raises ValueError for a
+    /// field not built from a board.
+    fn sources<'py>(&self, py: Python<'py>) -> PyResult<Sources<'py>> {
+        let picked = self
+            .inner
+            .picked()
+            .ok_or_else(|| PyValueError::new_err("the field was not built from a board"))?;
+        let index = |values: Vec<isize>| IntpArray(values.into_pyarray(py));
+        // An index into a Rust slice fits an isize, and a source's code is
+        // small.
+        let source = picked.iter().map(|p| p.source as isize).collect();
+        let layer = picked.iter().map(|p| p.layer as isize).collect();
+        let item = picked.iter().map(|p| p.index as isize).collect();
+        let copper = picked
+            .iter()
+            .map(|p| p.copper.map_or(-1, |c| c as isize))
+            .collect();
+        let inflations = self.inner.edges().inflations()[..picked.len()].to_vec();
+        Ok((
+            index(source),
+            index(layer),
+            index(item),
+            index(copper),
+            floats(py, inflations),
+        ))
     }
 
     /// How far the board edge keeps from the copper's centreline, mm; None
