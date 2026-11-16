@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 from itertools import pairwise
 
 import kipy.board_types as kbt
@@ -33,6 +34,7 @@ from kipy.proto.board.board_types_pb2 import PadType
 from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
+from kibends import obstacles as obstacle_module
 from kibends.energy import (
     SMOOTH_REACH,
     SMOOTH_WIDTH,
@@ -276,6 +278,61 @@ class TestObstacleSet:
         zone = kipy_zone(kipy_rect(0, 0, 2, 2), [BL.BL_F_Cu], rule_area=False)
 
         assert obstacles_of(FakeBoard(zones=[zone])).items == ()
+
+
+NAMED_BOARD = FakeBoard(
+    pads=[
+        kipy_pad("other", "HV", 3, 1),
+        kipy_pad("mh", "", 6, 4, layers=(), pad_type=PadType.PT_NPTH, drill=1.2),
+    ],
+    tracks=[kipy_track("gnd", "GND", (1, 6), (8, 6), width=0.4)],
+    vias=[kipy_via("v", "GND", 8, 2, diameter=0.8, drill=0.4)],
+    zones=[kipy_zone(kipy_rect(1, 8, 3, 9), [BL.BL_F_Cu])],
+    shapes=edge_segments([(0, 0), (10, 0), (10, 10), (0, 10)]),
+)
+
+
+class TestNaming:
+    def test_the_items_give_the_field_s_distances(self) -> None:
+        field = obstacles_of(NAMED_BOARD)
+        edge = field.edge
+        assert edge is not None
+        rebuilt = Obstacles(field.items, *edge)
+        at = np.random.default_rng(0).uniform(-1, 11, size=(200, 2))
+
+        distance, gradient = field.signed_distance(at)
+        expected, expected_gradient = rebuilt.signed_distance(at)
+
+        assert {o.description for o in field.items} == {
+            "pad other",
+            "hole of pad mh",
+            "track gnd",
+            "via v",
+            "hole of via v",
+            "track keepout",
+        }
+        np.testing.assert_allclose(distance, expected, rtol=0, atol=NM_TOLERANCE)
+        np.testing.assert_allclose(
+            gradient, expected_gradient, rtol=0, atol=NM_TOLERANCE
+        )
+
+    def test_items_are_named_once_when_first_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built: list[Obstacle] = []
+
+        @dataclass(frozen=True)
+        class Counted(Obstacle):
+            def __post_init__(self) -> None:
+                built.append(self)
+
+        monkeypatch.setattr(obstacle_module, "Obstacle", Counted)
+        field = obstacles_of(NAMED_BOARD)
+        assert built == []
+
+        items = field.items
+        assert field.items is items
+        assert built == list(items)
 
 
 PAIR_GAP = 0.15
