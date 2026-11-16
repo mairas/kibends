@@ -2,8 +2,8 @@
 and the `SmoothOptions` they give (`SmoothValues`, `smooth_options`), the
 checks on the fields the panel edits (`PanelFields`, `read_panel`) and on
 the command line's numbers (`finite_problem` and its kin,
-`schedule_problem`), a finished run's summary (`summary`) and the message
-for a failure (`error_message`).
+`schedule_problem`), a finished run's figures and summary (`figures`,
+`summary`) and the message for a failure (`error_message`).
 
 The failure messages follow kistitch's cli.py error mapping (MIT,
 Copyright (c) 2025 Hat Labs Oy).
@@ -43,6 +43,7 @@ from kibends.run import (
     NoBoardError,
     PlotUnavailableError,
     RunReport,
+    Scope,
     ScopeKind,
     ScopeOption,
     SmoothOptions,
@@ -211,7 +212,8 @@ def schedule_problem(spacings: Sequence[float]) -> str | None:
 
 
 def listed(spacings: Sequence[float]) -> str:
-    return " ".join(f"{s:g}" for s in spacings)
+    """`spacings` as the panel's Spacing field shows them."""
+    return ", ".join(f"{s:g}" for s in spacings)
 
 
 class Field(Enum):
@@ -220,7 +222,7 @@ class Field(Enum):
     GROUND_NETS = "Ground nets"
     TIME_LIMIT = "Time limit"
     REPULSION = "Repulsion"
-    RANGE = "Range"
+    RANGE = "Repulsion range"
     ATTRACTION = "Attraction"
     ATTRACTION_RANGE = "Attraction range"
     SPACING = "Spacing"
@@ -261,6 +263,12 @@ _SEPARATORS = re.compile(r"[,\s]+")
 
 def _words(text: str) -> list[str]:
     return [w for w in _SEPARATORS.split(text) if w]
+
+
+def normalised(text: str) -> str:
+    """The items of a list field, as typed, separated by a comma and a
+    space."""
+    return ", ".join(_words(text))
 
 
 def _number(text: str) -> float:
@@ -367,6 +375,45 @@ def counted(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
+@dataclass(frozen=True)
+class RunFigures:
+    """What a run without a refusal did, as its summary tells it."""
+
+    ending: str
+    iterations: int
+    elapsed: float
+    """The optimize stage's wall time, s."""
+    chains: int
+    """The chains it changed."""
+    vias: int
+    """The vias it moved."""
+    length_change: float
+    """The changed chains' summed length change, mm, rounded to 0.01 mm."""
+    rejected: int
+    """The edge moves it rejected."""
+    scope: Scope
+
+
+def figures(report: RunReport) -> RunFigures:
+    changed = [c for c in report.chains if c.changed]
+    # Adding 0.0 turns a -0.0 from rounding into 0.0.
+    change = round(sum(c.after.length - c.before.length for c in changed), 2) + 0.0
+    return RunFigures(
+        ending=_ending(report.termination),
+        iterations=report.iterations,
+        elapsed=report.elapsed,
+        chains=len(changed),
+        vias=sum(v.moved for v in report.vias),
+        length_change=change,
+        rejected=(
+            sum(c.rejected_edges for c in report.chains)
+            + sum(v.rejected_edges for v in report.vias)
+            + sum(p.rejected_edges for p in report.pairs)
+        ),
+        scope=report.scope,
+    )
+
+
 def summary(report: RunReport) -> str:
     """How a run without a refusal ended, in one line: its ending,
     iterations and time, the chains and vias it changed, their summed
@@ -378,24 +425,16 @@ def summary(report: RunReport) -> str:
             if report.termination is Termination.STOPPED
             else "Nothing to do"
         )
-    changed = [c for c in report.chains if c.changed]
-    # Adding 0.0 turns a -0.0 from rounding into 0.0.
-    change = round(sum(c.after.length - c.before.length for c in changed), 2) + 0.0
-    rejected = (
-        sum(c.rejected_edges for c in report.chains)
-        + sum(v.rejected_edges for v in report.vias)
-        + sum(p.rejected_edges for p in report.pairs)
-    )
-    scope = report.scope
-    kind = "selection" if scope.kind is ScopeKind.SELECTION else "whole board"
+    f = figures(report)
+    change = f.length_change
+    kind = "selection" if f.scope.kind is ScopeKind.SELECTION else "whole board"
     return (
-        f"{_ending(report.termination)} after "
-        f"{counted(report.iterations, 'iteration')} in {report.elapsed:.1f} s; "
-        f"{counted(len(changed), 'chain')}, "
-        f"{counted(sum(v.moved for v in report.vias), 'via')} changed; "
+        f"{f.ending} after {counted(f.iterations, 'iteration')} in {f.elapsed:.1f} s; "
+        f"{counted(f.chains, 'chain')}, {counted(f.vias, 'via')} changed; "
         f"length {change:{'+' if change else ''}.2f} mm; "
-        f"{counted(rejected, 'rejected edge move')}; "
-        f"{kind} of {counted(scope.tracks, 'track')}, {counted(scope.vias, 'via')}"
+        f"{counted(f.rejected, 'rejected edge move')}; "
+        f"{kind} of {counted(f.scope.tracks, 'track')}, "
+        f"{counted(f.scope.vias, 'via')}"
     )
 
 

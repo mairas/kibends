@@ -135,6 +135,45 @@ class TestSummary:
         assert "0 chains, 1 via changed; length 0.00 mm" in text
 
 
+class TestNormalised:
+    @pytest.mark.parametrize(
+        ("text", "listed"),
+        [
+            ("GND  PGND,AGND, ", "GND, PGND, AGND"),
+            (" 1.6 0.4,0.1", "1.6, 0.4, 0.1"),
+            ("0..5 x", "0..5, x"),
+            ("  ", ""),
+        ],
+    )
+    def test_separates_the_items_with_a_comma_and_a_space(
+        self, text: str, listed: str
+    ) -> None:
+        assert present.normalised(text) == listed
+
+
+class TestFigures:
+    def test_count_and_sum_what_the_summary_says(self) -> None:
+        chains = (chain(10.0, 7.5), chain(4.0, 4.29), chain(3.0, 1.0, changed=False))
+
+        figures = present.figures(report(chains, (via(moved=True), via(moved=False))))
+
+        assert figures == present.RunFigures(
+            ending="Settled",
+            iterations=38,
+            elapsed=12.44,
+            chains=2,
+            vias=1,
+            length_change=-2.21,
+            rejected=7,
+            scope=SELECTION,
+        )
+
+    def test_a_change_rounding_to_zero_is_zero(self) -> None:
+        change = present.figures(report((chain(1.0, 0.999),))).length_change
+
+        assert (change, str(change)) == (0.0, "0.0")
+
+
 class TestErrorMessage:
     @pytest.mark.parametrize(
         "error",
@@ -311,7 +350,7 @@ class TestReadPanel:
 
     def test_a_value_that_is_not_a_number_is_refused(self) -> None:
         assert invalid(falloff_range="far") == {
-            Field.RANGE: "Range: must be a number, got far"
+            Field.RANGE: "Repulsion range: must be a number, got far"
         }
 
     @pytest.mark.parametrize(
@@ -337,7 +376,7 @@ class TestReadPanel:
     @pytest.mark.parametrize(
         ("text", "problem"),
         [
-            ("0.05 0.1", "must fall strictly, coarsest first, got 0.05 0.1"),
+            ("0.05 0.1", "must fall strictly, coarsest first, got 0.05, 0.1"),
             ("0.2", "the final spacing, the last value, must be at most 0.1, got 0.2"),
             ("0.4 -0.05", "must be positive"),
             ("0.4 x", "must be a number, got x"),
@@ -347,6 +386,9 @@ class TestReadPanel:
         self, text: str, problem: str
     ) -> None:
         assert invalid(spacing=text) == {Field.SPACING: f"Spacing: {problem}"}
+
+    def test_the_default_spacing_is_listed_with_commas(self) -> None:
+        assert PanelFields().spacing == "1.6, 0.4, 0.1"
 
     def test_spacing_values_may_be_separated_by_commas(self) -> None:
         assert read(spacing="0.4, 0.2,0.05").spacing == (0.4, 0.2, 0.05)

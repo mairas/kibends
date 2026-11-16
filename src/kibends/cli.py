@@ -48,7 +48,6 @@ from kibends.present import (
     RunRefusedError,
     SmoothValues,
     error_message,
-    listed,
     non_negative_problem,
     positive_problem,
     schedule_problem,
@@ -338,7 +337,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "coarsest first, each handing over to the next as the problem "
         "settles or --time-limit runs out; the last, at most "
         f"{MAX_SPACING:g}, is the final spacing, and one value runs at it alone "
-        f"(default: {listed(DEFAULT_SCHEDULE)})",
+        f"(default: {' '.join(f'{s:g}' for s in DEFAULT_SCHEDULE)})",
     )
     smooth_parser.add_argument(
         "--settled-change",
