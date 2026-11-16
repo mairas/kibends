@@ -1,4 +1,6 @@
 import math
+import threading
+import time
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -288,6 +290,9 @@ class TestObstacleSet:
         assert obstacles_of(FakeBoard(zones=[zone])).items == ()
 
 
+NAMING_PAUSE = 0.001
+"""s each obstacle takes to name, so that two first reads overlap."""
+
 NAMED_BOARD = FakeBoard(
     pads=[
         kipy_pad("other", "HV", 3, 1),
@@ -341,6 +346,32 @@ class TestNaming:
         items = field.items
         assert field.items is items
         assert built == list(items)
+
+    def test_two_first_reads_at_once_give_one_tuple(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        @dataclass(frozen=True)
+        class Slow(Obstacle):
+            def __post_init__(self) -> None:
+                time.sleep(NAMING_PAUSE)
+
+        monkeypatch.setattr(obstacle_module, "Obstacle", Slow)
+        field = obstacles_of(NAMED_BOARD)
+        start = threading.Barrier(2)
+        read: list[tuple[Obstacle, ...]] = []
+
+        def first_read() -> None:
+            start.wait()
+            read.append(field.items)
+
+        threads = [threading.Thread(target=first_read) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(read) == 2
+        assert read[0] is read[1]
 
 
 PAIR_GAP = 0.15

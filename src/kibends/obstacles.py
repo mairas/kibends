@@ -38,6 +38,7 @@ optimizer takes is a Rust field (`core_field`).
 
 import enum
 import math
+import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -173,6 +174,11 @@ class Obstacle:
     selected arc. None for any other obstacle."""
 
 
+_NAMING = threading.Lock()
+"""Held while a field names its items, so that two threads reading them
+first at once get one tuple."""
+
+
 class Obstacles:
     """Signed distance to the nearest inflated obstacle, and edge checks:
     `items`, and the outside of `board_outline` inflated by
@@ -192,7 +198,7 @@ class Obstacles:
         edge_inflation: float = 0.0,
     ) -> None:
         self._items: tuple[Obstacle, ...] | None = tuple(items)
-        self._name: Callable[[], tuple[Obstacle, ...]] | None = None
+        self._name: Callable[[], tuple[Obstacle, ...]] = partial(tuple, self._items)
         self.outline = board_outline
         self.core = _core.Obstacles(
             plain_shapes(o.geometry for o in self._items),
@@ -224,11 +230,13 @@ class Obstacles:
     def items(self) -> tuple[Obstacle, ...]:
         """The obstacles, in the field's order. Only the start check reads
         them (`inside`), so a built field names them on first read."""
-        if self._items is None:
-            assert self._name is not None
-            self._items = self._name()
-            self._name = None
-        return self._items
+        items = self._items
+        if items is None:
+            with _NAMING:
+                items = self._items
+                if items is None:
+                    items = self._items = self._name()
+        return items
 
     @property
     def edge(self) -> tuple[BaseGeometry, float] | None:
