@@ -2,8 +2,9 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+import scenarios
 from conftest import Ticking
-from distance_fields import FloatArray
+from distance_fields import FloatArray, FreeSpace
 
 import kibends.optimize as optimize_module
 from kibends import _core
@@ -16,6 +17,8 @@ from kibends.bursts import (
     Stop,
     run_burst,
 )
+from kibends.obstacles import HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.via_moves import MovingVias
 
 SHORT_SETTINGS = replace(DEFAULT_SETTINGS, burst_maxiter=10)
 
@@ -159,8 +162,13 @@ def test_a_scaled_objective_answers_as_its_objective() -> None:
 
 @pytest.mark.fallback
 def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None:
+    chain = scenarios.selected("A", "A", FreeSpace(), (0.0, 0.0), (10.0, 0.0))
+    moving = MovingVias([chain], [], HOLE_CLEARANCE, HOLE_TO_HOLE)
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
+        [chain], [], moving, scenarios.PARAMS, OptimizerSettings(spacing=0.3)
+    )
     report = optimize_module._Report(  # pyright: ignore[reportPrivateUsage]
-        [], Ticking(), 0.0, 0.0, lambda _owing: None
+        placed, Ticking(), 0.0, 0.0, lambda _owing: None
     )
 
     report(_core.FallbackNotice())

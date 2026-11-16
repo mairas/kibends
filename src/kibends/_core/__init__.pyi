@@ -153,11 +153,6 @@ class AbnormalNotice:
     L-BFGS ended a burst of a problem abnormally, `streak` in a row.
     """
     @property
-    def problem(self) -> builtins.int:
-        r"""
-        The problem, by its place among those advanced.
-        """
-    @property
     def streak(self) -> builtins.int: ...
 
 @typing.final
@@ -242,11 +237,6 @@ class BurstNotice:
     r"""
     What one burst cost and moved (`kibends_core::optimize::BurstReport`).
     """
-    @property
-    def problem(self) -> builtins.int:
-        r"""
-        The problem, by its place among those advanced.
-        """
     @property
     def level(self) -> builtins.int:
         r"""
@@ -714,7 +704,7 @@ class Obstacles:
 @typing.final
 class OwingNotice:
     r"""
-    Whether some problem owes a burst at its level
+    Whether the problem owes a burst at its level
     (`kibends_core::optimize::state::State::owes_burst`): at the start of
     `advance` and after each step that changes it.
     """
@@ -1010,7 +1000,7 @@ class ProblemState:
 @typing.final
 class ProgressNotice:
     r"""
-    After an outer iteration: its number, its largest change, and each
+    After an outer iteration: its number, its largest change, and the
     problem's length and energy.
     """
     @property
@@ -1018,9 +1008,9 @@ class ProgressNotice:
     @property
     def change(self) -> builtins.float: ...
     @property
-    def lengths(self) -> builtins.list[builtins.float]: ...
+    def length(self) -> builtins.float: ...
     @property
-    def energies(self) -> builtins.list[builtins.float]: ...
+    def energy(self) -> builtins.float: ...
 
 @typing.final
 class Revert:
@@ -1128,15 +1118,10 @@ class SmoothAnswer:
 @typing.final
 class StageNotice:
     r"""
-    A problem enters a level of a schedule with coarse levels: the coarsest
-    before its first burst, each finer one, and the final one, as a coarser
-    one hands over.
+    The problem enters a level of a schedule with coarse levels: the
+    coarsest before its first burst, each finer one, and the final one, as a
+    coarser one hands over.
     """
-    @property
-    def problem(self) -> builtins.int:
-        r"""
-        The problem, by its place among those advanced.
-        """
     @property
     def level(self) -> builtins.int:
         r"""
@@ -1339,15 +1324,15 @@ class InsideOf(enum.Enum):
     net's stops.
     """
 
-def advance(problems: typing.Sequence[ProblemState], iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
+def advance(problem: ProblemState, iteration: builtins.int, cap: builtins.int, gave_up: builtins.bool, expired: typing.Optional[collections.abc.Callable[[], builtins.bool]], burst: collections.abc.Callable[[Objective, numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], Revert], bursts.Burst], report: collections.abc.Callable[[FallbackNotice | AbnormalNotice | BurstNotice | StageNotice | OwingNotice | ProgressNotice], object]) -> tuple[builtins.str, builtins.int]:
     r"""
-    Outer iterations of `problems` from `iteration` until `cap`, each giving
-    every problem that has not settled one burst, until every problem has
-    settled or `expired` answers true, asked after each step and before
-    its long parts (`kibends_core::optimize::state::State::step`). Each burst
-    runs through `burst`, called with its objective, start, per-coordinate
-    scale and check; `report` hears each notice as it comes. `gave_up` says
-    some problem was given up on before. Returns how the run ended, as
+    Outer iterations of `problem` from `iteration` until `cap`, each giving
+    it one burst unless it has settled, until it has settled or `expired`
+    answers true, asked after each step and before its long parts
+    (`kibends_core::optimize::state::State::step`). Each burst runs through
+    `burst`, called with its objective, start, per-coordinate scale and
+    check; `report` hears each notice as it comes. `gave_up` says the
+    problem was given up on before. Returns how the run ended, as
     `kibends.results.Termination`'s value names it, and the iteration it
     reached.
     """

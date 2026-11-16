@@ -309,10 +309,10 @@ def test_the_guard_takes_a_via_starting_inside_only_shallower(
     x, y = scenarios.DETOUR_VIA
     wall = Box(x + WALL_DEPTH - 50.0, y, 50.0, 50.0)
     scenario = squeezed(wall, y + ZONE_SLACK - MARGIN)
-    (placed,) = optimize_module._problems(
+    placed = optimize_module._problem_of(
         scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
-    problem = placed.problem
+    problem = placed
 
     moved = [problem.positions[0] + np.array(step)]
 
@@ -854,10 +854,10 @@ def test_the_guard_refuses_a_via_newly_inside_one_obstacle_while_inside_another(
     None
 ):
     scenario = beside_a_wall_under_pinned()
-    (placed,) = optimize_module._problems(
+    placed = optimize_module._problem_of(
         scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
-    problem = placed.problem
+    problem = placed
 
     moved = [np.array(SIDEWAYS)]
 
@@ -979,10 +979,10 @@ def test_the_guard_refuses_a_via_newly_inside_one_static_item_inside_another(
     stops: bool,
 ) -> None:
     scenario = inside_one_item_beside_another(stops)
-    (placed,) = optimize_module._problems(
+    placed = optimize_module._problem_of(
         scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
-    problem = placed.problem
+    problem = placed
 
     moved = [np.array(SIDEWAYS)]
 
@@ -1558,10 +1558,10 @@ class TestGradient:
         blocks = [pair_block(pair, COARSE.spacing) for pair in pairs]
         everything = [*scenario.chains, *(block.chain for block in blocks)]
         vias = MovingVias(everything, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
-        (placed,) = optimize_module._problems(
+        placed = optimize_module._problem_of(
             scenario.chains, blocks, vias, params, COARSE, static
         )
-        problem = placed.problem
+        problem = placed
         layout = problem.layout(problem.points)
         seen = problem.seeing(layout.starts)
         objective = problem.objective(layout, seen, problem.lookups(seen))
@@ -1587,8 +1587,8 @@ class TestGradient:
         scenario = scenarios.via_grid(3, 3, via_every=1)
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
         vias = MovingVias(scenario.chains, scenario.vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
-        (placed,) = optimize_module._problems(scenario.chains, [], vias, params, COARSE)
-        problem = placed.problem
+        placed = optimize_module._problem_of(scenario.chains, [], vias, params, COARSE)
+        problem = placed
         layout = problem.layout(problem.points)
         seen = problem.seeing(layout.starts)
         objective = problem.objective(layout, seen, problem.lookups(seen))
@@ -1860,10 +1860,10 @@ def test_the_guard_refuses_a_via_deep_outside_its_zone_entering_another_s_holes(
     None
 ):
     scenario = outside_their_zone()
-    (placed,) = optimize_module._problems(
+    placed = optimize_module._problem_of(
         scenario.chains, [], moving_vias(scenario), scenario.params, COARSE
     )
-    problem = placed.problem
+    problem = placed
     left, right = problem.positions
 
     moved = [left + np.array((TOWARD, 0.0)), right]
@@ -1895,10 +1895,10 @@ def alone(*, gap: float | None = None, top: float = OPEN_TOP) -> ViasScenario:
 
 
 def alone_problem(scenario: ViasScenario) -> optimize_module._Problem:
-    (placed,) = optimize_module._problems(
+    placed = optimize_module._problem_of(
         scenario.chains, [], moving_vias(scenario), scenario.params, DEFAULT_SETTINGS
     )
-    return placed.problem
+    return placed
 
 
 class TestViaStiffness:
@@ -2143,10 +2143,10 @@ class TestViaEnergy:
     def test_matches_the_via_by_via_reference(self, name: str, jitter: float) -> None:
         scenario = VIA_ENERGY_SCENARIOS[name]()
         params = replace(scenario.params, repulsion=0.5, falloff_range=1.5)
-        placed = optimize_module._problems(
+        placed = optimize_module._problem_of(
             scenario.chains, [], moving_vias(scenario), params, COARSE
         )
-        problems = [p.problem for p in placed if p.problem.vias]
+        problems = [placed] if placed.vias else []
         assert problems
         rng = np.random.default_rng(7)
         for problem in problems:
@@ -2335,7 +2335,7 @@ class TestPairEnergy:
     @pytest.mark.parametrize("name", PAIR_ENERGY_SCENARIOS)
     def test_matches_the_pair_by_pair_reference(self, name: str, jitter: float) -> None:
         scenario = PAIR_ENERGY_SCENARIOS[name]()
-        placed = optimize_module._problems(
+        placed = optimize_module._problem_of(
             scenario.chains,
             [],
             moving_vias(scenario),
@@ -2343,7 +2343,7 @@ class TestPairEnergy:
             COARSE,
             GROUND_STATIC,
         )
-        problems = [p.problem for p in placed if p.problem.vias]
+        problems = [placed] if placed.vias else []
         assert problems
         rng = np.random.default_rng(5)
         for problem in problems:

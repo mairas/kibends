@@ -1262,14 +1262,14 @@ class TestStop:
         built: list[object] = []
         real = cast(
             Callable[..., object],
-            optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+            optimize_module._problem_of,  # pyright: ignore[reportPrivateUsage]
         )
 
         def building(*args: object, **kwargs: object) -> object:
             built.append(real(*args, **kwargs))
             return built[-1]
 
-        monkeypatch.setattr(optimize_module, "_problem", building)
+        monkeypatch.setattr(optimize_module, "_problem_of", building)
         options = cli.smooth_options(cli.parse_args(["smooth"]))
         optimized: list[pipeline.OptimizerReport] = []
 
@@ -4398,7 +4398,7 @@ def test_says_when_setup_and_optimization_start(
     )
     assert setting_up < starting
     assert re.search(
-        r"set up in \d+\.\d s: 1 problem, length \d+\.\d{3} mm, energy \d+\.\d{3}",
+        r"set up in \d+\.\d s: length \d+\.\d{3} mm, energy \d+\.\d{3}",
         infos[starting],
     )
 

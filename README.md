@@ -206,13 +206,13 @@ net do not affect it, and its net's pads only stop it from overlapping them
 A run's chains, sections and moving vias, on every layer, are one problem,
 which a single optimizer run moves at once. The optimizer works in bursts:
 each burst moves every vertex and via of the problem at once, and undoes any move that would
-bring an edge or a via newly into another item's clearance. An outer iteration gives every
-problem that has not settled one burst. A problem settles when a burst
+bring an edge or a via newly into another item's clearance. An outer iteration gives the
+problem one burst unless it has settled. It settles when a burst
 barely changes it or its energy stops improving. Each evaluation of a
 burst spreads over every logical CPU; set the environment variable
 `RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
-Each problem runs through a schedule of spacings, the longest edges between a
+The problem runs through a schedule of spacings, the longest edges between a
 chain's vertices: by default 1.6, 0.4 and 0.1 mm (`--spacing`). Its chains
 run at each coarser spacing in turn, coarsest first, each handing over to the
 next when the problem settles at it, and end at the final spacing. A long
@@ -258,17 +258,17 @@ how many seconds, and how many edge moves it rejected. It converged, had
 nothing to do, or stopped at its iteration cap or the time limit, each
 keeping the best result found. The time limit counts again at each spacing
 (`--time-limit`), so it stops a run only at the final spacing; the warning
-of a run its iteration cap or Ctrl-C stopped while some problem was still at
+of a run its iteration cap or Ctrl-C stopped while still at
 a coarse spacing says it stopped before reaching the final spacing. It
 stopped on abnormal bursts when L-BFGS
-ended three bursts of some problem in a row abnormally at the final
+ended three bursts in a row abnormally at the final
 spacing (at a coarse spacing, such a streak hands over to the next one)
 after the run had
 improved the tracks: it keeps the best result found, which may fall short
 of the smoothest. A run that ends so without improving anything prints
 "L-BFGS terminated abnormally" and commits nothing.
 Ctrl-C while the run reads the board, builds the obstacles or optimizes
-stops it at once, at whatever spacing each problem runs: it prints "Stopping; press Ctrl-C again
+stops it at once, at whatever spacing it runs: it prints "Stopping; press Ctrl-C again
 to abort" at once, the optimizer ends the running burst, and the run simplifies and
 commits the best result found. Stopped before optimizing, the
 optimizer's setup included, it commits nothing. The setup stops only
@@ -280,10 +280,9 @@ landed, and the run says to check KiCad's undo history.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
-iteration how long setup took, how many problems it split the selection into
-(the layers or groups of layers the moving tracks and vias tie together), and
-their starting summed length and energy. With coarse spacings, it says
-when each problem starts at each of them ("Optimizing the chains on F.Cu
+iteration how long setup took and the starting summed length and energy.
+With coarse spacings, it says when the run starts at each of them
+("Optimizing the chains on F.Cu
 coarsely, at 1.6 mm spacing") and at the final spacing ("Refining the chains
 on F.Cu at 0.1 mm spacing"). When it holds a differential
 pair's section, it says how many chains and vias it put back.
@@ -507,8 +506,8 @@ zones they connect to let them. Ground vias of two ground nets keep their
 clearance and repel each other as other copper does.
 
 A selected grid of ground stitching vias that signal routes pass through
-moves out of their way, and the chains on their layers wait for it, since
-moving vias tie those layers into one problem. On synthetic two-layer
+moves out of their way, and the chains wait for it, since they and the vias
+are one problem. On synthetic two-layer
 planes with 29 to 47 stitching vias the routes ended up to a fifth
 shorter than with the stitching vias left unselected, and the runs took
 1.8 to 5.8 times as long, the most with the most vias. Once the routes
@@ -533,12 +532,12 @@ ground net leave each other alone, as vias of any other net do.
 | `--hole-clearance MM` | project, else 0.25 | Clearance between drilled holes and other nets' copper. Without it, the minimum hole clearance in the project's Board Setup. |
 | `--hole-to-hole MM` | project, else 0.25 | Clearance between a moving via's hole and every other hole. Without it, the minimum hole to hole in the project's Board Setup. |
 | `--chord-tolerance MM` | 0.01 | How far the committed tracks may depart from the optimised curve; larger values usually give fewer, longer tracks, though beside copper a pair may keep more. |
-| `--time-limit SECONDS` | none | How long each spacing may optimize, counted at the first spacing from the end of the optimizer's setup. While some problem still owes a first burst at a spacing a handover took it to, the time is up for a burst only once it has taken its first L-BFGS step: such a burst runs past the limit until then, so that every spacing a problem is handed to improves it. When the time is up, every problem still at a coarse spacing goes on at the next one and the time starts again; problems already at a finer spacing go on as they were. Once the time is up with every problem still running at the final spacing, optimizing stops and goes on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. So every spacing a problem reaches after the first optimizes, and a run optimizes for at most the limit once per spacing, three times with the default spacings, besides its overrun. The optimizer checks the limit before each energy evaluation of a burst, ending the running burst there at its last accepted step, and before each long part of the work that lays the tracks out for the next burst, so each time it runs over by about one energy evaluation or one such part and the checks after the burst, by about one L-BFGS step of each burst owed when it is up, and at the final spacing by the hold of a differential pair's section if one falls due when the time is up. |
-| `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that each problem runs at, coarsest first; each hands over to the next as the problem settles or `--time-limit` runs out. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
+| `--time-limit SECONDS` | none | How long each spacing may optimize, counted at the first spacing from the end of the optimizer's setup. While the run still owes a first burst at a spacing a handover took it to, the time is up for a burst only once it has taken its first L-BFGS step: such a burst runs past the limit until then, so that every spacing the run is handed to improves it. When the time is up at a coarse spacing, the run goes on at the next one and the time starts again. Once the time is up at the final spacing, optimizing stops and goes on with the best result found so far: simplification and the commit run as usual, so a partial result can be inspected and undone in one step. So every spacing the run reaches after the first optimizes, and a run optimizes for at most the limit once per spacing, three times with the default spacings, besides its overrun. The optimizer checks the limit before each energy evaluation of a burst, ending the running burst there at its last accepted step, and before each long part of the work that lays the tracks out for the next burst, so each time it runs over by about one energy evaluation or one such part and the checks after the burst, by about one L-BFGS step of a burst owed when it is up, and at the final spacing by the hold of a differential pair's section if one falls due when the time is up. |
+| `--spacing MM ...` | 1.6 0.4 0.1 | Distances between a chain's vertices that the run optimizes at, coarsest first; each hands over to the next as the problem settles or `--time-limit` runs out. The last is the final spacing, at most 0.1, and one value runs at it alone: `--spacing 0.1` turns the coarse spacings off. At most 8 values, each smaller than the one before. |
 | `--settled-change MM` | half `--chord-tolerance` | A problem settles when a burst moves none of its tracks or vias by this much. A smaller move cannot change the committed tracks by more than simplification already may. |
 | `--stall-tolerance MM` | 0.001 | A problem also settles when, over `--stall-window` of its bursts, its energy, in mm of track length, improves by less than this for each of its moving chains and vias, and its tracks' summed length falls by less than this. The energy's share counts per chain and via, so a problem and far-apart copies of it stall together: copies may run longer, or settle a burst sooner and end within micrometres of it. Raising it saves little time and lets some tracks end slightly longer. |
 | `--stall-window N` | 3 | Bursts of a problem the stall check looks back over. |
-| `--max-iterations N` | 200 | Outer iterations, each one burst of every problem not yet settled, after which the optimizer stops and goes on with the best result found. |
+| `--max-iterations N` | 200 | Outer iterations, each one burst unless the problem has settled, after which the optimizer stops and goes on with the best result found. |
 | `--burst-iterations N` | 50 | L-BFGS iterations per burst. Each burst lays the tracks out again and checks every move, so on a large selection shorter bursts reach a given result sooner. Fewer shorten a run further, but at 25 a differential pair in the test scenarios settles visibly short of its smooth shape: `--stall-window` counts bursts, so with shorter bursts it looks back over less work. More get a little closer to the exact optimum at several times the cost. |
 | `--lbfgs-ftol TOL` | 1e-9 | L-BFGS ends a burst early when the energy's relative reduction falls below this. Smaller values let bursts run to `--burst-iterations`; in the test scenarios they changed a scenario's summed track length by up to about 15 µm. Much larger values shorten runs but change the result a lot: 1e-6 moved some tracks by tenths of a millimetre in [an earlier measurement](https://github.com/mairas/kibends/issues/27). |
 | `--lbfgs-gtol TOL` | 1e-10 | L-BFGS ends a burst early when the largest gradient component falls below this. It rarely ends one before `--lbfgs-ftol` or `--burst-iterations` do. |
@@ -620,8 +619,7 @@ hole-to-hole clearances come from the project file, as without their
 options on the command line (see [Clearances](#clearances)).
 
 Run, or Return, starts a run. The progress line names the stage, and
-while optimizing the spacing level (the coarsest any layer still runs
-at), its spacing and the iteration, with the time since Run. The graph
+while optimizing the spacing level, its spacing and the iteration, with the time since Run. The graph
 below plots the summed track length's change from the start against the
 iteration, a dashed line marking where each finer spacing level starts;
 its axis always holds 0, the start, and spans at least 0.1 mm or 1 % of

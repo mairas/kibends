@@ -29,8 +29,8 @@ def problem(
 ) -> optimize_module._Problem:
     """The one problem of `chains` and `vias`."""
     moving = MovingVias(chains, vias, HOLE_CLEARANCE, HOLE_TO_HOLE)
-    (placed,) = optimize_module._problems(chains, [], moving, scenarios.PARAMS, COARSE)
-    return placed.problem
+    placed = optimize_module._problem_of(chains, [], moving, scenarios.PARAMS, COARSE)
+    return placed
 
 
 def failing(

@@ -333,9 +333,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action=_Schedule,
         default=DEFAULT_SCHEDULE,
         metavar="MM",
-        help="Distances between a chain's vertices that each problem runs at, "
-        "coarsest first, each handing over to the next as the problem "
-        "settles or --time-limit runs out; the last, at most "
+        help="Distances between a chain's vertices that the run optimizes at, "
+        "coarsest first, each handing over to the next as the tracks "
+        "settle or --time-limit runs out; the last, at most "
         f"{MAX_SPACING:g}, is the final spacing, and one value runs at it alone "
         f"(default: {' '.join(f'{s:g}' for s in DEFAULT_SCHEDULE)})",
     )
@@ -371,7 +371,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SETTINGS.max_iterations,
         metavar="N",
-        help="Outer iterations, each one burst of every problem not yet "
+        help="Outer iterations, each one burst unless the tracks have "
         "settled, after which the optimizer stops with the best result found "
         f"(default: {DEFAULT_SETTINGS.max_iterations})",
     )
@@ -404,12 +404,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--time-limit",
         type=_positive,
         metavar="SECONDS",
-        help="How long each spacing may optimize, past which a problem's first "
-        "burst at a spacing it was handed to still takes one L-BFGS step: "
-        "when the time is up, "
-        "the problems at a coarse spacing go on at the next and the time starts "
-        "again, and once every problem still running is at the final spacing, "
-        "optimizing stops and goes on with the best result found so far; so "
+        help="How long each spacing may optimize, past which the first burst "
+        "at a spacing the run was handed to still takes one L-BFGS step: "
+        "when the time is up at a coarse spacing, the run goes on at the next "
+        "and the time starts again, and at the final spacing optimizing stops "
+        "and goes on with the best result found so far; so "
         "it takes the time at most once per spacing, besides its overrun "
         "(default: no limit)",
     )

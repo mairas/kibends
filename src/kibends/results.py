@@ -118,22 +118,22 @@ class RunResult:
     """In the order the chains were given."""
     termination: Termination
     iterations: int
-    """Outer iterations, each giving every problem that has not settled one
-    burst."""
+    """Outer iterations, each giving the problem one burst unless it has
+    settled."""
     vias: tuple[ViaResult, ...] = ()
     """In the order the vias were given."""
     pairs: tuple[PairResult, ...] = ()
     """In the order the coupled sections were given."""
     gave_up: tuple[tuple[str, int], ...] = ()
-    """The problems given up on after abnormal bursts in a row, by
-    description, and how many there were."""
+    """The problem, by description, if it was given up on after abnormal
+    bursts in a row, and how many there were."""
     abnormal: tuple[tuple[str, int], ...] = ()
-    """The problems whose bursts L-BFGS ended abnormally, by description,
-    and how many there were. A burst moves every chain, section and via of
-    its problem, so it is counted once, for the problem."""
+    """The problem, by description, if L-BFGS ended some of its bursts
+    abnormally, and how many. A burst moves every chain, section and via,
+    so it is counted once."""
     before_final_spacing: bool = False
     """Whether the run stopped, at its iteration cap or the caller's stop,
-    while some problem ran at a coarse level or had taken no
+    while the problem ran at a coarse level or had taken no
     step: its result is that level's best state subdivided to the final
     spacing, or, where that costs more than its input, no coarse burst
     ended normally or it took no step, its input."""

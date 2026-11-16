@@ -372,10 +372,10 @@ def test_the_guard_takes_no_more_violations_than_the_start(
     alone = ChainInput(
         ChainCentreline("chain", "", 0.0, 0.0, polyline), "", fixed, GUARDED_DISC
     )
-    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
         [alone], [], MovingVias([alone], [], 0.0, 0.0), PARAMS, COARSE
     )
-    problem = placed.problem
+    problem = placed
     moved = problem.points[0].copy()
     if inside:
         # One free vertex in the disc: a run of one inside, no anchor in it.
@@ -841,13 +841,13 @@ def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
     ]
 
 
-def test_a_stop_while_problems_are_built_ends_before_the_next(
+def test_a_stop_once_the_problem_is_built_ends_before_any_burst(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     built: list[object] = []
     real = cast(
         Callable[..., object],
-        optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+        optimize_module._problem_of,  # pyright: ignore[reportPrivateUsage]
     )
 
     def building(*args: object, **kwargs: object) -> object:
@@ -857,13 +857,12 @@ def test_a_stop_while_problems_are_built_ends_before_the_next(
     def bursting(*args: object, **kwargs: object) -> NoReturn:
         raise AssertionError("a burst ran after a stop in setup")
 
-    monkeypatch.setattr(optimize_module, "_problem", building)
+    monkeypatch.setattr(optimize_module, "_problem_of", building)
     monkeypatch.setattr(optimize_module, "run_burst", bursting)
 
     with pytest.raises(StoppedInSetupError):
         optimize_chains(on_two_layers(*BOWED), PARAMS, COARSE, stop=lambda: bool(built))
 
-    # Two problems, F.Cu's and B.Cu's: the stop came after the first.
     assert len(built) == 1
 
 

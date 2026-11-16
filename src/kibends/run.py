@@ -304,19 +304,18 @@ class OptimizerReport:
     """The differential pairs among the chains."""
     termination: Termination
     """How the run ended, `Termination.GAVE_UP` also where it converged
-    after giving up on a problem that a hold then built again."""
+    after giving up on the problem before a hold built it again."""
     iterations: int
-    """Outer iterations, each giving every problem that has not settled
-    one burst, holds included."""
+    """Outer iterations, each giving the problem one burst unless it has
+    settled, holds included."""
     before_final_spacing: bool
     """Whether the run stopped at its iteration cap or the caller's stop
-    while some problem ran at a coarse spacing."""
+    while the problem ran at a coarse spacing."""
     elapsed: float
     """Wall time of the optimize stage, holds included, s."""
     abnormal: tuple[tuple[str, int], ...]
-    """The problems, each the chains of a layer or of the layers moving
-    vias tie together, whose bursts L-BFGS ended abnormally, by
-    description, and how many there were, before and after any hold."""
+    """The problem, by description, if L-BFGS ended some of its bursts
+    abnormally, and how many, before and after any hold."""
     frame: UserFrame
     """The frame to print positions in. The report's positions stay in the
     board frame; its descriptions are text already formatted in this

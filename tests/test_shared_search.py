@@ -283,10 +283,10 @@ def _problems(
     vias = MovingVias(
         everything, list(getattr(scenario, "vias", ())), HOLE_CLEARANCE, HOLE_TO_HOLE
     )
-    placed = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
         chains, blocks, vias, params, DEFAULT_SETTINGS
     )
-    return [p.problem for p in placed if p.problem.moving]
+    return [placed] if placed.moving else []
 
 
 class Pieces(NamedTuple):
