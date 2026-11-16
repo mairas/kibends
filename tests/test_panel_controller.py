@@ -1191,6 +1191,36 @@ class TestRun:
 
         assert outcome(p.controller).warnings == ("No copper on net GND3",)
 
+    @pytest.mark.parametrize(
+        "ending",
+        [CHANGED, SelectionError("bad"), Panic("boom")],
+        ids=["success", "failure", "panic"],
+    )
+    def test_drops_its_warning_sink_however_it_ends(
+        self, ending: RunReport | BaseException, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live: list[int] = []
+        add = cast(Callable[..., int], logger.add)
+        remove = cast(Callable[[int], None], logger.remove)
+
+        def adding(*args: object, **kwargs: object) -> int:
+            sink = add(*args, **kwargs)
+            live.append(sink)
+            return sink
+
+        def removing(sink: int) -> None:
+            remove(sink)
+            live.remove(sink)
+
+        c = opened(run=Scripted(outcome=ending)).controller
+        monkeypatch.setattr(logger, "add", adding)
+        monkeypatch.setattr(logger, "remove", removing)
+
+        c.run()
+
+        assert c.state in (State.DONE, State.FAILED)
+        assert live == []
+
     def test_a_new_run_starts_with_an_empty_graph_and_report(self) -> None:
         seen: list[tuple[int, Outcome | str]] = []
         p = opened()
