@@ -140,7 +140,7 @@ def test_an_arc_s_chords_inside_its_obstacle_by_their_sagitta_are_refused() -> N
 
 def test_an_arc_s_chords_within_their_sagitta_start_and_end_clear() -> None:
     chain, arc = hugging(0.0)
-    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
         [chain], [], MovingVias([chain], [], 0.0, 0.0), scenarios.PARAMS, SETTINGS
     )
 
@@ -150,7 +150,7 @@ def test_an_arc_s_chords_within_their_sagitta_start_and_end_clear() -> None:
 
     # A start the guard measures inside a clearance, chord by chord, which
     # it holds the run to (`_core.ProblemState.allowed`).
-    assert placed.problem.allowed[0] > 0
+    assert placed.allowed[0] > 0
     assert result.termination is Termination.CONVERGED
     (got,) = result.chains
     assert violations(got.polyline, got.fixed, chain.field) == 0

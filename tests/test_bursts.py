@@ -164,11 +164,11 @@ def test_a_scaled_objective_answers_as_its_objective() -> None:
 def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None:
     chain = scenarios.selected("A", "A", FreeSpace(), (0.0, 0.0), (10.0, 0.0))
     moving = MovingVias([chain], [], HOLE_CLEARANCE, HOLE_TO_HOLE)
-    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
         [chain], [], moving, scenarios.PARAMS, OptimizerSettings(spacing=0.3)
     )
     report = optimize_module._Report(  # pyright: ignore[reportPrivateUsage]
-        placed.problem, Ticking(), 0.0, 0.0, lambda _owing: None
+        placed, Ticking(), 0.0, 0.0, lambda _owing: None
     )
 
     report(_core.FallbackNotice())

@@ -49,10 +49,10 @@ def test_the_listed_energy_is_the_searched_one(
     vias = MovingVias(
         everything, list(getattr(scenario, "vias", ())), HOLE_CLEARANCE, HOLE_TO_HOLE
     )
-    (placed,) = optimize_module._problems(  # pyright: ignore[reportPrivateUsage]
+    placed = optimize_module._problem_of(  # pyright: ignore[reportPrivateUsage]
         chains, blocks, vias, params, DEFAULT_SETTINGS
     )
-    problem = placed.problem
+    problem = placed
     layout = problem.layout(problem.points)
     seen = seen_parts(problem.members, layout.starts, problem.rings)
     searched = problem.objective(layout, seen, None)

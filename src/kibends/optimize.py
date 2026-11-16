@@ -4,7 +4,7 @@ one L-BFGS problem.
 The run loop is Rust's (`kibends._core.advance`, `kibends._core.ProblemState`;
 the design is in `kibends_core::optimize` and its modules `state`, `checks`
 and `layout`). This module sets a run up: it gathers the members into the
-run's problem (`_problems`), reads its members and vias once into its Rust
+run's problem (`_problem_of`), reads its members and vias once into its Rust
 state (`_Problem`), and between the Rust calls asks `to_hold`, builds the
 problem again when it holds sections and logs what the run reports.
 Each burst runs through `bursts.run_burst`, its evaluations in Rust.
@@ -307,14 +307,11 @@ def optimize_chains(
         if stop is not None and stop():
             raise StoppedInSetupError
 
-    placed = _problems(
-        chains, blocks, moving_vias, params, settings, static_vias, stopped_in_setup
-    )
-    if not placed:
+    if not _layers(moving_vias):
         stopped_in_setup()
         return RunResult((), Termination.NOTHING_TO_DO, 0)
-    (whole,) = placed
-    problem = whole.problem
+    problem = _problem_of(chains, blocks, moving_vias, params, settings, static_vias)
+    stopped_in_setup()
     if problem.moving:
         unclean = problem.start_violations(arc_chords)
         if unclean:
@@ -450,17 +447,8 @@ def optimize_chains(
             )
         if gave_up is None and problem.gave_up:
             gave_up = (problem.description, problem.abnormal_streak)
-        rebuilt = _problem(
-            chains,
-            blocks,
-            moving_vias,
-            params,
-            settings,
-            static_vias,
-            layers=whole.layers,
-            on=whole.chains,
-            sections=whole.sections,
-            joined=whole.vias,
+        rebuilt = _problem_of(
+            chains, blocks, moving_vias, params, settings, static_vias
         )
         members, vias_back = rebuilt.go_on_from(problem)
         logger.info(
@@ -660,63 +648,11 @@ def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
     )
 
 
-@dataclass(frozen=True)
-class _Placed:
-    """A problem and the indices of its chains, sections and vias among
-    those of the run."""
-
-    problem: _Problem
-    layers: list[str]
-    chains: list[int]
-    sections: list[int]
-    vias: list[int]
-
-
-def _problem(
-    chains: Sequence[ChainInput],
-    blocks: Sequence[PairBlock],
-    vias: MovingVias,
-    params: EnergyParams,
-    settings: OptimizerSettings,
-    static_vias: Sequence[StaticVia],
-    *,
-    layers: Sequence[str],
-    on: Sequence[int],
-    sections: Sequence[int],
-    joined: Sequence[int],
-) -> _Problem:
-    """The problem of `layers`: the chains `on` them, the `sections` and
-    the `joined` vias, by their indices in `chains`, `blocks` and `vias`."""
-    members = [*on, *(len(chains) + k for k in sections)]
-    local = {i: n for n, i in enumerate(members)}
-    return _Problem(
-        layers,
-        [chains[i] for i in on],
-        [blocks[k] for k in sections],
-        [_problem_via(vias, v, local, joined) for v in joined],
-        params,
-        settings,
-        static_vias,
-        hole_clearance=vias.hole_clearance,
-        hole_to_hole=vias.hole_to_hole,
-    )
-
-
-def _problems(
-    chains: Sequence[ChainInput],
-    blocks: Sequence[PairBlock],
-    vias: MovingVias,
-    params: EnergyParams,
-    settings: OptimizerSettings,
-    static_vias: Sequence[StaticVia] = (),
-    built: Callable[[], None] = lambda: None,
-) -> list[_Placed]:
-    """The run's problem: every chain, section and moving via, with the
-    `static_vias` that share a layer with a moving via, `built` called once
-    it is built; none for a run with nothing to move. Its layers are the
-    chains' layers, those a via reaches first, or, when no via reaches
-    one, the vias' own layers first (stitching vias selected alone).
-    `vias` holds the chains, then the sections' centrelines."""
+def _layers(vias: MovingVias) -> list[str]:
+    """The run's layers: the chains' layers, those a via reaches first, or,
+    when no via reaches one, the vias' own layers first (stitching vias
+    selected alone); none for a run with nothing to move. `vias` holds the
+    chains, then the sections' centrelines."""
     chain_layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
     reached = [
         layer
@@ -727,47 +663,45 @@ def _problems(
         reached = list(
             dict.fromkeys(layer for via in vias.vias for layer in via.via.span)
         )
-    layers = list(dict.fromkeys([*reached, *chain_layers]))
-    if not layers:
-        return []
-    on = list(range(len(chains)))
-    sections = list(range(len(blocks)))
-    joined = list(range(len(vias.vias)))
-    problem = _problem(
+    return list(dict.fromkeys([*reached, *chain_layers]))
+
+
+def _problem_of(
+    chains: Sequence[ChainInput],
+    blocks: Sequence[PairBlock],
+    vias: MovingVias,
+    params: EnergyParams,
+    settings: OptimizerSettings,
+    static_vias: Sequence[StaticVia] = (),
+) -> _Problem:
+    """The run's problem on its `_layers`: every chain, section and moving
+    via, with the `static_vias` that share a layer with a moving via."""
+    return _Problem(
+        _layers(vias),
         chains,
         blocks,
-        vias,
+        [_problem_via(vias, v) for v in range(len(vias.vias))],
         params,
         settings,
         static_vias,
-        layers=layers,
-        on=on,
-        sections=sections,
-        joined=joined,
+        hole_clearance=vias.hole_clearance,
+        hole_to_hole=vias.hole_to_hole,
     )
-    built()
-    return [_Placed(problem, layers, on, sections, joined)]
 
 
-def _problem_via(
-    vias: MovingVias,
-    v: int,
-    local: Mapping[int, int],
-    joined: Sequence[int],
-) -> _Via:
-    """Via v of `vias` in a problem whose members `local` numbers and whose
-    vias are `joined`."""
+def _problem_via(vias: MovingVias, v: int) -> _Via:
+    """Via v of `vias` in the run's problem."""
     apart: dict[int, float] = {}
-    for k, u in enumerate(joined):
+    for u in range(len(vias.vias)):
         if u == v:
             continue
         inflation = vias.apart(v, u)
         if inflation is not None:
-            apart[k] = inflation
+            apart[u] = inflation
     return _Via(
         vias.vias[v],
-        tuple((local[e.chain], e.index, e.offset) for e in vias.ends[v]),
-        {local[i]: ring for i, ring in vias.rings(v).items() if i in local},
+        tuple((e.chain, e.index, e.offset) for e in vias.ends[v]),
+        dict(vias.rings(v)),
         apart,
     )
 
@@ -846,10 +780,10 @@ def _description(layers: Sequence[str], vias: bool) -> str:
 
 
 class _Problem:
-    """The chains, coupled sections and vias of the layers that moving vias
-    tie together, or of one layer, read once into their Rust state
-    (`kibends._core.ProblemState`), with what the Python side builds them
-    from. The chains come first, then the sections, as their centrelines."""
+    """The run's chains, coupled sections and vias, read once into their Rust
+    state (`kibends._core.ProblemState`), with what the Python side builds
+    them from. The chains come first, then the sections, as their
+    centrelines."""
 
     def __init__(
         self,
