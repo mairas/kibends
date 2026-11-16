@@ -501,7 +501,9 @@ impl Seen {
     /// that can answer here (`searched`). Either answers bit for bit as a
     /// search over every piece within reach: the terms of the others are
     /// exactly zero, and they join no two pieces that are listed
-    /// (`field::pairs::smooth_of_pairs`).
+    /// (`field::pairs::smooth_of_pairs`). That holds because every piece of
+    /// one obstacle is inflated alike here (one kind per track, each via a
+    /// piece of its own).
     pub fn smooth_answers(
         &self,
         queries: &[&[V2]],

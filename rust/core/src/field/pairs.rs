@@ -122,7 +122,10 @@ pub fn nearest_of_pairs(
 /// segments within their limits join when the first ends where the
 /// second starts and only pairs beyond their limits and zero-length
 /// segments lie between them, so that the answers do not depend on which
-/// pairs beyond the limits a search lists.
+/// pairs beyond the limits a search lists, as long as every segment of one
+/// obstacle is inflated alike: a segment inflated less can lie within its
+/// limit yet beyond the smooth reach, and still take a join from a
+/// zero-length segment inflated more.
 /// The edge that answers is its pair's index, a shared vertex by the
 /// segment it starts.
 ///
