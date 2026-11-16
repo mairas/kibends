@@ -1,12 +1,12 @@
-"""The optimizer: every chain, coupled section and moving via of a problem
-as one L-BFGS problem.
+"""The optimizer: every chain, coupled section and moving via of a run as
+one L-BFGS problem.
 
 The run loop is Rust's (`kibends._core.advance`, `kibends._core.ProblemState`;
 the design is in `kibends_core::optimize` and its modules `state`, `checks`
-and `layout`). This module sets a run up: it splits the members into
-problems (`_problems`), reads each problem's members and vias once into its
-Rust state (`_Problem`), and between the Rust calls asks `to_hold`, builds
-again the problems whose sections it holds and logs what the run reports.
+and `layout`). This module sets a run up: it gathers the members into the
+run's problem (`_problems`), reads its members and vias once into its Rust
+state (`_Problem`), and between the Rust calls asks `to_hold`, builds the
+problem again when it holds sections and logs what the run reports.
 Each burst runs through `bursts.run_burst`, its evaluations in Rust.
 
 What does not depend on a problem lives beside it: `members` (the members
@@ -196,9 +196,8 @@ def optimize_chains(
     on_progress: Callable[[Progress], None] | None = None,
     arc_chords: ArcChords = NO_CHORDS,
 ) -> RunResult:
-    """Minimise the chains', sections' and vias' summed energy, each
-    problem's jointly: the layers that moving vias tie together are one
-    problem, and every other layer is one of its own.
+    """Minimise the chains', sections' and vias' summed energy jointly, as
+    one problem on every layer they are on.
 
     Takes chains whose ends are fixed or loose where they meet at junctions
     (`junctions`), coupled sections of pairs (`pairs`) and moving `vias`,
@@ -730,43 +729,42 @@ def _problems(
     static_vias: Sequence[StaticVia] = (),
     built: Callable[[], None] = lambda: None,
 ) -> list[_Placed]:
-    """The run's problems: the layers that the vias tie together, with
-    every via and the `static_vias` they share a layer with, and each other
-    layer alone, `built` called after each. `vias` holds the chains, then
-    the sections' centrelines."""
-    layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
-    tied = [
-        layer for layer in layers if any(via.via.reaches(layer) for via in vias.vias)
+    """The run's problem: every chain, section and moving via, with the
+    `static_vias` that share a layer with a moving via, `built` called once
+    it is built; none for a run with nothing to move. Its layers are the
+    chains' layers, those a via reaches first, or, when no via reaches
+    one, the vias' own layers first (stitching vias selected alone).
+    `vias` holds the chains, then the sections' centrelines."""
+    chain_layers = list(dict.fromkeys(chain.layer for chain in vias.chains))
+    reached = [
+        layer
+        for layer in chain_layers
+        if any(via.via.reaches(layer) for via in vias.vias)
     ]
-    if not tied:
-        # Vias on no chain's layer, stitching vias selected alone.
-        tied = list(dict.fromkeys(layer for via in vias.vias for layer in via.via.span))
-    groups = [tied] if tied else []
-    groups += [[layer] for layer in layers if layer not in tied]
-    placed: list[_Placed] = []
-    for group in groups:
-        joined = [
-            v
-            for v, via in enumerate(vias.vias)
-            if group is tied or any(via.via.reaches(layer) for layer in group)
-        ]
-        on = [i for i, c in enumerate(chains) if c.layer in group]
-        sections = [k for k, b in enumerate(blocks) if b.given.layer in group]
-        problem = _problem(
-            chains,
-            blocks,
-            vias,
-            params,
-            settings,
-            static_vias,
-            layers=group,
-            on=on,
-            sections=sections,
-            joined=joined,
+    if not reached:
+        reached = list(
+            dict.fromkeys(layer for via in vias.vias for layer in via.via.span)
         )
-        placed.append(_Placed(problem, group, on, sections, joined))
-        built()
-    return placed
+    layers = list(dict.fromkeys([*reached, *chain_layers]))
+    if not layers:
+        return []
+    on = list(range(len(chains)))
+    sections = list(range(len(blocks)))
+    joined = list(range(len(vias.vias)))
+    problem = _problem(
+        chains,
+        blocks,
+        vias,
+        params,
+        settings,
+        static_vias,
+        layers=layers,
+        on=on,
+        sections=sections,
+        joined=joined,
+    )
+    built()
+    return [_Placed(problem, layers, on, sections, joined)]
 
 
 def _problem_via(

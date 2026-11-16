@@ -18,12 +18,14 @@ from conftest import (
     CENTRAL_RTOL,
     CENTRAL_STEP,
     POSITION_ROUND_OFF,
+    STRAIGHT_TOLERANCE,
     SUM_ORDER_ROUNDING,
     BurstClock,
     all_abnormal_bursts,
     first_check,
     gap_range,
     layer_energy,
+    off_straight,
     total_energy,
 )
 from distance_fields import BoolArray, FloatArray, FreeSpace
@@ -1111,21 +1113,20 @@ def test_a_second_hold_in_one_problem_goes_on_from_the_first() -> None:
         assert length(chain.polyline) < chain.before.length
 
 
-def test_a_hold_leaves_another_problem_as_it_was() -> None:
+def test_a_hold_lets_a_chain_on_another_layer_straighten() -> None:
     scenario = scenarios.pair_tent()
     back = replace(
         selected("back", "C", FreeSpace(), (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
         layer="B.Cu",
     )
     chains = (*scenario.chains, back)
-    plain = optimize_chains(chains, scenario.params, COARSE, pairs=scenario.pairs)
 
     result = optimize_chains(
         chains, scenario.params, COARSE, pairs=scenario.pairs, to_hold=hold_every
     )
 
     assert result.pairs[0].block.hold is Hold.CROWDING
-    np.testing.assert_array_equal(result.chains[1].polyline, plain.chains[1].polyline)
+    assert off_straight(result.chains[-1].polyline) < STRAIGHT_TOLERANCE
 
 
 def test_a_section_named_again_once_held_is_not_held_again() -> None:

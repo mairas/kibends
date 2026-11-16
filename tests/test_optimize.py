@@ -548,7 +548,7 @@ def test_iteration_cap_is_reported_with_a_valid_polyline() -> None:
 
 
 BURST_LINE = re.compile(
-    r"^DEBUG Burst of the chains on \S*: (\d+) L-BFGS iterations, "
+    r"^DEBUG Burst of the chains on [^:]*: (\d+) L-BFGS iterations, "
     r"(\d+) evaluations, (\d+\.\d{3}) s in evaluations, "
     r'(\d+\.\d{3}) s in the rest of the step, ended with "([^"]+)"'
     r"(?:, at (\d+(?:\.\d+)?) mm spacing)?$"
@@ -597,25 +597,24 @@ def stage_lines(log: list[str]) -> list[str]:
 
 
 def on_two_layers(*vertices: tuple[float, float]) -> list[ChainInput]:
-    """A chain on F.Cu and a copy on B.Cu: two problems."""
+    """A chain on F.Cu and a copy on B.Cu, one problem."""
     return [
         scenarios.selected(layer, layer, FreeSpace(), *vertices, layer=layer)
         for layer in ("F.Cu", "B.Cu")
     ]
 
 
-def test_each_problem_logs_each_level_it_enters_once_at_info(log: list[str]) -> None:
+def test_a_run_logs_each_level_it_enters_once_at_info(log: list[str]) -> None:
     settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
 
     result = optimize_chains(on_two_layers(*BOWED), PARAMS, settings)
 
     assert result.termination is Termination.CONVERGED
-    for layer in ("F.Cu", "B.Cu"):
-        assert [line for line in stage_lines(log) if f" on {layer} " in line] == [
-            f"INFO Optimizing the chains on {layer} coarsely, at 1.2 mm spacing",
-            f"INFO Optimizing the chains on {layer} coarsely, at 0.6 mm spacing",
-            f"INFO Refining the chains on {layer} at 0.3 mm spacing",
-        ]
+    assert stage_lines(log) == [
+        "INFO Optimizing the chains on F.Cu and B.Cu coarsely, at 1.2 mm spacing",
+        "INFO Optimizing the chains on F.Cu and B.Cu coarsely, at 0.6 mm spacing",
+        "INFO Refining the chains on F.Cu and B.Cu at 0.3 mm spacing",
+    ]
 
 
 def test_a_run_at_one_spacing_logs_no_stage(log: list[str]) -> None:
@@ -638,12 +637,8 @@ def test_a_burst_at_a_coarse_level_logs_its_spacing(log: list[str]) -> None:
 
 
 def refined_all(log: list[str]) -> bool:
-    """Whether both problems of `on_two_layers` logged entering the final
-    spacing."""
-    return all(
-        any(f"Refining the chains on {layer} " in line for line in stage_lines(log))
-        for layer in ("F.Cu", "B.Cu")
-    )
+    """Whether the run logged entering the final spacing."""
+    return any("Refining the chains " in line for line in stage_lines(log))
 
 
 def test_a_capped_run_says_whether_it_stopped_before_the_final_spacing(
@@ -679,7 +674,7 @@ def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
     said: set[bool] = set()
     for iterations in range(1, settings.max_iterations):
         log.clear()
-        bursts = iterations * len(chains)
+        bursts = iterations
 
         result = stopped_after(bursts)
 
@@ -690,35 +685,6 @@ def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
         assert result.before_final_spacing is not refined_all(log)
         said.add(result.before_final_spacing)
     assert said == {True, False}
-
-
-def test_progress_names_the_coarsest_level_a_problem_runs_at(log: list[str]) -> None:
-    # The straight chain settles each level in its first burst, so it runs
-    # ahead of the bowed one.
-    chains = [
-        scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
-        scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
-    ]
-    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
-    records: list[Progress] = []
-
-    optimize_chains(chains, PARAMS, settings, on_progress=records.append)
-
-    entered = {"F.Cu": 0, "B.Cu": 0}
-    behind: list[int] = []
-    apart = False
-    for line in log:
-        if stage_lines([line]):
-            layer = "F.Cu" if " on F.Cu " in line else "B.Cu"
-            entered[layer] += 1
-        elif " Iteration " in line:
-            behind.append(min(entered.values()) - 1)
-            apart = apart or len(set(entered.values())) > 1
-    assert apart
-    assert [r.level for r in records] == [0, *behind]
-    assert behind[0] == 0
-    assert behind[-1] == len(COARSE_LEVELS)
-    assert {r.levels for r in records} == {len(COARSE_LEVELS) + 1}
 
 
 def test_progress_at_one_spacing_is_at_its_only_level() -> None:
@@ -904,13 +870,18 @@ def test_a_stop_while_problems_are_built_ends_before_the_next(
 def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
-    # The limit runs out after the front's 1.2 mm burst and hands both over;
-    # the back's first 0.6 mm burst, the third, is then owed past it. The
-    # stop answers true from that burst's first question on, before its
-    # first line-search trial, and stays true.
-    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, time_limit=ONE_BURST)
+    # The limit runs out after the 1.2 mm burst and hands over; the first
+    # 0.6 mm burst, the second, is then owed past it. The stop answers true
+    # from that burst's first question on, before its first line-search
+    # trial, and stays true.
+    settings = replace(
+        COARSE,
+        coarse_spacings=COARSE_LEVELS,
+        time_limit=ONE_BURST,
+        burst_maxiter=UNFINISHED_BURST,
+    )
     clock = BurstClock(monkeypatch)
-    owed_from = 2
+    owed_from = 1
     bursts: list[Burst] = []
     running = False
 
@@ -941,61 +912,11 @@ def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(
 
     assert result.termination is Termination.STOPPED
     assert result.before_final_spacing
-    assert levels_of(log, "B.Cu") == [COARSE_LEVELS[1]]
+    assert levels_of(log, "B.Cu") == list(COARSE_LEVELS[:2])
     assert len(bursts) == owed_from + 1
     owed = bursts[-1]
     assert owed.cut
     assert (owed.iterations, owed.evaluations) == (0, 1)
-
-
-def test_the_time_limit_hands_over_only_the_problems_at_a_coarse_level(
-    monkeypatch: pytest.MonkeyPatch, log: list[str]
-) -> None:
-    # The straight chain's first burst settles its one coarse level; the
-    # limit passes after the bowed chain's, which has not settled, while the
-    # straight one owes a burst at the final spacing, which it runs past the
-    # limit before the bowed one hands over.
-    chains = [
-        scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
-        scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
-    ]
-    two_bursts = 1.5
-    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS[:1], time_limit=two_bursts)
-
-    result = optimize_chains(chains, PARAMS, settings, clock=BurstClock(monkeypatch))
-
-    assert not result.before_final_spacing
-    assert limit_lines(log) == [
-        "INFO Time limit reached at 1.2 mm spacing; going on at 0.3 mm spacing "
-        "with the chains on B.Cu",
-    ]
-    # Both go on at the final spacing.
-    assert levels_of(log, "F.Cu") == [COARSE_LEVELS[0], None]
-    assert levels_of(log, "B.Cu") == [COARSE_LEVELS[0], None]
-
-
-def test_a_problem_the_others_bursts_starve_still_runs_at_each_level_it_reaches(
-    monkeypatch: pytest.MonkeyPatch, log: list[str]
-) -> None:
-    # Each window's first burst takes the whole limit, so the back layer,
-    # stepped after the front, runs none in the first.
-    chains = on_two_layers(*BOWED)
-    settings = replace(
-        COARSE,
-        coarse_spacings=COARSE_LEVELS,
-        time_limit=ONE_BURST,
-        burst_maxiter=UNFINISHED_BURST,
-    )
-
-    result = optimize_chains(chains, PARAMS, settings, clock=BurstClock(monkeypatch))
-
-    assert result.termination is Termination.TIME_LIMIT
-    assert not result.before_final_spacing
-    assert levels_of(log, "F.Cu") == [*COARSE_LEVELS, None]
-    # Not started when the limit first ran out, it went on at the next level.
-    assert levels_of(log, "B.Cu") == [COARSE_LEVELS[1], None]
-    for each in result.chains:
-        assert measure(each.polyline, COARSE.spacing).length < each.before.length
 
 
 SLIGHT_BOW = ((0.0, 0.0), (5.0, 0.3), (10.0, 0.0))
