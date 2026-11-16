@@ -51,6 +51,7 @@ from kibends.panel.controller import (
     TOO_LATE_HINT,
     UNREACHABLE,
     Controller,
+    GroundNets,
     Icon,
     Line,
     Outcome,
@@ -724,6 +725,16 @@ class TestGroundNets:
         assert (c.ground.enabled, c.ground.caption) == (
             False,
             "Ignored while Attraction is 0",
+        )
+
+    def test_a_typed_list_is_kept_but_ignored_while_attraction_is_0(self) -> None:
+        c = opened().controller
+        c.type_ground_nets("AGND")
+
+        c.edit(PanelFields(attraction="0"))
+
+        assert c.ground == GroundNets(
+            "AGND", "", "Ignored while Attraction is 0", False, False
         )
 
     def test_an_invalid_attraction_leaves_it_enabled(self) -> None:
