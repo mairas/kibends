@@ -439,7 +439,7 @@ def run_smooth(
     if options.plot is not None:
         _require_plot()
     kicad = kipy.KiCad(timeout_ms=KICAD_TIMEOUT_MS)
-    board = _open_board(kicad)
+    board = open_board(kicad)
     on_stage(Stage.READING)
     clearances = read_clearances(
         board,
@@ -1343,7 +1343,9 @@ def _draw(
     logger.info(f"Wrote {path}")
 
 
-def _open_board(kicad: kipy.KiCad) -> kipy.board.Board:
+def open_board(kicad: kipy.KiCad) -> kipy.board.Board:
+    """The board open in KiCad's PCB editor; `NoBoardError` when there is
+    none, and KiCad's busy error as it is."""
     try:
         return kicad.get_board()
     except ApiError as e:

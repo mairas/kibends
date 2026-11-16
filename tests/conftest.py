@@ -98,6 +98,7 @@ from kibends.seen import Seen
 from kibends.snapshot import BoardSnapshot, Disc, LayerSnapshot, Via, ViaZone
 
 PAD_HALF_SIZE = 0.25
+BOARD_FILE = "board.kicad_pcb"
 TEXT_HALF_WIDTH = 1.0
 TEXT_HALF_HEIGHT = 0.5
 
@@ -918,6 +919,10 @@ class FakeBoard:
     project_path: str = ""
     """As `FakeProject.path`."""
     project_name: str = ""
+    document: DocumentSpecifier = field(
+        default_factory=lambda: DocumentSpecifier(board_filename=BOARD_FILE)
+    )
+    """Which board this is, as KiCad names it in every request."""
     reads: Counter[str] = field(default_factory=Counter[str])
 
     def get_origin(self, origin_type: BoardOriginType.ValueType) -> Vector2:
@@ -1093,7 +1098,6 @@ class CommitBoard(FakeBoard):
     push_error: BaseException | None = None
     assigned_ids: list[str] = field(default_factory=list[str])
     select_error: BaseException | None = None
-    document: DocumentSpecifier = field(default_factory=DocumentSpecifier)
 
     def __post_init__(self) -> None:
         self.client = CommitClient(board=self)
