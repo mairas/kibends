@@ -14,11 +14,11 @@ from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from test_panel_controller import PROGRESS, STOPPED, Scripted
+from test_panel_controller import LEVELLED, PROGRESS, STOPPED, Scripted
 from test_panel_probe import prober, ten_tracks_four_vias
 
 from kibends.panel.controller import State
-from kibends.panel.curve import EnergyCurve
+from kibends.panel.curve import MARGIN, EnergyCurve
 from kibends.panel.window import PanelWindow, Poster
 from kibends.present import Field, PanelFields
 from kibends.run import Stage
@@ -177,7 +177,20 @@ class TestRunning:
         assert w.controller.state is State.DONE
         assert w.status.text().startswith("Settled after")
         assert w.curve.values == tuple(p.energy for p in PROGRESS)
+        assert w.curve.separators == ()
         assert w.progress.text().endswith("iteration 3")
+
+    def test_shows_the_level_and_marks_its_changes(
+        self, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        w = window(Scripted(progress=LEVELLED))
+
+        w.button.click()
+        settle()
+
+        assert w.curve.values == tuple(p.energy for p in LEVELLED)
+        assert w.curve.separators == (2, 4)
+        assert w.progress.text().endswith("level 3 of 3 · iteration 6")
 
     def test_return_runs(self, window: Callable[[Scripted], PanelWindow]) -> None:
         run = Scripted()
@@ -294,6 +307,32 @@ class TestCurve:
         drawn = curve.grab().toImage()
         assert pen_pixels(drawn, curve.palette()) > pen_pixels(blank, curve.palette())
 
+    def test_paints_a_separator_at_each_level_change(self, app: QApplication) -> None:
+        curve = EnergyCurve()
+        curve.resize(200, 80)
+        values = tuple(p.energy for p in LEVELLED)
+        curve.set_values(values)
+        plain = curve.grab().toImage()
+
+        curve.set_values(values, (2, 4))
+
+        marked = curve.grab().toImage()
+        palette = curve.palette()
+        assert separator_columns(plain, palette) == []
+        inner = curve.width() - 2 * MARGIN
+        expected = EnergyCurve.separator_xs(len(values), (2, 4), inner)
+        found = separator_columns(marked, palette)
+        assert len(found) == len(expected)
+        for x, at in zip(found, expected, strict=True):
+            assert abs(x - (MARGIN + at)) <= 1
+        # The curve continues across them, drawn over them.
+        assert pen_pixels(marked, palette) == pen_pixels(plain, palette)
+
+    def test_separators_lie_between_the_values_they_part(
+        self, app: QApplication
+    ) -> None:
+        assert EnergyCurve.separator_xs(6, (2, 4), 100.0) == [30.0, 70.0]
+
     def test_scales_to_the_runs_range(self, app: QApplication) -> None:
         points = EnergyCurve.scaled((10.0, 5.0, 0.0), 100.0, 50.0)
 
@@ -304,6 +343,19 @@ class TestCurve:
             (0.0, 10.0),
             (10.0, 10.0),
         ]
+
+
+def separator_columns(image: QImage, palette: QPalette) -> list[int]:
+    """The columns inside the frame where the separators' colour fills at
+    least a third of the rows, each run of neighbours as its first."""
+    colour = QColor(palette.color(QPalette.ColorRole.Mid)).rgb()
+    rows = range(MARGIN, image.height() - MARGIN)
+    filled = [
+        x
+        for x in range(MARGIN, image.width() - MARGIN)
+        if sum(image.pixel(x, y) == colour for y in rows) * 3 >= len(rows)
+    ]
+    return [x for x in filled if x - 1 not in filled]
 
 
 def pen_pixels(image: QImage, palette: QPalette) -> int:

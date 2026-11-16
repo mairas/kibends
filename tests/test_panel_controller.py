@@ -52,6 +52,16 @@ PROGRESS = (
     Progress(1.5, 3, 3.5, 0, 1),
 )
 """A run at one spacing."""
+LEVELLED = (
+    Progress(0.5, 1, 9.0, 0, 3),
+    Progress(1.0, 2, 4.0, 0, 3),
+    Progress(1.5, 3, 6.0, 1, 3),
+    Progress(2.0, 4, 5.0, 1, 3),
+    Progress(2.5, 5, 5.5, 2, 3),
+    Progress(3.0, 6, 5.2, 2, 3),
+)
+"""A run through three levels, its energy jumping as it enters each finer
+one."""
 CHANGED = report((chain(10.0, 7.5),))
 STOPPED = replace(CHANGED, termination=Termination.STOPPED)
 UNCHANGED_STOP = replace(report(), termination=Termination.STOPPED)
@@ -493,6 +503,40 @@ class TestRun:
         c = p.controller
         assert c.energies == tuple(e.energy for e in PROGRESS)
         assert c.progress_line.endswith(" s · iteration 3")
+        assert c.separators == ()
+
+    def test_marks_each_level_change_and_names_the_level(self) -> None:
+        p = panel(run=Scripted(progress=LEVELLED), clock=Ticking(step=0.5))
+        p.controller.tick()
+
+        p.controller.run()
+
+        c = p.controller
+        assert c.energies == tuple(e.energy for e in LEVELLED)
+        # Before the third and the fifth value, the first at their level.
+        assert c.separators == (2, 4)
+        assert c.progress_line.endswith(" s · level 3 of 3 · iteration 6")
+
+    def test_names_the_level_as_it_runs(self) -> None:
+        lines: list[str] = []
+        p = opened()
+        p.scripted.progress = LEVELLED[:3]
+        p.scripted.during = lambda _stage: lines.append(p.controller.progress_line)
+
+        p.controller.run()
+
+        # After the stage that optimized.
+        assert lines[3].endswith(" s · level 2 of 3 · iteration 3")
+
+    def test_a_new_run_starts_without_separators(self) -> None:
+        p = opened()
+        p.scripted.progress = LEVELLED
+        p.controller.run()
+        p.scripted.progress = PROGRESS
+
+        p.controller.run()
+
+        assert p.controller.separators == ()
 
     def test_progress_counts_from_the_runs_start(self) -> None:
         lines: list[str] = []
@@ -628,9 +672,11 @@ class TestStop:
 
         p.scripted.outcome = STOPPED
         p.scripted.during = during
+        p.scripted.progress = LEVELLED
         p.controller.run()
 
         assert p.controller.energies == ()
+        assert p.controller.separators == ()
 
     def test_before_optimizing_nothing_changes(self) -> None:
         p = opened()

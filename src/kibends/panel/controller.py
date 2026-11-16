@@ -140,8 +140,10 @@ class Controller:
         self._started: float | None = None
         """When the last run started."""
         self._ended: float | None = None
-        self._iteration: int | None = None
+        self._last: Progress | None = None
+        """The last run's latest progress."""
         self._energies: list[float] = []
+        self._separators: list[int] = []
         self._closing = False
         self._closed = False
 
@@ -221,13 +223,25 @@ class Controller:
             return ""
         end = self._clock() if self._ended is None else self._ended
         elapsed = f"{end - self._started:.1f} s"
-        if self._iteration is None:
+        last = self._last
+        if last is None:
             return elapsed
-        return f"{elapsed} · iteration {self._iteration}"
+        if last.levels == 1:
+            return f"{elapsed} · iteration {last.iteration}"
+        return (
+            f"{elapsed} · level {last.level + 1} of {last.levels} · "
+            f"iteration {last.iteration}"
+        )
 
     @property
     def energies(self) -> tuple[float, ...]:
         return tuple(self._energies)
+
+    @property
+    def separators(self) -> tuple[int, ...]:
+        """Where in `energies` the run entered another level: each the
+        index of the first value at it."""
+        return tuple(self._separators)
 
     @property
     def status(self) -> str:
@@ -291,8 +305,9 @@ class Controller:
         self._stop = threading.Event()
         self._started = self._clock()
         self._ended = None
-        self._iteration = None
+        self._last = None
         self._energies = []
+        self._separators = []
         self._message = ""
         self._notify()
         stop = self._stop
@@ -377,7 +392,9 @@ class Controller:
     def _progressed(self, progress: Progress) -> None:
         if self._state is not State.RUNNING:
             return
-        self._iteration = progress.iteration
+        if self._last is not None and progress.level != self._last.level:
+            self._separators.append(len(self._energies))
+        self._last = progress
         self._energies.append(progress.energy)
         self._notify()
 

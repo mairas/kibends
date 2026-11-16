@@ -1,11 +1,14 @@
 """The panel's energy curve: the run's total energy after each outer
 iteration as one polyline, scaled to the run's range, without axes or
-numbers, in the palette's colours. Drawn with QPainter, since Qt's chart
-modules are GPLv3 or commercial and ship outside PySide6-Essentials."""
+numbers, in the palette's colours. A dashed vertical line in the frame's
+colour parts the values of each level of the spacing schedule from the
+next; the curve goes on across it, so the jump the finer spacing makes in
+the energy shows. Drawn with QPainter, since Qt's chart modules are GPLv3
+or commercial and ship outside PySide6-Essentials."""
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QPointF, QSize
+from PySide6.QtCore import QPointF, QSize, Qt
 from PySide6.QtGui import QPainter, QPaintEvent, QPalette, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -18,6 +21,8 @@ class EnergyCurve(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.values: tuple[float, ...] = ()
+        self.separators: tuple[int, ...] = ()
+        """Each the index of the first value at a level after the first."""
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def sizeHint(self) -> QSize:
@@ -26,11 +31,23 @@ class EnergyCurve(QWidget):
     def minimumSizeHint(self) -> QSize:
         return QSize(100, 40)
 
-    def set_values(self, values: Sequence[float]) -> None:
-        values = tuple(values)
-        if values != self.values:
-            self.values = values
+    def set_values(
+        self, values: Sequence[float], separators: Sequence[int] = ()
+    ) -> None:
+        values, separators = tuple(values), tuple(separators)
+        if (values, separators) != (self.values, self.separators):
+            self.values, self.separators = values, separators
             self.update()
+
+    @staticmethod
+    def separator_xs(
+        count: int, separators: Sequence[int], width: float
+    ) -> list[float]:
+        """Where each separator lies across a `width` that `count` values
+        span as `scaled` lays them out: halfway between the value before it
+        and the first after it."""
+        last = max(count - 1, 1)
+        return [width * (i - 0.5) / last for i in separators]
 
     @staticmethod
     def scaled(
@@ -57,9 +74,17 @@ class EnergyCurve(QWidget):
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         if not self.values:
             return
+        inner = self.rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
+        separator = QPen(palette.color(QPalette.ColorRole.Mid))
+        separator.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(separator)
+        for x in self.separator_xs(len(self.values), self.separators, inner.width()):
+            painter.drawLine(
+                QPointF(inner.left() + x, inner.top()),
+                QPointF(inner.left() + x, inner.bottom()),
+            )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(palette.color(QPalette.ColorRole.Highlight), PEN_WIDTH))
-        inner = self.rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
         points = [
             QPointF(inner.left() + x, inner.top() + y)
             for x, y in self.scaled(self.values, inner.width(), inner.height())

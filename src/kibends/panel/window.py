@@ -221,7 +221,7 @@ class PanelWindow(QWidget):
         self.button.setText(c.button_label)
         self.button.setEnabled(c.button_enabled)
         self.progress.setText(c.progress_line)
-        self.curve.set_values(c.energies)
+        self.curve.set_values(c.energies, c.separators)
         self.status.setText(c.status)
 
     def _edited(self) -> None:

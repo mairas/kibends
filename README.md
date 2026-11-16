@@ -606,7 +606,10 @@ a second: "12 of 1567 tracks, 3 of 210 vias" for a selection, counting arcs
 and the members of selected groups as tracks, or "Whole board: 1567
 tracks, 210 vias". Run, or Return, starts a run; the status line names
 its stage, and while it optimizes the panel shows the elapsed time, the
-iteration and a curve of the energy falling. Stop, or Esc, ends the
+spacing level it has reached when the schedule has more than one (the
+coarsest any layer still runs at), the iteration and a curve of the energy
+falling, a dashed line marking each change of level, where the energy
+jumps as the spacing gets finer. Stop, or Esc, ends the
 optimizer and commits the best result so far, as Ctrl-C does on the
 command line; a stop before optimizing commits nothing. When the run ends,
 the status says how: how it ended, its iterations and time, the chains and
