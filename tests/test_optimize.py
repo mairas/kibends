@@ -50,7 +50,7 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import StoppedInSetupError, optimize, optimize_chains
+from kibends.optimize import Progress, StoppedInSetupError, optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, RunResult, Termination
 from kibends.via_moves import MovingVias
@@ -692,6 +692,45 @@ def test_a_stopped_run_starts_no_further_burst_and_says_where_it_stopped(
     assert said == {True, False}
 
 
+def test_progress_names_the_coarsest_level_a_problem_runs_at(log: list[str]) -> None:
+    # The straight chain settles each level in its first burst, so it runs
+    # ahead of the bowed one.
+    chains = [
+        scenarios.selected("F.Cu", "F.Cu", FreeSpace(), (0, 0), (5, 0), (10, 0)),
+        scenarios.selected("B.Cu", "B.Cu", FreeSpace(), *BOWED, layer="B.Cu"),
+    ]
+    settings = replace(COARSE, coarse_spacings=COARSE_LEVELS)
+    records: list[Progress] = []
+
+    optimize_chains(chains, PARAMS, settings, on_progress=records.append)
+
+    entered = {"F.Cu": 0, "B.Cu": 0}
+    behind: list[int] = []
+    apart = False
+    for line in log:
+        if stage_lines([line]):
+            layer = "F.Cu" if " on F.Cu " in line else "B.Cu"
+            entered[layer] += 1
+        elif " Iteration " in line:
+            behind.append(min(entered.values()) - 1)
+            apart = apart or len(set(entered.values())) > 1
+    assert apart
+    assert [r.level for r in records] == behind
+    assert behind[0] == 0
+    assert behind[-1] == len(COARSE_LEVELS)
+    assert {r.levels for r in records} == {len(COARSE_LEVELS) + 1}
+
+
+def test_progress_at_one_spacing_is_at_its_only_level() -> None:
+    records: list[Progress] = []
+    settings = replace(COARSE, coarse_spacings=())
+
+    optimize_chains(on_two_layers(*BOWED), PARAMS, settings, on_progress=records.append)
+
+    assert records
+    assert {(r.level, r.levels) for r in records} == {(0, 1)}
+
+
 def test_a_problem_stopped_before_its_first_step_is_before_the_final_spacing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -756,6 +795,29 @@ def test_a_time_limit_ends_each_coarse_level_and_the_run_only_at_the_final_one(
     ]
     (chain,) = result.chains
     assert measure(chain.polyline, COARSE.spacing).length < chain.before.length
+
+
+def test_progress_follows_the_levels_the_time_limit_hands_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(
+        COARSE,
+        coarse_spacings=COARSE_LEVELS,
+        time_limit=ONE_BURST,
+        burst_maxiter=UNFINISHED_BURST,
+    )
+    records: list[Progress] = []
+
+    optimize_chains(
+        on_two_layers(*BOWED)[:1],
+        PARAMS,
+        settings,
+        clock=BurstClock(monkeypatch),
+        on_progress=records.append,
+    )
+
+    # One burst at each level, each ended by the limit.
+    assert [r.level for r in records] == [0, 1, 2]
 
 
 def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(

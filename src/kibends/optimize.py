@@ -106,6 +106,12 @@ class Progress:
     iteration: int
     energy: float
     """Every problem's energy, summed."""
+    level: int
+    """The level of the schedule the run stands at, counted from 0: the
+    coarsest level some problem still runs at, as problems may run at
+    different levels."""
+    levels: int
+    """The schedule's levels: its coarse spacings, then the final one."""
 
 
 def optimize(
@@ -399,6 +405,7 @@ def optimize_chains(
         unless at `cap`, which then ends the run."""
         nonlocal deadline, first_end
         while True:
+            report.read_levels()
             outcome, iteration = _core.advance(
                 [p.state for p in moving],
                 iteration,
@@ -513,8 +520,10 @@ class _Report:
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
     `shown`, the last INFO line, and handed to `on_progress`. A problem
     entering a level is logged at INFO (`_stage`), and whether some problem
-    owes a burst at its level goes to `on_owing`. The notices name
-    `problems` by their place; the elapsed seconds count from `origin`."""
+    owes a burst at its level goes to `on_owing`, and kept with the levels
+    read before the run advances (`read_levels`) to hand on in the
+    progress. The notices name `problems` by their place; the elapsed
+    seconds count from `origin`."""
 
     def __init__(
         self,
@@ -531,6 +540,14 @@ class _Report:
         self.shown = shown
         self.on_owing = on_owing
         self.on_progress = on_progress
+        self.levels: list[int] = []
+        self.read_levels()
+
+    def read_levels(self) -> None:
+        """Take each problem's level from its state, which `_core.advance`
+        holds while it reports: before each call to it, the levels it
+        reports from then on as `_core.StageNotice`s."""
+        self.levels = [p.state.level for p in self.problems]
 
     def __call__(self, notice: _Notice) -> None:
         if isinstance(notice, _core.FallbackNotice):
@@ -546,6 +563,7 @@ class _Report:
         elif isinstance(notice, _core.OwingNotice):
             self.on_owing(notice.owing)
         elif isinstance(notice, _core.StageNotice):
+            self.levels[notice.problem] = notice.level
             logger.info(_stage(self.problems[notice.problem], notice.level))
         else:
             now = self.clock()
@@ -557,8 +575,15 @@ class _Report:
             else:
                 logger.debug(message)
             if self.on_progress is not None:
+                settings = self.problems[0].settings
                 self.on_progress(
-                    Progress(elapsed, notice.iteration, sum(notice.energies))
+                    Progress(
+                        elapsed,
+                        notice.iteration,
+                        sum(notice.energies),
+                        min(self.levels),
+                        len(settings.coarse_spacings) + 1,
+                    )
                 )
 
 

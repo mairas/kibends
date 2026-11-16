@@ -46,7 +46,12 @@ STAGES = (
     Stage.SIMPLIFYING,
     Stage.COMMITTING,
 )
-PROGRESS = (Progress(0.5, 1, 9.0), Progress(1.0, 2, 4.0), Progress(1.5, 3, 3.5))
+PROGRESS = (
+    Progress(0.5, 1, 9.0, 0, 1),
+    Progress(1.0, 2, 4.0, 0, 1),
+    Progress(1.5, 3, 3.5, 0, 1),
+)
+"""A run at one spacing."""
 CHANGED = report((chain(10.0, 7.5),))
 STOPPED = replace(CHANGED, termination=Termination.STOPPED)
 UNCHANGED_STOP = replace(report(), termination=Termination.STOPPED)
