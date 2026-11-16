@@ -278,7 +278,9 @@ class Controller:
         def work() -> None:
             try:
                 probe = self._probe(known)
-            except Exception as e:
+            # A Rust panic is a BaseException; any failure must reach the
+            # controller, or it waits for this worker forever.
+            except BaseException as e:
                 if not isinstance(e, MAPPED_ERRORS):
                     logger.opt(exception=e).error("The panel's probe failed")
                 self._post(partial(self._probe_failed, e))
@@ -322,7 +324,7 @@ class Controller:
                     on_stage=lambda stage: post(partial(self._staged, stage)),
                     on_progress=lambda p: post(partial(self._progressed, p)),
                 )
-            except Exception as e:
+            except BaseException as e:  # as the probe's
                 if not isinstance(e, MAPPED_ERRORS):
                     logger.opt(exception=e).error("The panel's run failed")
                 post(partial(self._failed, e))
@@ -370,7 +372,7 @@ class Controller:
             self._state = State.IDLE
         self._notify()
 
-    def _probe_failed(self, error: Exception) -> None:
+    def _probe_failed(self, error: BaseException) -> None:
         self._probing = False
         if self._state in _IN_RUN:
             return
@@ -407,7 +409,7 @@ class Controller:
         else:
             self._end(State.DONE, summary(report))
 
-    def _failed(self, error: Exception) -> None:
+    def _failed(self, error: BaseException) -> None:
         self._end(State.FAILED, error_message(error, panel=True))
 
     def _end(self, state: State, message: str) -> None:

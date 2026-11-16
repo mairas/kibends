@@ -68,12 +68,16 @@ UNCHANGED_STOP = replace(report(), termination=Termination.STOPPED)
 EDITED = PanelFields(ground_nets="GND3", time_limit="5", repulsion="0.7")
 
 
+class Panic(BaseException):
+    """Like the `PanicException` a Rust panic raises: no `Exception`."""
+
+
 @dataclass
 class Scripted:
     """A run that reports `stages` and, while optimizing, `progress`, calls
     `during` after each stage and ends with `outcome`."""
 
-    outcome: RunReport | Exception = CHANGED
+    outcome: RunReport | BaseException = CHANGED
     stages: Sequence[Stage] = STAGES
     progress: Sequence[Progress] = PROGRESS
     during: Callable[[Stage], None] = lambda _stage: None
@@ -97,7 +101,7 @@ class Scripted:
             if stage is Stage.OPTIMIZING and on_progress is not None:
                 for p in self.progress:
                     on_progress(p)
-        if isinstance(self.outcome, Exception):
+        if isinstance(self.outcome, BaseException):
             raise self.outcome
         return self.outcome
 
@@ -280,7 +284,7 @@ class Answers:
     """A probe answering from boards, or raising errors, in turn; the last
     answers from then on."""
 
-    def __init__(self, answers: Sequence[FakeBoard | Exception]) -> None:
+    def __init__(self, answers: Sequence[FakeBoard | BaseException]) -> None:
         self.answers = list(answers)
         self.calls = 0
         self.known: list[BoardId | None] = []
@@ -289,7 +293,7 @@ class Answers:
         self.known.append(known)
         answer = self.answers[min(self.calls, len(self.answers) - 1)]
         self.calls += 1
-        if isinstance(answer, Exception):
+        if isinstance(answer, BaseException):
             raise answer
         return prober(answer)(known)
 
@@ -738,6 +742,29 @@ class TestErrors:
 
         assert c.status == "Unexpected error: RuntimeError: boom"
         assert any("Traceback" in line for line in log)
+
+    def test_a_panic_fails_the_run_and_is_logged(self, log: list[str]) -> None:
+        c = opened(run=Scripted(outcome=Panic("boom"))).controller
+
+        c.run()
+
+        assert c.state is State.FAILED
+        assert c.status == "Unexpected error: Panic: boom"
+        assert any("Traceback" in line for line in log)
+        assert c.close()
+
+    def test_a_panic_in_a_probe_lets_the_next_probe_run(self, log: list[str]) -> None:
+        probes = Answers([Panic("boom"), ten_tracks_four_vias()])
+        p = panel(probe=probes, clock=Ticking(step=2.0))
+
+        p.controller.tick()
+        assert p.controller.state is State.IDLE
+        assert p.controller.status == "Unexpected error: Panic: boom"
+        assert any("Traceback" in line for line in log)
+        p.controller.tick()
+
+        assert probes.calls == 2
+        assert p.controller.status == ""
 
     def test_an_abnormal_stop_names_the_advanced_fields(self) -> None:
         refused = replace(CHANGED, committed=False, refusal=ABNORMAL_MESSAGE)
