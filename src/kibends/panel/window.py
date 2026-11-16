@@ -65,16 +65,26 @@ ADVANCED = (
 
 class Poster(QObject):
     """Runs callables posted from any thread on the thread it lives on,
-    through a queued signal."""
+    through a queued signal; once closed, drops them, since a probe may
+    answer after the window is gone."""
 
     _posted = Signal(object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._posted.connect(self._call, Qt.ConnectionType.QueuedConnection)
+        self._lock = threading.Lock()
+        self._closed = False
 
     def post(self, call: Callable[[], None]) -> None:
-        self._posted.emit(call)
+        # Under the lock, so no post emits once `close` has returned.
+        with self._lock:
+            if not self._closed:
+                self._posted.emit(call)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
 
     def _call(self, call: Callable[[], None]) -> None:
         call()
@@ -275,19 +285,20 @@ class PanelWindow(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.controller.close():
             self._timer.stop()
+            self.poster.close()
             event.accept()
         else:
             event.ignore()
 
 
-def _thread(work: Callable[[], None]) -> None:
-    threading.Thread(target=work).start()
+def start_thread(work: Callable[[], None], *, daemon: bool) -> None:
+    threading.Thread(target=work, daemon=daemon).start()
 
 
 def main() -> None:
     """Open the panel and run until it is closed."""
     app = QApplication(sys.argv)
-    window = PanelWindow(Prober(), run_smooth, spawn=_thread)
+    window = PanelWindow(Prober(), run_smooth, spawn=start_thread)
     window.show()
     window.controller.tick()
     app.exec()

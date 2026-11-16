@@ -9,9 +9,10 @@ disabled.
 
 All methods run on one thread, the controller's. Workers report back
 through the injected `post`, which runs a callable on that thread; the
-work itself goes to `spawn`, which runs it on a new worker thread. A run
-worker calls `run`, `run.run_smooth` in the app, with the run's stop flag;
-it reports stages, progress and the outcome. Between runs, `tick`, called
+work itself goes to `spawn`, which runs it on a new worker thread, a
+daemon one for a probe. A run worker calls `run`, `run.run_smooth` in the
+app, with the run's stop flag; it reports stages, progress and the
+outcome. Between runs, `tick`, called
 several times a second, sends `probe` off about once a second, never two
 at once: a probe still out when the next is due skips it. The probe reads
 the board it does not know, on opening, on a board switch and after every
@@ -97,8 +98,12 @@ class RunSmooth(Protocol):
 
 type Post = Callable[[Callable[[], None]], None]
 """Runs a callable on the controller's thread."""
-type Spawn = Callable[[Callable[[], None]], None]
-"""Runs a callable on a new worker thread."""
+
+
+class Spawn(Protocol):
+    """Runs a callable on a new worker thread, a daemon one if `daemon`."""
+
+    def __call__(self, work: Callable[[], None], *, daemon: bool) -> None: ...
 
 
 def _counted(n: int, noun: str) -> str:
@@ -296,7 +301,9 @@ class Controller:
                 return
             self._post(partial(self._probed, probe))
 
-        self._spawn(work)
+        # A probe out when the window closes must not keep the process
+        # alive for the IPC timeout.
+        self._spawn(work, daemon=True)
 
     def edit(self, fields: PanelFields) -> None:
         if not self.editable:
@@ -340,7 +347,7 @@ class Controller:
                 return
             post(partial(self._finished, report))
 
-        self._spawn(work)
+        self._spawn(work, daemon=False)
 
     @property
     def _stoppable(self) -> bool:

@@ -25,7 +25,7 @@ from kibends import present
 from kibends import run as pipeline
 from kibends.commit import BoardChangedError
 from kibends.optimize import Progress
-from kibends.panel.controller import Controller, RunSmooth, State
+from kibends.panel.controller import Controller, RunSmooth, Spawn, State
 from kibends.panel.probe import BoardId, Probe
 from kibends.present import BUSY_MESSAGE, PanelFields
 from kibends.results import Termination
@@ -121,9 +121,11 @@ class Spawned:
 
     def __init__(self) -> None:
         self.waiting: list[Callable[[], None]] = []
+        self.daemons: list[bool] = []
 
-    def __call__(self, work: Callable[[], None]) -> None:
+    def __call__(self, work: Callable[[], None], *, daemon: bool) -> None:
         self.waiting.append(work)
+        self.daemons.append(daemon)
 
     def finish(self) -> None:
         while self.waiting:
@@ -147,7 +149,7 @@ def panel(
     board: FakeBoard | None = None,
     run: RunSmooth | None = None,
     *,
-    spawn: Callable[[Callable[[], None]], None] = lambda work: work(),
+    spawn: Spawn = lambda work, daemon: work(),
     probe: Callable[[BoardId | None], Probe] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> Panel:
@@ -349,6 +351,18 @@ class TestProbing:
 
         assert p.controller.scope_line == line
         assert p.controller.state is State.RUNNING
+
+    def test_probes_run_on_daemon_threads_and_runs_do_not(self) -> None:
+        # A probe may be out when the window closes, and must not keep the
+        # process alive; a run must end before the window closes.
+        spawned = Spawned()
+        p = panel(spawn=spawned)
+        p.controller.tick()
+        spawned.finish()
+
+        p.controller.run()
+
+        assert spawned.daemons == [True, False]
 
     def test_rereads_the_totals_after_a_run(self) -> None:
         probes = Answers([ten_tracks_four_vias()])

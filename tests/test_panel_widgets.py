@@ -19,7 +19,7 @@ from test_panel_probe import prober, ten_tracks_four_vias
 
 from kibends.panel.controller import State
 from kibends.panel.curve import MARGIN, EnergyCurve
-from kibends.panel.window import PanelWindow, Poster
+from kibends.panel.window import PanelWindow, Poster, start_thread
 from kibends.present import Field, PanelFields
 from kibends.run import Stage
 
@@ -42,7 +42,9 @@ def window(app: QApplication) -> Iterator[Callable[[Scripted], PanelWindow]]:
     made: list[PanelWindow] = []
 
     def make(run: Scripted) -> PanelWindow:
-        w = PanelWindow(prober(ten_tracks_four_vias()), run, spawn=lambda work: work())
+        w = PanelWindow(
+            prober(ten_tracks_four_vias()), run, spawn=lambda work, daemon: work()
+        )
         made.append(w)
         w.show()
         w.controller.tick()
@@ -257,8 +259,8 @@ class TestRunning:
                 seen.append(threading.current_thread() is threading.main_thread())
                 super().refresh()
 
-        def spawn(work: Callable[[], None]) -> None:
-            threads.append(threading.Thread(target=work))
+        def spawn(work: Callable[[], None], *, daemon: bool) -> None:
+            threads.append(threading.Thread(target=work, daemon=daemon))
             threads[-1].start()
 
         w = Watched(prober(ten_tracks_four_vias()), Scripted(), spawn=spawn)
@@ -294,6 +296,46 @@ class TestPoster:
         settle()
 
         assert ran_on == [threading.main_thread()]
+
+    def test_drops_what_is_posted_once_closed(self, app: QApplication) -> None:
+        poster = Poster()
+        ran: list[bool] = []
+        poster.close()
+
+        worker = threading.Thread(target=lambda: poster.post(lambda: ran.append(True)))
+        worker.start()
+        worker.join()
+        settle()
+
+        assert ran == []
+
+    def test_the_window_closes_its_poster_as_it_closes(
+        self, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        w = window(Scripted())
+        ran: list[bool] = []
+
+        w.close()
+        w.poster.post(lambda: ran.append(True))
+        settle()
+
+        assert ran == []
+
+
+class TestThreads:
+    @pytest.mark.parametrize("daemon", [True, False])
+    def test_starts_work_on_a_thread_as_asked(self, daemon: bool) -> None:
+        seen: list[bool] = []
+        done = threading.Event()
+
+        def work() -> None:
+            seen.append(threading.current_thread().daemon)
+            done.set()
+
+        start_thread(work, daemon=daemon)
+
+        assert done.wait(timeout=5.0)
+        assert seen == [daemon]
 
 
 class TestCurve:
