@@ -505,12 +505,14 @@ mod tests {
     #[test]
     fn crossings_are_judged_by_obstacle_however_high_its_number() {
         // A via's obstacle is numbered past every vertex of the problem, so
-        // the numbers run far above the obstacles one member crosses.
-        let stride = usize::MAX / 4;
-        let far = stride - 1;
+        // the numbers run far above the obstacles one member crosses. A
+        // table over this many could not be allocated; the keys of two
+        // edges still fit.
+        const STRIDE: usize = usize::MAX / 4;
+        let far = STRIDE - 1;
         let before = Crossed::of(
             &crossing(&[0, 1, 1], &[far, far, 2], &[-0.1, -0.3, -0.2]),
-            stride,
+            STRIDE,
         );
         let after = crossing(
             &[0, 1, 1, 0, 1],
@@ -520,7 +522,7 @@ mod tests {
         // Only deeper than the member's deepest edge in `far`, an edge
         // newly across 2 and a newly crossed obstacle count.
         assert_eq!(
-            before.new_or_deeper(&after, stride),
+            before.new_or_deeper(&after, STRIDE),
             vec![false, true, false, true, true]
         );
     }
