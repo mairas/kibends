@@ -376,9 +376,7 @@ impl Seen {
 
     /// (point, piece) pairs of `layer`, among them every piece within
     /// `radius` of a point that the point's member, by its place on the
-    /// layer in `owner`, sees, and each pair's inflation; by point, and
-    /// with `ordered` in the order `smooth_of_pairs` takes them, searched
-    /// or listed alike: by point, then obstacle, then piece.
+    /// layer in `owner`, sees, and each pair's inflation; by point.
     fn pairs(
         &self,
         layer: &SeenLayer,
@@ -386,7 +384,6 @@ impl Seen {
         owner: &[usize],
         flat: &[V2],
         radius: f64,
-        ordered: bool,
     ) -> Pairs {
         if layer.edges.is_empty() || points.is_empty() {
             return Pairs::default();
@@ -398,9 +395,6 @@ impl Seen {
                 self.expand(layer, owner[p], e, |piece, inflation| {
                     near.push((piece, inflation));
                 });
-            }
-            if ordered {
-                near.sort_unstable_by_key(|&(piece, _)| (self.obstacle[piece], piece));
             }
             for &(piece, inflation) in near.iter() {
                 pairs.push(p, piece, inflation);
@@ -500,7 +494,10 @@ impl Seen {
     /// answers it, as a chain field of the member's own pieces with `reach`
     /// gives it at `flat`; each answer's point is by its place among the
     /// member's queries and its edge is the piece's index. With `listed`,
-    /// each layer looks only at the pairs it lists.
+    /// each layer looks only at the pairs it lists; without, at the pairs
+    /// that can answer here (`candidates`), which a search over every
+    /// piece within reach answers alike, as the terms of the others are
+    /// exactly zero.
     pub fn smooth_answers(
         &self,
         queries: &[&[V2]],
@@ -518,8 +515,7 @@ impl Seen {
             let pairs = match listed.as_deref_mut() {
                 Some(list) => list.pairs(self, n, &points, &owner, flat),
                 None => {
-                    let radius = largest(limit.iter().copied(), f64::NEG_INFINITY);
-                    searched = self.pairs(layer, &points, &owner, flat, radius, true);
+                    searched = self.candidates(n, &points, &owner, flat, reach, 0.0);
                     &searched
                 }
             };
@@ -561,7 +557,7 @@ impl Seen {
             let widest = largest(layer.members.iter().map(|&i| self.within[i]), 0.0);
             let radius = widest + below;
             if !layer.edges.is_empty() && widest > 0.0 && radius >= 0.0 {
-                let pairs = self.pairs(layer, &points, &owner, flat, radius, false);
+                let pairs = self.pairs(layer, &points, &owner, flat, radius);
                 let (starts, along) = self.shapes(flat, &pairs.piece);
                 distance = nearest_of_pairs(
                     &points,
@@ -1269,6 +1265,78 @@ mod tests {
         );
         assert_eq!(found.point, (0..many).collect::<Vec<_>>());
         assert_eq!(found.piece, vec![0; many]);
+    }
+
+    #[test]
+    fn a_search_answers_as_one_over_every_piece_within_reach() {
+        const TRACKS: usize = 40;
+        const VERTICES: usize = 6;
+        const REACH: f64 = 1.0;
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        // Tracks of two kinds crowded into a small box, so that most points
+        // have pieces within reach far behind their nearest.
+        let tracks: Vec<Track> = (0..TRACKS)
+            .map(|k| Track {
+                first: k * VERTICES,
+                vertices: VERTICES,
+                layer: "F".into(),
+                net: k,
+                kind: k % 2,
+            })
+            .collect();
+        let viewers: Vec<Viewer> = tracks
+            .iter()
+            .map(|t| Viewer {
+                layer: "F".into(),
+                net: t.net,
+                kind: t.kind,
+                exempt: vec![],
+            })
+            .collect();
+        let seen = Seen::new(
+            &tracks,
+            &viewers,
+            vec![vec![0.2, 0.3], vec![0.3, 0.45]],
+            &vec![Pieces::default(); TRACKS],
+        );
+        let mut flat = Vec::new();
+        for _ in 0..TRACKS {
+            let mut at = random.point(4.0);
+            for _ in 0..VERTICES {
+                flat.push(at);
+                at = at + V2::new(random.uniform(-0.6, 0.6), random.uniform(-0.6, 0.6));
+            }
+        }
+        let queries: Vec<&[V2]> = flat.chunks(VERTICES).collect();
+        let layer = &seen.layers[0];
+        let (points, owner, _) = gathered(&queries, &layer.members);
+        let limit = seen.smooth_limit(layer, REACH);
+        let everything = {
+            let radius = largest(limit.iter().copied(), f64::NEG_INFINITY);
+            let unordered = seen.pairs(layer, &points, &owner, &flat, radius);
+            let mut order: Vec<usize> = (0..unordered.len()).collect();
+            order.sort_by_key(|&k| {
+                let piece = unordered.piece[k];
+                (unordered.point[k], seen.obstacle[piece], piece)
+            });
+            let mut pairs = Pairs::default();
+            for k in order {
+                pairs.push(
+                    unordered.point[k],
+                    unordered.piece[k],
+                    unordered.inflation[k],
+                );
+            }
+            pairs
+        };
+        let searched = seen.candidates(0, &points, &owner, &flat, REACH, 0.0);
+        assert!(searched.len() < everything.len());
+        let answer = |pairs: &Pairs| {
+            let mut found = seen.smooth_of_layer(&points, &owner, pairs, &limit, &flat);
+            found.edge = found.edge.iter().map(|&e| pairs.piece[e]).collect();
+            found
+        };
+        assert_eq!(answer(&searched), answer(&everything));
     }
 
     #[test]
