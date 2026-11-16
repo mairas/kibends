@@ -26,8 +26,15 @@
 //! the via also keeps the zone's clearance and margin from other-net copper
 //! where that exceeds the netclass rule (`rules::zone_inflation`). The
 //! vias standing still that a moving via pairs with leave its field and are
-//! built apart, each as the field would count it. A moving via's fields
-//! hold their items in sets of their own.
+//! built apart, each as the field would count it.
+//!
+//! A moving via's field is one view over the sets of every layer it
+//! spans, in the order its builder takes them: the first layer's copper,
+//! with the other vias' rings, then each other layer's copper, the holes,
+//! the via keepouts and the outline. A ring of another via lies in the set
+//! of the layer where it was last met, and counts as copper of the
+//! field's first layer (`edges::Override::Layer`); a pad that only stops
+//! a via is its copper held as no copper (`edges::Override::Stop`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -500,46 +507,6 @@ impl<'b> Built<'b> {
         let edges = StaticEdges::view(parts, self.members, self.inflations, ids, self.overrides);
         Obstacles::of(edges, edge_inflation)
     }
-
-    /// `field`, its items copied into a set of its own.
-    fn owned(mut self, outline: Option<usize>, edge_inflation: f64) -> Obstacles {
-        let (ids, edge_inflation) = self.with_edge(outline, edge_inflation);
-        let count = self.members.len();
-        let mut shapes = Vec::with_capacity(count);
-        let mut kinds = Vec::with_capacity(count);
-        let mut copper = Copper::default();
-        let mut records = Vec::with_capacity(count);
-        let mut overrides = self.overrides.iter().peekable();
-        for (item, m) in self.members.iter().enumerate() {
-            let set = &self.board.sets[self.parts[m.part as usize]];
-            let k = m.index as usize;
-            let of = set.copper().expect("a board's sets have copper");
-            let mut record = set.record(k).expect("a board's sets have records");
-            let (mut net, mut layer, mut extent) = (of.net[k], of.layer[k], of.extent[k]);
-            match overrides
-                .next_if(|(at, _)| *at as usize == item)
-                .map(|&(_, how)| how)
-            {
-                None => {}
-                Some(Override::Layer(l)) => layer = Some(l),
-                Some(Override::Stop) => {
-                    (net, layer, extent) = (None, None, 0.0);
-                    record.source = Source::PadStop;
-                }
-            }
-            shapes.push(set.shape(k).clone());
-            kinds.push(set.kind(k));
-            copper.net.push(net);
-            copper.layer.push(layer);
-            copper.extent.push(extent);
-            records.push(record);
-        }
-        let set = ItemSet::new(shapes, kinds, Some(copper), None).with_records(records);
-        Obstacles::of(
-            StaticEdges::whole(Arc::new(set), self.inflations, ids),
-            edge_inflation,
-        )
-    }
 }
 
 /// Which of a layer's pads, tracks and graphics a field holds; None for
@@ -845,7 +812,7 @@ pub fn via_obstacles(
     built.holes(first, &|_, _| false, &picked, &found.keeper);
     Ok(ViaFields {
         field,
-        split: Some(built.owned(None, 0.0)),
+        split: Some(built.field(None, 0.0)),
     })
 }
 
@@ -877,7 +844,7 @@ fn via_field(
             built.push(l, item, keeper.radius, None);
         }
     }
-    built.owned(Some(first), edge_clearance + keeper.radius)
+    built.field(Some(first), edge_clearance + keeper.radius)
 }
 
 /// What of a via's net limits it: its pads and holes, and its vias.
@@ -917,7 +884,7 @@ pub fn own_net_stops(
             }
         }
     }
-    let items = (!built.members.is_empty()).then(|| built.owned(None, 0.0));
+    let items = (!built.members.is_empty()).then(|| built.field(None, 0.0));
     let own = found.own.iter().map(|r| {
         (
             &board.layer(r.layer).vias[r.index],
@@ -1285,6 +1252,117 @@ mod tests {
             vec![(Source::ViaRing, 1), (Source::ViaHole, 1)]
         );
         answers_as_owned(&board, &built);
+    }
+
+    /// Three busy layers, the through via "moving" moving, and a blind
+    /// via standing on the inner and bottom layers only.
+    fn stack() -> (BoardItems, Via) {
+        let top = busy("F.Cu", 0);
+        let mut inner = busy("In1.Cu", 1);
+        let mut bottom = busy("B.Cu", 2);
+        let blind = Via {
+            span: Span { low: 1, high: 2 },
+            ..via("blind", "HV", (6.0, 8.0))
+        };
+        inner.vias.push(blind.clone());
+        bottom.vias.push(blind);
+        let me = top.vias[0].clone();
+        (board(vec![top, inner, bottom], &["moving"]), me)
+    }
+
+    /// A zone on the inner and bottom layers whose clearance exceeds the
+    /// netclass rule.
+    fn plane() -> Vec<Zone> {
+        vec![Zone {
+            clearance: 0.6,
+            margin: 0.2,
+            layers: vec![1, 2],
+        }]
+    }
+
+    #[test]
+    fn a_via_s_fields_answer_as_ones_of_their_own_items() {
+        let (board, me) = stack();
+        for zones in [Vec::new(), plane()] {
+            for split in [HashSet::new(), HashSet::from(["signal", "blind"])] {
+                let fields = via_obstacles(&board, &me, &split, RULES, &zones).unwrap();
+                answers_as_owned(&board, &fields.field);
+                if let Some(apart) = &fields.split {
+                    answers_as_owned(&board, apart);
+                }
+            }
+        }
+        for allow in [false, true] {
+            let stops = own_net_stops(&board, &me, HOLES, allow).unwrap();
+            answers_as_owned(&board, &stops.items.unwrap());
+        }
+    }
+
+    #[test]
+    fn a_blind_via_s_ring_counts_on_the_field_s_first_layer() {
+        let (board, me) = stack();
+        let fields = via_obstacles(&board, &me, &HashSet::new(), RULES, &[]).unwrap();
+        let ring = fields
+            .field
+            .picked()
+            .unwrap()
+            .into_iter()
+            .find(|p| {
+                p.source == Source::ViaRing && board.layer(p.layer).vias[p.index].id == "blind"
+            })
+            .unwrap();
+        // Last met on the bottom layer, its copper is the top layer's.
+        assert_eq!((ring.layer, ring.copper), (2, Some(0)));
+    }
+
+    #[test]
+    fn a_pad_on_every_layer_is_one_obstacle_to_a_via() {
+        let (board, me) = stack();
+        let fields = via_obstacles(&board, &me, &HashSet::new(), RULES, &[]).unwrap();
+        let obstacles = fields.field.edges().obstacles();
+        let pads: Vec<(usize, u32)> = fields
+            .field
+            .picked()
+            .unwrap()
+            .iter()
+            .zip(obstacles)
+            .filter(|(p, _)| p.source == Source::Pad && p.index == 0)
+            .map(|(p, &o)| (p.layer, o))
+            .collect();
+        assert_eq!(pads.len(), 3);
+        assert!(pads.iter().all(|&(_, o)| o == pads[0].1));
+    }
+
+    #[test]
+    fn a_zoned_via_s_field_holds_the_plain_one_s_items_inflated_apart() {
+        let (board, me) = stack();
+        let plain = via_obstacles(&board, &me, &HashSet::new(), RULES, &[]).unwrap();
+        let zoned = via_obstacles(&board, &me, &HashSet::new(), RULES, &plane()).unwrap();
+        assert_eq!(plain.field.picked(), zoned.field.picked());
+        let (a, b) = (plain.field.edges(), zoned.field.edges());
+        assert!(
+            a.inflations()
+                .iter()
+                .zip(b.inflations())
+                .any(|(x, y)| x < y)
+        );
+        // The inner layer's width change and T-junction keep their
+        // obstacles apart in both, their inflations growing alike.
+        assert_eq!(a.obstacle_count(), b.obstacle_count());
+    }
+
+    #[test]
+    fn a_via_s_own_pads_stop_it_as_no_copper() {
+        let (board, me) = stack();
+        let stops = own_net_stops(&board, &me, HOLES, false).unwrap();
+        let picked = stops.items.unwrap().picked().unwrap();
+        let pads: Vec<&Picked> = picked
+            .iter()
+            .filter(|p| p.source == Source::PadStop)
+            .collect();
+        // The ground pad on each of the three layers.
+        assert_eq!(pads.len(), 3);
+        assert!(pads.iter().all(|p| p.copper.is_none() && p.index == 2));
     }
 
     #[test]
