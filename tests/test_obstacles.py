@@ -75,10 +75,18 @@ difference straddles it."""
 def obstacles_of(
     fake: FakeBoard,
     replaced: frozenset[str] = frozenset(),
-    **clearances: float,
+    *,
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
 ) -> Obstacles:
     snap = layer_snapshot(fake, LAYER, replaced)
-    return build_obstacles(snap, NET, WIDTH, **clearances)
+    return build_obstacles(
+        snap,
+        NET,
+        WIDTH,
+        edge_clearance=edge_clearance,
+        hole_clearance=hole_clearance,
+    )
 
 
 def by_description(obstacles: Obstacles) -> dict[str, float]:
@@ -352,11 +360,21 @@ PAIR_TRACKS: list[kbt.Track | kbt.ArcTrack] = [
 ]
 
 
-def pair_obstacles_of(fake: FakeBoard, **clearances: float) -> Obstacles:
+def pair_obstacles_of(
+    fake: FakeBoard,
+    *,
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> Obstacles:
     snap = layer_snapshot(fake, LAYER, frozenset({"P", "N", "P fan-out"}))
     pitch = WIDTH + PAIR_GAP
     return build_pair_obstacles(
-        snap, pair_track("P", 0.0), pair_track("N", pitch), PAIR_GAP, **clearances
+        snap,
+        pair_track("P", 0.0),
+        pair_track("N", pitch),
+        PAIR_GAP,
+        edge_clearance=edge_clearance,
+        hole_clearance=hole_clearance,
     )
 
 

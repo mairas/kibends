@@ -59,7 +59,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 import kibends.optimize as optimize_module
-from kibends import cli, plot
+from kibends import _core, cli, plot
 from kibends import run as pipeline
 from kibends.bursts import (
     DEFAULT_SETTINGS,
@@ -82,7 +82,6 @@ from kibends.obstacles import (
     EDGE_CLEARANCE,
     HOLE_CLEARANCE,
     HOLE_TO_HOLE,
-    ChainCentreline,
     Obstacles,
 )
 from kibends.optimize import MAX_ABNORMAL_BURSTS, Progress, optimize_chains
@@ -90,7 +89,7 @@ from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.polylines import measure
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
-from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR, LayerSnapshot
+from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR
 from kibends.via_moves import MovingVias
 from kibends.vias import StaticVia, ViaInput
 
@@ -4478,6 +4477,26 @@ def pair_board(*, extra: Sequence[kbt.Track] = ()) -> CommitBoard:
     )
 
 
+def pair_beside_moving_via() -> CommitBoard:
+    """`pair_board` with a selected SIG route down the moving via `v`, and
+    an unselected GND via `w` beside the pair."""
+    top = kipy_track("top", "SIG", (2.0, -3.0), (8.0, -3.0), width=PAIR_WIDTH)
+    down = kipy_track(
+        "down",
+        "SIG",
+        (8.0, -3.0),
+        (12.0, -3.0),
+        width=PAIR_WIDTH,
+        layer=BL.BL_B_Cu,
+    )
+    moving, still = kipy_via("v", "SIG", 8.0, -3.0), kipy_via("w", "GND", 4.0, -5.0)
+    board = pair_board()
+    board.selection = [*board.selection, top, down, moving]
+    board.tracks = [*board.tracks, top, down]
+    board.vias = [moving, still]
+    return board
+
+
 STUB_AT = 2.5
 """x where a stub leaves a pair's first straight, mm."""
 N_STUB_AT = 2.0
@@ -4869,48 +4888,38 @@ class TestPairs:
         self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
         seen: list[set[str]] = []
-        real = pipeline.build_pair_obstacles
+        real = cast(Callable[..., Obstacles], pipeline.build_pair_obstacles)
 
-        def spy(
-            snapshot: LayerSnapshot,
-            a: ChainCentreline,
-            b: ChainCentreline,
-            gap: float,
-            *,
-            edge_clearance: float,
-            hole_clearance: float,
-        ) -> Obstacles:
-            seen.append({v.id for v in snapshot.vias})
-            return real(
-                snapshot,
-                a,
-                b,
-                gap,
-                edge_clearance=edge_clearance,
-                hole_clearance=hole_clearance,
-            )
+        def spy(*a: object, **kwargs: object) -> Obstacles:
+            field = real(*a, **kwargs)
+            seen.append({o.description for o in field.items if "via" in o.description})
+            return field
 
         monkeypatch.setattr(pipeline, "build_pair_obstacles", spy)
-        top = kipy_track("top", "SIG", (2.0, -3.0), (8.0, -3.0), width=PAIR_WIDTH)
-        down = kipy_track(
-            "down",
-            "SIG",
-            (8.0, -3.0),
-            (12.0, -3.0),
-            width=PAIR_WIDTH,
-            layer=BL.BL_B_Cu,
-        )
-        moving, still = kipy_via("v", "SIG", 8.0, -3.0), kipy_via("w", "GND", 4.0, -5.0)
-        board = pair_board()
-        board.selection = [*board.selection, top, down, moving]
-        board.tracks = [*board.tracks, top, down]
-        board.vias = [moving, still]
-        connect.to(board)
+        connect.to(pair_beside_moving_via())
 
         run("--dry-run")
 
         assert any("1 moving via" in line for line in log)
-        assert seen == [{"w"}]
+        assert seen == [{"via w", "hole of via w"}]
+
+    def test_each_layer_is_read_once(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        read: list[object] = []
+        real = cast(Callable[..., object], _core.BoardLayer)
+
+        def spy(*a: object) -> object:
+            read.append(a[0])
+            return real(*a)
+
+        monkeypatch.setattr(_core, "BoardLayer", spy)
+        connect.to(pair_beside_moving_via())
+
+        run("--dry-run")
+
+        assert any("1 moving via" in line for line in log)
+        assert sorted(map(str, read)) == ["B.Cu", "F.Cu"]
 
     def test_a_section_with_copper_between_its_ends_moves_whole(
         self, connect: Connector, reports: list[pipeline.RunReport]

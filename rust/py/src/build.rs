@@ -271,8 +271,8 @@ fn built<'py>(py: Python<'py>, built: BuiltField) -> PyResult<Built<'py>> {
     ))
 }
 
-/// Obstacles for a track of `net` and `width` mm on `layer`
-/// (`kibends_core::field::build::chain_obstacles`).
+/// Obstacles for a track of `net` and `width` mm on `layer`, but the vias
+/// whose ids are in `moving` (`kibends_core::field::build::chain_obstacles`).
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn build_obstacles<'py>(
@@ -282,17 +282,25 @@ fn build_obstacles<'py>(
     width: f64,
     edge_clearance: f64,
     hole_clearance: f64,
+    moving: Vec<String>,
 ) -> PyResult<Built<'py>> {
     built(
         py,
-        build::chain_obstacles(&layer.inner, net, width, edge_clearance, hole_clearance),
+        build::chain_obstacles(
+            &layer.inner,
+            net,
+            width,
+            edge_clearance,
+            hole_clearance,
+            &ids(&moving),
+        ),
     )
 }
 
 /// Obstacles for the centreline of a coupled section of a differential
 /// pair on `layer`, its tracks of `width`, `gap` mm apart, of nets `a_net`
-/// and `b_net` at `a_points` and `b_points`
-/// (`kibends_core::field::build::pair_obstacles`).
+/// and `b_net` at `a_points` and `b_points`, but the vias whose ids are in
+/// `moving` (`kibends_core::field::build::pair_obstacles`).
 #[gen_stub_pyfunction]
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -307,6 +315,7 @@ fn build_pair_obstacles<'py>(
     gap: f64,
     edge_clearance: f64,
     hole_clearance: f64,
+    moving: Vec<String>,
 ) -> PyResult<Built<'py>> {
     let a = points_of(&a_points)?;
     let b = points_of(&b_points)?;
@@ -326,6 +335,7 @@ fn build_pair_obstacles<'py>(
             gap,
             edge_clearance,
             hole_clearance,
+            &ids(&moving),
         ),
     )
 }

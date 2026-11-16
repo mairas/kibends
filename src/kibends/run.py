@@ -698,15 +698,14 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float
     ) -> ObstacleField:
-        snapshot = read.snapshots[layer]
-        still = tuple(v for v in snapshot.vias if v.id not in moving)
         return build_pair_obstacles(
-            replace(snapshot, vias=still),
+            read.snapshots[layer],
             a,
             b,
             gap,
             edge_clearance=clearances.edge,
             hole_clearance=clearances.hole,
+            moving=moving,
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
@@ -966,13 +965,13 @@ def _static_field(
 ) -> Obstacles:
     """The obstacles of `chain`'s net and width on `snapshot`'s layer, but
     the `moving` vias."""
-    still = tuple(v for v in snapshot.vias if v.id not in moving)
     return build_obstacles(
-        replace(snapshot, vias=still),
+        snapshot,
         chain.net,
         chain.width,
         edge_clearance=clearances.edge,
         hole_clearance=clearances.hole,
+        moving=moving,
     )
 
 

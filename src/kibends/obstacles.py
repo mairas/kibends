@@ -730,17 +730,22 @@ def build_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
+    moving: Collection[str] = frozenset(),
 ) -> Obstacles:
     """Obstacles for a track of `net` and `width` mm on the snapshot's layer
     (`kibends_core::field::build::chain_obstacles`).
 
     Copper clearance is the larger of both items' netclass clearances, with a
     pad's own override replacing its netclass. Copper of `net` is never an
-    obstacle; its holes are not either, except unplated ones.
+    obstacle; its holes are not either, except unplated ones. The vias in
+    `moving`, which the optimizer adds at their current positions, are left
+    out.
     """
     layer = core_layer(snapshot)
     _warn_unclosed(layer)
-    built = _core.build_obstacles(layer, net, width, edge_clearance, hole_clearance)
+    built = _core.build_obstacles(
+        layer, net, width, edge_clearance, hole_clearance, list(moving)
+    )
     return _named(built, [snapshot])
 
 
@@ -752,6 +757,7 @@ def build_pair_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
+    moving: Collection[str] = frozenset(),
 ) -> Obstacles:
     """Obstacles for the centreline of a coupled section of a differential
     pair, its tracks `a` and `b` `gap` mm apart, on the snapshot's layer
@@ -759,7 +765,8 @@ def build_pair_obstacles(
 
     The centreline keeps clear as one track as wide as the pair would.
     Copper of the pair's own nets is an obstacle like any other's, but for
-    copper that overlaps the section's track of its own net.
+    copper that overlaps the section's track of its own net. The vias in
+    `moving` are left out, as `build_obstacles` leaves them.
     """
     layer = core_layer(snapshot)
     _warn_unclosed(layer)
@@ -773,6 +780,7 @@ def build_pair_obstacles(
         gap,
         edge_clearance,
         hole_clearance,
+        list(moving),
     )
     return _named(built, [snapshot])
 
