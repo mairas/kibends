@@ -13,7 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 from test_panel_controller import LEVELLED, PROGRESS, STOPPED, Scripted
 from test_panel_probe import prober, ten_tracks_four_vias
 
@@ -105,7 +105,7 @@ class TestLayout:
         w = window(Scripted())
 
         assert set(w.edits) == set(Field)
-        assert all(w.label_of(edit) for edit in w.edits.values())
+        assert all(label_of(w, edit) for edit in w.edits.values())
 
     def test_stays_on_top(self, window: Callable[[Scripted], PanelWindow]) -> None:
         w = window(Scripted())
@@ -131,6 +131,35 @@ class TestEditing:
         w.via_in_pad.click()
 
         assert w.controller.fields == PanelFields(time_limit="5", allow_via_in_pad=True)
+
+    def test_each_edit_holds_its_own_field(
+        self, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        w = window(Scripted())
+        texts = {
+            Field.GROUND_NETS: "GND",
+            Field.TIME_LIMIT: "5",
+            Field.REPULSION: "0.7",
+            Field.RANGE: "0.4",
+            Field.ATTRACTION: "0.2",
+            Field.ATTRACTION_RANGE: "0.3",
+            Field.SPACING: "0.5 0.1",
+        }
+
+        for f, text in texts.items():
+            w.edits[f].selectAll()
+            QTest.keyClicks(w.edits[f], text)
+
+        assert w.controller.fields == PanelFields(
+            ground_nets="GND",
+            time_limit="5",
+            repulsion="0.7",
+            falloff_range="0.4",
+            attraction="0.2",
+            attraction_range="0.3",
+            spacing="0.5 0.1",
+        )
+        assert {f: e.text() for f, e in w.edits.items()} == texts
 
     def test_an_invalid_field_is_marked_and_named(
         self, window: Callable[[Scripted], PanelWindow]
@@ -406,6 +435,14 @@ class TestCurve:
             (0.0, 10.0),
             (10.0, 10.0),
         ]
+
+
+def label_of(w: PanelWindow, edit: QLineEdit) -> str:
+    """The text of the label bound to `edit`."""
+    for label in w.findChildren(QLabel):
+        if label.buddy() is edit:
+            return label.text()
+    return ""
 
 
 def separator_columns(image: QImage, palette: QPalette) -> list[int]:

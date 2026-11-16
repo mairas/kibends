@@ -18,6 +18,7 @@ loses focus; Wayland ignores the hint.
 import sys
 import threading
 from collections.abc import Callable
+from typing import cast
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QShowEvent
@@ -41,8 +42,8 @@ from kibends.present import Field, PanelFields
 from kibends.run import run_smooth
 
 TICK_MS = 200
-STATUS_LINES = 5
 """How often the window ticks its controller."""
+STATUS_LINES = 5
 INVALID_STYLE = 'QLineEdit[invalid="true"] { border: 2px solid #d32f2f; }'
 LABELS = {
     Field.GROUND_NETS: "Ground nets",
@@ -90,16 +91,20 @@ class Poster(QObject):
         call()
 
 
+ATTRIBUTES = {
+    Field.GROUND_NETS: "ground_nets",
+    Field.TIME_LIMIT: "time_limit",
+    Field.REPULSION: "repulsion",
+    Field.RANGE: "falloff_range",
+    Field.ATTRACTION: "attraction",
+    Field.ATTRACTION_RANGE: "attraction_range",
+    Field.SPACING: "spacing",
+}
+"""The `PanelFields` attribute each field's edit holds."""
+
+
 def _texts(fields: PanelFields) -> dict[Field, str]:
-    return {
-        Field.GROUND_NETS: fields.ground_nets,
-        Field.TIME_LIMIT: fields.time_limit,
-        Field.REPULSION: fields.repulsion,
-        Field.RANGE: fields.falloff_range,
-        Field.ATTRACTION: fields.attraction,
-        Field.ATTRACTION_RANGE: fields.attraction_range,
-        Field.SPACING: fields.spacing,
-    }
+    return {f: cast(str, getattr(fields, name)) for f, name in ATTRIBUTES.items()}
 
 
 class PanelWindow(QWidget):
@@ -202,13 +207,6 @@ class PanelWindow(QWidget):
 
         self._disclose(False)
 
-    def label_of(self, edit: QLineEdit) -> str:
-        """The text of the label bound to `edit`."""
-        for label in self.findChildren(QLabel):
-            if label.buddy() is edit:
-                return label.text()
-        return ""
-
     def refresh(self) -> None:
         """Set the widgets from the controller."""
         c = self.controller
@@ -235,18 +233,9 @@ class PanelWindow(QWidget):
         self.status.setText(c.status)
 
     def _edited(self) -> None:
-        text = {f: e.text() for f, e in self.edits.items()}
+        texts = {ATTRIBUTES[f]: e.text() for f, e in self.edits.items()}
         self.controller.edit(
-            PanelFields(
-                ground_nets=text[Field.GROUND_NETS],
-                time_limit=text[Field.TIME_LIMIT],
-                repulsion=text[Field.REPULSION],
-                falloff_range=text[Field.RANGE],
-                attraction=text[Field.ATTRACTION],
-                attraction_range=text[Field.ATTRACTION_RANGE],
-                spacing=text[Field.SPACING],
-                allow_via_in_pad=self.via_in_pad.isChecked(),
-            )
+            PanelFields(**texts, allow_via_in_pad=self.via_in_pad.isChecked())
         )
 
     def _disclose(self, shown: bool) -> None:
