@@ -14,6 +14,10 @@ KiCad refuses for another reason, which only warns, and the selection
 after the push (`commit._select`), logged at debug since the commit has
 landed.
 
+`panel` opens the panel (`kibends.panel`), imported only then, since
+PySide6 comes with the `gui` extra; without it the command says how to
+install it.
+
 `_exit_on`-style error mapping and `configure_logging` follow kistitch's
 cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
@@ -65,6 +69,10 @@ CLEARANCE_FLAGS = {
 }
 """The options that override the project's clearance rules, by
 `rules.Clearances` field."""
+GUI_EXTRA_MESSAGE = (
+    "The panel needs PySide6, which comes with the `gui` extra: "
+    "uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'"
+)
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
 # Until simplifying, a stop keeps the best result so far; from then on
 # nothing is left to stop.
@@ -444,13 +452,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "vias; by default the nets with copper zones on at least two inner "
         "layers, else GND if it has copper. Ignored with --attraction 0",
     )
-    smooth_parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help=f"Log at {VERBOSE_LOG_LEVEL}, overriding the level {LOG_LEVEL_VARIABLE} "
-        "sets",
+    panel_parser = subparsers.add_parser(
+        "panel",
+        help="Open a window that smooths the selection, or the whole board",
+        description="Open a small window that runs smooth on the PCB editor's "
+        "selection, or on the whole board when nothing is selected, shows its "
+        "progress and can stop it, keeping the result so far. Needs the gui "
+        "extra.",
     )
+    for p in (smooth_parser, panel_parser):
+        p.add_argument(
+            "--verbose",
+            "-v",
+            action="store_true",
+            help=f"Log at {VERBOSE_LOG_LEVEL}, overriding the level "
+            f"{LOG_LEVEL_VARIABLE} sets",
+        )
     return parser.parse_args(argv)
 
 
@@ -490,6 +507,14 @@ def execute_smooth(args: argparse.Namespace) -> None:
         smooth(options)
 
 
+def execute_panel() -> None:
+    try:
+        from kibends.panel.window import main as open_panel
+    except ImportError as e:
+        _fail(f"{GUI_EXTRA_MESSAGE} ({e})")
+    open_panel()
+
+
 def log_level(*, verbose: bool) -> str:
     """DEBUG when verbose, else the level in LOGURU_LEVEL, else INFO."""
     if verbose:
@@ -512,5 +537,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     match args.command:
         case "smooth":
             execute_smooth(args)
+        case "panel":
+            execute_panel()
         case _:
             assert_never(args.command)

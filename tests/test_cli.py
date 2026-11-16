@@ -5,6 +5,7 @@ import math
 import re
 import signal
 import sys
+import types
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -6369,3 +6370,36 @@ def test_a_zoned_via_s_field_without_zones_is_built_only_when_it_starts_inside(
     run("--dry-run")
 
     assert len(without_zones) == built
+
+
+class TestPanel:
+    def test_opens_the_panel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        opened: list[bool] = []
+
+        class Window(types.ModuleType):
+            @staticmethod
+            def main() -> None:
+                opened.append(True)
+
+        monkeypatch.setitem(sys.modules, "kibends.panel.window", Window("window"))
+
+        cli.main(["panel"])
+
+        assert opened == [True]
+
+    def test_without_the_gui_extra_says_how_to_install_it(
+        self, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "kibends.panel.window", None)
+
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["panel"])
+
+        assert raised.value.code == 1
+        assert [line.rstrip() for line in log if line.startswith("ERROR")] == [
+            f"ERROR {cli.GUI_EXTRA_MESSAGE} (import of kibends.panel.window "
+            "halted; None in sys.modules)"
+        ]
+
+    def test_takes_verbose(self) -> None:
+        assert cli.parse_args(["panel", "-v"]).verbose
