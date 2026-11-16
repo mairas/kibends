@@ -17,8 +17,9 @@ several times a second, sends `probe` off about once a second, never two
 at once: a probe still out when the next is due skips it. The probe reads
 the board it does not know, on opening, on a board switch and after every
 run, whose commit changed its totals. While a run is in progress no probe
-starts, and one that answers is ignored, so the scope line keeps what the
-run reads.
+starts, and one sent before the run started is ignored whenever it
+answers, so the scope line keeps what the run reads and the board's
+totals are read again after the commit.
 """
 
 import threading
@@ -145,6 +146,9 @@ class Controller:
         """Why the last probe failed, while no later one has answered."""
         self._probing = False
         self._last_probe = -float("inf")
+        self._runs = 0
+        """How many runs have started; a probe sent before the latest
+        answers with what that run may have changed, and is ignored."""
         self._message = ""
         """The status between runs: the last run's ending or failure, or a
         later probe's problem, whichever came last."""
@@ -288,6 +292,7 @@ class Controller:
         self._probing = True
         self._last_probe = now
         known = self._board if self._known else None
+        runs = self._runs
 
         def work() -> None:
             try:
@@ -297,9 +302,9 @@ class Controller:
             except BaseException as e:
                 if not isinstance(e, MAPPED_ERRORS):
                     logger.opt(exception=e).error("The panel's probe failed")
-                self._post(partial(self._probe_failed, e))
+                self._post(partial(self._probe_failed, runs, e))
                 return
-            self._post(partial(self._probed, probe))
+            self._post(partial(self._probed, runs, probe))
 
         # A probe out when the window closes must not keep the process
         # alive for the IPC timeout.
@@ -318,6 +323,7 @@ class Controller:
             return
         options = smooth_options(values)
         self._run_scope = self.scope_line
+        self._runs += 1
         self._state = State.RUNNING
         self._stage = None
         self._stop = threading.Event()
@@ -375,9 +381,9 @@ class Controller:
 
     # What the workers report.
 
-    def _probed(self, probe: Probe) -> None:
+    def _probed(self, runs: int, probe: Probe) -> None:
         self._probing = False
-        if self._state in _IN_RUN:
+        if runs != self._runs:
             return
         if probe.totals is not None:
             if self._board is not None and probe.board != self._board:
@@ -394,9 +400,9 @@ class Controller:
             self._state = State.IDLE
         self._notify()
 
-    def _probe_failed(self, error: BaseException) -> None:
+    def _probe_failed(self, runs: int, error: BaseException) -> None:
         self._probing = False
-        if self._state in _IN_RUN:
+        if runs != self._runs:
             return
         if isinstance(error, ApiError) and error.code == ApiStatusCode.AS_BUSY:
             return

@@ -352,6 +352,29 @@ class TestProbing:
         assert p.controller.scope_line == line
         assert p.controller.state is State.RUNNING
 
+    def test_a_reread_sent_before_a_run_and_answering_after_it_is_ignored(
+        self,
+    ) -> None:
+        spawned = Spawned()
+        probes = Answers([ten_tracks_four_vias()])
+        p = panel(probe=probes, spawn=spawned, clock=Ticking(step=2.0))
+        p.controller.tick()
+        spawned.finish()
+        p.controller.run()
+        spawned.finish()
+        p.controller.tick()  # the reread after the run, in flight
+        p.controller.run()
+        stale, run = spawned.waiting
+        spawned.waiting.clear()
+        run()
+
+        stale()  # answers with the totals from before the commit
+        p.controller.tick()
+        spawned.finish()
+
+        assert len(probes.known) == 3
+        assert probes.known[-1] is None  # read again after the second run
+
     def test_probes_run_on_daemon_threads_and_runs_do_not(self) -> None:
         # A probe may be out when the window closes, and must not keep the
         # process alive; a run must end before the window closes.
