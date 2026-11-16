@@ -685,20 +685,22 @@ class Controller:
                 format="{message}",
             )
             try:
-                report = run(
+                ending: RunReport | BaseException = run(
                     options,
                     stop=stop.is_set,
                     on_stage=lambda stage: post(partial(self._staged, stage)),
                     on_progress=lambda p: post(partial(self._progressed, p)),
                 )
             except BaseException as e:  # as the probe's
-                if not isinstance(e, MAPPED_ERRORS):
-                    logger.opt(exception=e).error("The panel's run failed")
-                post(partial(self._failed, e))
-                return
+                ending = e
             finally:
                 logger.remove(sink)
-            post(partial(self._finished, report, tuple(warnings)))
+            if isinstance(ending, RunReport):
+                post(partial(self._finished, ending, tuple(warnings)))
+                return
+            if not isinstance(ending, MAPPED_ERRORS):
+                logger.opt(exception=ending).error("The panel's run failed")
+            post(partial(self._failed, ending, tuple(warnings)))
 
         self._spawn(work, daemon=False)
         return True
@@ -833,7 +835,7 @@ class Controller:
     def _finished(self, report: RunReport, warnings: tuple[str, ...]) -> None:
         if report.refusal is not None:
             self._failed_optimizing = False
-            self._fail(GAVE_UP, Stage.OPTIMIZING)
+            self._fail(replace(GAVE_UP, warnings=warnings), Stage.OPTIMIZING)
             return
         if not self._lengths:
             self._no_points = (
@@ -912,9 +914,9 @@ class Controller:
             warnings=warnings,
         )
 
-    def _failed(self, error: BaseException) -> None:
+    def _failed(self, error: BaseException, warnings: tuple[str, ...]) -> None:
         self._failed_optimizing = self._stage is Stage.OPTIMIZING
-        self._fail(failure(error), self._stage)
+        self._fail(replace(failure(error), warnings=warnings), self._stage)
 
     def _fail(self, outcome: Outcome, stage: Stage | None) -> None:
         if not self._lengths:

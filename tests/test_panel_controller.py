@@ -1427,6 +1427,7 @@ class TestErrors:
         assert (o.icon, o.title) == (Icon.CRITICAL, "Unexpected error")
         assert o.detail.startswith("RuntimeError: boom\n\nTraceback")
         assert any("Traceback" in line for line in log)
+        assert o.warnings == ()
 
     def test_a_panic_fails_the_run_and_is_logged(self, log: list[str]) -> None:
         c = opened(run=Scripted(outcome=Panic("boom"))).controller
@@ -1470,6 +1471,29 @@ class TestErrors:
         )
         assert "Repulsion range values under Advanced" in o.body
         assert c.progress_line == Line("Failed", " while optimizing")
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            InsideClearanceError(VIOLATIONS, UserFrame()),
+            replace(CHANGED, committed=False, refusal=ABNORMAL_MESSAGE),
+        ],
+        ids=["failure", "refusal"],
+    )
+    def test_keeps_the_warnings_the_run_logged(
+        self, ending: RunReport | BaseException
+    ) -> None:
+        def during(stage: Stage) -> None:
+            if stage is Stage.READING:
+                logger.warning("Cannot read the project file")
+
+        run = Scripted(outcome=ending, stages=STAGES[:3], during=during)
+        c = opened(run=run).controller
+
+        c.run()
+
+        assert c.state is State.FAILED
+        assert outcome(c).warnings == ("Cannot read the project file",)
 
 
 class TestClose:
