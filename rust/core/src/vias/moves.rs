@@ -96,13 +96,12 @@ impl MovingVias {
                     .collect()
             })
             .collect();
-        let vias_near = (0..chains.len())
-            .map(|i| {
-                (0..vias.len())
-                    .filter(|&v| chains_near[v].contains(&i))
-                    .collect()
-            })
-            .collect();
+        let mut vias_near: Vec<Vec<usize>> = vec![Vec::new(); chains.len()];
+        for (v, near) in chains_near.iter().enumerate() {
+            for &i in near {
+                vias_near[i].push(v);
+            }
+        }
         Self {
             chains,
             vias,
@@ -248,6 +247,48 @@ mod tests {
                 hole_to_hole: HOLE_TO_HOLE,
             },
         )
+    }
+
+    #[test]
+    fn each_chain_is_near_the_vias_it_is_near_ascending() {
+        const NETS: usize = 3;
+        const LAYERS: i32 = 4;
+        let mut random = crate::testing::Random(0x2545_f491_4f6c_dd1d);
+        let mut net = || format!("N{}", random.below(NETS));
+        let names: Vec<String> = (0..60).map(|_| net()).collect();
+        let chains: Vec<Chain> = names
+            .iter()
+            .enumerate()
+            .map(|(k, n)| chain(n, k as i32 % LAYERS))
+            .collect();
+        let vias: Vec<Moving> = (0..40)
+            .map(|k| {
+                let mut via = moving(&names[(7 * k) % names.len()], V2::new(0.0, 0.0), vec![]);
+                let low = k as i32 % LAYERS;
+                via.via.span = Span {
+                    low,
+                    high: low + (k as i32 / LAYERS) % LAYERS,
+                };
+                via
+            })
+            .collect();
+        let found = MovingVias::new(
+            chains,
+            vias,
+            HoleRules {
+                hole_clearance: HOLE_CLEARANCE,
+                hole_to_hole: HOLE_TO_HOLE,
+            },
+        );
+        let expected: Vec<Vec<usize>> = (0..found.chain_count())
+            .map(|i| {
+                (0..found.via_count())
+                    .filter(|&v| found.chains_near[v].contains(&i))
+                    .collect()
+            })
+            .collect();
+        assert!(expected.iter().any(|v| v.len() > 1));
+        assert_eq!(found.vias_near, expected);
     }
 
     #[test]
