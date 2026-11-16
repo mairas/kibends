@@ -19,78 +19,43 @@ cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 import argparse
-import math
 import os
 import signal
 import sys
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
-from itertools import pairwise
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn, assert_never, cast
 
-from kipy.errors import ApiError
-from kipy.errors import ConnectionError as KiCadConnectionError
-from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from loguru import logger
 
-from kibends.bursts import (
-    DEFAULT_CHORD_TOLERANCE,
-    DEFAULT_SETTINGS,
-    MAX_COARSE_LEVELS,
-)
-from kibends.chain import ChainError
-from kibends.commit import (
-    BoardChangedError,
-    CommitUncertainError,
-    CreateItemsError,
-    DeleteItemsError,
-)
-from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
-from kibends.inside import InsideClearanceError
+from kibends import present
+from kibends.bursts import DEFAULT_CHORD_TOLERANCE, DEFAULT_SETTINGS
+from kibends.energy import DEFAULT_ATTRACTION_RANGE
 from kibends.obstacles import EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE
+from kibends.present import (
+    DEFAULT_ATTRACTION,
+    DEFAULT_RANGE,
+    DEFAULT_REPULSION,
+    DEFAULT_SCHEDULE,
+    MAPPED_ERRORS,
+    MAX_SPACING,
+    RunRefusedError,
+    SmoothValues,
+    error_message,
+    listed,
+    non_negative_problem,
+    positive_problem,
+    schedule_problem,
+)
 from kibends.results import Termination
 from kibends.run import (
-    KICAD_TIMEOUT_MS,
-    NoBoardError,
     OptimizerReport,
-    PlotUnavailableError,
     ScopeOption,
     SmoothOptions,
     Stage,
     run_smooth,
-)
-from kibends.snapshot import SelectionError
-
-DEFAULT_REPULSION = 0.5
-DEFAULT_RANGE = 1.0
-# Chosen from runs on real boards. A via's tracks hold it well beyond its
-# clearance: a signal via on a straight route with a return via 1.5 mm
-# across it ends 1.37 mm from it, 0.57 mm beyond the clearance, the route
-# 0.0033 mm longer than without attraction. With nothing else near, a pair
-# of 0.4 mm or 0.6 mm vias settles about 0.02 mm beyond its clearance,
-# since the pull beats the repulsion's push at every distance past it. Stitching
-# grids that routes cross settled in 11 to 51 iterations, against 16 to 32
-# at 0.25, as scripts/benchmark.py measured.
-DEFAULT_ATTRACTION = 1.15
-# Not user-facing: the clearance hinge only shapes the approach to the
-# clearance boundary, which the burst's edge check keeps edges from newly
-# crossing.
-CLEARANCE_WEIGHT = 50.0
-# Above the worst-case sag between quadrature points at the final spacing,
-# at most MAX_SPACING; the coarse levels' longer edges sag more, and the final
-# level runs at the final spacing.
-STANDOFF = 0.02
-POINTS_PER_EDGE = 3
-MAX_SPACING = 0.1
-"""The coarsest final spacing --spacing takes, mm: STANDOFF and the obstacle
-fields' MAX_EDGE_LENGTH are tuned to it."""
-DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
-
-BUSY_MESSAGE = (
-    "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
 )
 
 CLEARANCE_FLAGS = {
@@ -110,26 +75,6 @@ VERBOSE_LOG_LEVEL = "DEBUG"
 LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
-class RunRefusedError(RuntimeError):
-    """The run refused the result; nothing committed."""
-
-
-# Failures that need no traceback; all but CommitUncertainError leave the
-# board untouched.
-EXPECTED_ERRORS = (
-    SelectionError,
-    ChainError,
-    BoardChangedError,
-    CommitUncertainError,
-    CreateItemsError,
-    DeleteItemsError,
-    InsideClearanceError,
-    NoBoardError,
-    PlotUnavailableError,
-    RunRefusedError,
-)
-
-
 def _fail(message: str) -> NoReturn:
     logger.error(message)
     raise SystemExit(1)
@@ -137,26 +82,12 @@ def _fail(message: str) -> NoReturn:
 
 @contextmanager
 def _exit_on_failure() -> Generator[None]:
-    """Report an expected failure as one log line and exit 1."""
+    """Report an expected failure as one log line, worded by
+    `present.error_message`, and exit 1."""
     try:
         yield
-    except KeyboardInterrupt:
-        # The push maps its own interrupt to CommitUncertainError.
-        _fail("Interrupted: nothing committed")
-    except EXPECTED_ERRORS as e:
-        _fail(str(e))
-    except ApiError as e:
-        _fail(
-            BUSY_MESSAGE
-            if e.code == ApiStatusCode.AS_BUSY
-            else f"KiCad refused the request: {e}"
-        )
-    except KiCadConnectionError as e:
-        _fail(
-            f"Cannot reach KiCad ({e}): either it is not running — start KiCad "
-            "10 or later with the API server enabled (Preferences > Plugins) — "
-            f"or a request timed out after {KICAD_TIMEOUT_MS / 1000:g} s"
-        )
+    except MAPPED_ERRORS as e:
+        _fail(error_message(e))
 
 
 @contextmanager
@@ -269,25 +200,20 @@ def report_warnings(report: OptimizerReport) -> list[str]:
     return warnings
 
 
-def _finite(text: str) -> float:
+def _checked(text: str, problem: Callable[[float], str | None]) -> float:
     value = float(text)
-    if not math.isfinite(value):
-        raise argparse.ArgumentTypeError(f"must be a finite number, got {text}")
+    found = problem(value)
+    if found is not None:
+        raise argparse.ArgumentTypeError(f"{found}, got {text}")
     return value
 
 
 def _non_negative(text: str) -> float:
-    value = _finite(text)
-    if value < 0:
-        raise argparse.ArgumentTypeError(f"must not be negative, got {text}")
-    return value
+    return _checked(text, non_negative_problem)
 
 
 def _positive(text: str) -> float:
-    value = _finite(text)
-    if value <= 0:
-        raise argparse.ArgumentTypeError(f"must be positive, got {text}")
-    return value
+    return _checked(text, positive_problem)
 
 
 def _positive_int(text: str) -> int:
@@ -299,8 +225,7 @@ def _positive_int(text: str) -> int:
 
 class _Schedule(argparse.Action):
     """Takes --spacing's values, each already positive and finite, as a
-    tuple once they fall strictly to a final spacing of at most MAX_SPACING
-    and number at most one more than MAX_COARSE_LEVELS."""
+    tuple once `schedule_problem` finds nothing wrong with them."""
 
     def __call__(
         self,
@@ -310,26 +235,10 @@ class _Schedule(argparse.Action):
         option_string: str | None = None,
     ) -> None:
         spacings = tuple(cast(Sequence[float], values))
-        if any(finer >= coarser for coarser, finer in pairwise(spacings)):
-            raise argparse.ArgumentError(
-                self, f"must fall strictly, coarsest first, got {_listed(spacings)}"
-            )
-        if spacings[-1] > MAX_SPACING:
-            raise argparse.ArgumentError(
-                self,
-                f"the final spacing, the last value, must be at most {MAX_SPACING:g}, "
-                f"got {spacings[-1]:g}",
-            )
-        if len(spacings) > MAX_COARSE_LEVELS + 1:
-            raise argparse.ArgumentError(
-                self,
-                f"takes at most {MAX_COARSE_LEVELS + 1} values, got {len(spacings)}",
-            )
+        problem = schedule_problem(spacings)
+        if problem is not None:
+            raise argparse.ArgumentError(self, problem)
         setattr(namespace, self.dest, spacings)
-
-
-def _listed(spacings: Sequence[float]) -> str:
-    return " ".join(f"{s:g}" for s in spacings)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -423,7 +332,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "coarsest first, each handing over to the next as the problem "
         "settles or --time-limit runs out; the last, at most "
         f"{MAX_SPACING:g}, is the final spacing, and one value runs at it alone "
-        f"(default: {_listed(DEFAULT_SCHEDULE)})",
+        f"(default: {listed(DEFAULT_SCHEDULE)})",
     )
     smooth_parser.add_argument(
         "--settled-change",
@@ -546,43 +455,32 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def smooth_options(args: argparse.Namespace) -> SmoothOptions:
-    return SmoothOptions(
-        params=EnergyParams(
+    return present.smooth_options(
+        SmoothValues(
             repulsion=args.repulsion,
             falloff_range=args.range,
-            clearance_weight=CLEARANCE_WEIGHT,
-            standoff=STANDOFF,
-            points_per_edge=POINTS_PER_EDGE,
             attraction=args.attraction,
             attraction_range=args.attraction_range,
-        ),
-        edge_clearance=args.edge_clearance,
-        hole_clearance=args.hole_clearance,
-        hole_to_hole=args.hole_to_hole,
-        override_names=CLEARANCE_FLAGS,
-        chord_tolerance=args.chord_tolerance,
-        dry_run=args.dry_run,
-        plot=args.plot,
-        allow_via_in_pad=args.allow_via_in_pad,
-        ground_nets=tuple(args.ground_nets),
-        scope=ScopeOption.BOARD if args.all else ScopeOption.SELECTION,
-        settings=replace(
-            DEFAULT_SETTINGS,
-            spacing=args.spacing[-1],
-            coarse_spacings=args.spacing[:-1],
-            settled_change=(
-                args.chord_tolerance / 2
-                if args.settled_change is None
-                else args.settled_change
-            ),
+            edge_clearance=args.edge_clearance,
+            hole_clearance=args.hole_clearance,
+            hole_to_hole=args.hole_to_hole,
+            override_names=CLEARANCE_FLAGS,
+            chord_tolerance=args.chord_tolerance,
+            spacing=args.spacing,
+            settled_change=args.settled_change,
             stall_tolerance=args.stall_tolerance,
             stall_window=args.stall_window,
             max_iterations=args.max_iterations,
-            burst_maxiter=args.burst_iterations,
+            burst_iterations=args.burst_iterations,
             lbfgs_ftol=args.lbfgs_ftol,
             lbfgs_gtol=args.lbfgs_gtol,
             time_limit=args.time_limit,
-        ),
+            scope=ScopeOption.BOARD if args.all else ScopeOption.SELECTION,
+            dry_run=args.dry_run,
+            plot=args.plot,
+            allow_via_in_pad=args.allow_via_in_pad,
+            ground_nets=tuple(args.ground_nets),
+        )
     )
 
 

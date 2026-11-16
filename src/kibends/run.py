@@ -196,7 +196,7 @@ class SmoothOptions:
     again each time it ends a coarse level; the final level's covers the
     holds.
     Its settle threshold should be half `chord_tolerance` at most, as
-    `cli.smooth_options` sets it; the default suits the default tolerance."""
+    `present.smooth_options` sets it; the default suits the default tolerance."""
     ground_nets: tuple[str, ...] = ()
     """The ground nets, overriding their detection when not empty
     (`BoardSnapshot.ground_nets`)."""
