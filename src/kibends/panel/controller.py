@@ -970,10 +970,9 @@ _ENDINGS: Mapping[Termination, tuple[Icon, str]] = {
         Icon.WARNING,
         " — best result committed; it may fall short of the smoothest",
     ),
-    Termination.ABNORMAL: (Icon.WARNING, NOTHING_COMMITTED),
 }
 """Each ending's icon and the headline after its name, for a run that
-changed something."""
+changed something; an abnormal end arrives as a refusal (`GAVE_UP`)."""
 
 GAVE_UP = Outcome(
     Icon.WARNING,
