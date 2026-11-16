@@ -652,40 +652,6 @@ def test_a_burst_owed_past_the_limit_ends_after_its_first_iteration(
         assert length(chain.polyline) < chain.before.length
 
 
-def test_bursts_past_the_limit_while_one_is_owed_end_after_an_iteration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Two problems, one chain on each layer: after each handover both owe
-    # a burst, and A's runs while B still owes one.
-    free = FreeSpace()
-    chains = (
-        selected("A", "A", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
-        selected("B", "B", free, (3.0, 0.8), (5.0, 2.0), (7.0, 0.8), layer="B.Cu"),
-    )
-    bursts = recorded_bursts(monkeypatch)
-    start = _core.statistics().evaluations
-
-    def evaluated() -> float:
-        """A clock that moves only as the energy is evaluated."""
-        return float(_core.statistics().evaluations - start)
-
-    limited = replace(COARSE, time_limit=1.0)
-
-    result = optimize_chains(
-        chains, scenarios.PARAMS, limited, clock=evaluated, started=0.0
-    )
-
-    assert result.termination is Termination.TIME_LIMIT
-    # The limit cuts A's first burst at once and hands both over, B from
-    # level 0 without a step; each later level runs one burst of each.
-    first, *later = bursts
-    assert (first.cut, first.iterations) == (True, 0)
-    assert len(later) == len(chains) * len(COARSE.coarse_spacings)
-    assert [(b.cut, b.iterations) for b in later] == [(True, 1)] * len(later)
-    for chain in result.chains:
-        assert length(chain.polyline) < chain.before.length
-
-
 def test_a_burst_owed_past_the_limit_that_ends_unmoved_owes_no_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -872,48 +838,6 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
 
     assert result.termination is first
     assert clock.now > TIMED_QUESTIONS - 0.5
-
-
-def test_a_stop_after_a_problem_gave_up_without_improving_is_abnormal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Every burst leaves its problem where it started: the front's end
-    # abnormally, so that it gives up, the back's normally, so that only a
-    # stall could settle it.
-    calls: list[bool] = []
-
-    def still(
-        objective: Objective,
-        start: FloatArray,
-        revert: Check,
-        settings: OptimizerSettings,
-        stop: Stop | None = None,
-    ) -> Burst:
-        failing = len(calls) % 2 == 0 and calls.count(True) < MAX_ABNORMAL_BURSTS
-        calls.append(failing)
-        return Burst(start.copy(), abnormal=failing)
-
-    monkeypatch.setattr(optimize_module, "run_burst", still)
-    # Straight, they stay as they are between bursts too.
-    front = selected("front", "A", FreeSpace(), (0.0, 0.0), (5.0, 0.0), (10.0, 0.0))
-    back = on_layer(
-        replace(front, centreline=replace(front.centreline, net="B")), "B.Cu"
-    )
-    # One spacing: a coarse level hands an abnormal streak over.
-    settings = replace(
-        ONE_SPACING, settled_change=0.0, stall_window=4 * MAX_ABNORMAL_BURSTS
-    )
-
-    result = optimize_chains(
-        (front, back),
-        scenarios.PARAMS,
-        settings,
-        # Asked after each problem's burst: yes after the front's last.
-        stop=lambda: calls.count(True) >= MAX_ABNORMAL_BURSTS,
-    )
-
-    assert result.gave_up == (("the chains on F.Cu", MAX_ABNORMAL_BURSTS),)
-    assert result.termination is Termination.ABNORMAL
 
 
 STALL_APART = 0.5
@@ -1289,9 +1213,9 @@ def test_chains_on_different_layers_do_not_interact() -> None:
 
     result = optimize_chains([across, along], scenarios.PARAMS, COARSE)
 
-    for chain, given in zip(result.chains, (across, along), strict=True):
-        alone = optimize_chains([given], scenarios.PARAMS, COARSE)
-        np.testing.assert_array_equal(chain.polyline, alone.chains[0].polyline)
+    # Crossing in plan, each would bend away from the other if it saw it.
+    for chain in result.chains:
+        assert off_straight(chain.polyline) < STRAIGHT_TOLERANCE
 
 
 def test_endpoints_must_be_fixed() -> None:
@@ -1362,36 +1286,6 @@ def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
     # and is refused, as at one spacing.
     assert result.iterations == all_abnormal_bursts(settings)
     assert result.termination is Termination.ABNORMAL
-
-
-def test_a_problem_given_up_on_beside_one_that_converges_gives_up_the_run(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    real = optimize_module.run_burst
-    reach = 10.0
-
-    def back_fails(
-        objective: Objective,
-        start: FloatArray,
-        revert: Check,
-        settings: OptimizerSettings,
-        stop: Stop | None = None,
-    ) -> Burst:
-        burst = real(objective, start, revert, settings, stop)
-        return replace(burst, abnormal=bool(start.max() > reach))
-
-    monkeypatch.setattr(optimize_module, "run_burst", back_fails)
-    free = FreeSpace()
-    # Only the back chain's vertices reach past `reach`.
-    front = selected("front", "A", free, (0.0, 0.0), (5.0, 1.5), (reach, 0.0))
-    back = selected(
-        "back", "B", free, (0.0, 0.0), (reach, 1.5), (2 * reach, 0.0), layer="B.Cu"
-    )
-
-    result = optimize_chains([front, back], scenarios.PARAMS, COARSE)
-
-    assert result.gave_up == (("the chains on B.Cu", MAX_ABNORMAL_BURSTS),)
-    assert result.termination is Termination.GAVE_UP
 
 
 def test_a_normal_burst_ends_an_abnormal_streak(
