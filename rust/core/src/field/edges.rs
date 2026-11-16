@@ -488,13 +488,17 @@ impl StaticEdges {
 
     /// The item of the trees nearest `p` by its geometry, and that
     /// distance. Of equally near items, the least inflated, whose
-    /// inflation leaves the widest search around the point.
+    /// inflation leaves the widest search around the point, in whatever
+    /// order the trees give them: every item whose box lies within
+    /// DEGENERATE_DISTANCE of the nearest is measured, since a box's
+    /// squared distance may exceed the square of an equal distance by
+    /// round-off, as for a via's ring and its hole, which are one point.
     pub fn nearest_item(&self, p: V2) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
         for (part, set) in self.parts.iter().enumerate() {
             for (k, d2) in set.tree().nearest_first(p) {
                 if let Some((_, least)) = best
-                    && d2 > least * least
+                    && d2 > (least + DEGENERATE_DISTANCE) * (least + DEGENERATE_DISTANCE)
                 {
                     break;
                 }
@@ -837,6 +841,25 @@ mod tests {
             Vec::new(),
         )
         .with_indexed_edges(indexed)
+    }
+
+    #[test]
+    fn of_a_ring_and_its_hole_the_less_inflated_is_nearest_in_either_order() {
+        // From this point the tree's squared distance to the centre exceeds
+        // the square of the measured one by an ulp.
+        let p = V2::new(0.125, 0.625);
+        let centre = || Shape::line(vec![V2::new(0.0, 0.0)]);
+        for inflations in [vec![0.825, 0.725], vec![0.725, 0.825]] {
+            let field = StaticEdges::new(
+                vec![centre(), centre()],
+                vec![Kind::Line; 2],
+                inflations.clone(),
+                vec![0, 0],
+                None,
+            );
+            let (item, _) = field.nearest_item(p).unwrap();
+            assert_eq!(inflations[item], 0.725);
+        }
     }
 
     #[test]

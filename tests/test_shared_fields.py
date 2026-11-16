@@ -6,9 +6,10 @@ and at a T-junction, blind and through vias, moving and split vias, a
 graphic of more than INDEXED_EDGES edges, keepouts, a zoned moving via and
 a coupled section, placed symmetrically so that distances tie exactly.
 
-`TestGolden` pins every field's answers to the digests below, recorded
-from the fields as built before they shared their items; run this file
-as a script to record them again.
+`TestGolden` pins every field's answers to the digests in
+`DIGESTS`, recorded from the fields as built before they shared their
+items, each holding its own; run this file as a script to record them
+again.
 """
 
 import hashlib
