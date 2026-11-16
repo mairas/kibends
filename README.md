@@ -45,6 +45,16 @@ With `--plot` support, which adds matplotlib:
 uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'
 ```
 
+With the panel (see [The panel](#the-panel)), which adds PySide6:
+
+```sh
+uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'
+```
+
+PySide6 needs macOS 14 or later, or on Linux glibc 2.34 or later on x86_64
+and 2.39 or later on aarch64. Both extras install together as
+`kibends[gui,plot]`.
+
 ## Usage
 
 1. Open the board in KiCad's PCB editor.
@@ -581,6 +591,42 @@ a rule nobody set.
 Change the route by hand or with the router, select the chains again and
 re-run. Re-running on kibends' own output with nothing else changed moves it
 only slightly, but still replaces its tracks.
+
+### The panel
+
+`kibends panel` opens a small window that runs the same smoothing as
+`kibends smooth` and stays open between runs, for selecting, running,
+looking at the result in KiCad and running again. It needs the `gui`
+extra (see [Installation](#installation)). The window asks to stay above
+other windows; Wayland does not allow that.
+
+The panel runs on KiCad's selection, or on the whole board when nothing is
+selected, as `--all` does. The line above the button says which, about once
+a second: "12 of 1567 tracks, 3 of 210 vias" for a selection, counting arcs
+and the members of selected groups as tracks, or "Whole board: 1567
+tracks, 210 vias". Run, or Return, starts a run; the status line names
+its stage, and while it optimizes the panel shows the elapsed time, the
+iteration and a curve of the energy falling. Stop, or Esc, ends the
+optimizer and commits the best result so far, as Ctrl-C does on the
+command line; a stop before optimizing commits nothing. When the run ends,
+the status says how: how it ended, its iterations and time, the chains and
+vias it changed, their total length change, the edge moves it rejected and
+what it read. One run is one undo step in KiCad.
+
+The fields are the command line's options of the same names: Ground nets
+(empty: the detected nets, shown greyed), Time limit (empty: none) and,
+under Advanced, Repulsion, Range, Attraction, Attraction range, Spacing and
+Allow via in pad. They start at the defaults each time the panel opens and
+keep their values while it stays open; an invalid value is marked, named in
+the status, and disables Run until fixed. The edge, hole and hole-to-hole
+clearances come from the project file, as without their options on the
+command line (see [Clearances](#clearances)). When KiCad shows another
+board, the panel's title, totals and detected ground nets follow it, and
+Ground nets is cleared.
+
+A failure, such as KiCad being busy with an open tool or dialog, or not
+reachable, shows in the status, and Run tries again. Closing the window
+during a run stops it, and the window closes once the commit is done.
 
 ## Development
 

@@ -6,7 +6,7 @@ The repository is public. Never write host names, addresses or other details of 
 
 ## Commands
 
-- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs, and builds the Rust extension `kibends._core` (crates `rust/core` and `rust/py`) in cargo's dev profile. Run it in every fresh worktree before testing.
+- `./run sync` installs dependencies, including the `plot` extra that `TestPlot` needs and the `gui` extra that the panel's widget tests need (on Qt's offscreen platform; skipped without it), and builds the Rust extension `kibends._core` (crates `rust/core` and `rust/py`) in cargo's dev profile. Run it in every fresh worktree before testing.
 - `./run test` runs the fast tier; `./run test-all` runs everything, including `slow` tests. Both sync quietly first, so they test the current Rust code, and run the core crate's `cargo test` before pytest.
 - `./run lint` runs `ruff check`, `ruff format --check`, `cargo fmt --check` and `cargo clippy -D warnings`; `./run format` formats with ruff and rustfmt and applies ruff's fixes.
 - `./run typecheck` regenerates the stubs of `kibends._core` (`./run stubs`, into `src/kibends/_core/`) and fails if they changed, then runs pyright in strict mode over `src`, `tests` and `scripts`. Keep code fully annotated and never use `Any`.
