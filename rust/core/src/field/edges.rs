@@ -1,27 +1,33 @@
 //! A static field's obstacles as edges, with the search that finds the
 //! edges near points.
 //!
-//! Each item is a geometry of a kind (`Kind`), with its inflation and its
-//! obstacle. It is looked for as far beyond the reach as the largest
-//! inflation of the items but the `Outside` ones, or for the outside of an
-//! area as far as its own. Its edges are its geometry's, or its
-//! boundary's, and an item's are numbered together, items in order.
+//! A field's items are members of item sets (`items::ItemSet`) that
+//! several fields share: one set, or several, as a moving via's field
+//! spans the sets of its layers. The field holds which of the sets' items
+//! it has, in its own order, and each one's inflation and obstacle; a set
+//! holds the rest. An item is a geometry of a kind (`Kind`). It is looked
+//! for as far beyond the reach as the largest inflation of the field's
+//! items but the `Outside` ones, or for the outside of an area as far as
+//! its own. Its edges are its geometry's, or its boundary's.
 //!
-//! A tree over the items' bounding boxes finds those near a point; the
-//! `Outside` items are few and asked at every point. Whether a point is
-//! inside an area is tested exactly, and only where the point is inside
+//! Each set's tree over its items' bounding boxes finds those near a
+//! point, and the field keeps those that are its own, in its order; the
+//! `Outside` items are few and asked at every point. The field's items
+//! answer in its order wherever their sets give them, so that it answers
+//! exactly as a field of the same items in one set would. Whether a point
+//! is inside an area is tested exactly, and only where the point is inside
 //! the area's bounding box. Of an item with more than INDEXED_EDGES edges,
 //! a tree over the middles of pieces of its edges finds those near a point
 //! (`StaticEdges::item_edges_near`).
 
 use std::collections::HashMap;
-use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use super::pairs::{BoxTree, PointTree};
+pub use super::items::Copper;
+use super::items::ItemSet;
 use super::smooth::SMOOTH_REACH;
 use super::union_find::UnionFind;
-use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, MAX_EDGE_LENGTH, TOUCH_TOLERANCE};
+use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, TOUCH_TOLERANCE};
 use crate::geometry::{
     Shape, V2, closest_point, offset, outward_normal, segment_distance, segment_to_segment,
 };
@@ -95,45 +101,40 @@ pub struct StaticDistances {
     pub distance: Vec<f64>,
 }
 
-/// What a clearance check joins of the items: copper of one net on one
-/// layer that touches is one obstacle to it. Nets and layers are numbered,
-/// None for an item that is not copper of one net on one layer.
-#[derive(Clone, Debug, Default)]
-pub struct Copper {
-    pub net: Vec<Option<usize>>,
-    pub layer: Vec<Option<usize>>,
-    /// How far each item's copper reaches beyond its geometry, mm.
-    pub extent: Vec<f64>,
+/// A field's item: the set it lies in, by its place among the field's
+/// sets, and its index there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub part: u32,
+    pub index: u32,
 }
 
-/// An item's edges split into pieces of at most MAX_EDGE_LENGTH: a tree
-/// over their middles, each piece's edge, numbered from the item's first,
-/// and half the longest piece.
-struct Pieces {
-    tree: PointTree,
-    edge_of: Vec<usize>,
-    half_piece: f64,
-}
+/// A set's item that is not the field's.
+const ABSENT: u32 = u32::MAX;
 
+/// A static field's items, each a member of one of its sets, with the
+/// field's own inflation and obstacle of each.
 pub struct StaticEdges {
-    shapes: Vec<Shape>,
-    kinds: Vec<Kind>,
+    parts: Vec<Arc<ItemSet>>,
+    members: Vec<Member>,
+    /// Each part's items' places among the field's, ABSENT for the items
+    /// not there; None for a field of every item of one set, in order.
+    lookup: Option<Vec<Vec<u32>>>,
+    /// Whether a part's items found in its tree, taken in the order it
+    /// gives them, are the field's in its order.
+    ordered: bool,
     inflations: Vec<f64>,
-    obstacles: Vec<usize>,
+    obstacles: Vec<u32>,
     obstacle_count: usize,
     /// The largest inflation of the items but the `Outside` ones.
     inflation: f64,
-    tree: BoxTree,
     outside: Vec<usize>,
-    first: Vec<usize>,
-    count: Vec<usize>,
-    starts: Vec<V2>,
-    ends: Vec<V2>,
-    bounds: Vec<Option<[f64; 4]>>,
-    pieces: Vec<OnceLock<Pieces>>,
+    /// The field's items whose copper is on another layer than their
+    /// set's, ascending: each with its layer, None for an item that is not
+    /// copper in the field.
+    layers: Vec<(u32, Option<u32>)>,
     indexed_edges: usize,
-    copper: Option<Copper>,
-    clearance: OnceLock<Vec<usize>>,
+    clearance: OnceLock<Vec<u32>>,
 }
 
 impl StaticEdges {
@@ -147,50 +148,77 @@ impl StaticEdges {
         obstacles: Vec<usize>,
         copper: Option<Copper>,
     ) -> Self {
-        let mut first = Vec::with_capacity(shapes.len());
-        let mut count = Vec::with_capacity(shapes.len());
-        let mut starts = Vec::new();
-        let mut ends = Vec::new();
-        for shape in &shapes {
-            let edges = shape.edges();
-            first.push(starts.len());
-            count.push(edges.len());
-            for (a, b) in edges {
-                starts.push(a);
-                ends.push(b);
-            }
-        }
-        let bounds: Vec<Option<[f64; 4]>> = shapes.iter().map(Shape::bounds).collect();
-        let tree = BoxTree::new(
-            (0..shapes.len())
-                .filter(|&k| kinds[k] != Kind::Outside)
-                .filter_map(|k| {
-                    bounds[k].map(|[x0, y0, x1, y1]| (k, V2::new(x0, y0), V2::new(x1, y1)))
-                }),
+        let set = Arc::new(ItemSet::new(shapes, kinds, copper, None));
+        let obstacles = obstacles.into_iter().map(number).collect();
+        Self::whole(set, inflations, obstacles)
+    }
+
+    /// Every item of `set`, in order, each of its inflation and obstacle.
+    pub fn whole(set: Arc<ItemSet>, inflations: Vec<f64>, obstacles: Vec<u32>) -> Self {
+        let members = (0..set.len())
+            .map(|k| Member {
+                part: 0,
+                index: number(k),
+            })
+            .collect();
+        Self::build(vec![set], members, None, inflations, obstacles, Vec::new())
+    }
+
+    /// The items `members` of `parts`, in that order, each of its
+    /// inflation and obstacle, and on the copper layer `layers` gives the
+    /// items it names. The parts are sets of one interner, and no item is
+    /// a member twice.
+    pub fn view(
+        parts: Vec<Arc<ItemSet>>,
+        members: Vec<Member>,
+        inflations: Vec<f64>,
+        obstacles: Vec<u32>,
+        layers: Vec<(u32, Option<u32>)>,
+    ) -> Self {
+        assert!(
+            parts.windows(2).all(|w| w[0].token() == w[1].token()),
+            "a field's sets are of one interner"
         );
-        let inflation = (0..shapes.len())
-            .filter(|&k| kinds[k] != Kind::Outside)
-            .map(|k| inflations[k])
+        let mut lookup: Vec<Vec<u32>> = parts.iter().map(|p| vec![ABSENT; p.len()]).collect();
+        for (k, m) in members.iter().enumerate() {
+            let slot = &mut lookup[m.part as usize][m.index as usize];
+            assert_eq!(*slot, ABSENT, "an item is a member of a field once");
+            *slot = number(k);
+        }
+        Self::build(parts, members, Some(lookup), inflations, obstacles, layers)
+    }
+
+    fn build(
+        parts: Vec<Arc<ItemSet>>,
+        members: Vec<Member>,
+        lookup: Option<Vec<Vec<u32>>>,
+        inflations: Vec<f64>,
+        obstacles: Vec<u32>,
+        layers: Vec<(u32, Option<u32>)>,
+    ) -> Self {
+        let kind = |m: &Member| parts[m.part as usize].kind(m.index as usize);
+        let inflation = members
+            .iter()
+            .zip(&inflations)
+            .filter(|(m, _)| kind(m) != Kind::Outside)
+            .map(|(_, &i)| i)
             .fold(0.0, f64::max);
+        let outside = (0..members.len())
+            .filter(|&k| kind(&members[k]) == Kind::Outside)
+            .collect();
+        let ordered = parts.len() == 1 && members.windows(2).all(|w| w[0].index < w[1].index);
         Self {
-            outside: (0..shapes.len())
-                .filter(|&k| kinds[k] == Kind::Outside)
-                .collect(),
-            obstacle_count: obstacles.iter().max().map_or(0, |&m| m + 1),
-            pieces: (0..shapes.len()).map(|_| OnceLock::new()).collect(),
-            tree,
-            shapes,
-            kinds,
+            obstacle_count: obstacles.iter().max().map_or(0, |&m| m as usize + 1),
+            parts,
+            members,
+            lookup,
+            ordered,
             inflations,
             obstacles,
             inflation,
-            first,
-            count,
-            starts,
-            ends,
-            bounds,
+            outside,
+            layers,
             indexed_edges: INDEXED_EDGES,
-            copper,
             clearance: OnceLock::new(),
         }
     }
@@ -219,31 +247,77 @@ impl StaticEdges {
     }
 
     pub fn len(&self) -> usize {
-        self.shapes.len()
+        self.members.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.shapes.is_empty()
+        self.members.is_empty()
     }
 
-    pub fn shapes(&self) -> &[Shape] {
-        &self.shapes
+    /// The set of `item` and its index there.
+    fn at(&self, item: usize) -> (&ItemSet, usize) {
+        let m = self.members[item];
+        (&self.parts[m.part as usize], m.index as usize)
     }
 
-    pub fn kinds(&self) -> &[Kind] {
-        &self.kinds
+    pub fn shape(&self, item: usize) -> &Shape {
+        let (set, k) = self.at(item);
+        set.shape(k)
+    }
+
+    pub fn kind(&self, item: usize) -> Kind {
+        let (set, k) = self.at(item);
+        set.kind(k)
+    }
+
+    pub fn members(&self) -> &[Member] {
+        &self.members
     }
 
     pub fn inflations(&self) -> &[f64] {
         &self.inflations
     }
 
-    pub fn obstacles(&self) -> &[usize] {
+    pub fn obstacles(&self) -> &[u32] {
         &self.obstacles
     }
 
     pub fn obstacle_count(&self) -> usize {
         self.obstacle_count
+    }
+
+    /// The field's items among the items `found` gives of each of its
+    /// sets, ascending.
+    fn mapped(&self, found: impl Fn(&ItemSet) -> Vec<usize>) -> Vec<usize> {
+        let Some(lookup) = &self.lookup else {
+            return found(&self.parts[0]);
+        };
+        let mut items = Vec::new();
+        for (part, places) in self.parts.iter().zip(lookup) {
+            items.extend(
+                found(part)
+                    .into_iter()
+                    .map(|k| places[k])
+                    .filter(|&f| f != ABSENT)
+                    .map(|f| f as usize),
+            );
+        }
+        if !self.ordered {
+            items.sort_unstable();
+        }
+        items
+    }
+
+    /// The place among the field's of item `k` of part `part`, None for
+    /// an item that is not the field's.
+    fn place(&self, part: usize, k: usize) -> Option<usize> {
+        match &self.lookup {
+            None => Some(k),
+            Some(lookup) => {
+                let f = lookup[part][k];
+                (f != ABSENT).then_some(f as usize)
+            }
+        }
     }
 
     /// Each item's obstacle as a clearance check judges it, numbered below
@@ -254,104 +328,83 @@ impl StaticEdges {
     /// energy splits it into; copper on two layers is two, even where a via
     /// joins them, since a via crossing from one to the other's clearance
     /// enters new copper. Taken only when a moving via's clearance asks.
-    pub fn clearance_obstacles(&self) -> &[usize] {
-        self.clearance.get_or_init(|| match &self.copper {
-            None => self.obstacles.clone(),
-            Some(copper) => self.joined_copper(copper),
+    pub fn clearance_obstacles(&self) -> &[u32] {
+        self.clearance.get_or_init(|| {
+            if self.parts.iter().any(|p| p.copper().is_none()) {
+                self.obstacles.clone()
+            } else {
+                self.joined_copper()
+            }
         })
     }
 
-    fn joined_copper(&self, copper: &Copper) -> Vec<usize> {
-        let is_copper = |k: usize| copper.net[k].is_some() && copper.layer[k].is_some();
+    fn joined_copper(&self) -> Vec<u32> {
+        let mut nets = Vec::with_capacity(self.len());
+        let mut layers = Vec::with_capacity(self.len());
+        let mut extents = Vec::with_capacity(self.len());
+        for item in 0..self.len() {
+            let (set, k) = self.at(item);
+            let copper = set.copper().expect("every part has copper");
+            nets.push(copper.net[k]);
+            layers.push(copper.layer[k]);
+            extents.push(copper.extent[k]);
+        }
+        for &(item, layer) in &self.layers {
+            layers[item as usize] = layer;
+        }
+        let is_copper = |k: usize| nets[k].is_some() && layers[k].is_some();
         let widest = (0..self.len())
             .filter(|&k| is_copper(k))
-            .map(|k| copper.extent[k])
+            .map(|k| extents[k])
             .fold(0.0, f64::max);
         let mut sets = UnionFind::new(self.obstacle_count);
         for a in (0..self.len()).filter(|&k| is_copper(k)) {
-            let Some([x0, y0, x1, y1]) = self.bounds[a] else {
+            let (set, k) = self.at(a);
+            let Some([x0, y0, x1, y1]) = set.bounds(k) else {
                 continue;
             };
             // Two pieces overlap within both their extents; the box reaches
             // as far as the widest piece could.
-            let r = copper.extent[a] + widest + TOUCH_TOLERANCE;
-            for b in self.tree.meeting(V2::new(x0, y0), V2::new(x1, y1), r) {
-                if b <= a
-                    || !is_copper(b)
-                    || copper.net[a] != copper.net[b]
-                    || copper.layer[a] != copper.layer[b]
-                {
+            let r = extents[a] + widest + TOUCH_TOLERANCE;
+            let meeting = self.mapped(|s| s.tree().meeting(V2::new(x0, y0), V2::new(x1, y1), r));
+            for b in meeting {
+                if b <= a || !is_copper(b) || nets[a] != nets[b] || layers[a] != layers[b] {
                     continue;
                 }
-                let gap = self.shapes[a].shape_distance(&self.shapes[b]);
-                if gap <= copper.extent[a] + copper.extent[b] + TOUCH_TOLERANCE {
-                    sets.join(self.obstacles[a], self.obstacles[b]);
+                let gap = self.shape(a).shape_distance(self.shape(b));
+                if gap <= extents[a] + extents[b] + TOUCH_TOLERANCE {
+                    sets.join(self.obstacles[a] as usize, self.obstacles[b] as usize);
                 }
             }
         }
-        let mut lowest: HashMap<usize, usize> = HashMap::new();
+        let mut lowest: HashMap<usize, u32> = HashMap::new();
         for o in 0..self.obstacle_count {
             let root = sets.root(o);
-            lowest.entry(root).or_insert(o);
+            lowest.entry(root).or_insert(number(o));
         }
         self.obstacles
             .iter()
             .map(|&o| {
-                let root = sets.root(o);
+                let root = sets.root(o as usize);
                 lowest.get(&root).copied().unwrap_or(o)
             })
             .collect()
     }
 
-    fn edge_range(&self, item: usize) -> Range<usize> {
-        self.first[item]..self.first[item] + self.count[item]
-    }
-
-    /// The edge of `edge`, numbered across the items.
-    pub fn edge(&self, edge: usize) -> (V2, V2) {
-        (self.starts[edge], self.ends[edge])
-    }
-
-    fn pieces(&self, item: usize) -> &Pieces {
-        self.pieces[item].get_or_init(|| {
-            let mut middles = Vec::new();
-            let mut edge_of = Vec::new();
-            let mut longest: f64 = 0.0;
-            for (local, e) in self.edge_range(item).enumerate() {
-                let a = self.starts[e];
-                let along = self.ends[e] - a;
-                let length = along.hypot();
-                let parts = (length / MAX_EDGE_LENGTH).ceil().max(1.0);
-                longest = longest.max(length / parts);
-                // An f64 count of pieces of a finite edge is a small whole
-                // number.
-                let pieces = parts as usize;
-                for part in 0..pieces {
-                    middles.push(a + ((part as f64 + 0.5) / parts) * along);
-                    edge_of.push(local);
-                }
-            }
-            Pieces {
-                tree: PointTree::new(&middles),
-                edge_of,
-                half_piece: longest / 2.0,
-            }
-        })
-    }
-
-    /// The edges of `item`, numbered across the items and ascending, among
-    /// them every edge within 2·slack of the nearest to `p`: all of them,
-    /// or of an item of more than INDEXED_EDGES edges those of the pieces
-    /// whose middles lie within the nearest piece's middle's distance,
-    /// 2·slack and half a piece. The nearest piece's middle is no nearer
-    /// than the nearest edge, and every edge has a piece whose middle is
-    /// within half the longest piece of the edge's nearest point.
+    /// The edges of `item`, numbered across its set's items and ascending,
+    /// among them every edge within 2·slack of the nearest to `p`: all of
+    /// them, or of an item of more than INDEXED_EDGES edges those of the
+    /// pieces whose middles lie within the nearest piece's middle's
+    /// distance, 2·slack and half a piece. The nearest piece's middle is no
+    /// nearer than the nearest edge, and every edge has a piece whose
+    /// middle is within half the longest piece of the edge's nearest point.
     pub fn item_edges_near(&self, item: usize, p: V2, slack: f64) -> Vec<usize> {
-        let range = self.edge_range(item);
+        let (set, k) = self.at(item);
+        let range = set.edge_range(k);
         if range.len() <= self.indexed_edges {
             return range.collect();
         }
-        let pieces = self.pieces(item);
+        let pieces = set.pieces(k);
         let Some((_, bound)) = pieces.tree.nearest(p) else {
             return Vec::new();
         };
@@ -368,14 +421,15 @@ impl StaticEdges {
         edges
     }
 
-    /// The edges of `item`, ascending, among them every one within
-    /// `radius` of the segment from `a` to `b`.
+    /// The edges of `item`, numbered across its set's items and ascending,
+    /// among them every one within `radius` of the segment from `a` to `b`.
     fn item_edges_near_segment(&self, item: usize, a: V2, b: V2, radius: f64) -> Vec<usize> {
-        let range = self.edge_range(item);
+        let (set, k) = self.at(item);
+        let range = set.edge_range(k);
         if range.len() <= self.indexed_edges {
             return range.collect();
         }
-        let pieces = self.pieces(item);
+        let pieces = set.pieces(k);
         let r = radius + pieces.half_piece + DEGENERATE_DISTANCE;
         // Every point of the segment lies within half its length of its
         // middle.
@@ -395,13 +449,15 @@ impl StaticEdges {
     /// Whether `p` lies inside `item`: in an `Area`'s area or outside an
     /// `Outside`'s, never for a `Line`.
     pub fn inside(&self, item: usize, p: V2) -> bool {
-        let kind = self.kinds[item];
+        let (set, k) = self.at(item);
+        let kind = set.kind(k);
         if kind == Kind::Line {
             return false;
         }
-        let boxed = self.bounds[item]
+        let boxed = set
+            .bounds(k)
             .is_some_and(|[x0, y0, x1, y1]| p.x >= x0 && p.y >= y0 && p.x <= x1 && p.y <= y1);
-        let within = boxed && self.shapes[item].contains(p);
+        let within = boxed && set.shape(k).contains(p);
         if kind == Kind::Outside {
             !within
         } else {
@@ -412,59 +468,64 @@ impl StaticEdges {
     /// The unit gradient at a point lying on the item's edges, where the
     /// direction to them is noise.
     pub fn normal(&self, item: usize, p: V2) -> V2 {
-        let kind = self.kinds[item];
-        let n = outward_normal(&self.shapes[item], p, kind != Kind::Line);
+        let (set, k) = self.at(item);
+        let kind = set.kind(k);
+        let n = outward_normal(set.shape(k), p, kind != Kind::Line);
         if kind == Kind::Outside { -n } else { n }
     }
 
     /// The distance from `p` to the item's geometry, zero inside an area.
     fn item_distance(&self, item: usize, p: V2) -> f64 {
-        if self.kinds[item] == Kind::Area && self.shapes[item].covers(p) {
+        let (set, k) = self.at(item);
+        if set.kind(k) == Kind::Area && set.shape(k).covers(p) {
             return 0.0;
         }
         self.item_edges_near(item, p, 0.0)
             .into_iter()
-            .map(|e| segment_distance(p, self.starts[e], self.ends[e]))
+            .map(|e| segment_distance(p, set.start(e), set.end(e)))
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// The item of the tree nearest `p` by its geometry, and that distance.
-    /// Of equally near items, the least inflated, whose inflation leaves
-    /// the widest search around the point.
+    /// The item of the trees nearest `p` by its geometry, and that
+    /// distance. Of equally near items, the least inflated, whose
+    /// inflation leaves the widest search around the point.
     pub fn nearest_item(&self, p: V2) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
-        for (item, d2) in self.tree.nearest_first(p) {
-            if let Some((_, least)) = best
-                && d2 > least * least
-            {
-                break;
-            }
-            let d = self.item_distance(item, p);
-            let nearer = best.is_none_or(|(other, least)| {
-                d < least || d == least && self.inflations[item] < self.inflations[other]
-            });
-            if nearer {
-                best = Some((item, d));
+        for (part, set) in self.parts.iter().enumerate() {
+            for (k, d2) in set.tree().nearest_first(p) {
+                if let Some((_, least)) = best
+                    && d2 > least * least
+                {
+                    break;
+                }
+                let Some(item) = self.place(part, k) else {
+                    continue;
+                };
+                let d = self.item_distance(item, p);
+                let nearer = best.is_none_or(|(other, least)| {
+                    d < least || d == least && self.inflations[item] < self.inflations[other]
+                });
+                if nearer {
+                    best = Some((item, d));
+                }
             }
         }
         best
     }
 
-    /// The items of the tree whose bounding boxes lie within `radius` of
+    /// The items of the trees whose bounding boxes lie within `radius` of
     /// `p`, ascending; none for a NaN or negative radius.
     pub fn items_within(&self, p: V2, radius: f64) -> Vec<usize> {
-        self.tree.within(p, radius)
+        self.mapped(|set| set.tree().within(p, radius))
     }
 
-    /// The items of the tree whose bounding boxes come within `radius` of
+    /// The items of the trees whose bounding boxes come within `radius` of
     /// the segment from `a` to `b`'s bounding box, ascending; none for a
     /// NaN or negative radius.
     pub fn items_near_segment(&self, a: V2, b: V2, radius: f64) -> Vec<usize> {
-        self.tree.meeting(
-            V2::new(a.x.min(b.x), a.y.min(b.y)),
-            V2::new(a.x.max(b.x), a.y.max(b.y)),
-            radius,
-        )
+        let low = V2::new(a.x.min(b.x), a.y.min(b.y));
+        let high = V2::new(a.x.max(b.x), a.y.max(b.y));
+        self.mapped(|set| set.tree().meeting(low, high, radius))
     }
 
     /// The items that can come within `reach` of `p` once inflated and once
@@ -522,19 +583,18 @@ impl StaticEdges {
         let mut near: Vec<Near> = Vec::new();
         let mut bound = f64::INFINITY;
         for item in self.near(p, reach, slack) {
-            if self.count[item] == 0 {
+            let (set, k) = self.at(item);
+            if set.edge_count(k) == 0 {
                 continue;
             }
-            let kind = self.kinds[item];
+            let kind = set.kind(k);
             let inside = self.inside(item, p);
             let edges: Vec<(usize, f64)> = self
                 .item_edges_near(item, p, slack)
                 .into_iter()
                 .map(|e| {
-                    (
-                        e,
-                        offset(p, self.starts[e], self.ends[e] - self.starts[e]).hypot(),
-                    )
+                    let a = set.start(e);
+                    (e, offset(p, a, set.end(e) - a).hypot())
                 })
                 .collect();
             let nearest = edges
@@ -566,7 +626,9 @@ impl StaticEdges {
             });
         }
         let tolerance = 2.0 * DEGENERATE_DISTANCE;
-        let mut kept: Vec<(usize, usize, usize)> = Vec::new();
+        // By obstacle, then item and edge: the edges numbered across the
+        // field's items in order.
+        let mut kept: Vec<(u32, usize, usize, usize)> = Vec::new();
         for (n, at) in near.iter().enumerate() {
             let reachable =
                 at.inside || at.unsure || at.nearest - slack <= at.limit + DEGENERATE_DISTANCE;
@@ -575,20 +637,21 @@ impl StaticEdges {
             }
             for &(edge, raw) in &at.edges {
                 if raw <= at.nearest + 2.0 * slack + tolerance {
-                    kept.push((self.obstacles[at.item], edge, n));
+                    kept.push((self.obstacles[at.item], at.item, edge, n));
                 }
             }
         }
         kept.sort_unstable();
-        for (obstacle, edge, n) in kept {
+        for (obstacle, item, edge, n) in kept {
             let at = &near[n];
+            let (set, _) = self.at(item);
             found.point.push(i);
-            found.starts.push(self.starts[edge]);
-            found.ends.push(self.ends[edge]);
-            found.inflation.push(self.inflations[at.item]);
+            found.starts.push(set.start(edge));
+            found.ends.push(set.end(edge));
+            found.inflation.push(self.inflations[item]);
             found.limit.push(at.limit);
-            found.obstacle.push(obstacle);
-            found.item.push(at.item);
+            found.obstacle.push(obstacle as usize);
+            found.item.push(item);
             found.inside.push(at.inside);
             found.unsure.push(at.unsure);
         }
@@ -606,13 +669,14 @@ impl StaticEdges {
         for (i, &p) in coords.iter().enumerate() {
             let mut measured: Vec<(usize, f64)> = Vec::new();
             for item in self.near(p, below.max(0.0), 0.0) {
-                if self.count[item] == 0 {
+                let (set, k) = self.at(item);
+                if set.edge_count(k) == 0 {
                     continue;
                 }
                 let (length, _) = self.nearest_offset(item, p);
                 let inside = self.inside(item, p);
                 let distance = if inside { -length } else { length } - self.inflations[item];
-                measured.push((clearance[item], distance));
+                measured.push((clearance[item] as usize, distance));
             }
             measured.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
             let mut last = None;
@@ -635,9 +699,10 @@ impl StaticEdges {
     /// GEOS measures it from the first of its nearest edges, and that
     /// offset.
     pub fn nearest_offset(&self, item: usize, p: V2) -> (f64, V2) {
+        let (set, _) = self.at(item);
         let mut best: Option<(usize, f64)> = None;
         for e in self.item_edges_near(item, p, 0.0) {
-            let d = segment_distance(p, self.starts[e], self.ends[e]);
+            let d = segment_distance(p, set.start(e), set.end(e));
             if best.is_none_or(|(_, least)| d < least) {
                 best = Some((e, d));
             }
@@ -645,7 +710,7 @@ impl StaticEdges {
         let Some((e, _)) = best else {
             return (f64::INFINITY, V2::default());
         };
-        let toward = p - closest_point(p, self.starts[e], self.ends[e]);
+        let toward = p - closest_point(p, set.start(e), set.end(e));
         (toward.norm(), toward)
     }
 
@@ -653,24 +718,32 @@ impl StaticEdges {
     /// edges, considering only edges that can be nearer than `below`;
     /// infinite if none is.
     pub fn segment_edge_distance(&self, item: usize, a: V2, b: V2, below: f64) -> f64 {
+        let (set, _) = self.at(item);
         self.item_edges_near_segment(item, a, b, below)
             .into_iter()
-            .map(|e| segment_to_segment(a, b, self.starts[e], self.ends[e]))
+            .map(|e| segment_to_segment(a, b, set.start(e), set.end(e)))
             .fold(f64::INFINITY, f64::min)
     }
 
     /// The item's edges that the segment from `a` to `b` may touch.
     pub fn edges_touching_segment(&self, item: usize, a: V2, b: V2) -> Vec<(V2, V2)> {
+        let (set, _) = self.at(item);
         self.item_edges_near_segment(item, a, b, DEGENERATE_DISTANCE)
             .into_iter()
-            .map(|e| (self.starts[e], self.ends[e]))
+            .map(|e| (set.start(e), set.end(e)))
             .collect()
     }
+}
+
+/// An index or count as the u32 a field holds it in.
+pub fn number(k: usize) -> u32 {
+    u32::try_from(k).expect("fewer than 2³² items")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field::items::Interner;
 
     fn disc(centre: V2, radius: f64, edges: usize) -> Shape {
         let ring = (0..=edges)
@@ -700,31 +773,91 @@ mod tests {
             .collect()
     }
 
-    fn scene(indexed: usize) -> StaticEdges {
+    const INFLATIONS: [f64; 5] = [0.3, 0.2, 0.35, 0.4, 0.3];
+
+    fn scene_items() -> Vec<(Shape, Kind)> {
         let mut outline = disc(V2::new(3.0, 2.0), 6.0, 200);
         outline.type_id = 3;
-        let shapes = vec![
-            disc(V2::new(1.0, 1.0), 0.8, 300),
-            disc(V2::new(4.0, 1.0), 1.5, 64),
-            Shape::line(vec![V2::new(0.0, 3.0), V2::new(6.0, 3.5)]),
-            Shape::line(vec![V2::new(5.0, 5.0)]),
-            outline,
-        ];
-        let kinds = vec![
-            Kind::Area,
-            Kind::Area,
-            Kind::Line,
-            Kind::Line,
-            Kind::Outside,
-        ];
+        vec![
+            (disc(V2::new(1.0, 1.0), 0.8, 300), Kind::Area),
+            (disc(V2::new(4.0, 1.0), 1.5, 64), Kind::Area),
+            (
+                Shape::line(vec![V2::new(0.0, 3.0), V2::new(6.0, 3.5)]),
+                Kind::Line,
+            ),
+            (Shape::line(vec![V2::new(5.0, 5.0)]), Kind::Line),
+            (outline, Kind::Outside),
+        ]
+    }
+
+    fn scene(indexed: usize) -> StaticEdges {
+        let (shapes, kinds) = scene_items().into_iter().unzip();
         StaticEdges::new(
             shapes,
             kinds,
-            vec![0.3, 0.2, 0.35, 0.4, 0.3],
+            INFLATIONS.to_vec(),
             vec![0, 1, 2, 3, 4],
             None,
         )
         .with_indexed_edges(indexed)
+    }
+
+    /// `scene`'s items in two sets, out of order and among items the field
+    /// does not hold.
+    fn split_scene(indexed: usize) -> StaticEdges {
+        let items = scene_items();
+        let decoy = (
+            Shape::line(vec![V2::new(2.0, 2.0), V2::new(2.5, 2.0)]),
+            Kind::Line,
+        );
+        let mut interner = Interner::new();
+        let mut set = |picked: Vec<(Shape, Kind)>| {
+            let (shapes, kinds) = picked.into_iter().unzip();
+            Arc::new(ItemSet::new(shapes, kinds, None, Some(&mut interner)))
+        };
+        let first = set(vec![decoy.clone(), items[1].clone(), items[3].clone()]);
+        let second = set(vec![
+            items[4].clone(),
+            items[2].clone(),
+            decoy,
+            items[0].clone(),
+        ]);
+        let member = |part, index| Member { part, index };
+        StaticEdges::view(
+            vec![first, second],
+            vec![
+                member(1, 3),
+                member(0, 1),
+                member(1, 1),
+                member(0, 2),
+                member(1, 0),
+            ],
+            INFLATIONS.to_vec(),
+            vec![0, 1, 2, 3, 4],
+            Vec::new(),
+        )
+        .with_indexed_edges(indexed)
+    }
+
+    #[test]
+    fn a_field_over_two_sets_answers_as_one_over_its_own() {
+        let points = scattered(300, 11);
+        for indexed in [0, usize::MAX] {
+            let (one, two) = (scene(indexed), split_scene(indexed));
+            for reach in [0.3, f64::INFINITY] {
+                for slack in [0.0, 0.05] {
+                    assert_eq!(
+                        one.search(&points, reach, slack),
+                        two.search(&points, reach, slack)
+                    );
+                }
+                assert_eq!(one.distances(&points, reach), two.distances(&points, reach));
+            }
+            for &p in &points {
+                assert_eq!(one.nearest_item(p), two.nearest_item(p));
+                assert_eq!(one.items_within(p, 0.5), two.items_within(p, 0.5));
+            }
+        }
     }
 
     #[test]
@@ -745,7 +878,7 @@ mod tests {
         let p = V2::new(1.0, 1.9);
         let near = field.item_edges_near(0, p, 0.05);
         assert!(!near.is_empty());
-        assert!(near.len() * 10 < field.count[0]);
+        assert!(near.len() * 10 < field.shape(0).edges().len());
     }
 
     #[test]

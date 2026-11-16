@@ -4,15 +4,20 @@
 //! Positive in free space, zero exactly at the required clearance, negative
 //! inside an inflated obstacle or outside the board. Where obstacles
 //! overlap, the deepest one counts.
+//!
+//! A field built from its own items (`Obstacles::new`) holds them in a set
+//! of its own (`items::ItemSet`), and numbers its obstacles from the
+//! items' interned ids (`obstacle_ids`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::edges::{Copper, StaticEdges};
+use super::edges::{StaticEdges, number};
+use super::items::{Copper, Interner, ItemIds, ItemSet};
 use super::search::parts_smooth_distance;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, Field, Kind};
-use crate::geometry::{LINE_STRING, Part, Shape, V2, outward_normal};
+use crate::geometry::{Shape, V2, outward_normal};
 
 /// An obstacle as the field takes it: raw geometry and the inflation at
 /// which what keeps clear of it is at clearance.
@@ -42,24 +47,15 @@ impl Obstacles {
     /// `items`, and the outside of `outline` inflated by `edge_inflation`
     /// as the board edge.
     pub fn new(items: Vec<Item>, outline: Option<Shape>, edge_inflation: f64) -> Self {
-        let mut ids = obstacle_ids(&items);
-        let edge_obstacle = ids.iter().max().map_or(0, |&m| m + 1);
-        let max_inflation = items.iter().map(|i| i.inflation).fold(0.0, f64::max);
         let count = items.len();
-        let mut numbered: HashMap<String, usize> = HashMap::new();
-        let mut number = |name: &Option<String>| -> Option<usize> {
-            name.as_ref().map(|n| {
-                let next = numbered.len();
-                *numbered.entry(n.clone()).or_insert(next)
-            })
-        };
+        let mut interner = Interner::new();
         let mut copper = Copper::default();
         let mut shapes = Vec::with_capacity(count + 1);
         let mut kinds = Vec::with_capacity(count + 1);
         let mut inflations = Vec::with_capacity(count + 1);
         for item in items {
-            copper.net.push(number(&item.net));
-            copper.layer.push(number(&item.layer));
+            copper.net.push(item.net.map(|n| interner.name(&n)));
+            copper.layer.push(item.layer.map(|l| interner.name(&l)));
             copper.extent.push(item.extent);
             kinds.push(if item.shape.is_area() {
                 Kind::Area
@@ -74,21 +70,39 @@ impl Obstacles {
             shapes.push(outline);
             kinds.push(Kind::Outside);
             inflations.push(edge_inflation);
-            ids.push(edge_obstacle);
             copper.net.push(None);
             copper.layer.push(None);
             copper.extent.push(0.0);
         }
+        let set = Arc::new(ItemSet::new(
+            shapes,
+            kinds,
+            Some(copper),
+            Some(&mut interner),
+        ));
+        let keys: Vec<(ItemIds, f64)> = (0..count)
+            .map(|k| (set.ids(k).expect("interned"), inflations[k]))
+            .collect();
+        let mut ids = obstacle_ids(&keys);
+        if has_outline {
+            ids.push(edge_obstacle(&ids));
+        }
+        Self::of(StaticEdges::whole(set, inflations, ids), edge_inflation)
+    }
+
+    /// The field of `edges`, its last item the board edge if it is
+    /// `Outside`, inflated by `edge_inflation`.
+    pub fn of(edges: StaticEdges, edge_inflation: f64) -> Self {
+        let outline = !edges.is_empty() && edges.kind(edges.len() - 1) == Kind::Outside;
+        let items = edges.len() - usize::from(outline);
+        let max_inflation = edges.inflations()[..items]
+            .iter()
+            .copied()
+            .fold(0.0, f64::max);
         Self {
-            edges: Arc::new(StaticEdges::new(
-                shapes,
-                kinds,
-                inflations,
-                ids,
-                Some(copper),
-            )),
-            items: count,
-            outline: has_outline,
+            edges: Arc::new(edges),
+            items,
+            outline,
             edge_inflation,
             max_inflation,
         }
@@ -162,7 +176,7 @@ impl Obstacles {
     /// The distance from `p` to the item's raw geometry, zero inside an
     /// area.
     fn raw_distance(&self, item: usize, p: V2) -> f64 {
-        let shape = &self.edges.shapes()[item];
+        let shape = &self.edges.shape(item);
         if shape.is_area() && shape.covers(p) {
             return 0.0;
         }
@@ -172,7 +186,7 @@ impl Obstacles {
     /// Signed distance from `p` to the item's geometry, negative inside an
     /// area, and the unit gradient.
     fn signed_to(&self, item: usize, p: V2) -> (f64, V2) {
-        let shape = &self.edges.shapes()[item];
+        let shape = &self.edges.shape(item);
         let area = shape.is_area();
         let inside = area && shape.covers(p);
         let (length, toward) = self.edges.nearest_offset(item, p);
@@ -209,7 +223,7 @@ impl Obstacles {
     fn segment_clear(&self, a: V2, b: V2, tolerance: f64) -> bool {
         if self.items > 0 {
             for item in self.edges.items_near_segment(a, b, self.max_inflation) {
-                let gap = self.edges.shapes()[item].segment_distance(a, b);
+                let gap = self.edges.shape(item).segment_distance(a, b);
                 if gap <= self.max_inflation && gap < self.edges.inflations()[item] - tolerance {
                     return false;
                 }
@@ -219,7 +233,7 @@ impl Obstacles {
             return true;
         }
         let edge = self.items;
-        let outline = &self.edges.shapes()[edge];
+        let outline = self.edges.shape(edge);
         let below = self.edge_inflation - tolerance;
         outline.covers_segment(a, b, &self.edges.edges_touching_segment(edge, a, b))
             && self.edges.segment_edge_distance(edge, a, b, below) >= below
@@ -229,39 +243,15 @@ impl Obstacles {
 /// A key under which items are one obstacle.
 #[derive(Hash, PartialEq, Eq)]
 enum Key {
-    /// The same geometry, as its type and coordinates tell it.
-    Geometry(Vec<u64>),
-    /// An end of a centreline, with its inflation.
-    End([u64; 3]),
+    /// The same geometry.
+    Geometry(u32),
+    /// An end of a centreline, with its inflation's bits.
+    End(u32, u64),
 }
 
-fn geometry_key(shape: &Shape) -> Vec<u64> {
-    let mut key = vec![
-        u64::from(shape.type_id.unsigned_abs()),
-        shape.parts.len() as u64,
-    ];
-    let points = |points: &[V2], key: &mut Vec<u64>| {
-        key.push(points.len() as u64);
-        for p in points {
-            key.push(p.x.to_bits());
-            key.push(p.y.to_bits());
-        }
-    };
-    for part in &shape.parts {
-        match part {
-            Part::Polygon(rings) => {
-                key.extend([0, rings.len() as u64]);
-                for ring in rings {
-                    points(ring, &mut key);
-                }
-            }
-            Part::Line(line) => {
-                key.push(1);
-                points(line, &mut key);
-            }
-        }
-    }
-    key
+/// The obstacle of the board edge after the items' `ids`.
+pub fn edge_obstacle(ids: &[u32]) -> u32 {
+    ids.iter().max().map_or(0, |&m| m + 1)
 }
 
 impl Field for Obstacles {
@@ -282,7 +272,8 @@ impl Field for Obstacles {
     }
 }
 
-/// Each item's obstacle, numbered from 0. Items of one geometry are one
+/// Each item's obstacle, numbered from 0 in the order of the items' first:
+/// each item by its ids and its inflation. Items of one geometry are one
 /// obstacle: a pad or keepout on each of the layers a via spans, a via's
 /// ring and its hole. So are centrelines of one inflation that meet end to
 /// end, as the segments of a track do, so that its joints and bends add
@@ -294,29 +285,24 @@ impl Field for Obstacles {
 /// of another, a T-junction: opposite its stem a point reads up to τ·ln 2
 /// nearer than it is. A clearance check joins them again
 /// (`StaticEdges::clearance_obstacles`).
-pub fn obstacle_ids(items: &[Item]) -> Vec<usize> {
+pub fn obstacle_ids(items: &[(ItemIds, f64)]) -> Vec<u32> {
     let mut sets = UnionFind::new(items.len());
     let mut first: HashMap<Key, usize> = HashMap::new();
-    for (k, item) in items.iter().enumerate() {
-        let mut keys = vec![Key::Geometry(geometry_key(&item.shape))];
-        if item.shape.type_id == LINE_STRING
-            && let Some(Part::Line(line)) = item.shape.parts.first()
-            && let (Some(a), Some(b)) = (line.first(), line.last())
-        {
-            let inflation = item.inflation.to_bits();
-            keys.push(Key::End([a.x.to_bits(), a.y.to_bits(), inflation]));
-            keys.push(Key::End([b.x.to_bits(), b.y.to_bits(), inflation]));
+    for (k, &(ids, inflation)) in items.iter().enumerate() {
+        let mut keys = vec![Key::Geometry(ids.geometry)];
+        if let Some(ends) = ids.ends {
+            keys.extend(ends.map(|end| Key::End(end, inflation.to_bits())));
         }
         for key in keys {
             let f = *first.entry(key).or_insert(k);
             sets.join(k, f);
         }
     }
-    let mut numbered: HashMap<usize, usize> = HashMap::new();
+    let mut numbered: HashMap<usize, u32> = HashMap::new();
     (0..items.len())
         .map(|k| {
             let root = sets.root(k);
-            let next = numbered.len();
+            let next = number(numbered.len());
             *numbered.entry(root).or_insert(next)
         })
         .collect()
@@ -354,7 +340,8 @@ mod tests {
             line(&[(2.0, 1.0), (3.0, 1.0)], 0.4),
             line(&[(5.0, 0.0), (6.0, 0.0)], 0.3),
         ];
-        assert_eq!(obstacle_ids(&items), vec![0, 0, 1, 2]);
+        let field = Obstacles::new(items, None, 0.0);
+        assert_eq!(field.edges().obstacles(), &[0, 0, 1, 2]);
     }
 
     #[test]

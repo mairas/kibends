@@ -10,7 +10,7 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pyme
 
 use crate::arrays::{
     BoolArg, BoolArray, Flags, Floats, Indices, IntpArg, Points, flags_of, floats, floats_of,
-    indices, indices_of, points_of, same_lengths, vectors,
+    indices, indices_of, numbers, points_of, same_lengths, vectors,
 };
 use kibends_core::field::edges::StaticDistances;
 use kibends_core::field::obstacles::Item;
@@ -104,7 +104,7 @@ impl StaticEdges {
     /// Each item's obstacle.
     #[getter]
     fn obstacles<'py>(&self, py: Python<'py>) -> Indices<'py> {
-        indices(py, self.inner.obstacles())
+        numbers(py, self.inner.obstacles())
     }
 
     /// Each item's obstacle as a clearance check judges it: its obstacle,
@@ -112,7 +112,7 @@ impl StaticEdges {
     /// layer.
     #[getter]
     fn clearance_obstacles<'py>(&self, py: Python<'py>) -> Indices<'py> {
-        indices(py, self.inner.clearance_obstacles())
+        numbers(py, self.inner.clearance_obstacles())
     }
 
     /// Each point's exact signed distance to each obstacle nearer than

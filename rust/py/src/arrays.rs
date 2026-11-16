@@ -165,6 +165,12 @@ pub(crate) fn indices<'py>(py: Python<'py>, values: &[usize]) -> Indices<'py> {
     )
 }
 
+/// `indices` of numbers a field holds as u32.
+pub(crate) fn numbers<'py>(py: Python<'py>, values: &[u32]) -> Indices<'py> {
+    let values: Vec<usize> = values.iter().map(|&i| i as usize).collect();
+    indices(py, &values)
+}
+
 pub(crate) fn vectors<'py>(py: Python<'py>, values: &[V2]) -> PyResult<Points<'py>> {
     let flat: Vec<f64> = values.iter().flat_map(|v| [v.x, v.y]).collect();
     let array = Array2::from_shape_vec((values.len(), 2), flat)

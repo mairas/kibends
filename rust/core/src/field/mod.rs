@@ -23,9 +23,12 @@
 //!
 //! `Obstacles` answers `signed_distance` and every segment check item by
 //! item, and `smooth_distance` from its items as edges (`StaticEdges`): a
-//! search with the field's tree finds the items near the points and the
-//! edges of them that can answer, and those are measured by GEOS's
-//! point-to-segment formula (`search::static_smooth`). A moving via's
+//! search with the trees of its item sets finds the items near the points
+//! and the edges of them that can answer, and those are measured by GEOS's
+//! point-to-segment formula (`search::static_smooth`). The sets hold each
+//! item's geometry, edges and tree once, for every field that takes it
+//! (`items`); a field holds which items it has, their order, inflations
+//! and obstacles. A moving via's
 //! clearance checks take each obstacle's exact distance from the same edges
 //! (`search::static_distances`), so that they judge static copper obstacle
 //! by obstacle; to them an obstacle of `Obstacles` is its connected copper
@@ -41,6 +44,7 @@ pub mod build;
 pub mod chain;
 pub mod composite;
 pub mod edges;
+pub mod items;
 pub mod obstacles;
 pub mod pairs;
 pub mod search;
