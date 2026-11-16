@@ -8,7 +8,7 @@ starts clean ends clean. A stretch that starts inside static copper's
 clearance, exempt below for its pinned vertex, is the exception: an edge
 is judged against static copper as a whole, clear or not, so it may move
 deeper, or to where it is inside another piece's. Before the first burst
-the optimizer judges each problem's inputs, the copper as drawn with its
+the optimizer judges the problem's inputs, the copper as drawn with its
 long edges split, by the measure its guard counts violations with
 (`_core.ProblemState.start_inside`): a member's run of vertices inside the
 clearance of its static copper or of another member or via, but a run

@@ -106,14 +106,12 @@ class Progress:
     """Seconds by the run's clock since it started."""
     iteration: int
     energy: float
-    """Every problem's energy, summed."""
+    """The problem's energy."""
     length: float
-    """Every problem's track length, summed, mm: the selected tracks at
-    their current shapes, before simplification."""
+    """The selected tracks' summed length at their current shapes, before
+    simplification, mm."""
     level: int
-    """The level of the schedule the run stands at, counted from 0: the
-    coarsest level some problem still runs at, as problems may run at
-    different levels."""
+    """The level of the schedule the run stands at, counted from 0."""
     levels: int
     """The schedule's levels: its coarse spacings, then the final one."""
 
@@ -171,7 +169,7 @@ def stalled(
 
 
 class StoppedInSetupError(Exception):
-    """`stop` answered true while the optimizer set its problems up:
+    """`stop` answered true while the optimizer set its problem up:
     nothing optimized."""
 
 
@@ -204,13 +202,13 @@ def optimize_chains(
     and returns each chain's, section's and via's best state; a junction's
     ends come back at one point, loose. A via keeps `hole_clearance` and
     `hole_to_hole` where holes are involved. `static_vias` are the board's
-    vias that are none of `vias`; each problem keeps those its moving vias
+    vias that are none of `vias`; the problem keeps those its moving vias
     share a layer with.
 
-    `stop` is asked in setup after building each problem and after
-    checking where the copper starts, and raises `StoppedInSetupError` if
-    it answers true there, since setup runs no burst whose state could be
-    kept. A problem's build is not stopped within.
+    `stop` is asked in setup after building the problem and after checking
+    where the copper starts, and raises `StoppedInSetupError` if it answers
+    true there, since setup runs no burst whose state could be kept. The
+    build is not stopped within.
 
     Before any burst it raises `inside.InsideClearanceError` naming each
     place where the copper of a problem that moves starts inside a
@@ -218,10 +216,10 @@ def optimize_chains(
     offset from its chords (`arc_chords`, `inside`): a burst keeps the
     clearance its start keeps, and the run is to end clean.
 
-    Each problem runs through `settings`' schedule: its chains at each of
+    The problem runs through `settings`' schedule: its chains at each of
     `coarse_spacings` in turn, then at the final spacing, a level handing
     over when the problem settles at it (`kibends_core::optimize::state`).
-    Each problem keeps its best state, replaced only after a
+    It keeps its best state, replaced only after a
     burst that does not raise its energy, leaves no chain or section with
     more violations than it started with, and leaves no via deeper inside
     its clearance or its stops than it started. It goes on at the final
@@ -229,71 +227,66 @@ def optimize_chains(
     ended normally and that state costs no more than its inputs; else from
     the inputs.
 
-    A problem settles when its burst moved no shape or via by
+    The problem settles when its burst moved no shape or via by
     `settled_change` and moved nothing back, or when the lowest energy its
     bursts reached, whether or not the guard took them as its best state,
     and its tracks' length stalled over `stall_window` bursts (`stalled`),
     or after MAX_ABNORMAL_BURSTS abnormal bursts in a row, at a coarse level
     handing over instead; the run converges
-    when every problem has, and gives up (`Termination.GAVE_UP`) if some
-    problem settled on abnormal bursts. A run that gave up on some problem
-    and whose best states sum to no less energy than its inputs ends
-    `Termination.ABNORMAL`, whatever stopped it. With a
-    time limit in `settings`, the limit runs out once `clock` reads it or
-    more past the end of setup, when optimizing starts, and no problem owes
-    a burst at its level (`_core.OwingNotice`): one that has not
-    settled and has run none at a level a handover took it to. While some
-    problem owes one, a burst past the limit runs until it accepts its
-    first L-BFGS iteration and ends there, cut, so that each level a
-    handover took a problem to descends; the problems after it in the
-    outer iteration step so too. Once the limit has run out, the
+    when it has, and gives up (`Termination.GAVE_UP`) if it settled on
+    abnormal bursts. A run that gave up and whose best state has no less
+    energy than its inputs ends `Termination.ABNORMAL`, whatever stopped
+    it. With a time limit in `settings`, the limit runs out once `clock`
+    reads it or more past the end of setup, when optimizing starts, and
+    the problem owes no burst at its level (`_core.OwingNotice`): it owes
+    one when it has not settled and has run none at a level a handover
+    took it to. While it owes one, a burst past the limit runs until it
+    accepts its first L-BFGS iteration and ends there, cut, so that each
+    level a handover took it to descends. Once the limit has run out, the
     running burst ends before its next line-search trial, at its last
-    accepted point (`bursts.run_burst`), and its state goes
-    through the checks and the guard as any burst's. Each problem then
-    still before the final level goes on at its next level as if it had
-    settled where it runs, one that has taken no step leaving level 0, and
-    the limit counts again from then (`_hand_over`); the rest go on as they
-    were. With none before the final level the run ends
-    `Termination.TIME_LIMIT`. So every level a problem reaches above level
-    0 runs a burst, and the limit counts at most once for each level,
-    besides the overrun of the bursts running when it runs out, about an
-    L-BFGS iteration for each owed one, and the holds. Should it run out
-    in the outer iteration that
-    reaches the iteration cap with some problem before the final level,
-    the cap ends the run; after a hold the limit is still out, so the run
-    goes on as when it runs out, with no burst first.
-    `stop`, asked whenever the time limit is, ends the running burst the
-    same way and the run at once, `Termination.STOPPED`, if it answered
-    true before the limit ran out. A run that `stop` or the iteration cap
-    ends while some problem runs at a coarse level ends each such problem
-    at the final spacing (`ProblemState.finish`), and one that has taken no
-    step at its inputs; either way it says so
+    accepted point (`bursts.run_burst`), and its state goes through the
+    checks and the guard as any burst's. The problem, if still before the
+    final level, then goes on at its next level as if it had settled where
+    it runs, leaving level 0 if it has taken no step, and the limit counts
+    again from then (`_hand_over`). At the final level the run ends
+    `Termination.TIME_LIMIT`. So every level the problem reaches above
+    level 0 runs a burst, and the limit counts at most once for each
+    level, besides the overrun of the burst running when it runs out,
+    about an L-BFGS iteration for an owed one, and the holds. Should it
+    run out in the outer iteration that reaches the iteration cap with the
+    problem before the final level, the cap ends the run; after a hold the
+    limit is still out, so the run goes on as when it runs out, with no
+    burst first. `stop`, asked whenever the time limit is, ends the
+    running burst the same way and the run at once,
+    `Termination.STOPPED`, if it answered true before the limit ran out. A
+    run that `stop` or the iteration cap ends while the problem runs at a
+    coarse level ends it at the final spacing (`ProblemState.finish`), at
+    its inputs if it has taken no step; either way it says so
     (`RunResult.before_final_spacing`).
 
     Whenever the run would end, `to_hold` is given each section's best
-    state and names the sections to hold (`Hold.CROWDING`). Each problem
-    with such a section takes it back to its drawn shape and goes on from
-    its best state (`_Problem.go_on_from`), with the members and vias that
-    would come too close to the section, or to what was put back, put back
-    where they started; the others keep their progress. The iteration cap
+    state and names the sections to hold (`Hold.CROWDING`). The problem
+    takes such a section back to its drawn shape and goes on from its best
+    state (`_Problem.go_on_from`), with the members and vias that would
+    come too close to the section, or to what was put back, put back where
+    they started; the others keep their progress. The iteration cap
     counts again from the hold. A run that would end at the time limit or
     on `stop`, even in the iteration it converged, runs no further burst
     and ends on whichever ended it: it asks `to_hold` again after each hold, since
     what a hold put back may be bent too tightly, until it names no
     section that is not held.
 
-    It logs at INFO when setup begins, once the problems are built, the
-    setup time and the starting length and energy, as each problem enters a
+    It logs at INFO when setup begins, once the problem is built, the
+    setup time and the starting length and energy, as the problem enters a
     level of a schedule with coarse levels its spacing (`_stage`), each
-    time the time limit ends a coarse level its spacing and the problems
-    that left it (`_hand_over`),
+    time the time limit ends a coarse level its spacing (`_hand_over`),
     and at each hold what it put back. Each
     outer iteration
     logs its progress at DEBUG, and at INFO once `PROGRESS_INTERVAL` has
     passed since optimizing started or the last INFO line, and goes to
     `on_progress` as a `Progress`, its seconds counted from `started`, by
     default when optimizing starts; `on_progress` first hears the start, as
-    iteration 0, once the problems are set up. Each burst logs what it cost
+    iteration 0, once the problem is set up. Each burst logs what it cost
     at DEBUG only (`_burst_done`).
     """
     logger.info("Setting up the optimizer")
