@@ -73,6 +73,8 @@ from PySide6.QtWidgets import (
 
 from kibends.panel.controller import (
     ADVANCED,
+    STOP,
+    STOPPING,
     Controller,
     Icon,
     Line,
@@ -527,7 +529,7 @@ class PanelWindow(QWidget):
         self.graph_figure.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.graph = LengthGraph()
         self.report = ReportArea()
-        self.stop_button = QPushButton("&Stop")
+        self.stop_button = QPushButton(f"&{STOP}")
         self.run_button = QPushButton("&Run")
         self.run_button.setDefault(True)
         self.stop_button.setToolTip(
@@ -705,7 +707,7 @@ class PanelWindow(QWidget):
     def _stopping_width(self, button: QPushButton) -> int:
         if button is not self.stop_button:
             return 0
-        return button.fontMetrics().horizontalAdvance("Stopping…") + 24
+        return button.fontMetrics().horizontalAdvance(STOPPING) + 24
 
     def _caption_rows(
         self, grid: QGridLayout, line: int, fields: tuple[Field, ...], text: str
@@ -723,18 +725,10 @@ class PanelWindow(QWidget):
 
     def _describe(self) -> None:
         """Every input's accessible name and description."""
-        names = {
-            Field.REPULSION: "Repulsion",
-            Field.RANGE: "Repulsion range",
-            Field.ATTRACTION: "Attraction",
-            Field.ATTRACTION_RANGE: "Attraction range",
-            Field.SPACING: "Spacing",
-            Field.TIME_LIMIT: "Time limit",
-        }
         for f, edit in self.edits.items():
-            edit.setAccessibleName(names[f])
+            edit.setAccessibleName(f.value)
             edit.setToolTip(TIPS[f])
-        self.nets.setAccessibleName("Ground nets")
+        self.nets.setAccessibleName(Field.GROUND_NETS.value)
         self.nets.setToolTip(TIPS[Field.GROUND_NETS])
         self.nets.setAccessibleDescription(TIPS[Field.GROUND_NETS])
         self.via_in_pad.setAccessibleName("Allow via in pad")
@@ -788,7 +782,8 @@ class PanelWindow(QWidget):
         if self.graph.accessibleDescription() != c.graph_description:
             self.graph.setAccessibleDescription(c.graph_description)
         self.report.set_outcome(c.report)
-        self.stop_button.setText("&Stop" if c.stop_label == "Stop" else c.stop_label)
+        label = c.stop_label
+        self.stop_button.setText(f"&{label}" if label == STOP else label)
         self._enable_buttons(c.run_enabled, c.stop_enabled)
         self.run_button.setToolTip(c.run_tip)
 

@@ -107,6 +107,8 @@ TOO_LATE_HINT = "Too late to stop: the result is being simplified and committed.
 STOPPING_HINT = "Will commit the best result so far."
 COMMITTING_HINT = "Committing as one undo step…"
 RUN_TIP = "Run on the scope shown at the top (Return)"
+STOP = "Stop"
+STOPPING = "Stopping…"
 
 NO_RUN_YET = "Track length change appears here during a run"
 NO_OPTIMIZATION = "No optimization ran"
@@ -431,7 +433,7 @@ class Controller:
 
     @property
     def stop_label(self) -> str:
-        return "Stopping…" if self._state is State.STOPPING else "Stop"
+        return STOPPING if self._state is State.STOPPING else STOP
 
     @property
     def close_asks(self) -> bool:
