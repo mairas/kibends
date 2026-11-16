@@ -353,3 +353,37 @@ impl ItemSet {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ends(interner: &mut Interner, a: (f64, f64), b: (f64, f64)) -> [u32; 2] {
+        let line = Shape::line(vec![V2::new(a.0, a.1), V2::new(b.0, b.1)]);
+        interner.ids(&line).ends.unwrap()
+    }
+
+    #[test]
+    fn points_share_an_id_exactly_when_their_bits_are_equal() {
+        let mut interner = Interner::new();
+        let [origin, right] = ends(&mut interner, (0.0, 0.0), (1.0, 0.0));
+        let [again, up] = ends(&mut interner, (0.0, 0.0), (0.0, 1.0));
+        let [_, near] = ends(&mut interner, (0.0, 0.0), (1.0, 1e-300));
+        assert_eq!(origin, again);
+        assert_ne!(right, up);
+        assert_ne!(right, near);
+        assert_ne!(origin, right);
+        // -0.0 equals 0.0 but has other bits.
+        let [negative, _] = ends(&mut interner, (-0.0, 0.0), (1.0, 0.0));
+        assert_ne!(negative, origin);
+    }
+
+    #[test]
+    fn geometries_share_an_id_exactly_when_their_coordinates_are_equal() {
+        let mut interner = Interner::new();
+        let line = |y: f64| Shape::line(vec![V2::new(0.0, 0.0), V2::new(1.0, y)]);
+        let a = interner.ids(&line(0.0)).geometry;
+        assert_eq!(a, interner.ids(&line(0.0)).geometry);
+        assert_ne!(a, interner.ids(&line(1e-300)).geometry);
+    }
+}

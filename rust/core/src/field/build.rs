@@ -1372,6 +1372,36 @@ mod tests {
     }
 
     #[test]
+    fn a_via_s_overlapping_own_pads_stay_apart_to_its_clearance_checks() {
+        let mut top = layer("F.Cu", 0);
+        top.vias = vec![via("me", "GND", (0.0, 0.0))];
+        // Two pads of its net whose copper overlaps.
+        top.pads = vec![pad("GND", (3.0, 0.0), true), pad("GND", (4.5, 0.0), true)];
+        let me = top.vias[0].clone();
+        let board = board(vec![top], &["me"]);
+        let stops = own_net_stops(&board, &me, HOLES, false)
+            .unwrap()
+            .items
+            .unwrap();
+        let edges = stops.edges();
+        let stop: Vec<u32> = stops
+            .picked()
+            .unwrap()
+            .iter()
+            .zip(edges.clearance_obstacles())
+            .filter(|(p, _)| p.source == Source::PadStop)
+            .map(|(_, &o)| o)
+            .collect();
+        assert_eq!(stop.len(), 2);
+        // Held as no copper, they are not joined as touching copper is.
+        assert_ne!(stop[0], stop[1]);
+        let between = edges.distances(&[V2::new(3.75, 0.0)], f64::INFINITY);
+        assert!(between.obstacle.contains(&(stop[0] as usize)));
+        assert!(between.obstacle.contains(&(stop[1] as usize)));
+        answers_as_owned(&board, &stops);
+    }
+
+    #[test]
     fn a_via_of_no_spanned_layer_is_an_error() {
         let me = Via {
             span: Span { low: 3, high: 4 },
