@@ -13,16 +13,126 @@ from kibends.commit import (
     CreateItemsError,
     DeleteItemsError,
 )
+from kibends.coords import UserFrame
 from kibends.inside import INSIDE_MESSAGE, InsideClearanceError
 from kibends.present import Field, Invalid, PanelFields, SmoothValues
+from kibends.results import PolylineStats, Termination
 from kibends.run import (
     ABNORMAL_MESSAGE,
     PLOT_EXTRA_MESSAGE,
+    ChainReport,
     NoBoardError,
     PlotUnavailableError,
+    RunReport,
+    Scope,
+    ScopeKind,
     ScopeOption,
+    ViaReport,
 )
 from kibends.snapshot import SelectionError
+
+SELECTION = Scope(ScopeKind.SELECTION, 12, 3)
+
+
+def chain(before: float, after: float, *, changed: bool = True) -> ChainReport:
+    return ChainReport(
+        "SIG",
+        "F.Cu",
+        0.2,
+        "SIG on F.Cu",
+        2,
+        PolylineStats(before, 2, float("inf")),
+        PolylineStats(after, 5, 1.0),
+        1,
+        changed,
+    )
+
+
+def via(*, moved: bool) -> ViaReport:
+    return ViaReport("v", (0.0, 0.0), (0.5, 0.0) if moved else (0.0, 0.0), 2)
+
+
+def report(
+    chains: tuple[ChainReport, ...] = (),
+    vias: tuple[ViaReport, ...] = (),
+    termination: Termination = Termination.CONVERGED,
+    scope: Scope = SELECTION,
+) -> RunReport:
+    return RunReport(
+        chains,
+        vias,
+        (),
+        termination,
+        38,
+        False,
+        12.44,
+        (),
+        UserFrame(),
+        committed=True,
+        refusal=None,
+        scope=scope,
+    )
+
+
+class TestSummary:
+    def test_sums_the_changed_chains_length_change_and_names_the_scope(
+        self,
+    ) -> None:
+        chains = (chain(10.0, 7.5), chain(4.0, 4.29), chain(3.0, 1.0, changed=False))
+
+        text = present.summary(report(chains, (via(moved=True), via(moved=False))))
+
+        assert text == (
+            "Settled after 38 iterations in 12.4 s; 2 chains, 1 via changed; "
+            "length -2.21 mm; 7 rejected edge moves; selection of 12 tracks, 3 vias"
+        )
+
+    def test_a_longer_result_has_a_plus_sign(self) -> None:
+        assert "length +0.50 mm" in present.summary(report((chain(1.0, 1.5),)))
+
+    def test_a_change_rounding_to_zero_has_no_sign(self) -> None:
+        assert "length 0.00 mm" in present.summary(report((chain(1.0, 0.999),)))
+
+    def test_names_a_whole_board_run(self) -> None:
+        whole = Scope(ScopeKind.BOARD, 1567, 210)
+
+        text = present.summary(report((chain(1.0, 0.5),), scope=whole))
+
+        assert text.endswith("; whole board of 1567 tracks, 210 vias")
+
+    @pytest.mark.parametrize(
+        ("termination", "ending"),
+        [
+            (Termination.CONVERGED, "Settled"),
+            (Termination.STOPPED, "Stopped"),
+            (Termination.TIME_LIMIT, "Stopped at the time limit"),
+            (Termination.ITERATION_CAP, "Stopped at the iteration cap"),
+            (Termination.GAVE_UP, "Stopped on abnormal bursts"),
+        ],
+    )
+    def test_begins_with_how_the_run_ended(
+        self, termination: Termination, ending: str
+    ) -> None:
+        text = present.summary(report((chain(1.0, 0.5),), termination=termination))
+
+        assert text.startswith(f"{ending} after 38 iterations")
+
+    def test_without_changes_is_nothing_to_do(self) -> None:
+        unchanged = (chain(1.0, 1.0, changed=False),)
+
+        assert present.summary(report(unchanged, (via(moved=False),))) == (
+            "Nothing to do"
+        )
+
+    def test_a_stop_without_changes_says_nothing_changed(self) -> None:
+        stopped = report(termination=Termination.STOPPED)
+
+        assert present.summary(stopped) == "Stopped; nothing changed"
+
+    def test_a_moved_via_alone_is_a_change(self) -> None:
+        text = present.summary(report(vias=(via(moved=True),)))
+
+        assert "0 chains, 1 via changed; length 0.00 mm" in text
 
 
 class TestErrorMessage:

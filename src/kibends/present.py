@@ -2,7 +2,8 @@
 and the `SmoothOptions` they give (`SmoothValues`, `smooth_options`), the
 checks on the fields the panel edits (`PanelFields`, `read_panel`) and on
 the command line's numbers (`finite_problem` and its kin,
-`schedule_problem`) and the message for a failure (`error_message`).
+`schedule_problem`), a finished run's summary (`summary`) and the message
+for a failure (`error_message`).
 
 The failure messages follow kistitch's cli.py error mapping (MIT,
 Copyright (c) 2025 Hat Labs Oy).
@@ -15,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from itertools import pairwise
 from pathlib import Path
+from typing import assert_never
 
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -34,11 +36,14 @@ from kibends.commit import (
 )
 from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
 from kibends.inside import InsideClearanceError
+from kibends.results import Termination
 from kibends.run import (
     ABNORMAL_MESSAGE,
     KICAD_TIMEOUT_MS,
     NoBoardError,
     PlotUnavailableError,
+    RunReport,
+    ScopeKind,
     ScopeOption,
     SmoothOptions,
 )
@@ -337,6 +342,60 @@ def read_panel(fields: PanelFields) -> SmoothValues | Invalid:
         scope=ScopeOption.SELECTION_ELSE_BOARD,
     )
     return Invalid(messages) if messages else values
+
+
+def _ending(termination: Termination) -> str:
+    match termination:
+        case Termination.CONVERGED | Termination.NOTHING_TO_DO:
+            return "Settled"
+        case Termination.STOPPED:
+            return "Stopped"
+        case Termination.TIME_LIMIT:
+            return "Stopped at the time limit"
+        case Termination.ITERATION_CAP:
+            return "Stopped at the iteration cap"
+        case Termination.GAVE_UP:
+            return "Stopped on abnormal bursts"
+        case Termination.ABNORMAL:
+            return "Terminated abnormally"
+        case _:
+            assert_never(termination)
+
+
+def _counted(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def summary(report: RunReport) -> str:
+    """How a run without a refusal ended, in one line: its ending,
+    iterations and time, the chains and vias it changed, their summed
+    length change, the edge moves it rejected and its scope; "Nothing to
+    do" or, for a stop, "Stopped; nothing changed" when nothing changed."""
+    if not report.changes:
+        return (
+            "Stopped; nothing changed"
+            if report.termination is Termination.STOPPED
+            else "Nothing to do"
+        )
+    changed = [c for c in report.chains if c.changed]
+    # Adding 0.0 turns a -0.0 from rounding into 0.0.
+    change = round(sum(c.after.length - c.before.length for c in changed), 2) + 0.0
+    rejected = (
+        sum(c.rejected_edges for c in report.chains)
+        + sum(v.rejected_edges for v in report.vias)
+        + sum(p.rejected_edges for p in report.pairs)
+    )
+    scope = report.scope
+    kind = "selection" if scope.kind is ScopeKind.SELECTION else "whole board"
+    return (
+        f"{_ending(report.termination)} after "
+        f"{_counted(report.iterations, 'iteration')} in {report.elapsed:.1f} s; "
+        f"{_counted(len(changed), 'chain')}, "
+        f"{_counted(sum(v.moved for v in report.vias), 'via')} changed; "
+        f"length {change:{'+' if change else ''}.2f} mm; "
+        f"{_counted(rejected, 'rejected edge move')}; "
+        f"{kind} of {_counted(scope.tracks, 'track')}, {_counted(scope.vias, 'via')}"
+    )
 
 
 def error_message(error: BaseException, *, panel: bool = False) -> str:
