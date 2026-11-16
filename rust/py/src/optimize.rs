@@ -1,5 +1,5 @@
-//! The run loop as Python sees it (`kibends_core::optimize`): a problem's
-//! state (`ProblemState`), the outer iterations that advance the problems
+//! The run loop as Python sees it (`kibends_core::optimize`): the problem's
+//! state (`ProblemState`), the outer iterations that advance it
 //! (`advance`) and what they tell Python as they go (`FallbackNotice`,
 //! `AbnormalNotice`, `BurstNotice`, `StageNotice`, `ProgressNotice`).
 //!
@@ -784,9 +784,6 @@ impl FallbackNotice {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct AbnormalNotice {
-    /// The problem, by its place among those advanced.
-    #[pyo3(get)]
-    problem: usize,
     #[pyo3(get)]
     streak: u32,
 }
@@ -795,9 +792,6 @@ pub struct AbnormalNotice {
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct BurstNotice {
-    /// The problem, by its place among those advanced.
-    #[pyo3(get)]
-    problem: usize,
     /// The level of the schedule it ran at: its coarse spacings, then the
     /// final one.
     #[pyo3(get)]
@@ -833,21 +827,18 @@ pub struct BurstNotice {
     changes: Vec<f64>,
 }
 
-/// A problem enters a level of a schedule with coarse levels: the coarsest
-/// before its first burst, each finer one, and the final one, as a coarser
-/// one hands over.
+/// The problem enters a level of a schedule with coarse levels: the
+/// coarsest before its first burst, each finer one, and the final one, as a
+/// coarser one hands over.
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct StageNotice {
-    /// The problem, by its place among those advanced.
-    #[pyo3(get)]
-    problem: usize,
     /// The level of the schedule: its coarse spacings, then the final one.
     #[pyo3(get)]
     level: usize,
 }
 
-/// Whether some problem owes a burst at its level
+/// Whether the problem owes a burst at its level
 /// (`kibends_core::optimize::state::State::owes_burst`): at the start of
 /// `advance` and after each step that changes it.
 #[gen_stub_pyclass]
@@ -857,7 +848,7 @@ pub struct OwingNotice {
     owing: bool,
 }
 
-/// After an outer iteration: its number, its largest change, and each
+/// After an outer iteration: its number, its largest change, and the
 /// problem's length and energy.
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
@@ -867,20 +858,17 @@ pub struct ProgressNotice {
     #[pyo3(get)]
     change: f64,
     #[pyo3(get)]
-    lengths: Vec<f64>,
+    length: f64,
     #[pyo3(get)]
-    energies: Vec<f64>,
+    energy: f64,
 }
 
 fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
     Ok(match notice {
-        Notice::Abnormal { problem, streak } => {
-            Py::new(py, AbnormalNotice { problem, streak })?.into_any()
-        }
+        Notice::Abnormal { streak } => Py::new(py, AbnormalNotice { streak })?.into_any(),
         Notice::Burst(b) => Py::new(
             py,
             BurstNotice {
-                problem: b.problem,
                 level: b.level,
                 iterations: b.iterations,
                 evaluations: b.evaluations,
@@ -895,20 +883,20 @@ fn notice(py: Python<'_>, notice: Notice) -> PyResult<Py<PyAny>> {
             },
         )?
         .into_any(),
-        Notice::Stage { problem, level } => Py::new(py, StageNotice { problem, level })?.into_any(),
+        Notice::Stage { level } => Py::new(py, StageNotice { level })?.into_any(),
         Notice::Owing { owing } => Py::new(py, OwingNotice { owing })?.into_any(),
         Notice::Progress {
             iteration,
             change,
-            lengths,
-            energies,
+            length,
+            energy,
         } => Py::new(
             py,
             ProgressNotice {
                 iteration,
                 change,
-                lengths,
-                energies,
+                length,
+                energy,
             },
         )?
         .into_any(),
@@ -970,22 +958,22 @@ impl Bursts<Failure> for PythonBursts<'_, '_> {
     }
 }
 
-/// Outer iterations of `problems` from `iteration` until `cap`, each giving
-/// every problem that has not settled one burst, until every problem has
-/// settled or `expired` answers true, asked after each step and before
-/// its long parts (`kibends_core::optimize::state::State::step`). Each burst
-/// runs through `burst`, called with its objective, start, per-coordinate
-/// scale and check; `report` hears each notice as it comes. `gave_up` says
-/// some problem was given up on before. Returns how the run ended, as
+/// Outer iterations of `problem` from `iteration` until `cap`, each giving
+/// it one burst unless it has settled, until it has settled or `expired`
+/// answers true, asked after each step and before its long parts
+/// (`kibends_core::optimize::state::State::step`). Each burst runs through
+/// `burst`, called with its objective, start, per-coordinate scale and
+/// check; `report` hears each notice as it comes. `gave_up` says the
+/// problem was given up on before. Returns how the run ended, as
 /// `kibends.results.Termination`'s value names it, and the iteration it
 /// reached.
 #[gen_stub_pyfunction]
 #[pyfunction]
-#[pyo3(signature = (problems, iteration, cap, gave_up, expired, burst, report))]
+#[pyo3(signature = (problem, iteration, cap, gave_up, expired, burst, report))]
 #[allow(clippy::too_many_arguments)]
 fn advance(
     py: Python<'_>,
-    problems: Vec<Bound<'_, ProblemState>>,
+    problem: Bound<'_, ProblemState>,
     iteration: u64,
     cap: u64,
     gave_up: bool,
@@ -1005,11 +993,7 @@ fn advance(
     ))]
     report: Py<PyAny>,
 ) -> PyResult<(&'static str, u64)> {
-    let mut borrowed: Vec<PyRefMut<'_, ProblemState>> = problems
-        .iter()
-        .map(|p| p.try_borrow_mut())
-        .collect::<Result<_, _>>()?;
-    let mut states: Vec<&mut State> = borrowed.iter_mut().map(|p| &mut p.inner).collect();
+    let mut borrowed: PyRefMut<'_, ProblemState> = problem.try_borrow_mut()?;
     let mut iteration = iteration;
     let mut asked =
         expired.map(|e| move || -> Result<bool, Failure> { Ok(e.call0()?.is_truthy()?) });
@@ -1023,7 +1007,7 @@ fn advance(
         report: &report,
     };
     let outcome = core::advance(
-        &mut states,
+        &mut borrowed.inner,
         &mut iteration,
         cap,
         gave_up,

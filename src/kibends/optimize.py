@@ -400,9 +400,12 @@ def optimize_chains(
         unless at `cap`, which then ends the run."""
         nonlocal deadline, first_end
         while True:
+            if not problem.moving:
+                # A hold left nothing free.
+                return Termination.NOTHING_TO_DO, iteration
             report.read_level()
             outcome, iteration = _core.advance(
-                [problem.state] if problem.moving else [],
+                problem.state,
                 iteration,
                 cap,
                 gave_up is not None,
@@ -415,7 +418,7 @@ def optimize_chains(
                 termination is not Termination.TIME_LIMIT
                 or first_end is not Termination.TIME_LIMIT
                 or limit is None
-                or not (problem.moving and problem.state.before_final)
+                or not problem.state.before_final
             ):
                 return termination, iteration
             if iteration >= cap:
@@ -599,8 +602,8 @@ class _Report:
             self._hand_on(
                 elapsed,
                 notice.iteration,
-                sum(notice.energies),
-                sum(notice.lengths),
+                notice.energy,
+                notice.length,
                 self.level,
             )
 
@@ -820,8 +823,8 @@ def _progress(notice: _core.ProgressNotice, elapsed: float) -> str:
     """One line on where the run stands after an outer iteration."""
     return (
         f"Iteration {notice.iteration}, {elapsed:.1f} s: "
-        f"length {sum(notice.lengths):.3f} mm, "
-        f"energy {sum(notice.energies):.3f}, "
+        f"length {notice.length:.3f} mm, "
+        f"energy {notice.energy:.3f}, "
         f"largest change {notice.change:.2e} mm"
     )
 

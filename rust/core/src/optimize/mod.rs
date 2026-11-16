@@ -1,5 +1,5 @@
 //! The optimizer's run loop: every chain, coupled section and moving via of
-//! a problem as one L-BFGS problem, given bursts until it settles.
+//! a run as one L-BFGS problem, given bursts until it settles.
 //!
 //! The energy of a problem (`problem`) is the sum of each chain's energy in
 //! its static field plus the other chains on its layer, taken as one
@@ -8,9 +8,9 @@
 //! (`field::smooth::smooth_minimum`), so where a quadrature point of one
 //! chain sees another chain, the obstacle term's gradient also reaches, by
 //! that chain's share, the two vertices of its edge nearest the point. The
-//! checks take exact distances. Without moving vias the layers do not
-//! interact, so each layer is a problem of its own, and an outer iteration
-//! (`advance`) gives every problem that has not settled one burst
+//! checks take exact distances. Chains on different layers do not see each
+//! other, but a run's every layer is one problem, and an outer iteration
+//! (`advance`) gives it one burst until it has settled
 //! (`state::State::step`): lay each chain out again at the spacing of the
 //! level it runs at, simplified and its long edges split, and each section
 //! so at the final spacing (`state`), run L-BFGS over every free
@@ -67,23 +67,23 @@
 //! the energy's tolerance hold per member, so that a problem and far-apart
 //! copies of it stall together. Members that have settled still add their
 //! tolerance, so one still gaining energy while its length grows may stop
-//! sooner beside them. The run converges when every problem has settled,
-//! none of them on abnormal bursts, and otherwise stops at the iteration
+//! sooner beside them. The run converges when the problem has settled, not
+//! on abnormal bursts, and otherwise stops at the iteration
 //! cap or at the time limit, which ends the running burst before its next
 //! line-search trial, at its last accepted point (`burst`), or a step
 //! before its burst (`state::State::step`); a cut burst's
 //! state goes through the checks and the
-//! guard as any, and it settles nothing. The run reports whether some
+//! guard as any, and it settles nothing. The run reports whether the
 //! problem owes a burst at its level (`Notice::Owing`,
 //! `state::State::owes_burst`), so that the caller's time limit lets
 //! those bursts reach an iteration: each burst tells its stop whether it
-//! has accepted one (`burst::Stop`). At the time limit the caller may hand every problem still
-//! before the final level over to its next level, as if it had settled
-//! there (`state::State::hand_over`), and advance again, so that a time
-//! limit counts once for each level and every level a problem is handed
-//! to runs a burst. Each problem keeps
-//! its best state either way. A run where every problem settled without
-//! moving anything had nothing to do.
+//! has accepted one (`burst::Stop`). At the time limit the caller may hand
+//! the problem, if still before the final level, over to its next level, as
+//! if it had settled there (`state::State::hand_over`), and advance again,
+//! so that a time limit counts once for each level and every level the
+//! problem is handed to runs a burst. The problem keeps its best state
+//! either way. A run where the problem settled without moving anything had
+//! nothing to do.
 
 pub mod checks;
 pub mod layout;
@@ -224,8 +224,6 @@ pub fn stalled(
 /// What one burst cost and moved, for the run's caller to log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BurstReport {
-    /// The problem, by its place among those the run advanced.
-    pub problem: usize,
     /// The level of the schedule it ran at (`state::Shared::spacing_at`).
     pub level: usize,
     pub iterations: u64,
@@ -253,7 +251,6 @@ pub struct BurstReport {
 pub enum Notice {
     /// L-BFGS ended a burst of the problem abnormally, `streak` in a row.
     Abnormal {
-        problem: usize,
         streak: u32,
     },
     Burst(BurstReport),
@@ -261,23 +258,22 @@ pub enum Notice {
     /// coarsest before its first burst, each finer one, and the final one,
     /// as a coarser one hands over.
     Stage {
-        problem: usize,
         level: usize,
     },
-    /// Whether some problem owes a burst at its level
+    /// Whether the problem owes a burst at its level
     /// (`state::State::owes_burst`): at the start of `advance` and after
     /// each step that changes it, so that the caller's time limit waits for
     /// the bursts owed.
     Owing {
         owing: bool,
     },
-    /// After an outer iteration: its number, its largest change, and each
+    /// After an outer iteration: its number, its largest change, and the
     /// problem's length and energy.
     Progress {
         iteration: u64,
         change: f64,
-        lengths: Vec<f64>,
-        energies: Vec<f64>,
+        length: f64,
+        energy: f64,
     },
 }
 
@@ -320,27 +316,24 @@ pub(crate) fn asked<E>(expired: &mut Option<&mut Expired<'_, E>>) -> Result<bool
 /// How an `advance` ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Every problem settled, none on abnormal bursts, and none moved
-    /// anything.
+    /// The problem settled, not on abnormal bursts, and moved nothing.
     NothingToDo,
-    /// Every problem settled, none on abnormal bursts.
+    /// The problem settled, not on abnormal bursts.
     Converged,
-    /// Every problem settled, some on abnormal bursts, or one given up on
-    /// before.
+    /// The problem settled on abnormal bursts, or was given up on before.
     GaveUp,
     IterationCap,
     /// `expired` answered true.
     TimeLimit,
 }
 
-/// Outer iterations of `problems` from `iteration` until `cap`, each giving
-/// every problem that has not settled one burst, until every problem has
-/// settled or `expired` answers true, asked after each step and within it
-/// (`State::step`). `gave_up`
-/// says some problem was given up on before. After each outer iteration it
-/// reports its progress.
+/// Outer iterations of `problem` from `iteration` until `cap`, each giving
+/// it one burst unless it has settled, until it has settled or `expired`
+/// answers true, asked after each step and within it (`State::step`).
+/// `gave_up` says the problem was given up on before. After each outer
+/// iteration it reports its progress.
 pub fn advance<E: From<NotFinite>>(
-    problems: &mut [&mut State],
+    problem: &mut State,
     iteration: &mut u64,
     cap: u64,
     gave_up: bool,
@@ -348,40 +341,33 @@ pub fn advance<E: From<NotFinite>>(
     bursts: &mut dyn Bursts<E>,
     report: &mut dyn FnMut(Notice) -> Result<(), E>,
 ) -> Result<Outcome, E> {
-    let owing_of = |problems: &[&mut State]| problems.iter().any(|p| p.owes_burst());
-    let mut owing = owing_of(problems);
+    let mut owing = problem.owes_burst();
     report(Notice::Owing { owing })?;
     while *iteration < cap {
         *iteration += 1;
         let mut out_of_time = false;
         let mut change = 0.0;
-        for n in 0..problems.len() {
-            if problems[n].settled {
-                continue;
-            }
-            let stepped = problems[n].step(n, expired.as_deref_mut(), bursts, report)?;
+        if !problem.settled {
+            let stepped = problem.step(expired.as_deref_mut(), bursts, report)?;
             if let Some(stepped) = stepped {
                 change = python_max(change, stepped);
             }
-            if owing_of(problems) != owing {
+            if problem.owes_burst() != owing {
                 owing = !owing;
                 report(Notice::Owing { owing })?;
             }
-            if stepped.is_none() || asked(&mut expired)? {
-                out_of_time = true;
-                break;
-            }
+            out_of_time = stepped.is_none() || asked(&mut expired)?;
         }
         report(Notice::Progress {
             iteration: *iteration,
             change,
-            lengths: problems.iter().map(|p| p.length()).collect(),
-            energies: problems.iter().map(|p| p.energy).collect(),
+            length: problem.length(),
+            energy: problem.energy,
         })?;
-        if problems.iter().all(|p| p.settled) {
-            return Ok(if gave_up || problems.iter().any(|p| p.gave_up()) {
+        if problem.settled {
+            return Ok(if gave_up || problem.gave_up() {
                 Outcome::GaveUp
-            } else if !problems.iter().any(|p| p.moved) {
+            } else if !problem.moved {
                 Outcome::NothingToDo
             } else {
                 Outcome::Converged

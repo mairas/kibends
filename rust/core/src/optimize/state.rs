@@ -1517,7 +1517,6 @@ impl State {
     /// level it enters.
     pub fn step<E: From<NotFinite>>(
         &mut self,
-        n: usize,
         mut expired: Option<&mut Expired<'_, E>>,
         bursts: &mut dyn Bursts<E>,
         report: &mut dyn FnMut(Notice) -> Result<(), E>,
@@ -1527,10 +1526,7 @@ impl State {
         }
         if self.unstarted {
             self.enter(0)?;
-            report(Notice::Stage {
-                problem: n,
-                level: 0,
-            })?;
+            report(Notice::Stage { level: 0 })?;
             if asked(&mut expired)? {
                 return Ok(None);
             }
@@ -1628,7 +1624,6 @@ impl State {
             self.abnormal_bursts += 1;
             self.abnormal_streak += 1;
             report(Notice::Abnormal {
-                problem: n,
                 streak: self.abnormal_streak,
             })?;
         } else {
@@ -1666,7 +1661,6 @@ impl State {
         self.coarse_descended |= self.coarse() && descended;
         let rest = began.elapsed().as_secs_f64() - ran.evaluating;
         report(Notice::Burst(BurstReport {
-            problem: n,
             level: self.level,
             iterations: ran.iterations,
             evaluations: ran.evaluations,
@@ -1692,7 +1686,7 @@ impl State {
         if self.settled && self.coarse() {
             let level = self.level + 1;
             self.enter(level)?;
-            report(Notice::Stage { problem: n, level })?;
+            report(Notice::Stage { level })?;
         }
         Ok(Some(change))
     }
@@ -2069,7 +2063,7 @@ mod tests {
     fn run(problem: &mut State, bursts: &mut dyn Bursts<NotFinite>, cap: u64) -> Outcome {
         let mut iteration = 0;
         advance(
-            &mut [problem],
+            problem,
             &mut iteration,
             cap,
             false,
@@ -2460,25 +2454,14 @@ mod tests {
     fn stages(p: &mut State, bursts: &mut dyn Bursts<NotFinite>) -> (Vec<usize>, Vec<usize>) {
         let (mut entered, mut ran) = (Vec::new(), Vec::new());
         let mut iteration = 0;
-        advance(
-            &mut [p],
-            &mut iteration,
-            100,
-            false,
-            None,
-            bursts,
-            &mut |notice| {
-                match notice {
-                    Notice::Stage { problem, level } => {
-                        assert_eq!(problem, 0);
-                        entered.push(level);
-                    }
-                    Notice::Burst(b) => ran.push(b.level),
-                    _ => {}
-                }
-                Ok(())
-            },
-        )
+        advance(p, &mut iteration, 100, false, None, bursts, &mut |notice| {
+            match notice {
+                Notice::Stage { level } => entered.push(level),
+                Notice::Burst(b) => ran.push(b.level),
+                _ => {}
+            }
+            Ok(())
+        })
         .expect("finite");
         (entered, ran)
     }
@@ -2502,19 +2485,13 @@ mod tests {
         let mut notices = Vec::new();
         let mut bursts = toward(0.5);
 
-        p.step(0, None, &mut bursts, &mut |notice| {
+        p.step(None, &mut bursts, &mut |notice| {
             notices.push(notice);
             Ok(())
         })
         .expect("finite");
 
-        assert_eq!(
-            notices[0],
-            Notice::Stage {
-                problem: 0,
-                level: 0
-            }
-        );
+        assert_eq!(notices[0], Notice::Stage { level: 0 });
         assert!(matches!(&notices[1], Notice::Burst(b) if b.level == 0));
         assert!(bursts.counts[0][0] * 3 < fine);
         assert!(!p.unstarted);
@@ -2559,7 +2536,6 @@ mod tests {
             let asked = std::cell::Cell::new(0);
             let change = fresh()
                 .step(
-                    0,
                     Some(&mut expiring(usize::MAX, &asked)),
                     &mut toward(0.5),
                     &mut |_| Ok(()),
@@ -2573,12 +2549,9 @@ mod tests {
                 let mut bursts = toward(0.5);
 
                 let change = p
-                    .step(
-                        0,
-                        Some(&mut expiring(from, &asked)),
-                        &mut bursts,
-                        &mut |_| Ok(()),
-                    )
+                    .step(Some(&mut expiring(from, &asked)), &mut bursts, &mut |_| {
+                        Ok(())
+                    })
                     .expect("finite");
 
                 assert_eq!(change, None, "from question {from}");
@@ -2598,7 +2571,7 @@ mod tests {
         let mut expired = || Ok::<_, NotFinite>(true);
 
         let outcome = advance(
-            &mut [&mut p],
+            &mut p,
             &mut iteration,
             100,
             false,
@@ -2668,7 +2641,7 @@ mod tests {
         let entered = p.best.clone();
 
         let mut straighten = toward(0.0);
-        p.step(0, None, &mut straighten, &mut |_| Ok(()))
+        p.step(None, &mut straighten, &mut |_| Ok(()))
             .expect("finite");
 
         // Straight across the post fails the guard; straight in free space
@@ -2679,7 +2652,7 @@ mod tests {
         assert_eq!(p.now, p.best);
         // The chain put back is held for the rest of the level: the next
         // burst moves only the other.
-        p.step(0, None, &mut straighten, &mut |_| Ok(()))
+        p.step(None, &mut straighten, &mut |_| Ok(()))
             .expect("finite");
         let pinned_ends = 2;
         assert_eq!(
@@ -2718,7 +2691,7 @@ mod tests {
         p.enter(0).expect("finite");
 
         let change = p
-            .step(0, None, &mut toward(0.0), &mut |_| Ok(()))
+            .step(None, &mut toward(0.0), &mut |_| Ok(()))
             .expect("finite")
             .expect("its burst ran");
 
@@ -2749,16 +2722,8 @@ mod tests {
 
     fn advanced(p: &mut State, bursts: &mut dyn Bursts<NotFinite>) -> (Outcome, u64) {
         let mut iteration = 0;
-        let outcome = advance(
-            &mut [p],
-            &mut iteration,
-            100,
-            false,
-            None,
-            bursts,
-            &mut |_| Ok(()),
-        )
-        .expect("finite");
+        let outcome =
+            advance(p, &mut iteration, 100, false, None, bursts, &mut |_| Ok(())).expect("finite");
         (outcome, iteration)
     }
 
@@ -2829,7 +2794,7 @@ mod tests {
     fn a_burst_cut_before_any_iteration_does_not_descend() {
         for (iterations, at_inputs) in [(0, true), (1, false)] {
             let mut p = coarse_problem(Arc::new(FreeSpace), CUT_RISE, &LEVELS);
-            p.step(0, None, &mut cut_after(iterations), &mut |_| Ok(()))
+            p.step(None, &mut cut_after(iterations), &mut |_| Ok(()))
                 .expect("finite");
 
             p.finish().expect("finite");
@@ -2844,7 +2809,7 @@ mod tests {
     fn a_handover_after_a_burst_cut_before_any_iteration_hands_no_descent() {
         for (iterations, descended) in [(0, false), (1, true)] {
             let mut p = coarse_problem(Arc::new(FreeSpace), CUT_RISE, &LEVELS);
-            p.step(0, None, &mut cut_after(iterations), &mut |_| Ok(()))
+            p.step(None, &mut cut_after(iterations), &mut |_| Ok(()))
                 .expect("finite");
 
             assert_eq!(p.hand_over().expect("finite"), Some(0));
@@ -2879,7 +2844,7 @@ mod tests {
     #[test]
     fn the_final_level_keeps_the_inputs_over_a_coarse_best_with_more_energy() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
-        p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+        p.step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         assert_eq!(p.level, 0);
         // A coarse best bowed twice as high as the inputs, as the guard
@@ -2926,7 +2891,7 @@ mod tests {
         p.enter(0).expect("finite");
         // A normal burst descends at the coarsest level, then a streak that
         // moves nothing gives it up, as at a pad's corner.
-        p.step(0, None, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
+        p.step(None, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
             .expect("finite");
         assert!(!p.settled);
         let mut abnormal = Still {
@@ -2934,25 +2899,25 @@ mod tests {
             ..still(0, 0)
         };
         for _ in 0..MAX_ABNORMAL_BURSTS {
-            p.step(0, None, &mut abnormal, &mut |_| Ok(()))
+            p.step(None, &mut abnormal, &mut |_| Ok(()))
                 .expect("finite");
         }
         assert_eq!(p.level, 1);
 
         // Settled so, a level hands the descent over in turn.
         for level in 2..=LEVELS.len() {
-            p.step(0, None, &mut abnormal, &mut |_| Ok(()))
+            p.step(None, &mut abnormal, &mut |_| Ok(()))
                 .expect("finite");
             assert_eq!(p.level, level);
         }
-        p.step(0, None, &mut abnormal, &mut |_| Ok(()))
+        p.step(None, &mut abnormal, &mut |_| Ok(()))
             .expect("finite");
 
         assert!(p.settled);
         assert!(!p.gave_up());
         // Only the first burst after a handover.
         p.settled = false;
-        p.step(0, None, &mut abnormal, &mut |_| Ok(()))
+        p.step(None, &mut abnormal, &mut |_| Ok(()))
             .expect("finite");
         assert!(!p.settled);
     }
@@ -3000,7 +2965,7 @@ mod tests {
         let mut limited = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         let mut settled = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         for p in [&mut limited, &mut settled] {
-            p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+            p.step(None, &mut toward(0.5), &mut |_| Ok(()))
                 .expect("finite");
             assert_eq!(p.level, 0);
         }
@@ -3032,7 +2997,7 @@ mod tests {
             abnormal: true,
             ..toward(0.5)
         };
-        p.step(0, None, &mut abnormal, &mut |_| Ok(()))
+        p.step(None, &mut abnormal, &mut |_| Ok(()))
             .expect("finite");
         p.enter(LEVELS.len() - 1).expect("finite");
 
@@ -3048,13 +3013,13 @@ mod tests {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         assert!(!p.ran);
         p.enter(0).expect("finite");
-        p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+        p.step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         assert_eq!(p.level, 0);
         assert!(p.ran);
 
         // A burst that settles its level hands over to one it has not run at.
-        p.step(0, None, &mut still(0, 0), &mut |_| Ok(()))
+        p.step(None, &mut still(0, 0), &mut |_| Ok(()))
             .expect("finite")
             .expect("its burst ran");
         assert_eq!(p.level, 1);
@@ -3070,7 +3035,7 @@ mod tests {
         let mut iteration = 0;
 
         advance(
-            &mut [&mut p],
+            &mut p,
             &mut iteration,
             100,
             false,
@@ -3095,13 +3060,13 @@ mod tests {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         // Not started, it has no level of its own yet.
         assert!(!p.owes_burst());
-        p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+        p.step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         assert!(!p.owes_burst());
 
         p.hand_over().expect("finite");
         assert!(p.owes_burst());
-        p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+        p.step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         assert!(!p.owes_burst());
 
@@ -3113,7 +3078,7 @@ mod tests {
     fn the_time_limit_at_the_final_level_hands_nothing_over() {
         let mut p = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         p.enter(LEVELS.len()).expect("finite");
-        p.step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+        p.step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         let (best, now) = (p.best.clone(), p.now.clone());
 
@@ -3128,7 +3093,7 @@ mod tests {
         let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         earlier.enter(0).expect("finite");
         earlier
-            .step(0, None, &mut toward(0.0), &mut |_| Ok(()))
+            .step(None, &mut toward(0.0), &mut |_| Ok(()))
             .expect("finite");
         // Built again with the post under the straightened chain, which
         // puts it back at its input.
@@ -3153,13 +3118,13 @@ mod tests {
     fn a_problem_built_again_owes_the_burst_its_earlier_one_owed() {
         let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         earlier
-            .step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+            .step(None, &mut toward(0.5), &mut |_| Ok(()))
             .expect("finite");
         earlier.hand_over().expect("finite");
         for burst in [false, true] {
             if burst {
                 earlier
-                    .step(0, None, &mut toward(0.5), &mut |_| Ok(()))
+                    .step(None, &mut toward(0.5), &mut |_| Ok(()))
                     .expect("finite");
             }
             let mut again = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
@@ -3176,7 +3141,7 @@ mod tests {
         let mut earlier = coarse_problem(Arc::new(FreeSpace), BOW, &LEVELS);
         earlier.enter(0).expect("finite");
         earlier
-            .step(0, None, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
+            .step(None, &mut toward(ABNORMAL_FACTOR), &mut |_| Ok(()))
             .expect("finite");
         assert_eq!(earlier.level, 0);
         assert!(earlier.descended);
@@ -3678,7 +3643,7 @@ mod tests {
         let drawn = p.now.points[0].clone();
 
         let change = p
-            .step(0, None, &mut still(0, 0), &mut |_| Ok(()))
+            .step(None, &mut still(0, 0), &mut |_| Ok(()))
             .expect("finite")
             .expect("its burst ran");
 
