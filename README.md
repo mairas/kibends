@@ -203,10 +203,9 @@ other nets' copper still repel it. Tracks and copper shapes of the via's own
 net do not affect it, and its net's pads only stop it from overlapping them
 (see `--allow-via-in-pad`). Each moving via adds to the run's time.
 
-All the chains of one layer are one problem, which a single optimizer run
-moves at once; a moving via joins every layer it spans, and the chains on
-them, into one problem. The optimizer works in bursts: each burst moves
-every vertex and via of a problem at once, and undoes any move that would
+A run's chains, sections and moving vias, on every layer, are one problem,
+which a single optimizer run moves at once. The optimizer works in bursts:
+each burst moves every vertex and via of the problem at once, and undoes any move that would
 bring an edge or a via newly into another item's clearance. An outer iteration gives every
 problem that has not settled one burst. A problem settles when a burst
 barely changes it or its energy stops improving. Each evaluation of a
@@ -273,9 +272,7 @@ stops it at once, at whatever spacing each problem runs: it prints "Stopping; pr
 to abort" at once, the optimizer ends the running burst, and the run simplifies and
 commits the best result found. Stopped before optimizing, the
 optimizer's setup included, it commits nothing. The setup stops only
-between the problems it builds, one for the layers that moving vias tie
-together and one for each other layer, so a selection that forms one
-problem, such as a whole board with vias, waits for its whole setup:
+once it has built the problem, so a stop waits for the whole setup:
 about 10 s on a large board. A second Ctrl-C, or one
 after optimizing, ends the run with
 "nothing committed"; one while KiCad applies the commit may leave it
