@@ -1318,15 +1318,12 @@ class TestErrors:
                 "\n".join(v.describe(UserFrame()) for v in VIOLATIONS),
             ),
             (
-                BoardChangedError(
-                    "Selected items changed in KiCad since they were read: "
-                    "track t1, via v2; select them again and rerun"
-                ),
+                BoardChangedError(("t1", "v2")),
                 Icon.WARNING,
                 "The board changed during the run",
                 "Tracks or vias the run read were edited in KiCad meanwhile. Select "
                 "them again and Run.",
-                "track t1, via v2",
+                "t1, v2",
             ),
             (
                 CreateItemsError("KiCad created 0 of 2 tracks"),

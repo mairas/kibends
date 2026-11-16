@@ -199,9 +199,10 @@ class TestArcs:
         board.tracks = ARC_EDITS[edit]
         changed = "a" if edit == "track now an arc" else "arc"
 
-        with pytest.raises(commit.BoardChangedError, match=f": {changed};"):
+        with pytest.raises(commit.BoardChangedError, match=f": {changed};") as e:
             commit_selection(board)
 
+        assert e.value.changed == (changed,)
         assert board.calls == []
 
 

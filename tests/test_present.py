@@ -180,7 +180,7 @@ class TestErrorMessage:
         [
             SelectionError("The selection holds no tracks or vias"),
             ChainError("no tracks that can be modified"),
-            BoardChangedError("a track changed in KiCad"),
+            BoardChangedError(("t1",)),
             CommitUncertainError("Lost the connection; it may have landed"),
             CreateItemsError("KiCad created 0 of 2 tracks"),
             DeleteItemsError("KiCad deleted 0 of 2 tracks"),

@@ -34,7 +34,6 @@ outcome (`Outcome`): its ending and figures (`present.figures`), or what
 failed and what to do.
 """
 
-import re
 import threading
 import traceback
 from collections.abc import Callable, Mapping
@@ -988,8 +987,6 @@ GAVE_UP = Outcome(
     "Repulsion or Repulsion range values under Advanced.",
 )
 
-_CHANGED_ITEMS = re.compile(r": (.*); select them again")
-
 
 def failure(error: BaseException) -> Outcome:
     """What the report area says of a run that failed with `error`."""
@@ -1038,14 +1035,13 @@ def failure(error: BaseException) -> Outcome:
                 detail="\n".join(v.describe(error.frame) for v in places),
             )
         case BoardChangedError():
-            items = _CHANGED_ITEMS.search(str(error))
             return Outcome(
                 Icon.WARNING,
                 "The board changed during the run",
                 NOTHING_COMMITTED,
                 "Tracks or vias the run read were edited in KiCad meanwhile. "
                 "Select them again and Run.",
-                detail=str(error) if items is None else items[1],
+                detail=", ".join(error.changed),
             )
         case CommitUncertainError():
             return Outcome(
