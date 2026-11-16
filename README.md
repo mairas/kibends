@@ -280,10 +280,9 @@ landed, and the run says to check KiCad's undo history.
 Per-chain figures are not printed: `--plot` titles each chain's subplot
 with its length before and after.
 It reports when it starts setting up the optimizer, and before the first
-iteration how long setup took, how many problems it split the selection into
-(the layers or groups of layers the moving tracks and vias tie together), and
-their starting summed length and energy. With coarse spacings, it says
-when each problem starts at each of them ("Optimizing the chains on F.Cu
+iteration how long setup took and the starting summed length and energy.
+With coarse spacings, it says when the run starts at each of them
+("Optimizing the chains on F.Cu
 coarsely, at 1.6 mm spacing") and at the final spacing ("Refining the chains
 on F.Cu at 0.1 mm spacing"). When it holds a differential
 pair's section, it says how many chains and vias it put back.

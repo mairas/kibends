@@ -310,57 +310,47 @@ def optimize_chains(
     placed = _problems(
         chains, blocks, moving_vias, params, settings, static_vias, stopped_in_setup
     )
-    problems = [p.problem for p in placed]
-    moving = [p for p in problems if p.moving]
-    unclean = [v for p in moving for v in p.start_violations(arc_chords)]
-    if unclean:
-        raise InsideClearanceError(unclean)
+    if not placed:
+        stopped_in_setup()
+        return RunResult((), Termination.NOTHING_TO_DO, 0)
+    (whole,) = placed
+    problem = whole.problem
+    if problem.moving:
+        unclean = problem.start_violations(arc_chords)
+        if unclean:
+            raise InsideClearanceError(unclean)
     stopped_in_setup()
-    # A problem given up on before a hold stays given up on, though the
+    # Given up on before a hold, the problem stays given up on, though the
     # problem that replaces it converges.
-    gave_up: dict[str, int] = {}
+    gave_up: tuple[str, int] | None = None
 
     def sections(*, best: bool) -> tuple[PairResult, ...]:
-        by_section = {
-            i: p.problem.pair_result(len(p.chains) + k, best=best)
-            for p in placed
-            for k, i in enumerate(p.sections)
-        }
-        return tuple(by_section[k] for k in range(len(blocks)))
+        return tuple(
+            problem.pair_result(len(chains) + k, best=best) for k in range(len(blocks))
+        )
 
     def result(termination: Termination, iterations: int, *, best: bool) -> RunResult:
-        by_index = {
-            i: p.problem.result(k, best=best)
-            for p in placed
-            for k, i in enumerate(p.chains)
-        }
-        by_via = {
-            v: p.problem.via_result(k, best=best)
-            for p in placed
-            for k, v in enumerate(p.vias)
-        }
-        given_up = dict(gave_up)
-        for p in problems:
-            if p.gave_up:
-                given_up.setdefault(p.description, p.abnormal_streak)
+        given_up = gave_up
+        if given_up is None and problem.gave_up:
+            given_up = (problem.description, problem.abnormal_streak)
         return RunResult(
-            tuple(by_index[i] for i in range(len(chains))),
+            tuple(problem.result(i, best=best) for i in range(len(chains))),
             termination,
             iterations,
-            vias=tuple(by_via[v] for v in range(len(vias))),
+            vias=tuple(problem.via_result(v, best=best) for v in range(len(vias))),
             pairs=sections(best=best),
-            gave_up=tuple(given_up.items()),
-            abnormal=tuple(
-                (p.description, p.abnormal_bursts)
-                for p in problems
-                if p.abnormal_bursts
+            gave_up=() if given_up is None else (given_up,),
+            abnormal=(
+                ((problem.description, problem.abnormal_bursts),)
+                if problem.abnormal_bursts
+                else ()
             ),
         )
 
-    if not moving:
+    if not problem.moving:
         return result(Termination.NOTHING_TO_DO, 0, best=False)
     begun = clock()
-    logger.info(_starting(moving, begun - set_up))
+    logger.info(_starting(problem, begun - set_up))
     origin = begun if started is None else started
     limit = settings.time_limit
     deadline = None if limit is None else begun + limit
@@ -369,7 +359,7 @@ def optimize_chains(
     # Cast, as the checker would otherwise take it as None where `ended`
     # has set it.
     first_end = cast(Termination | None, None)
-    # Whether some problem owes a burst at its level, as the run last said
+    # Whether the problem owes a burst at its level, as the run last said
     # (`_core.OwingNotice`): a burst then runs past the limit to its first
     # accepted iteration.
     owing = False
@@ -380,7 +370,7 @@ def optimize_chains(
 
     def ended(iterated: bool = False) -> bool:
         """Whether `stop` or the time limit ends the run, the limit while
-        some problem owes a burst only once the running one has `iterated`."""
+        the problem owes a burst only once the running one has `iterated`."""
         nonlocal first_end
         if stop is not None and stop():
             first_end = first_end or Termination.STOPPED
@@ -391,7 +381,7 @@ def optimize_chains(
         return False
 
     expired = None if deadline is None and stop is None else ended
-    report = _Report(moving, clock, origin, begun, owe, on_progress)
+    report = _Report(problem, clock, origin, begun, owe, on_progress)
     report.start()
 
     def burst(
@@ -410,12 +400,12 @@ def optimize_chains(
         unless at `cap`, which then ends the run."""
         nonlocal deadline, first_end
         while True:
-            report.read_levels()
+            report.read_level()
             outcome, iteration = _core.advance(
-                [p.state for p in moving],
+                [problem.state] if problem.moving else [],
                 iteration,
                 cap,
-                bool(gave_up),
+                gave_up is not None,
                 expired,
                 burst,
                 report,
@@ -425,7 +415,7 @@ def optimize_chains(
                 termination is not Termination.TIME_LIMIT
                 or first_end is not Termination.TIME_LIMIT
                 or limit is None
-                or not any(p.state.before_final for p in moving)
+                or not (problem.moving and problem.state.before_final)
             ):
                 return termination, iteration
             if iteration >= cap:
@@ -433,7 +423,7 @@ def optimize_chains(
                 # after any cap.
                 first_end = None
                 return Termination.ITERATION_CAP, iteration
-            _hand_over(moving)
+            _hand_over(problem)
             deadline = clock() + limit
             first_end = None
 
@@ -455,35 +445,29 @@ def optimize_chains(
             blocks[k] = pair_block(
                 replace(blocks[k].given, hold=Hold.CROWDING), settings.spacing
             )
-        for n, p in enumerate(placed):
-            here = [k for k in held if k in p.sections]
-            if not here:
-                continue
-            if p.problem.gave_up:
-                gave_up.setdefault(p.problem.description, p.problem.abnormal_streak)
-            problem = _problem(
-                chains,
-                blocks,
-                moving_vias,
-                params,
-                settings,
-                static_vias,
-                layers=p.layers,
-                on=p.chains,
-                sections=p.sections,
-                joined=p.vias,
-            )
-            members, vias_back = problem.go_on_from(p.problem)
-            logger.info(
-                f"Holding {len(here)} coupled section{'' if len(here) == 1 else 's'} "
-                f"of {problem.description} as drawn and going on; put back as "
-                f"they started: {members} other member{'' if members == 1 else 's'} "
-                f"and {vias_back} via{'' if vias_back == 1 else 's'}"
-            )
-            placed[n] = replace(p, problem=problem)
-        problems = [p.problem for p in placed]
-        moving = [p for p in problems if p.moving]
-        report.problems = moving
+        if gave_up is None and problem.gave_up:
+            gave_up = (problem.description, problem.abnormal_streak)
+        rebuilt = _problem(
+            chains,
+            blocks,
+            moving_vias,
+            params,
+            settings,
+            static_vias,
+            layers=whole.layers,
+            on=whole.chains,
+            sections=whole.sections,
+            joined=whole.vias,
+        )
+        members, vias_back = rebuilt.go_on_from(problem)
+        logger.info(
+            f"Holding {len(held)} coupled section{'' if len(held) == 1 else 's'} "
+            f"of {rebuilt.description} as drawn and going on; put back as "
+            f"they started: {members} other member{'' if members == 1 else 's'} "
+            f"and {vias_back} via{'' if vias_back == 1 else 's'}"
+        )
+        problem = rebuilt
+        report.problem = problem
         cap = iteration + settings.max_iterations
         # A stop or the time limit in the iteration that converged still
         # ends the run, as the hold has undone the convergence.
@@ -494,15 +478,15 @@ def optimize_chains(
     if termination is Termination.TIME_LIMIT and first_end is Termination.STOPPED:
         termination = Termination.STOPPED
     # A run stopped at a coarse level still ends at the final spacing.
-    before_final = any(p.state.before_final for p in moving)
-    for p in moving:
-        p.state.finish()
+    before_final = problem.moving and problem.state.before_final
+    if problem.moving:
+        problem.state.finish()
     final = replace(
         result(termination, iteration, best=True),
         before_final_spacing=before_final,
     )
-    if final.gave_up and sum(p.best_energy for p in moving) >= sum(
-        p.input_energy for p in moving
+    if final.gave_up and (
+        not problem.moving or problem.best_energy >= problem.input_energy
     ):
         return replace(final, termination=Termination.ABNORMAL)
     return final
@@ -524,46 +508,45 @@ class _Report:
     (`_burst_done`), and the progress after each outer iteration at DEBUG,
     and at INFO once `PROGRESS_INTERVAL` has passed by `clock` since
     `shown`, the last INFO line, and handed to `on_progress`, which first
-    hears the start (`start`). A problem
-    entering a level is logged at INFO (`_stage`), and whether some problem
-    owes a burst at its level goes to `on_owing`, and kept with the levels
-    read before the run advances (`read_levels`) to hand on in the
-    progress. The notices name `problems` by their place; the elapsed
-    seconds count from `origin`."""
+    hears the start (`start`). The problem entering a level is logged at
+    INFO (`_stage`), and whether it owes a burst at its level goes to
+    `on_owing`, and kept with the level read before the run advances
+    (`read_level`) to hand on in the progress. The elapsed seconds count
+    from `origin`."""
 
     def __init__(
         self,
-        problems: Sequence[_Problem],
+        problem: _Problem,
         clock: Callable[[], float],
         origin: float,
         shown: float,
         on_owing: Callable[[bool], None],
         on_progress: Callable[[Progress], None] | None = None,
     ) -> None:
-        self.problems = problems
+        self.problem = problem
         self.clock = clock
         self.origin = origin
         self.shown = shown
         self.on_owing = on_owing
         self.on_progress = on_progress
-        self.levels: list[int] = []
-        self.read_levels()
+        self.level = 0
+        self.read_level()
 
-    def read_levels(self) -> None:
-        """Take each problem's level from its state, which `_core.advance`
-        holds while it reports: before each call to it, the levels it
+    def read_level(self) -> None:
+        """Take the problem's level from its state, which `_core.advance`
+        holds while it reports: before each call to it, the level it
         reports from then on as `_core.StageNotice`s."""
-        self.levels = [p.state.level for p in self.problems]
+        self.level = self.problem.state.level
 
     def start(self) -> None:
         """Hand the run's start, at `shown`, to `on_progress` as iteration 0,
-        at level 0: each problem stands at its inputs, laid out at the final
+        at level 0: the problem stands at its inputs, laid out at the final
         spacing, and its first step enters the coarsest level."""
         self._hand_on(
             self.shown - self.origin,
             0,
-            sum(p.energy for p in self.problems),
-            sum(p.length() for p in self.problems),
+            self.problem.energy,
+            self.problem.length(),
             0,
         )
 
@@ -584,7 +567,7 @@ class _Report:
                 energy,
                 length,
                 level,
-                len(self.problems[0].settings.coarse_spacings) + 1,
+                len(self.problem.settings.coarse_spacings) + 1,
             )
         )
 
@@ -594,16 +577,16 @@ class _Report:
         elif isinstance(notice, _core.AbnormalNotice):
             logger.debug(
                 "L-BFGS ended a burst of "
-                f"{self.problems[notice.problem].description} abnormally, "
+                f"{self.problem.description} abnormally, "
                 f"{notice.streak} in a row"
             )
         elif isinstance(notice, _core.BurstNotice):
-            _burst_done(self.problems[notice.problem], notice)
+            _burst_done(self.problem, notice)
         elif isinstance(notice, _core.OwingNotice):
             self.on_owing(notice.owing)
         elif isinstance(notice, _core.StageNotice):
-            self.levels[notice.problem] = notice.level
-            logger.info(_stage(self.problems[notice.problem], notice.level))
+            self.level = notice.level
+            logger.info(_stage(self.problem, notice.level))
         else:
             now = self.clock()
             elapsed = now - self.origin
@@ -618,7 +601,7 @@ class _Report:
                 notice.iteration,
                 sum(notice.energies),
                 sum(notice.lengths),
-                min(self.levels),
+                self.level,
             )
 
 
@@ -638,23 +621,19 @@ def _stage(problem: _Problem, level: int) -> str:
     return f"Refining {problem.description} at {spacing:g} mm spacing"
 
 
-def _hand_over(problems: Sequence[_Problem]) -> None:
-    """Each of `problems` before the final level goes on at the next, as if
-    it had settled where it runs (`ProblemState.hand_over`). Logs at INFO,
-    for each level they left, its spacing, the next level's and the
-    problems that left it."""
-    left: dict[int, list[str]] = {}
-    for problem in problems:
-        level = problem.state.hand_over()
-        if level is not None:
-            left.setdefault(level, []).append(problem.description)
-    for level, names in sorted(left.items()):
-        settings = problems[0].settings
-        logger.info(
-            f"Time limit reached at {_level_spacing(settings, level):g} mm spacing; "
-            f"going on at {_level_spacing(settings, level + 1):g} mm spacing "
-            f"with {_listed(names)}"
-        )
+def _hand_over(problem: _Problem) -> None:
+    """The problem, before the final level, goes on at the next, as if it
+    had settled where it runs (`ProblemState.hand_over`). Logs at INFO the
+    level's spacing and the next one's."""
+    level = problem.state.hand_over()
+    if level is None:
+        return
+    settings = problem.settings
+    logger.info(
+        f"Time limit reached at {_level_spacing(settings, level):g} mm spacing; "
+        f"going on at {_level_spacing(settings, level + 1):g} mm spacing "
+        f"with {problem.description}"
+    )
 
 
 def _burst_done(problem: _Problem, notice: _core.BurstNotice) -> None:
@@ -829,14 +808,11 @@ def junctions(chains: Sequence[ChainInput]) -> list[list[End]]:
     return list(groups.values())
 
 
-def _starting(problems: Sequence[_Problem], setup: float) -> str:
+def _starting(problem: _Problem, setup: float) -> str:
     """One line on the run about to start, after `setup` seconds of setup."""
-    count = len(problems)
     return (
         f"Optimizer set up in {setup:.1f} s: "
-        f"{count} problem{'' if count == 1 else 's'}, "
-        f"length {sum(p.length() for p in problems):.3f} mm, "
-        f"energy {sum(p.energy for p in problems):.3f}"
+        f"length {problem.length():.3f} mm, energy {problem.energy:.3f}"
     )
 
 

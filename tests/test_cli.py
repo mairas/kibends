@@ -4398,7 +4398,7 @@ def test_says_when_setup_and_optimization_start(
     )
     assert setting_up < starting
     assert re.search(
-        r"set up in \d+\.\d s: 1 problem, length \d+\.\d{3} mm, energy \d+\.\d{3}",
+        r"set up in \d+\.\d s: length \d+\.\d{3} mm, energy \d+\.\d{3}",
         infos[starting],
     )
 
