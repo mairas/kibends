@@ -597,39 +597,53 @@ only slightly, but still replaces its tracks.
 `kibends-panel` opens a small window that runs the same smoothing as
 `kibends smooth` and stays open between runs, for selecting, running,
 looking at the result in KiCad and running again. It needs the `gui`
-extra (see [Installation](#installation)). The window asks to stay above
-other windows; Wayland does not allow that.
+extra (see [Installation](#installation)). The window stays above other
+windows; Wayland does not allow that.
 
-The panel runs on KiCad's selection, or on the whole board when nothing is
-selected, as `--all` does. The line above the button says which, about once
-a second: "12 of 1567 tracks, 3 of 210 vias" for a selection, counting arcs
-and the members of selected groups as tracks, or "Whole board: 1567
-tracks, 210 vias". Run, or Return, starts a run; the status line names
-its stage, and while it optimizes the panel shows the elapsed time, the
-spacing level it has reached when the schedule has more than one (the
-coarsest any layer still runs at), the iteration and a curve of the energy
-falling, a dashed line marking each change of level, where the energy
-jumps as the spacing gets finer. Stop, or Esc, ends the
-optimizer and commits the best result so far, as Ctrl-C does on the
-command line; a stop before optimizing commits nothing. When the run ends,
-the status says how: how it ended, its iterations and time, the chains and
-vias it changed, their total length change, the edge moves it rejected and
-what it read. One run is one undo step in KiCad.
+The top line says what Run will touch, refreshed about once a second: the
+selection ("**Selection**: 12 of 1567 tracks, 3 of 210 vias", counting
+arcs and the members of selected groups as tracks) or, when nothing is
+selected, the whole board, as `--all` does ("**Whole board**: 1567
+tracks, 210 vias"). It also says when KiCad cannot be reached or has no
+board open; Run is disabled until it can run.
 
-The fields are the command line's options of the same names: Ground nets
-(empty: the detected nets, shown greyed), Time limit (empty: none) and,
-under Advanced, Repulsion, Range, Attraction, Attraction range, Spacing and
-Allow via in pad. They start at the defaults each time the panel opens and
-keep their values while it stays open; an invalid value is marked, named in
-the status, and disables Run until fixed. The edge, hole and hole-to-hole
-clearances come from the project file, as without their options on the
-command line (see [Clearances](#clearances)). When KiCad shows another
-board, the panel's title, totals and detected ground nets follow it, and
-Ground nets is cleared.
+The fields are the command line's options of the same names. Ground nets
+shows the nets detected on the board and says how they were found; typing
+in it makes it your list, which "Use detected" or emptying the field
+gives back to detection, and which is dropped when KiCad shows another
+board. It is ignored while Attraction is 0. Time limit is per spacing
+level, empty for none. Under Advanced are Repulsion and its range,
+Attraction and its range, Spacing and Allow via in pad, with Restore
+defaults for them. Lists take commas or spaces and are shown with ", ".
+The fields start at the defaults each time the panel opens and keep
+their values while it stays open. An invalid value disables Run; its
+message shows under the field once you leave it or try to run, and
+trying to run opens Advanced at the field to fix. The edge, hole and
+hole-to-hole clearances come from the project file, as without their
+options on the command line (see [Clearances](#clearances)).
 
-A failure, such as KiCad being busy with an open tool or dialog, or not
-reachable, shows in the status, and Run tries again. Closing the window
-during a run stops it, and the window closes once the commit is done.
+Run, or Return, starts a run. The progress line names the stage, and
+while optimizing the spacing level (the coarsest any layer still runs
+at), its spacing and the iteration, with the time since Run. The graph
+below plots the summed track length's change from the start against the
+iteration, a dashed line marking where each finer spacing level starts;
+its axis always holds 0, the start, and spans at least 0.1 mm or 1 % of
+the starting length, so that a run that hardly moves the tracks shows as
+a nearly flat line. Its figure is the optimizer's, before simplification,
+so it differs slightly from the committed change in the report. Stop, or
+Esc, ends optimizing and commits the best result so far, as Ctrl-C does
+on the command line; a stop before optimizing commits nothing, and from
+simplifying on Stop is disabled.
+
+When the run ends, the report says how it ended and what it committed:
+the length change of the changed chains, the chains and vias it changed,
+its iterations and time, the edge moves it rejected and its scope, and
+the warnings the run logged, if any. One run is one undo step in KiCad. A
+failure, such as KiCad being busy with an open tool or dialog, says what
+failed and what to do, with any long detail in a box with a Copy button;
+Run tries again. Closing the window while the run can still stop asks
+whether to stop it and close once the commit is done; later in a run the
+window closes when the run ends.
 
 ## Development
 
