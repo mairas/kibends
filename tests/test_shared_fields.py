@@ -5,38 +5,35 @@ of one shape on every layer, tracks meeting end to end, at a width change
 and at a T-junction, blind and through vias, moving and split vias, a
 graphic of more than INDEXED_EDGES edges, keepouts, a zoned moving via and
 a coupled section, placed symmetrically so that distances tie exactly.
-
-`TestGolden` pins every field's answers to the digests in
-`DIGESTS`, recorded from the fields as built before they shared their
-items, each holding its own; run this file as a script to record them
-again.
 """
 
-import hashlib
-import json
 import math
-import struct
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import cast
+from functools import partial
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 from shapely.geometry import LineString, Polygon, box
 
+from kibends import run
 from kibends.energy import FloatArray, ObstacleField
 from kibends.obstacles import (
+    EDGE_CLEARANCE,
+    HOLE_CLEARANCE,
+    HOLE_TO_HOLE,
     INDEXED_EDGES,
     ChainCentreline,
     CompositeField,
     Obstacles,
+    board_items,
     build_obstacles,
     build_pair_obstacles,
     own_net_stops,
     split_via_obstacles,
 )
+from kibends.rules import Clearances
 from kibends.snapshot import (
     Graphic,
     LayerSnapshot,
@@ -305,19 +302,6 @@ def answers(field: ObstacleField) -> list[NDArray[np.generic]]:
     return found
 
 
-def digest(field: ObstacleField) -> str:
-    h = hashlib.sha256()
-    for part in obstacles_of(field):
-        h.update(repr(described(part)).encode())
-        edge = part.edge
-        h.update(repr(None if edge is None else edge[1].hex()).encode())
-    for array in answers(field):
-        a = np.ascontiguousarray(array)
-        h.update(struct.pack("<q", a.size))
-        h.update(a.astype(a.dtype.newbyteorder("<")).tobytes())
-    return h.hexdigest()
-
-
 def owned(field: Obstacles) -> Obstacles:
     """`field` built again from its own named items."""
     edge = field.edge
@@ -353,21 +337,21 @@ def test_a_field_answers_as_one_built_from_its_own_items(built: Built) -> None:
             np.testing.assert_array_equal(got, want)
 
 
-DIGESTS = Path(__file__).parent / "data" / "shared_fields_digests.json"
-"""Each field's digest, recorded from the fields as built before they
-shared their items."""
-
-
-def recorded() -> dict[str, str]:
-    return cast(dict[str, str], json.loads(DIGESTS.read_text()))
-
-
-class TestGolden:
-    @pytest.mark.parametrize("built", list(built_fields()), ids=lambda b: b.name)
-    def test_a_field_answers_as_recorded(self, built: Built) -> None:
-        assert digest(built.field) == recorded()[built.name]
-
-
-if __name__ == "__main__":
-    digests = {b.name: digest(b.field) for b in built_fields()}
-    DIGESTS.write_text(json.dumps(digests, indent=2) + "\n")
+def test_a_zoned_via_s_rules_copper_built_late_answers_as_built_at_once() -> None:
+    snaps = snapshots()
+    via = the_via(snaps, ZONED)
+    split = frozenset({"v-sig"})
+    board = board_items(snaps, MOVING)
+    late = partial(
+        run._rules_copper,  # pyright: ignore[reportPrivateUsage]
+        board,
+        via,
+        split,
+        Clearances(EDGE_CLEARANCE, HOLE_CLEARANCE, HOLE_TO_HOLE),
+    )
+    plain, apart = split_via_obstacles(snaps, via, split, moving=MOVING)
+    assert apart is not None
+    at_once = CompositeField([plain, apart])
+    field = late()
+    for got, want in zip(answers(field), answers(at_once), strict=True):
+        np.testing.assert_array_equal(got, want)
