@@ -1,6 +1,7 @@
 """What the command line and the panel both present: the values a run takes
 and the `SmoothOptions` they give (`SmoothValues`, `smooth_options`), the
-checks on the command line's numbers (`finite_problem` and its kin,
+checks on the fields the panel edits (`PanelFields`, `read_panel`) and on
+the command line's numbers (`finite_problem` and its kin,
 `schedule_problem`) and the message for a failure (`error_message`).
 
 The failure messages follow kistitch's cli.py error mapping (MIT,
@@ -8,8 +9,10 @@ Copyright (c) 2025 Hat Labs Oy).
 """
 
 import math
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from itertools import pairwise
 from pathlib import Path
 
@@ -204,6 +207,136 @@ def schedule_problem(spacings: Sequence[float]) -> str | None:
 
 def listed(spacings: Sequence[float]) -> str:
     return " ".join(f"{s:g}" for s in spacings)
+
+
+class Field(Enum):
+    """A field the panel edits, by its label."""
+
+    GROUND_NETS = "Ground nets"
+    TIME_LIMIT = "Time limit"
+    REPULSION = "Repulsion"
+    RANGE = "Range"
+    ATTRACTION = "Attraction"
+    ATTRACTION_RANGE = "Attraction range"
+    SPACING = "Spacing"
+
+
+@dataclass(frozen=True)
+class PanelFields:
+    """The panel's fields as the user typed them, starting at the defaults.
+    Empty ground nets means their detection, an empty time limit none; every
+    other text field needs a value."""
+
+    ground_nets: str = ""
+    """Net names separated by commas or spaces."""
+    time_limit: str = ""
+    repulsion: str = f"{DEFAULT_REPULSION:g}"
+    falloff_range: str = f"{DEFAULT_RANGE:g}"
+    attraction: str = f"{DEFAULT_ATTRACTION:g}"
+    attraction_range: str = f"{DEFAULT_ATTRACTION_RANGE:g}"
+    spacing: str = listed(DEFAULT_SCHEDULE)
+    """Values separated by commas or spaces, coarsest first."""
+    allow_via_in_pad: bool = False
+
+
+@dataclass(frozen=True)
+class Invalid:
+    """The fields that hold no valid value, each with its message, which
+    names the field."""
+
+    messages: Mapping[Field, str]
+
+
+class _FieldError(ValueError):
+    pass
+
+
+_SEPARATORS = re.compile(r"[,\s]+")
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in _SEPARATORS.split(text) if w]
+
+
+def _number(text: str) -> float:
+    try:
+        return float(text)
+    except ValueError:
+        raise _FieldError(f"must be a number, got {text}") from None
+
+
+def _checked(text: str, problem: Callable[[float], str | None]) -> float:
+    value = _number(text.strip())
+    found = problem(value)
+    if found is not None:
+        raise _FieldError(found)
+    return value
+
+
+def _required(text: str, problem: Callable[[float], str | None]) -> float:
+    if not text.strip():
+        raise _FieldError("needs a value")
+    return _checked(text, problem)
+
+
+def _time_limit(text: str) -> float | None:
+    return _checked(text, positive_problem) if text.strip() else None
+
+
+def _schedule(text: str) -> tuple[float, ...]:
+    words = _words(text)
+    if not words:
+        raise _FieldError("needs a value")
+    spacings = tuple(_checked(w, positive_problem) for w in words)
+    found = schedule_problem(spacings)
+    if found is not None:
+        raise _FieldError(found)
+    return spacings
+
+
+def read_panel(fields: PanelFields) -> SmoothValues | Invalid:
+    """The values the panel's fields give, for a run that reads the
+    selection, else the whole board; or, when some field holds no valid
+    value, a message for each such field."""
+    messages: dict[Field, str] = {}
+
+    def read[T](which: Field, parse: Callable[[], T], fallback: T) -> T:
+        try:
+            return parse()
+        except _FieldError as e:
+            messages[which] = f"{which.value}: {e}"
+            return fallback
+
+    values = SmoothValues(
+        ground_nets=tuple(_words(fields.ground_nets)),
+        time_limit=read(Field.TIME_LIMIT, lambda: _time_limit(fields.time_limit), None),
+        repulsion=read(
+            Field.REPULSION,
+            lambda: _required(fields.repulsion, non_negative_problem),
+            DEFAULT_REPULSION,
+        ),
+        falloff_range=read(
+            Field.RANGE,
+            lambda: _required(fields.falloff_range, positive_problem),
+            DEFAULT_RANGE,
+        ),
+        attraction=read(
+            Field.ATTRACTION,
+            lambda: _required(fields.attraction, non_negative_problem),
+            DEFAULT_ATTRACTION,
+        ),
+        attraction_range=read(
+            Field.ATTRACTION_RANGE,
+            lambda: _required(fields.attraction_range, positive_problem),
+            DEFAULT_ATTRACTION_RANGE,
+        ),
+        spacing=read(
+            Field.SPACING, lambda: _schedule(fields.spacing), DEFAULT_SCHEDULE
+        ),
+        allow_via_in_pad=fields.allow_via_in_pad,
+        scope=ScopeOption.SELECTION_ELSE_BOARD,
+    )
+    return Invalid(messages) if messages else values
 
 
 def error_message(error: BaseException, *, panel: bool = False) -> str:

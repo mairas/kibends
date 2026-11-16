@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
@@ -12,12 +14,13 @@ from kibends.commit import (
     DeleteItemsError,
 )
 from kibends.inside import INSIDE_MESSAGE, InsideClearanceError
-from kibends.present import SmoothValues
+from kibends.present import Field, Invalid, PanelFields, SmoothValues
 from kibends.run import (
     ABNORMAL_MESSAGE,
     PLOT_EXTRA_MESSAGE,
     NoBoardError,
     PlotUnavailableError,
+    ScopeOption,
 )
 from kibends.snapshot import SelectionError
 
@@ -112,3 +115,128 @@ class TestSmoothOptions:
         assert from_cli == present.smooth_options(
             SmoothValues(override_names=cli.CLEARANCE_FLAGS)
         )
+
+
+def read(**texts: str) -> SmoothValues:
+    values = present.read_panel(replace(PanelFields(), **texts))
+    assert isinstance(values, SmoothValues)
+    return values
+
+
+def invalid(**texts: str) -> dict[Field, str]:
+    result = present.read_panel(replace(PanelFields(), **texts))
+    assert isinstance(result, Invalid)
+    return dict(result.messages)
+
+
+class TestReadPanel:
+    def test_the_defaults_give_the_command_lines_options_on_the_panels_scope(
+        self,
+    ) -> None:
+        from_cli = cli.smooth_options(cli.parse_args(["smooth"]))
+
+        options = present.smooth_options(read())
+
+        assert options == replace(
+            from_cli, scope=ScopeOption.SELECTION_ELSE_BOARD, override_names={}
+        )
+
+    def test_reads_every_field(self) -> None:
+        fields = PanelFields(
+            ground_nets="GND, PGND  AGND",
+            time_limit="2.5",
+            repulsion="0",
+            falloff_range="0.7",
+            attraction="0",
+            attraction_range="1.5",
+            spacing="0.4 0.05",
+            allow_via_in_pad=True,
+        )
+
+        values = present.read_panel(fields)
+
+        assert values == SmoothValues(
+            ground_nets=("GND", "PGND", "AGND"),
+            time_limit=2.5,
+            repulsion=0.0,
+            falloff_range=0.7,
+            attraction=0.0,
+            attraction_range=1.5,
+            spacing=(0.4, 0.05),
+            allow_via_in_pad=True,
+            scope=ScopeOption.SELECTION_ELSE_BOARD,
+        )
+
+    def test_empty_ground_nets_and_time_limit_mean_detection_and_none(self) -> None:
+        values = read(ground_nets="  ", time_limit=" ")
+
+        assert values.ground_nets == ()
+        assert values.time_limit is None
+
+    def test_a_zero_time_limit_is_refused(self) -> None:
+        assert invalid(time_limit="0") == {
+            Field.TIME_LIMIT: "Time limit: must be positive"
+        }
+
+    @pytest.mark.parametrize(
+        ("field", "name"),
+        [
+            (Field.REPULSION, "repulsion"),
+            (Field.ATTRACTION, "attraction"),
+            (Field.RANGE, "falloff_range"),
+            (Field.ATTRACTION_RANGE, "attraction_range"),
+            (Field.TIME_LIMIT, "time_limit"),
+        ],
+    )
+    def test_a_negative_value_is_refused(self, field: Field, name: str) -> None:
+        message = invalid(**{name: "-1"})[field]
+
+        assert message.startswith(f"{field.value}: must")
+
+    @pytest.mark.parametrize("text", ["inf", "-inf", "nan"])
+    def test_a_value_that_is_not_finite_is_refused(self, text: str) -> None:
+        assert invalid(repulsion=text) == {
+            Field.REPULSION: "Repulsion: must be a finite number"
+        }
+
+    def test_a_value_that_is_not_a_number_is_refused(self) -> None:
+        assert invalid(falloff_range="far") == {
+            Field.RANGE: "Range: must be a number, got far"
+        }
+
+    @pytest.mark.parametrize(
+        ("field", "name"),
+        [
+            (Field.REPULSION, "repulsion"),
+            (Field.RANGE, "falloff_range"),
+            (Field.ATTRACTION, "attraction"),
+            (Field.ATTRACTION_RANGE, "attraction_range"),
+            (Field.SPACING, "spacing"),
+        ],
+    )
+    def test_an_empty_required_field_is_refused(self, field: Field, name: str) -> None:
+        assert invalid(**{name: " "}) == {field: f"{field.value}: needs a value"}
+
+    def test_every_invalid_field_has_its_message(self) -> None:
+        assert set(invalid(repulsion="-1", time_limit="0", spacing="")) == {
+            Field.REPULSION,
+            Field.TIME_LIMIT,
+            Field.SPACING,
+        }
+
+    @pytest.mark.parametrize(
+        ("text", "problem"),
+        [
+            ("0.05 0.1", "must fall strictly, coarsest first, got 0.05 0.1"),
+            ("0.2", "the final spacing, the last value, must be at most 0.1, got 0.2"),
+            ("0.4 -0.05", "must be positive"),
+            ("0.4 x", "must be a number, got x"),
+        ],
+    )
+    def test_a_bad_spacing_schedule_is_refused_as_on_the_command_line(
+        self, text: str, problem: str
+    ) -> None:
+        assert invalid(spacing=text) == {Field.SPACING: f"Spacing: {problem}"}
+
+    def test_spacing_values_may_be_separated_by_commas(self) -> None:
+        assert read(spacing="0.4, 0.2,0.05").spacing == (0.4, 0.2, 0.05)
