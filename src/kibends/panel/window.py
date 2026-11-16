@@ -12,8 +12,9 @@ each refresh sets the widgets from the controller. A timer ticks the
 controller ten times a second, which sends the probe and keeps the
 elapsed time moving.
 
-Return runs from anywhere, unless a button or the checkbox has focus,
-which it then activates; Esc stops and never closes the window. Closing
+Return runs from anywhere, unless a button other than Stop or the
+checkbox has focus, which it then activates; it never stops a run. Esc
+stops and never closes the window. Closing
 while the run can still stop asks first; later in a run the window waits
 for the run to end (`Controller.close`).
 
@@ -886,7 +887,12 @@ class PanelWindow(QWidget):
         key = event.key()
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             focus = self.focusWidget()
-            if isinstance(focus, QAbstractButton) and focus is not self.run_button:
+            # Never Stop: focus moves to it as a run starts, and a second
+            # or held Return must not stop the run; Esc stops.
+            if isinstance(focus, QAbstractButton) and focus not in (
+                self.run_button,
+                self.stop_button,
+            ):
                 focus.click()
             else:
                 self.attempt_run()

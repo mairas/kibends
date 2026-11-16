@@ -411,6 +411,31 @@ class TestRunning:
 
         assert len(run.options) == 1
 
+    def test_a_second_return_while_optimizing_does_not_stop(
+        self, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        focused: list[QWidget | None] = []
+        run = Scripted()
+        w = window(run)
+
+        def during(stage: Stage) -> None:
+            settle()
+            if stage is Stage.OPTIMIZING:
+                focus = w.focusWidget()
+                focused.append(focus)
+                assert focus is not None
+                QTest.keyClick(focus, Qt.Key.Key_Return)
+                settle()
+
+        run.during = during
+        QTest.keyClick(w.run_button, Qt.Key.Key_Return)
+        settle()
+
+        assert focused == [w.stop_button]
+        assert run.stop is not None and not run.stop()
+        assert len(run.options) == 1
+        assert w.controller.state is State.DONE
+
     def test_return_on_a_button_activates_it(
         self, window: Callable[[Scripted], PanelWindow]
     ) -> None:
