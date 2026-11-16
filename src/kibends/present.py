@@ -38,7 +38,6 @@ from kibends.energy import DEFAULT_ATTRACTION_RANGE, EnergyParams
 from kibends.inside import InsideClearanceError
 from kibends.results import Termination
 from kibends.run import (
-    ABNORMAL_MESSAGE,
     KICAD_TIMEOUT_MS,
     NoBoardError,
     PlotUnavailableError,
@@ -77,11 +76,6 @@ DEFAULT_SCHEDULE = (*DEFAULT_SETTINGS.coarse_spacings, DEFAULT_SETTINGS.spacing)
 
 BUSY_MESSAGE = (
     "KiCad is busy — close any open tool or dialog in the PCB editor and retry"
-)
-PANEL_ABNORMAL_MESSAGE = (
-    "The optimizer terminated abnormally without improving the track; "
-    "nothing committed. "
-    "Try other Repulsion or Range values under Advanced"
 )
 
 
@@ -438,17 +432,14 @@ def summary(report: RunReport) -> str:
     )
 
 
-def error_message(error: BaseException, *, panel: bool = False) -> str:
-    """The one line that tells the user of `error`: the command line's, or
-    with `panel` the panel's, which names its own fields. An error outside
+def error_message(error: BaseException) -> str:
+    """The one line that tells the user of `error`. An error outside
     `MAPPED_ERRORS` is unexpected, named by its type; the caller logs its
     traceback."""
     match error:
         case KeyboardInterrupt():
             # The push maps its own interrupt to CommitUncertainError.
             return "Interrupted: nothing committed"
-        case RunRefusedError() if panel and str(error) == ABNORMAL_MESSAGE:
-            return PANEL_ABNORMAL_MESSAGE
         case _ if isinstance(error, EXPECTED_ERRORS):
             return str(error)
         case ApiError() if error.code == ApiStatusCode.AS_BUSY:

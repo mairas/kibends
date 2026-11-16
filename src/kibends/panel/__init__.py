@@ -13,7 +13,7 @@ controller through a "post to the controller's thread" callable: in the
 window (`window`) a queued Qt signal (`window.Poster`), in tests a plain
 call.
 
-`curve` draws the energy history; `window` lays out the widgets and runs
-the Qt application. Only `window` and `curve` import PySide6, which the
-`gui` extra installs.
+`curve` draws the graph of the track length's change by iteration;
+`window` lays out the widgets and runs the Qt application. Only `window`
+and `curve` import PySide6, which the `gui` extra installs.
 """

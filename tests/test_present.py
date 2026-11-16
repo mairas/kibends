@@ -219,24 +219,8 @@ class TestErrorMessage:
             "Interrupted: nothing committed"
         )
 
-    def test_the_panel_names_the_advanced_fields_for_an_abnormal_end(self) -> None:
-        refused = present.RunRefusedError(ABNORMAL_MESSAGE)
-
-        message = present.error_message(refused, panel=True)
-
-        assert message != ABNORMAL_MESSAGE
-        assert "--" not in message
-        assert "Repulsion" in message and "Range" in message
-        assert "under Advanced" in message
-        assert present.error_message(refused) == ABNORMAL_MESSAGE
-
-    def test_the_panel_gives_other_errors_the_command_lines_text(self) -> None:
-        error = BoardChangedError("a track changed in KiCad")
-
-        assert present.error_message(error, panel=True) == str(error)
-
     def test_an_unexpected_error_names_its_type(self) -> None:
-        message = present.error_message(RuntimeError("boom"), panel=True)
+        message = present.error_message(RuntimeError("boom"))
 
         assert message == "Unexpected error: RuntimeError: boom"
 
