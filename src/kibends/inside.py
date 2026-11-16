@@ -554,7 +554,7 @@ def _via_and_static(via: ViaInput) -> Violation | None:
     """A via inside static copper's clearance, judged by its field without
     its zones."""
     centre = Point(via.via.position)
-    field = via.rules_copper or via.copper
+    field = via.rules_copper
     distance, _ = field.signed_distance(np.array([via.via.position], dtype=float))
     depth = -float(distance[0])
     if depth <= START_TOLERANCE:

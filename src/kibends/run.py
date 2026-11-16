@@ -48,6 +48,7 @@ import importlib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from time import monotonic
 from typing import NamedTuple
@@ -697,15 +698,14 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     def section_field(
         layer: str, a: ChainCentreline, b: ChainCentreline, gap: float
     ) -> ObstacleField:
-        snapshot = read.snapshots[layer]
-        still = tuple(v for v in snapshot.vias if v.id not in moving)
         return build_pair_obstacles(
-            replace(snapshot, vias=still),
+            read.snapshots[layer],
             a,
             b,
             gap,
             edge_clearance=clearances.edge,
             hole_clearance=clearances.hole,
+            moving=moving,
         )
 
     layout = lay_out(whole, parts, pairs, section_field)
@@ -965,13 +965,13 @@ def _static_field(
 ) -> Obstacles:
     """The obstacles of `chain`'s net and width on `snapshot`'s layer, but
     the `moving` vias."""
-    still = tuple(v for v in snapshot.vias if v.id not in moving)
     return build_obstacles(
-        replace(snapshot, vias=still),
+        snapshot,
         chain.net,
         chain.width,
         edge_clearance=clearances.edge,
         hole_clearance=clearances.hole,
+        moving=moving,
     )
 
 
@@ -1000,13 +1000,10 @@ def _via_inputs(
         field, static_vias = _via_field(
             layers, m.via, split, moving, clearances, m.zones
         )
-        rules_copper = None
+        build_rules = None
         if m.zones:
-            plain, plain_static = _via_field(
-                layers, m.via, split, moving, clearances, ()
-            )
-            rules_copper = (
-                plain if plain_static is None else CompositeField([plain, plain_static])
+            build_rules = partial(
+                _rules_copper, layers, m.via, split, moving, clearances
             )
         inputs.append(
             ViaInput(
@@ -1026,10 +1023,23 @@ def _via_inputs(
                 ground=grounded,
                 static_vias=static_vias,
                 own_vias=own_net_vias(layers, m.via, moving=moving),
-                rules_copper=rules_copper,
+                build_rules_copper=build_rules,
             )
         )
     return inputs
+
+
+def _rules_copper(
+    layers: Sequence[LayerSnapshot],
+    via: Via,
+    split: Collection[str],
+    moving: Collection[str],
+    clearances: Clearances,
+) -> ObstacleField:
+    """`via`'s field over `layers` and the vias of `split` together, by the
+    rules without its zones (`vias.ViaInput.rules_copper`)."""
+    plain, plain_static = _via_field(layers, via, split, moving, clearances, ())
+    return plain if plain_static is None else CompositeField([plain, plain_static])
 
 
 def _via_field(

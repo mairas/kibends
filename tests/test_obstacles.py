@@ -1,4 +1,7 @@
 import math
+import threading
+import time
+from dataclasses import dataclass, replace
 from itertools import pairwise
 
 import kipy.board_types as kbt
@@ -33,6 +36,7 @@ from kipy.proto.board.board_types_pb2 import PadType
 from reference_fields import chain_obstacles
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 
+from kibends import obstacles as obstacle_module
 from kibends.energy import (
     SMOOTH_REACH,
     SMOOTH_WIDTH,
@@ -73,10 +77,18 @@ difference straddles it."""
 def obstacles_of(
     fake: FakeBoard,
     replaced: frozenset[str] = frozenset(),
-    **clearances: float,
+    *,
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
 ) -> Obstacles:
     snap = layer_snapshot(fake, LAYER, replaced)
-    return build_obstacles(snap, NET, WIDTH, **clearances)
+    return build_obstacles(
+        snap,
+        NET,
+        WIDTH,
+        edge_clearance=edge_clearance,
+        hole_clearance=hole_clearance,
+    )
 
 
 def by_description(obstacles: Obstacles) -> dict[str, float]:
@@ -278,6 +290,90 @@ class TestObstacleSet:
         assert obstacles_of(FakeBoard(zones=[zone])).items == ()
 
 
+NAMING_PAUSE = 0.001
+"""s each obstacle takes to name, so that two first reads overlap."""
+
+NAMED_BOARD = FakeBoard(
+    pads=[
+        kipy_pad("other", "HV", 3, 1),
+        kipy_pad("mh", "", 6, 4, layers=(), pad_type=PadType.PT_NPTH, drill=1.2),
+    ],
+    tracks=[kipy_track("gnd", "GND", (1, 6), (8, 6), width=0.4)],
+    vias=[kipy_via("v", "GND", 8, 2, diameter=0.8, drill=0.4)],
+    zones=[kipy_zone(kipy_rect(1, 8, 3, 9), [BL.BL_F_Cu])],
+    shapes=edge_segments([(0, 0), (10, 0), (10, 10), (0, 10)]),
+)
+
+
+class TestNaming:
+    def test_the_items_give_the_field_s_distances(self) -> None:
+        field = obstacles_of(NAMED_BOARD)
+        edge = field.edge
+        assert edge is not None
+        rebuilt = Obstacles(field.items, *edge)
+        at = np.random.default_rng(0).uniform(-1, 11, size=(200, 2))
+
+        distance, gradient = field.signed_distance(at)
+        expected, expected_gradient = rebuilt.signed_distance(at)
+
+        assert {o.description for o in field.items} == {
+            "pad other",
+            "hole of pad mh",
+            "track gnd",
+            "via v",
+            "hole of via v",
+            "track keepout",
+        }
+        np.testing.assert_allclose(distance, expected, rtol=0, atol=NM_TOLERANCE)
+        np.testing.assert_allclose(
+            gradient, expected_gradient, rtol=0, atol=NM_TOLERANCE
+        )
+
+    def test_items_are_named_once_when_first_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built: list[Obstacle] = []
+
+        @dataclass(frozen=True)
+        class Counted(Obstacle):
+            def __post_init__(self) -> None:
+                built.append(self)
+
+        monkeypatch.setattr(obstacle_module, "Obstacle", Counted)
+        field = obstacles_of(NAMED_BOARD)
+        assert built == []
+
+        items = field.items
+        assert field.items is items
+        assert built == list(items)
+
+    def test_two_first_reads_at_once_give_one_tuple(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        @dataclass(frozen=True)
+        class Slow(Obstacle):
+            def __post_init__(self) -> None:
+                time.sleep(NAMING_PAUSE)
+
+        monkeypatch.setattr(obstacle_module, "Obstacle", Slow)
+        field = obstacles_of(NAMED_BOARD)
+        start = threading.Barrier(2)
+        read: list[tuple[Obstacle, ...]] = []
+
+        def first_read() -> None:
+            start.wait()
+            read.append(field.items)
+
+        threads = [threading.Thread(target=first_read) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(read) == 2
+        assert read[0] is read[1]
+
+
 PAIR_GAP = 0.15
 PAIR_HALF_EXTENT = WIDTH + PAIR_GAP / 2
 """From a pair's centreline to the outer edge of either track."""
@@ -295,11 +391,21 @@ PAIR_TRACKS: list[kbt.Track | kbt.ArcTrack] = [
 ]
 
 
-def pair_obstacles_of(fake: FakeBoard, **clearances: float) -> Obstacles:
+def pair_obstacles_of(
+    fake: FakeBoard,
+    *,
+    edge_clearance: float = EDGE_CLEARANCE,
+    hole_clearance: float = HOLE_CLEARANCE,
+) -> Obstacles:
     snap = layer_snapshot(fake, LAYER, frozenset({"P", "N", "P fan-out"}))
     pitch = WIDTH + PAIR_GAP
     return build_pair_obstacles(
-        snap, pair_track("P", 0.0), pair_track("N", pitch), PAIR_GAP, **clearances
+        snap,
+        pair_track("P", 0.0),
+        pair_track("N", pitch),
+        PAIR_GAP,
+        edge_clearance=edge_clearance,
+        hole_clearance=hole_clearance,
     )
 
 
@@ -366,6 +472,73 @@ class TestPairObstacleSet:
         inside = np.array([[10.0 - 0.4 - PAIR_HALF_EXTENT, 0.0]])
         assert obstacles.signed_distance(inside)[0][0] == pytest.approx(
             0.0, abs=POSITION_ROUND_OFF
+        )
+
+
+MOVING_NETS = ("GND", "SIG", "HV", "N")
+MOVING_VIAS = 30
+MOVING_SHARE = 0.4
+"""The share of the vias each draw moves."""
+
+
+def described(field: Obstacles) -> list[tuple[str, float, str, str | None, str | None]]:
+    return [
+        (o.description, o.inflation, o.geometry.wkb_hex, o.net, o.layer)
+        for o in field.items
+    ]
+
+
+class TestMovingVias:
+    @pytest.mark.parametrize("seed", range(3))
+    def test_fields_leave_them_out_as_a_snapshot_without_them(self, seed: int) -> None:
+        rng = np.random.default_rng(seed)
+        centres = rng.uniform(1, 9, size=(MOVING_VIAS, 2))
+        vias = [
+            kipy_via(
+                f"v{i}",
+                MOVING_NETS[i % len(MOVING_NETS)],
+                float(x),
+                float(y),
+                diameter=0.6,
+                drill=0.3,
+            )
+            for i, (x, y) in enumerate(centres)
+        ]
+        fake = FakeBoard(
+            pads=[kipy_pad("p", "HV", 3, 1), kipy_pad("q", "GND", 7, 7)],
+            tracks=[kipy_track("gnd", "GND", (1, 6), (8, 6), width=0.4), *PAIR_TRACKS],
+            vias=vias,
+            shapes=edge_segments([(0, 0), (10, 0), (10, 10), (0, 10)]),
+        )
+        snap = layer_snapshot(fake, LAYER, frozenset({"P", "N", "P fan-out"}))
+        moving = {v.id for v in snap.vias if rng.random() < MOVING_SHARE}
+        without = replace(snap, vias=tuple(v for v in snap.vias if v.id not in moving))
+        a, b = pair_track("P", 0.0), pair_track("N", WIDTH + PAIR_GAP)
+        built = [
+            (
+                build_obstacles(without, net, WIDTH),
+                build_obstacles(snap, net, WIDTH, moving=moving),
+            )
+            for net in MOVING_NETS
+        ]
+        built.append(
+            (
+                build_pair_obstacles(without, a, b, PAIR_GAP),
+                build_pair_obstacles(snap, a, b, PAIR_GAP, moving=moving),
+            )
+        )
+        at = rng.uniform(-1, 11, size=(200, 2))
+
+        for expected, field in built:
+            assert described(field) == described(expected)
+            np.testing.assert_array_equal(
+                field.signed_distance(at)[0], expected.signed_distance(at)[0]
+            )
+        assert moving
+        assert not any(
+            o.description.endswith(tuple(f"via {i}" for i in moving))
+            for _, field in built
+            for o in field.items
         )
 
 

@@ -381,9 +381,14 @@ fn layer_obstacles(
     }
 }
 
-fn every_via(layers: &[&Layer], l: usize) -> Vec<ViaRef> {
-    (0..layers[l].vias.len())
-        .map(|index| ViaRef { layer: l, index })
+/// Layer l's vias but those in `moving`.
+fn still_vias(layers: &[&Layer], l: usize, moving: &HashSet<&str>) -> Vec<ViaRef> {
+    layers[l]
+        .vias
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !moving.contains(v.id.as_str()))
+        .map(|(index, _)| ViaRef { layer: l, index })
         .collect()
 }
 
@@ -391,13 +396,16 @@ fn every_via(layers: &[&Layer], l: usize) -> Vec<ViaRef> {
 ///
 /// Copper clearance is the larger of both items' netclass clearances, with
 /// a pad's own override replacing its netclass. Copper of `net` is never
-/// an obstacle; its holes are not either, except unplated ones.
+/// an obstacle; its holes are not either, except unplated ones. The vias
+/// in `moving`, which the optimizer adds at their current positions, are
+/// left out.
 pub fn chain_obstacles(
     layer: &Layer,
     net: &str,
     width: f64,
     edge_clearance: f64,
     hole_clearance: f64,
+    moving: &HashSet<&str>,
 ) -> BuiltField {
     let keeper = Keeper::track(Some(net), width, layer.clearance(net), hole_clearance);
     let layers = &[layer];
@@ -407,7 +415,7 @@ pub fn chain_obstacles(
         &keeper,
         edge_clearance,
         &Keep::default(),
-        &every_via(layers, 0),
+        &still_vias(layers, 0, moving),
     )
 }
 
@@ -431,7 +439,9 @@ pub struct PairTrack<'a> {
 /// net is left out: what the section connects to, at its pinned ends or
 /// between them, where the centreline cannot keep clear of it. Copper that
 /// a fan-out beyond the section connects to stays, as the other track keeps
-/// clear of it in its own fan-out's place.
+/// clear of it in its own fan-out's place. The vias in `moving` are left
+/// out, as for a chain (`chain_obstacles`).
+#[allow(clippy::too_many_arguments)]
 pub fn pair_obstacles(
     layer: &Layer,
     a: PairTrack<'_>,
@@ -440,6 +450,7 @@ pub fn pair_obstacles(
     gap: f64,
     edge_clearance: f64,
     hole_clearance: f64,
+    moving: &HashSet<&str>,
 ) -> BuiltField {
     // A pair of one net keeps the second track's line, as a mapping by net
     // would.
@@ -475,12 +486,12 @@ pub fn pair_obstacles(
                 .collect(),
         ),
     };
-    let vias: Vec<ViaRef> = layer
-        .vias
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| free(&v.net, &point(v.position), v.diameter / 2.0))
-        .map(|(index, _)| ViaRef { layer: 0, index })
+    let vias: Vec<ViaRef> = still_vias(&[layer], 0, moving)
+        .into_iter()
+        .filter(|r| {
+            let v = &layer.vias[r.index];
+            free(&v.net, &point(v.position), v.diameter / 2.0)
+        })
         .collect();
     let clearance = py_max(layer.clearance(a.net), layer.clearance(b.net));
     let keeper = Keeper {
@@ -896,14 +907,14 @@ mod tests {
             width: 0.2,
             centreline: Shape::line(vec![V2::new(0.0, 3.0), V2::new(5.0, 3.0)]),
         }];
-        let built = chain_obstacles(&top, "SIG", 0.2, 0.3, HOLE_CLEARANCE);
+        let built = chain_obstacles(&top, "SIG", 0.2, 0.3, HOLE_CLEARANCE, &HashSet::new());
         // The unplated pad's copper is of the net too; only its hole stays.
         assert_eq!(
             built.picked.iter().map(|p| p.source).collect::<Vec<_>>(),
             vec![Source::PadHole]
         );
         assert_eq!(built.picked[0].index, 1);
-        let other = chain_obstacles(&top, "GND", 0.2, 0.3, HOLE_CLEARANCE);
+        let other = chain_obstacles(&top, "GND", 0.2, 0.3, HOLE_CLEARANCE, &HashSet::new());
         assert_eq!(other.picked.len(), 5);
     }
 
@@ -942,6 +953,25 @@ mod tests {
         // Hole to hole from the via of its net: 0.15 + 0.15 + 0.25.
         let (d, _) = vias.signed_distance(&[V2::new(6.0, 0.0)], f64::INFINITY);
         assert!((d[0] + 0.55).abs() < 1e-12);
+    }
+
+    #[test]
+    fn moving_vias_leave_a_chain_s_field_keeping_the_others_indices() {
+        let mut top = layer("F.Cu", 0);
+        top.vias = vec![
+            via("moving", "GND", (0.0, 0.0)),
+            via("still", "GND", (2.0, 0.0)),
+        ];
+        let moving = HashSet::from(["moving"]);
+        let built = chain_obstacles(&top, "SIG", 0.2, 0.3, HOLE_CLEARANCE, &moving);
+        assert_eq!(
+            built
+                .picked
+                .iter()
+                .map(|p| (p.source, p.index))
+                .collect::<Vec<_>>(),
+            vec![(Source::ViaRing, 1), (Source::ViaHole, 1)]
+        );
     }
 
     #[test]

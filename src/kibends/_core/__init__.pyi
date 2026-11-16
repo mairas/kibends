@@ -1366,18 +1366,18 @@ def bend_radius_limit(gap: builtins.float, width: builtins.float) -> builtins.fl
     edge still has a radius of at least zero.
     """
 
-def build_obstacles(layer: BoardLayer, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+def build_obstacles(layer: BoardLayer, net: builtins.str, width: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float, moving: typing.Sequence[builtins.str]) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
     r"""
-    Obstacles for a track of `net` and `width` mm on `layer`
-    (`kibends_core::field::build::chain_obstacles`).
+    Obstacles for a track of `net` and `width` mm on `layer`, but the vias
+    whose ids are in `moving` (`kibends_core::field::build::chain_obstacles`).
     """
 
-def build_pair_obstacles(layer: BoardLayer, a_net: builtins.str, a_points: numpy.typing.NDArray[numpy.float64], b_net: builtins.str, b_points: numpy.typing.NDArray[numpy.float64], width: builtins.float, gap: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
+def build_pair_obstacles(layer: BoardLayer, a_net: builtins.str, a_points: numpy.typing.NDArray[numpy.float64], b_net: builtins.str, b_points: numpy.typing.NDArray[numpy.float64], width: builtins.float, gap: builtins.float, edge_clearance: builtins.float, hole_clearance: builtins.float, moving: typing.Sequence[builtins.str]) -> tuple[Obstacles, tuple[numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.intp], numpy.typing.NDArray[numpy.float64]]]:
     r"""
     Obstacles for the centreline of a coupled section of a differential
     pair on `layer`, its tracks of `width`, `gap` mm apart, of nets `a_net`
-    and `b_net` at `a_points` and `b_points`
-    (`kibends_core::field::build::pair_obstacles`).
+    and `b_net` at `a_points` and `b_points`, but the vias whose ids are in
+    `moving` (`kibends_core::field::build::pair_obstacles`).
     """
 
 def chains_field(polylines: typing.Sequence[numpy.typing.NDArray[numpy.float64]], inflations: numpy.typing.NDArray[numpy.float64], obstacles: numpy.typing.NDArray[numpy.intp]) -> ChainField:

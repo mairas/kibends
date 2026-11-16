@@ -9,9 +9,10 @@ This module reads each layer's snapshot into plain records once
 (`core_layer`, with `plain_shapes`), and the Rust builders pick the items
 of each field and inflate them by the clearance rules (`kibends._core`;
 their design is in `kibends_core::field::build` and `kibends_core::rules`).
-Each built field comes back with its items named from the snapshot's
-records (`Obstacle`). Python keeps every shapely construction: buffers,
-unions, the board outline, the zones' regions (`containment`).
+Each built field names its items from the snapshot's records
+(`Obstacle`) when they are first read. Python keeps every shapely
+construction: buffers, unions, the board outline, the zones' regions
+(`containment`).
 
 A chain's static field is one per (layer, net, width), from other nets'
 copper, holes, keepouts and the board edge (`build_obstacles`); no copper
@@ -37,8 +38,10 @@ optimizer takes is a Rust field (`core_field`).
 
 import enum
 import math
+import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
@@ -171,6 +174,11 @@ class Obstacle:
     selected arc. None for any other obstacle."""
 
 
+_NAMING = threading.Lock()
+"""Held while a field names its items, so that two threads reading them
+first at once get one tuple."""
+
+
 class Obstacles:
     """Signed distance to the nearest inflated obstacle, and edge checks:
     `items`, and the outside of `board_outline` inflated by
@@ -189,14 +197,15 @@ class Obstacles:
         board_outline: BaseGeometry | None = None,
         edge_inflation: float = 0.0,
     ) -> None:
-        self.items = tuple(items)
+        self._items: tuple[Obstacle, ...] | None = tuple(items)
+        self._name: Callable[[], tuple[Obstacle, ...]] = partial(tuple, self._items)
         self.outline = board_outline
         self.core = _core.Obstacles(
-            plain_shapes(o.geometry for o in self.items),
-            np.array([o.inflation for o in self.items], dtype=float),
-            [o.net for o in self.items],
-            np.array([o.extent for o in self.items], dtype=float),
-            [o.layer for o in self.items],
+            plain_shapes(o.geometry for o in self._items),
+            np.array([o.inflation for o in self._items], dtype=float),
+            [o.net for o in self._items],
+            np.array([o.extent for o in self._items], dtype=float),
+            [o.layer for o in self._items],
             None if board_outline is None else plain_shapes([board_outline]),
             edge_inflation,
         )
@@ -205,16 +214,29 @@ class Obstacles:
     def of(
         cls,
         core: _core.Obstacles,
-        items: Sequence[Obstacle],
+        name: Callable[[], tuple[Obstacle, ...]],
         outline: BaseGeometry | None = None,
     ) -> Obstacles:
-        """The field `core` answers for, of `items`, its board edge the
-        outside of `outline`."""
+        """The field `core` answers for, its items as `name` gives them when
+        first read, its board edge the outside of `outline`."""
         field = cls.__new__(cls)
-        field.items = tuple(items)
+        field._items = None
+        field._name = name
         field.outline = outline
         field.core = core
         return field
+
+    @property
+    def items(self) -> tuple[Obstacle, ...]:
+        """The obstacles, in the field's order. Only the start check reads
+        them (`inside`), so a built field names them on first read."""
+        items = self._items
+        if items is None:
+            with _NAMING:
+                items = self._items
+                if items is None:
+                    items = self._items = self._name()
+        return items
 
     @property
     def edge(self) -> tuple[BaseGeometry, float] | None:
@@ -594,20 +616,32 @@ class _Source(enum.IntEnum):
     PAD_STOP = 8
 
 
-Built = tuple[
-    _core.Obstacles, tuple[IntArray, IntArray, IntArray, IntArray, FloatArray]
-]
-"""A field the Rust builders built, and its items' sources: each one's
-kind, the layer of its record and its index there, the layer of its
-copper, -1 for none, and its inflation."""
+Sources = tuple[IntArray, IntArray, IntArray, IntArray, FloatArray]
+"""A built field's items' sources: each one's kind, the layer of its record
+and its index there, the layer of its copper, -1 for none, and its
+inflation."""
+
+Built = tuple[_core.Obstacles, Sources]
+"""A field the Rust builders built, and its items' sources."""
 
 
 def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
-    """The field of `built` with its items named from the records of
-    `layers`."""
-    core, (sources, owners, indices, coppers, inflations) = built
+    """The field of `built`, its items named from the records of `layers`
+    when first read."""
+    core, sources = built
+    outline = None
+    if layers and core.edge_inflation is not None:
+        outline = _outline_of(layers[0])
+    return Obstacles.of(core, partial(_items_of, sources, layers), outline)
+
+
+def _items_of(
+    sources: Sources, layers: Sequence[LayerSnapshot]
+) -> tuple[Obstacle, ...]:
+    """The obstacles `sources` name from the records of `layers`."""
+    kind_of, owners, indices, coppers, inflations = sources
     items: list[Obstacle] = []
-    kinds: list[int] = sources.tolist()
+    kinds: list[int] = kind_of.tolist()
     records: list[int] = owners.tolist()
     at: list[int] = indices.tolist()
     copper_layers: list[int] = coppers.tolist()
@@ -686,10 +720,7 @@ def _named(built: Built, layers: Sequence[LayerSnapshot]) -> Obstacles:
                 assert pad.shape is not None
                 item = Obstacle(f"pad {pad.name}", pad.shape, inflation)
         items.append(item)
-    outline = None
-    if layers and core.edge_inflation is not None:
-        outline = _outline_of(layers[0])
-    return Obstacles.of(core, items, outline)
+    return tuple(items)
 
 
 def _warn_unclosed(layer: _core.BoardLayer) -> None:
@@ -707,17 +738,22 @@ def build_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
+    moving: Collection[str] = frozenset(),
 ) -> Obstacles:
     """Obstacles for a track of `net` and `width` mm on the snapshot's layer
     (`kibends_core::field::build::chain_obstacles`).
 
     Copper clearance is the larger of both items' netclass clearances, with a
     pad's own override replacing its netclass. Copper of `net` is never an
-    obstacle; its holes are not either, except unplated ones.
+    obstacle; its holes are not either, except unplated ones. The vias in
+    `moving`, which the optimizer adds at their current positions, are left
+    out.
     """
     layer = core_layer(snapshot)
     _warn_unclosed(layer)
-    built = _core.build_obstacles(layer, net, width, edge_clearance, hole_clearance)
+    built = _core.build_obstacles(
+        layer, net, width, edge_clearance, hole_clearance, list(moving)
+    )
     return _named(built, [snapshot])
 
 
@@ -729,6 +765,7 @@ def build_pair_obstacles(
     *,
     edge_clearance: float = EDGE_CLEARANCE,
     hole_clearance: float = HOLE_CLEARANCE,
+    moving: Collection[str] = frozenset(),
 ) -> Obstacles:
     """Obstacles for the centreline of a coupled section of a differential
     pair, its tracks `a` and `b` `gap` mm apart, on the snapshot's layer
@@ -736,7 +773,8 @@ def build_pair_obstacles(
 
     The centreline keeps clear as one track as wide as the pair would.
     Copper of the pair's own nets is an obstacle like any other's, but for
-    copper that overlaps the section's track of its own net.
+    copper that overlaps the section's track of its own net. The vias in
+    `moving` are left out, as `build_obstacles` leaves them.
     """
     layer = core_layer(snapshot)
     _warn_unclosed(layer)
@@ -750,6 +788,7 @@ def build_pair_obstacles(
         gap,
         edge_clearance,
         hole_clearance,
+        list(moving),
     )
     return _named(built, [snapshot])
 
