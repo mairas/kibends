@@ -343,8 +343,7 @@ it is inside one it stops, commits nothing and lists each place: the
 chain or via, what it is too close to, how far apart they are and what is
 required, and where, in the coordinates of the board's grid origin. Move
 the copper apart or relax the rules, then run again. A chain end pinned on
-a pad or via of its own net is no violation, nor is a stretch inside a
-clearance that holds a vertex that cannot move, nor copper within √2 nm
+a pad or via of its own net is no violation, nor is copper within √2 nm
 of a clearance, as KiCad's grid rounds it. A selected arc is
 judged as the straight chords kibends smooths it as, which sit inside the
 arc: on its inner side a chord is allowed the arc's offset from it, and
@@ -364,11 +363,7 @@ the refill reconnects the via, moves out of it as the optimizer runs.
 Once started, no step of the optimizer takes copper newly inside a
 clearance, nor deeper inside another selected chain's or moving via's
 than its burst started: such a trial step is not taken, and the step
-stops short of it. Static copper is the exception: an edge is judged
-against all of it at once, clear or not, so a stretch that starts inside
-static copper's clearance, holding a vertex that cannot move, may move
-deeper into it, or to where it is inside another piece's. Check such a
-run with KiCad's DRC.
+stops short of it. So a run that starts clean ends clean.
 
 ### Differential pairs
 

@@ -1132,6 +1132,7 @@ def alongside(slope: float = 0.0) -> ViasScenario:
     )
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_an_edge_moved_deeper_into_a_member_it_started_inside_moves_back(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
@@ -1154,6 +1155,7 @@ SLID = 0.1
 """How far along the chains the tangential move slides A's vertex, mm."""
 
 
+@pytest.mark.usefixtures("unrefused")
 @pytest.mark.parametrize("slope", [0.0, 1.7], ids=["along-x", "sloping"])
 def test_an_edge_slid_along_inside_a_member_s_clearance_stays(
     monkeypatch: pytest.MonkeyPatch, log: list[str], slope: float
@@ -1179,6 +1181,7 @@ DIVERGING = 0.05
 of net B that runs along x, starting inside their clearance."""
 
 
+@pytest.mark.usefixtures("unrefused")
 @pytest.mark.parametrize("slide", [-SLID, SLID], ids=["back", "forward"])
 def test_an_edge_slid_along_an_oblique_chain_inside_a_member_s_clearance_stays(
     monkeypatch: pytest.MonkeyPatch, log: list[str], slide: float

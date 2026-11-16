@@ -1305,6 +1305,7 @@ INSIDE_DEPTH = 0.02
 """How far the chain starts inside the section's clearance, mm."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_chain_starting_inside_a_section_s_clearance_moves_clear_of_it() -> None:
     section = scenarios.coupled(FreeSpace(), (0.0, 0.0), (5.0, 0.0))
     half_extent = pair_block(section, COARSE.spacing).facing.centreline.width / 2

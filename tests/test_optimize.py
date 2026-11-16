@@ -260,6 +260,7 @@ def test_a_vertex_just_inside_a_pad_s_clearance_is_refused_with_its_depth() -> N
     assert violation.depth == pytest.approx(PAD_DEPTH)
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_a_pinned_end_inside_a_clearance_stays() -> None:
     polyline, fixed = chain((0.0, 0.0), (5.0, 2.0), (10.0, 0.0))
 
@@ -309,6 +310,7 @@ CLIP_HEIGHT = 1.2
 # where they cut into the discs, a start the refusal lets through since those
 # vertices cannot move. The run converges in 5 iterations at these settings,
 # so every cap here stops it unsettled.
+@pytest.mark.usefixtures("unrefused")
 @pytest.mark.parametrize("cap", [1, 2, 3, 4])
 def test_a_clipped_detour_stopped_at_the_cap_adds_no_violation(cap: int) -> None:
     detour = scenarios.detour()
@@ -409,6 +411,7 @@ SHALLOW_DEPTH = 0.001
 """mm the box reaches over the pinned chain."""
 
 
+@pytest.mark.usefixtures("unrefused")
 def test_free_vertices_inside_an_obstacle_between_pins_move_out() -> None:
     # Pins at both ends and one between them, all inside the box.
     pinned_at = (6.0, 0.0)
