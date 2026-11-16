@@ -116,9 +116,16 @@ pub fn nearest_of_pairs(
 
 /// The smooth distance at each of `query` over (point, segment) pairs, as
 /// `nearest_of_pairs` takes them, pair k's segment part of obstacle[k]: the
-/// smooth minimum over every segment, less, where two consecutive segments
-/// of one obstacle join, the vertex they share, inflated by the lesser of
-/// their inflations. The pairs come in the order `obstacle_order` gives.
+/// smooth minimum over every segment, less, where two segments of one
+/// obstacle join, the vertex they share, inflated by the lesser of their
+/// inflations. The pairs come in the order `obstacle_order` gives. Two
+/// segments within their limits join when the first ends where the
+/// second starts and only pairs beyond their limits and zero-length
+/// segments lie between them, so that the answers do not depend on which
+/// pairs beyond the limits a search lists, as long as every segment of one
+/// obstacle is inflated alike: a segment inflated less can lie within its
+/// limit yet beyond the smooth reach, and still take a join from a
+/// zero-length segment inflated more.
 /// The edge that answers is its pair's index, a shared vertex by the
 /// segment it starts.
 ///
@@ -169,24 +176,40 @@ pub fn smooth_of_pairs(
     // much as the vertex, has the vertex's term, so the two cancel; each
     // vertex cancels one segment at most, and each segment meets it at one
     // end only.
+    //
+    // A segment joins the last one before it of its point and obstacle
+    // within the limit, past any zero-length one, which lies on the vertex
+    // the two share; a zero-length one only when there is no other. So
+    // pairs beyond the limit, which a search may list or not, and the
+    // zero-length pieces of repeated vertices change no join.
     let mut segment = vec![true; point.len()];
-    let mut shared = vec![false; point.len()];
-    for k in 1..point.len() {
-        let joins = distance[k] < f64::INFINITY
-            && point[k - 1] == point[k]
-            && obstacle[k - 1] == obstacle[k]
-            && distance[k - 1] < f64::INFINITY
-            && (starts[k - 1] + along[k - 1] - starts[k]).hypot() <= ROUND_OFF;
-        if !joins {
+    // The inflation of the vertex each segment shares at its start.
+    let mut shared: Vec<Option<f64>> = vec![None; point.len()];
+    let (mut long, mut short): (Option<usize>, Option<usize>) = (None, None);
+    for k in 0..point.len() {
+        if k > 0 && (point[k - 1] != point[k] || obstacle[k - 1] != obstacle[k]) {
+            (long, short) = (None, None);
+        }
+        if distance[k] == f64::INFINITY {
             continue;
         }
-        let vertex = inflations[k - 1].min(inflations[k]);
+        let before = long.or(short);
+        if along[k] == V2::new(0.0, 0.0) {
+            short = Some(k);
+        } else {
+            long = Some(k);
+        }
+        let Some(j) = before else { continue };
+        if (starts[j] + along[j] - starts[k]).hypot() > ROUND_OFF {
+            continue;
+        }
+        let vertex = inflations[j].min(inflations[k]);
         if along_at[k] == 0.0 && inflations[k] == vertex {
             segment[k] = false;
-        } else if along_at[k - 1] == 1.0 && inflations[k - 1] == vertex && segment[k - 1] {
-            segment[k - 1] = false;
+        } else if along_at[j] == 1.0 && inflations[j] == vertex && segment[j] {
+            segment[j] = false;
         } else {
-            shared[k] = true;
+            shared[k] = Some(vertex);
         }
     }
     let mut terms = Terms::default();
@@ -203,13 +226,13 @@ pub fn smooth_of_pairs(
                 false,
             );
         }
-        if shared[k] {
+        if let Some(vertex) = shared[k] {
             let from = query[point[k]] - starts[k];
             let length = from.hypot();
             terms.push(
                 point[k],
                 k,
-                length - inflations[k - 1].min(inflations[k]),
+                length - vertex,
                 unit_gradient(from, length, along[k]),
                 true,
             );

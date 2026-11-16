@@ -90,19 +90,33 @@ pub struct Round {
 
 /// What a member's edges cross: each (edge, obstacle) pair as one number,
 /// the obstacles numbered below the stride, ascending, and the member's
-/// depth in each obstacle at its deepest edge, +inf in those it does not
-/// cross.
+/// depth at its deepest edge in each obstacle it crosses, by obstacle.
+///
+/// Only the obstacles crossed are kept: a via's obstacle is numbered past
+/// every vertex of the problem, so a table over the stride would hold one
+/// entry per vertex for every member.
 #[derive(Clone, Debug)]
 struct Crossed {
     key: Vec<usize>,
-    deepest: Vec<f64>,
+    deepest: Vec<(usize, f64)>,
 }
 
 impl Crossed {
     fn of(edges: &EdgesClear, stride: usize) -> Self {
-        let mut deepest = vec![f64::INFINITY; stride];
-        for (&o, &d) in edges.obstacle.iter().zip(&edges.depth) {
-            deepest[o] = minimum(deepest[o], d);
+        let mut by_obstacle: Vec<(usize, f64)> = edges
+            .obstacle
+            .iter()
+            .copied()
+            .zip(edges.depth.iter().copied())
+            .collect();
+        // Stable, so each obstacle's depths fold in the edges' order.
+        by_obstacle.sort_by_key(|&(o, _)| o);
+        let mut deepest: Vec<(usize, f64)> = Vec::new();
+        for (o, d) in by_obstacle {
+            match deepest.last_mut() {
+                Some((last, depth)) if *last == o => *depth = minimum(*depth, d),
+                _ => deepest.push((o, minimum(f64::INFINITY, d))),
+            }
         }
         let mut key: Vec<usize> = edges
             .edge
@@ -131,7 +145,11 @@ impl Crossed {
             .zip(&edges.depth)
             .map(|((&e, &o), &d)| {
                 let new = self.key.binary_search(&(e * stride + o)).is_err();
-                let deeper = d < minimum(self.deepest[o] - DEEPER_ROUND_OFF, -INSIDE_TOLERANCE);
+                let deepest = self
+                    .deepest
+                    .binary_search_by_key(&o, |&(obstacle, _)| obstacle)
+                    .map_or(f64::INFINITY, |at| self.deepest[at].1);
+                let deeper = d < minimum(deepest - DEEPER_ROUND_OFF, -INSIDE_TOLERANCE);
                 new || deeper
             })
             .collect()
@@ -473,6 +491,41 @@ pub fn revert_until_clear(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn crossing(edge: &[usize], obstacle: &[usize], depth: &[f64]) -> EdgesClear {
+        EdgesClear {
+            clear: vec![false; edge.len()],
+            edge: edge.to_vec(),
+            vertex: edge.to_vec(),
+            obstacle: obstacle.to_vec(),
+            depth: depth.to_vec(),
+        }
+    }
+
+    #[test]
+    fn crossings_are_judged_by_obstacle_however_high_its_number() {
+        // A via's obstacle is numbered past every vertex of the problem, so
+        // the numbers run far above the obstacles one member crosses. A
+        // table over this many could not be allocated; the keys of two
+        // edges still fit.
+        const STRIDE: usize = usize::MAX / 4;
+        let far = STRIDE - 1;
+        let before = Crossed::of(
+            &crossing(&[0, 1, 1], &[far, far, 2], &[-0.1, -0.3, -0.2]),
+            STRIDE,
+        );
+        let after = crossing(
+            &[0, 1, 1, 0, 1],
+            &[far, far, 2, 2, 5],
+            &[-0.3, -0.31, -0.2, -0.1, -0.1],
+        );
+        // Only deeper than the member's deepest edge in `far`, an edge
+        // newly across 2 and a newly crossed obstacle count.
+        assert_eq!(
+            before.new_or_deeper(&after, STRIDE),
+            vec![false, true, false, true, true]
+        );
+    }
 
     #[test]
     fn crossings_naming_nothing_to_move_back_move_all_back() {
