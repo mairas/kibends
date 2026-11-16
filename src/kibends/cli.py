@@ -491,7 +491,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         metavar="SECONDS",
         help="How long each spacing may optimize, past which a problem's first "
-        "burst at a spacing it was handed to still runs: when the time is up, "
+        "burst at a spacing it was handed to still takes one L-BFGS step: "
+        "when the time is up, "
         "the problems at a coarse spacing go on at the next and the time starts "
         "again, and once every problem still running is at the final spacing, "
         "optimizing stops and goes on with the best result found so far; so "

@@ -315,7 +315,7 @@ def counted() -> Generator[Count]:
         start: FloatArray,
         revert: Check,
         settings: OptimizerSettings,
-        stop: Callable[[], bool] | None = None,
+        stop: Callable[[bool], bool] | None = None,
     ) -> Burst:
         count.bursts += 1
         checking = 0.0

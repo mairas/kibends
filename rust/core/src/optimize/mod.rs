@@ -75,8 +75,9 @@
 //! state goes through the checks and the
 //! guard as any, and it settles nothing. The run reports whether some
 //! problem owes a burst at its level (`Notice::Owing`,
-//! `state::State::owes_burst`), so that the caller's time limit waits for
-//! those bursts. At the time limit the caller may hand every problem still
+//! `state::State::owes_burst`), so that the caller's time limit lets
+//! those bursts reach an iteration: each burst tells its stop whether it
+//! has accepted one (`burst::Stop`). At the time limit the caller may hand every problem still
 //! before the final level over to its next level, as if it had settled
 //! there (`state::State::hand_over`), and advance again, so that a time
 //! limit counts once for each level and every level a problem is handed

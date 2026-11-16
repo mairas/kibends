@@ -236,6 +236,11 @@ type Trial = (Vec<f64>, Evaluation);
 /// The energy and its gradient at x.
 pub type Evaluation = (f64, Vec<f64>);
 
+/// Whether to end the burst, asked with whether it has accepted an
+/// iteration, so that a caller may let it reach one first; or the error
+/// that ends it.
+pub type Stop<'a, E> = dyn FnMut(bool) -> Result<bool, E> + 'a;
+
 /// The energy and its gradient as a function of x, or the error that ends
 /// the burst.
 pub type Objective<'a, E> = dyn FnMut(&[f64]) -> Result<Evaluation, E> + 'a;
@@ -247,14 +252,14 @@ pub type ClearanceEntered<'a> = dyn FnMut(&[f64]) -> Option<Vec<bool>> + 'a;
 
 /// Minimises `objective` from `start` over y with x = `scale` ⊙ y, or over
 /// x without a scale, asking `stop` after each iteration and before each
-/// line search's trial, and taking only trials that enter no clearance by
-/// `entered`, if given.
+/// line search's trial, with whether the burst has accepted an iteration,
+/// and taking only trials that enter no clearance by `entered`, if given.
 pub fn run<E>(
     objective: &mut Objective<'_, E>,
     start: &[f64],
     scale: Option<&[f64]>,
     settings: &Settings,
-    stop: &mut dyn FnMut() -> Result<bool, E>,
+    stop: &mut Stop<'_, E>,
     entered: Option<&mut ClearanceEntered<'_>>,
 ) -> Result<Burst, E> {
     if let Some(s) = scale {
@@ -264,6 +269,7 @@ pub fn run<E>(
         objective: RefCell::new(objective),
         stop: RefCell::new(stop),
         stopped: Cell::new(false),
+        iterated: Cell::new(false),
         scale,
         entered: RefCell::new(entered.map(|a| a as &mut ClearanceEntered<'_>)),
         last: RefCell::new(None),
@@ -513,9 +519,11 @@ where
 /// The objective over y, caching its last evaluation.
 struct Scaled<'a, E> {
     objective: RefCell<&'a mut Objective<'a, E>>,
-    stop: RefCell<&'a mut dyn FnMut() -> Result<bool, E>>,
+    stop: RefCell<&'a mut Stop<'a, E>>,
     /// Whether `stop` answered true before a line search's trial.
     stopped: Cell<bool>,
+    /// Whether the burst has accepted an iteration, as `stop` is told.
+    iterated: Cell<bool>,
     scale: Option<&'a [f64]>,
     /// What judges a line search's trials, by x.
     entered: RefCell<Option<&'a mut ClearanceEntered<'a>>>,
@@ -547,7 +555,7 @@ impl<E> Scaled<'_, E> {
 
     /// What `stop` answers, None for its error, which ends the burst.
     fn ask(&self) -> Option<bool> {
-        match (self.stop.borrow_mut())() {
+        match (self.stop.borrow_mut())(self.iterated.get()) {
             Ok(stopped) => Some(stopped),
             Err(e) => {
                 *self.failure.borrow_mut() = Some(e);
@@ -786,6 +794,7 @@ impl<E> Wrapper<'_, '_, '_, E> {
         self.record.accept(&next);
         self.record.decrease = (before - next.cost) / before.abs().max(next.cost.abs()).max(1.0);
         self.record.iterations += 1;
+        self.scaled.iterated.set(true);
         next
     }
 
@@ -970,8 +979,8 @@ mod tests {
         Ok((value, gradient))
     }
 
-    fn never() -> impl FnMut() -> Result<bool, ()> {
-        || Ok(false)
+    fn never() -> impl FnMut(bool) -> Result<bool, ()> {
+        |_| Ok(false)
     }
 
     fn burst(
@@ -1069,7 +1078,7 @@ mod tests {
             count.set(count.get() + 1);
             objective(x)
         };
-        let mut stop = || Ok::<_, ()>(count.get() >= evaluations);
+        let mut stop = |_| Ok::<_, ()>(count.get() >= evaluations);
         run(&mut counted, start, None, settings, &mut stop, None).unwrap()
     }
 
@@ -1134,7 +1143,7 @@ mod tests {
             evaluated.set(evaluated.get() + 1);
             falling(x)
         };
-        let mut stop = || Ok::<_, ()>(met.get().is_some());
+        let mut stop = |_| Ok::<_, ()>(met.get().is_some());
 
         let b = run(
             &mut objective,
@@ -1169,7 +1178,7 @@ mod tests {
             evaluated.set(evaluated.get() + 1);
             falling(x)
         };
-        let mut stop = || Ok::<_, ()>(guarded.get() > 0);
+        let mut stop = |_| Ok::<_, ()>(guarded.get() > 0);
 
         let b = run(
             &mut objective,
@@ -1186,6 +1195,32 @@ mod tests {
         // The start's evaluation alone.
         assert_eq!(evaluated.get(), 1);
         assert_eq!(b.point, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn stop_is_told_whether_the_burst_has_iterated() {
+        let mut told = Vec::new();
+        let mut stop = |iterated: bool| {
+            told.push(iterated);
+            Ok::<_, ()>(iterated)
+        };
+
+        let b = run(
+            &mut rosenbrock,
+            &[-1.2, 1.0],
+            None,
+            &SETTINGS,
+            &mut stop,
+            None,
+        )
+        .unwrap();
+
+        // Asked before each trial of the first line search, then after
+        // the first iteration, where it answers true.
+        assert_eq!(b.ending, Ending::Stopped);
+        assert_eq!(b.iterations, 1);
+        assert_eq!(told.last(), Some(&true));
+        assert!(told[..told.len() - 1].iter().all(|&t| !t), "{told:?}");
     }
 
     #[test]
@@ -1260,7 +1295,7 @@ mod tests {
     #[test]
     fn a_gradient_below_gtol_ends_the_burst_before_stop_is_asked() {
         let mut asked = 0;
-        let mut stop = || {
+        let mut stop = |_| {
             asked += 1;
             Ok::<_, ()>(true)
         };
@@ -1281,7 +1316,7 @@ mod tests {
 
     #[test]
     fn an_error_of_stop_ends_the_burst_with_it() {
-        let mut stop = || Err::<bool, _>("interrupted");
+        let mut stop = |_| Err::<bool, _>("interrupted");
         let mut objective = |x: &[f64]| rosenbrock(x).map_err(|()| "");
 
         let answer = run(
@@ -1298,7 +1333,7 @@ mod tests {
 
     #[test]
     fn an_error_of_the_objective_ends_the_burst_with_it() {
-        let mut stop = || Ok::<_, &str>(false);
+        let mut stop = |_| Ok::<_, &str>(false);
         let mut objective = |x: &[f64]| {
             if x[0].abs() < 0.5 {
                 Err("not finite")

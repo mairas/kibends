@@ -1591,14 +1591,15 @@ def reset_statistics() -> None:
     Every statistic back to zero.
     """
 
-def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[collections.abc.Callable[[], builtins.bool]] = None, check: typing.Optional[Revert] = None) -> BurstResult:
+def run_burst(objective: Objective, start: numpy.typing.NDArray[numpy.float64], scale: typing.Optional[numpy.typing.NDArray[numpy.float64]], max_iterations: builtins.int, ftol: builtins.float, gtol: builtins.float, stop: typing.Optional[collections.abc.Callable[[builtins.bool], builtins.bool]] = None, check: typing.Optional[Revert] = None) -> BurstResult:
     r"""
     Minimises `objective` from `start` with L-BFGS, over y with x =
     `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
     `gtol` ends it (`kibends_core::burst`). Before each line search's trial
     and after each iteration it checks for signals and asks `stop`, if
-    given, which ends the burst at its last accepted point by answering
-    true, after an iteration only before the cap. With a `check`, its line
+    given, with whether the burst has accepted an iteration; `stop` ends
+    the burst at its last accepted point by answering true, after an
+    iteration only before the cap. With a `check`, its line
     searches take
     only points that enter no clearance by the check. An exception
     raised there or by the objective ends the burst and propagates.

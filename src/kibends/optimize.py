@@ -233,9 +233,11 @@ def optimize_chains(
     time limit in `settings`, the limit runs out once `clock` reads it or
     more past the end of setup, when optimizing starts, and no problem owes
     a burst at its level (`_core.OwingNotice`): one that has not
-    settled and has run none at a level a handover took it to. So an owed
-    burst runs past the limit, as a long one does, and the problems after
-    it in the outer iteration step too. Once the limit has run out, the
+    settled and has run none at a level a handover took it to. While some
+    problem owes one, a burst past the limit runs until it accepts its
+    first L-BFGS iteration and ends there, cut, so that each level a
+    handover took a problem to descends; the problems after it in the
+    outer iteration step so too. Once the limit has run out, the
     running burst ends before its next line-search trial, at its last
     accepted point (`bursts.run_burst`), and its state goes
     through the checks and the guard as any burst's. Each problem then
@@ -245,8 +247,9 @@ def optimize_chains(
     were. With none before the final level the run ends
     `Termination.TIME_LIMIT`. So every level a problem reaches above level
     0 runs a burst, and the limit counts at most once for each level,
-    besides the overrun of the bursts running when it runs out, owed ones
-    included, and the holds. Should it run out in the outer iteration that
+    besides the overrun of the bursts running when it runs out, about an
+    L-BFGS iteration for each owed one, and the holds. Should it run out
+    in the outer iteration that
     reaches the iteration cap with some problem before the final level,
     the cap ends the run; after a hold the limit is still out, so the run
     goes on as when it runs out, with no burst first.
@@ -357,20 +360,22 @@ def optimize_chains(
     # has set it.
     first_end = cast(Termination | None, None)
     # Whether some problem owes a burst at its level, as the run last said
-    # (`_core.OwingNotice`): a burst owed runs past the limit, as a long
-    # one does.
+    # (`_core.OwingNotice`): a burst then runs past the limit to its first
+    # accepted iteration.
     owing = False
 
     def owe(now: bool) -> None:
         nonlocal owing
         owing = now
 
-    def ended() -> bool:
+    def ended(iterated: bool = False) -> bool:
+        """Whether `stop` or the time limit ends the run, the limit while
+        some problem owes a burst only once the running one has `iterated`."""
         nonlocal first_end
         if stop is not None and stop():
             first_end = first_end or Termination.STOPPED
             return True
-        if deadline is not None and clock() >= deadline and not owing:
+        if deadline is not None and clock() >= deadline and (iterated or not owing):
             first_end = first_end or Termination.TIME_LIMIT
             return True
         return False

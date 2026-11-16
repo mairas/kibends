@@ -1722,14 +1722,14 @@ class TestCtrlC:
         answers: list[bool] = []
 
         def sending(*args: object) -> Burst:
-            stop = cast(Callable[[], bool], args[4])
+            stop = cast(Stop, args[4])
 
-            def asked() -> bool:
+            def asked(iterated: bool) -> bool:
                 # Asked for the SIGNAL_AT-th time, past the first iteration,
                 # it sends SIGINT from C and answers no; the burst's next
                 # ask runs the handler, then the run's stop.
                 sent = len(answers) == SIGNAL_AT - 1 and libc_raise(signal.SIGINT) == 0
-                answers.append(False if sent else stop())
+                answers.append(False if sent else stop(iterated))
                 return answers[-1]
 
             return real(*args[:4], asked)

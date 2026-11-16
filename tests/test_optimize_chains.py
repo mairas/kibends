@@ -617,6 +617,41 @@ SLOW_SETUP = 100.0
 """Seconds a setup takes, far past a limit of STOPPED_AFTER seconds."""
 
 
+def test_a_burst_owed_past_the_limit_ends_after_its_first_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.drape()
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> float:
+        """A clock that moves only as the energy is evaluated."""
+        return float(_core.statistics().evaluations - start)
+
+    # A limit of one evaluation runs out at the first trial of each level's
+    # first burst: the coarsest's is cut there, and each later level's,
+    # owed, runs past it.
+    limited = replace(COARSE, time_limit=1.0)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=evaluated, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    first, *owed = bursts
+    assert (first.cut, first.iterations) == (True, 0)
+    assert len(owed) == len(COARSE.coarse_spacings)
+    for burst in owed:
+        assert burst.cut
+        assert burst.iterations == 1
+        assert not burst.abnormal
+    assert result.abnormal == ()
+    # The owed bursts descended: the run ends at what they reached, not at
+    # its inputs.
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
 def test_time_limit_counts_from_when_optimizing_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
