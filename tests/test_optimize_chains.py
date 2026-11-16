@@ -652,6 +652,76 @@ def test_a_burst_owed_past_the_limit_ends_after_its_first_iteration(
         assert length(chain.polyline) < chain.before.length
 
 
+def test_bursts_past_the_limit_while_one_is_owed_end_after_an_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two problems, one chain on each layer: after each handover both owe
+    # a burst, and A's runs while B still owes one.
+    free = FreeSpace()
+    chains = (
+        selected("A", "A", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+        selected("B", "B", free, (3.0, 0.8), (5.0, 2.0), (7.0, 0.8), layer="B.Cu"),
+    )
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> float:
+        """A clock that moves only as the energy is evaluated."""
+        return float(_core.statistics().evaluations - start)
+
+    limited = replace(COARSE, time_limit=1.0)
+
+    result = optimize_chains(
+        chains, scenarios.PARAMS, limited, clock=evaluated, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    # The limit cuts A's first burst at once and hands both over, B from
+    # level 0 without a step; each later level runs one burst of each.
+    first, *later = bursts
+    assert (first.cut, first.iterations) == (True, 0)
+    assert len(later) == len(chains) * len(COARSE.coarse_spacings)
+    assert [(b.cut, b.iterations) for b in later] == [(True, 1)] * len(later)
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_burst_owed_past_the_limit_that_ends_unmoved_owes_no_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every burst ends abnormally where it started, before any iteration;
+    # the clock reads one second for each burst run.
+    ran: list[Burst] = []
+
+    def unmoved(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        ran.append(Burst(start.copy(), abnormal=True))
+        return ran[-1]
+
+    monkeypatch.setattr(optimize_module, "run_burst", unmoved)
+    scenario = bumps()
+    limited = replace(COARSE, time_limit=0.5)
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        limited,
+        clock=lambda: float(len(ran)),
+        started=0.0,
+    )
+
+    # The limit runs out after each level's one burst: an owed burst that
+    # took no step still counts as run, and the run hands over, then ends.
+    assert result.termination is Termination.TIME_LIMIT
+    assert not result.before_final_spacing
+    assert len(ran) == len(COARSE.coarse_spacings) + 1
+
+
 def test_time_limit_counts_from_when_optimizing_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
