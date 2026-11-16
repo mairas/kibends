@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
@@ -14,6 +13,7 @@ from kibends.bursts import (
     FALLBACK_WARNING,
     OptimizerSettings,
     ScaledObjective,
+    Stop,
     run_burst,
 )
 
@@ -90,7 +90,7 @@ def test_a_burst_whose_line_search_fails_ends_abnormally_where_it_started() -> N
 
 
 def test_an_exception_from_stop_ends_the_burst_and_propagates() -> None:
-    def interrupted() -> bool:
+    def interrupted(_iterated: bool) -> bool:
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
@@ -168,11 +168,11 @@ def test_a_burst_moved_back_whole_is_logged_as_a_warning(log: list[str]) -> None
     assert [line.strip() for line in log] == [f"WARNING {FALLBACK_WARNING}"]
 
 
-def ask_until(answers: int) -> Callable[[], bool]:
+def ask_until(answers: int) -> Stop:
     """A stop that answers True from its `answers`th question on."""
     asked = 0
 
-    def stop() -> bool:
+    def stop(_iterated: bool) -> bool:
         nonlocal asked
         asked += 1
         return asked >= answers
@@ -180,7 +180,7 @@ def ask_until(answers: int) -> Callable[[], bool]:
     return stop
 
 
-def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
+def test_stop_ends_the_burst_before_the_trial_it_answers_true_for() -> None:
     start = np.array([3.0, 2.0])
     whole = run_burst(steep_valley, start, nothing_crosses, SHORT_SETTINGS)
 
@@ -188,8 +188,10 @@ def test_stop_ends_the_burst_at_the_iteration_it_answers_true() -> None:
         steep_valley, start, nothing_crosses, SHORT_SETTINGS, ask_until(2)
     )
 
-    assert whole.iterations > 2
-    assert burst.iterations == 2
+    # It is asked before each line-search trial: the start's evaluation and
+    # one trial ran.
+    assert whole.evaluations > 2
+    assert burst.evaluations == 2
     assert burst.cut
     assert not burst.abnormal
 
@@ -199,7 +201,7 @@ def test_a_burst_its_stop_never_ends_runs_whole() -> None:
     whole = run_burst(steep_valley, start, nothing_crosses, SHORT_SETTINGS)
 
     burst = run_burst(
-        steep_valley, start, nothing_crosses, SHORT_SETTINGS, lambda: False
+        steep_valley, start, nothing_crosses, SHORT_SETTINGS, lambda _iterated: False
     )
 
     np.testing.assert_array_equal(burst.points, whole.points)

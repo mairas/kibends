@@ -1246,6 +1246,35 @@ class TestStop:
         assert optimized == []
         assert "begin_commit" not in board.calls
 
+    def test_a_stop_while_the_optimizer_sets_up_ends_the_run_with_nothing_changed(
+        self, connect: Connector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        board = connect.to(l_board())
+        built: list[object] = []
+        real = cast(
+            Callable[..., object],
+            optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        def building(*args: object, **kwargs: object) -> object:
+            built.append(real(*args, **kwargs))
+            return built[-1]
+
+        monkeypatch.setattr(optimize_module, "_problem", building)
+        options = cli.smooth_options(cli.parse_args(["smooth"]))
+        optimized: list[pipeline.OptimizerReport] = []
+
+        report = pipeline.run_smooth(
+            options, optimized.append, stop=lambda: bool(built)
+        )
+
+        assert built
+        assert report.termination is Termination.STOPPED
+        assert report.iterations == 0
+        assert not report.changes and not report.committed
+        assert optimized == []
+        assert "begin_commit" not in board.calls
+
     def test_a_stop_before_anything_changed_says_so(
         self,
         connect: Connector,
@@ -1670,6 +1699,12 @@ def noting_handler[**P, R](seen: list[object], real: Callable[P, R]) -> Callable
     return noting
 
 
+SIGNAL_AT = 10
+"""The question of a burst's stop at which SIGINT is sent: past the first
+L-BFGS iteration of the first burst on `l_board`, so that the stop keeps a
+state that moved."""
+
+
 @pytest.mark.usefixtures("sigint_handler")
 class TestCtrlC:
     @pytest.mark.usefixtures("coarse_optimizer")
@@ -1687,13 +1722,14 @@ class TestCtrlC:
         answers: list[bool] = []
 
         def sending(*args: object) -> Burst:
-            stop = cast(Callable[[], bool], args[4])
+            stop = cast(Stop, args[4])
 
-            def asked() -> bool:
-                # Asked first, it sends SIGINT from C and answers no; the
-                # burst's next ask runs the handler, then the run's stop.
-                sent = not answers and libc_raise(signal.SIGINT) == 0
-                answers.append(False if sent else stop())
+            def asked(iterated: bool) -> bool:
+                # Asked for the SIGNAL_AT-th time, past the first iteration,
+                # it sends SIGINT from C and answers no; the burst's next
+                # ask runs the handler, then the run's stop.
+                sent = len(answers) == SIGNAL_AT - 1 and libc_raise(signal.SIGINT) == 0
+                answers.append(False if sent else stop(iterated))
                 return answers[-1]
 
             return real(*args[:4], asked)
@@ -1702,7 +1738,9 @@ class TestCtrlC:
 
         run()
 
-        assert answers[:2] == [False, True], "the burst ran on past the signal"
+        assert answers[SIGNAL_AT - 1 : SIGNAL_AT + 1] == [False, True], (
+            "the burst ran on past the signal"
+        )
         (report,) = reports
         assert report.termination is Termination.STOPPED
         assert report.committed

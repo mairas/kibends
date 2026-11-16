@@ -5,9 +5,10 @@ of `tests/scenarios.py`."""
 import json
 import math
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn, cast
 
 import numpy as np
 import pytest
@@ -49,7 +50,7 @@ from kibends.bursts import (
 from kibends.energy import ObstacleField
 from kibends.neighbours import ChainInput
 from kibends.obstacles import ChainCentreline, Obstacle, Obstacles
-from kibends.optimize import optimize, optimize_chains
+from kibends.optimize import StoppedInSetupError, optimize, optimize_chains
 from kibends.polylines import measure, resample
 from kibends.results import OptimizeResult, RunResult, Termination
 from kibends.via_moves import MovingVias
@@ -777,24 +778,48 @@ def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
     ]
 
 
+def test_a_stop_while_problems_are_built_ends_before_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[object] = []
+    real = cast(
+        Callable[..., object],
+        optimize_module._problem,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    def building(*args: object, **kwargs: object) -> object:
+        built.append(real(*args, **kwargs))
+        return built[-1]
+
+    def bursting(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("a burst ran after a stop in setup")
+
+    monkeypatch.setattr(optimize_module, "_problem", building)
+    monkeypatch.setattr(optimize_module, "run_burst", bursting)
+
+    with pytest.raises(StoppedInSetupError):
+        optimize_chains(on_two_layers(*BOWED), PARAMS, COARSE, stop=lambda: bool(built))
+
+    # Two problems, F.Cu's and B.Cu's: the stop came after the first.
+    assert len(built) == 1
+
+
 def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
     # The limit runs out after the front's 1.2 mm burst and hands both over;
     # the back's first 0.6 mm burst, the third, is then owed past it. The
-    # stop is asked after the second burst, then after each L-BFGS
-    # iteration of the third, and answers true at the first of those.
+    # stop answers true from that burst's first question on, before its
+    # first line-search trial, and stays true.
     settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, time_limit=ONE_BURST)
     clock = BurstClock(monkeypatch)
     owed_from = 2
-    asked = 0
+    bursts: list[Burst] = []
+    running = False
 
     def stop() -> bool:
-        nonlocal asked
-        asked += clock.bursts >= owed_from
-        return asked > 1
+        return len(bursts) > owed_from or (running and len(bursts) == owed_from)
 
-    bursts: list[Burst] = []
     counted = optimize_module.run_burst
 
     def recording(
@@ -804,7 +829,10 @@ def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(
         settings: OptimizerSettings,
         stop: Stop | None = None,
     ) -> Burst:
+        nonlocal running
+        running = True
         burst = counted(objective, start, revert, settings, stop)
+        running = False
         bursts.append(burst)
         return burst
 
@@ -820,7 +848,7 @@ def test_a_stop_during_a_burst_owed_past_the_limit_cuts_it(
     assert len(bursts) == owed_from + 1
     owed = bursts[-1]
     assert owed.cut
-    assert owed.iterations == 1
+    assert (owed.iterations, owed.evaluations) == (0, 1)
 
 
 def test_the_time_limit_hands_over_only_the_problems_at_a_coarse_level(

@@ -1,6 +1,7 @@
 //! One L-BFGS burst (`kibends_core::burst`) over an `Objective`, evaluated
-//! without leaving Rust; Python is asked only once per iteration, for
-//! signals and for the caller's `stop`.
+//! without leaving Rust; Python is asked only for signals and for the
+//! caller's `stop`, before each line search's trial and after each
+//! iteration.
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
@@ -35,7 +36,8 @@ pub struct BurstResult {
     /// Whether an iteration was not accepted.
     #[pyo3(get)]
     abnormal: bool,
-    /// Whether `stop` ended it before its iteration cap.
+    /// Whether `stop` ended it: in a line search, or after an iteration
+    /// before its cap.
     #[pyo3(get)]
     cut: bool,
 }
@@ -52,9 +54,12 @@ impl BurstResult {
 
 /// Minimises `objective` from `start` with L-BFGS, over y with x =
 /// `scale` ⊙ y if a scale is given, until `max_iterations`, `ftol` or
-/// `gtol` ends it (`kibends_core::burst`). After each iteration it checks
-/// for signals and asks `stop`, if given, which ends the burst by
-/// answering true before the cap. With a `check`, its line searches take
+/// `gtol` ends it (`kibends_core::burst`). Before each line search's trial
+/// and after each iteration it checks for signals and asks `stop`, if
+/// given, with whether the burst has accepted an iteration; `stop` ends
+/// the burst at its last accepted point by answering true, after an
+/// iteration only before the cap. With a `check`, its line
+/// searches take
 /// only points that enter no clearance by the check. An exception
 /// raised there or by the objective ends the burst and propagates.
 #[gen_stub_pyfunction]
@@ -70,7 +75,7 @@ fn run_burst(
     ftol: f64,
     gtol: f64,
     #[gen_stub(override_type(
-        type_repr = "typing.Optional[collections.abc.Callable[[], builtins.bool]]",
+        type_repr = "typing.Optional[collections.abc.Callable[[builtins.bool], builtins.bool]]",
         imports = ("typing", "collections.abc", "builtins")
     ))]
     stop: Option<Py<PyAny>>,
@@ -87,10 +92,10 @@ fn run_burst(
         gtol,
     };
     let mut evaluate = |x: &[f64]| objective.evaluate(py, x);
-    let mut asked = || -> PyResult<bool> {
+    let mut asked = |iterated: bool| -> PyResult<bool> {
         py.check_signals()?;
         match &stop {
-            Some(stop) => stop.call0(py)?.is_truthy(py),
+            Some(stop) => stop.call1(py, (iterated,))?.is_truthy(py),
             None => Ok(false),
         }
     };

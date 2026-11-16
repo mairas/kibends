@@ -32,7 +32,11 @@ from before coarse levels, run `./run bench -- --spacing 0.1` here and
 `./run bench` in that checkout, and compare their tables. A checkout from
 before the time limit counted at each spacing takes it for the whole run,
 so with coarse levels its rows and this checkout's stop at different
-budgets: the limit once against the limit at each spacing.
+budgets: the limit once against the limit at each spacing. A checkout from
+before the limit counted from when optimizing starts counts it from before
+the optimizer's setup, so `--tree` against one compares time-limited rows
+at different budgets too: there the first spacing has the setup's time
+less.
 
 `--tree` compares this checkout with TREE, another checkout such as an
 older commit from `git worktree add`, on one machine. It brings TREE's
@@ -311,7 +315,7 @@ def counted() -> Generator[Count]:
         start: FloatArray,
         revert: Check,
         settings: OptimizerSettings,
-        stop: Callable[[], bool] | None = None,
+        stop: Callable[[bool], bool] | None = None,
     ) -> Burst:
         count.bursts += 1
         checking = 0.0

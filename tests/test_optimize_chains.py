@@ -39,6 +39,7 @@ from scenarios import ChainsScenario, selected
 from shapely.geometry import LineString
 
 import kibends.optimize as optimize_module
+from kibends import _core
 from kibends.bursts import (
     Burst,
     Check,
@@ -57,6 +58,7 @@ from kibends.optimize import (
     MAX_ABNORMAL_BURSTS,
     PROGRESS_INTERVAL,
     Progress,
+    StoppedInSetupError,
     optimize_chains,
 )
 from kibends.results import RunResult, Termination
@@ -572,46 +574,185 @@ def recorded_bursts(monkeypatch: pytest.MonkeyPatch) -> list[Burst]:
     return bursts
 
 
-TIMED_ITERATIONS = 2
-"""The L-BFGS iterations a burst runs before a clock that ticks a second
-a reading, from 0, passes a limit half a second beyond: the run reads it
-when setup begins and ends, then after each iteration."""
+STOPPED_AFTER = 25
+"""Energy evaluations of `scenarios.drape` at one spacing after which a stop
+turns true: inside a line search of its first burst, past its first
+iterations, where the search would take four more trials."""
 
 
-def test_time_limit_ends_the_burst_at_the_iteration_past_it(
+TIMED_QUESTIONS = 2
+"""The questions the run asks of the time limit before a clock that ticks a
+second a reading, from 0, passes a limit half a second short of them: the
+run reads it when setup begins and ends, from when the limit counts, then at
+each question."""
+
+
+def test_a_time_limit_in_a_line_search_ends_the_burst_before_its_next_trial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scenario = bumps()
+    scenario = scenarios.drape()
     bursts = recorded_bursts(monkeypatch)
-    limited = replace(ONE_SPACING, time_limit=TIMED_ITERATIONS + 0.5)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> float:
+        """A clock that moves only as the energy is evaluated."""
+        return float(_core.statistics().evaluations - start)
+
+    limited = replace(ONE_SPACING, time_limit=float(STOPPED_AFTER))
 
     result = optimize_chains(
-        scenario.chains, scenario.params, limited, clock=Ticking(), started=0.0
+        scenario.chains, scenario.params, limited, clock=evaluated, started=0.0
     )
 
+    assert evaluated() == STOPPED_AFTER
     (burst,) = bursts
     assert burst.cut
-    assert burst.iterations == TIMED_ITERATIONS
     assert result.termination is Termination.TIME_LIMIT
     # The cut burst's state passed the guard and is the best.
     for chain in result.chains:
         assert length(chain.polyline) < chain.before.length
 
 
-def test_time_limit_counts_from_when_the_stage_started() -> None:
+SLOW_SETUP = 100.0
+"""Seconds a setup takes, far past a limit of STOPPED_AFTER seconds."""
+
+
+def test_a_burst_owed_past_the_limit_ends_after_its_first_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.drape()
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> float:
+        """A clock that moves only as the energy is evaluated."""
+        return float(_core.statistics().evaluations - start)
+
+    # A limit of one evaluation runs out at the first trial of each level's
+    # first burst: the coarsest's is cut there, and each later level's,
+    # owed, runs past it.
+    limited = replace(COARSE, time_limit=1.0)
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=evaluated, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    first, *owed = bursts
+    assert (first.cut, first.iterations) == (True, 0)
+    assert len(owed) == len(COARSE.coarse_spacings)
+    for burst in owed:
+        assert burst.cut
+        assert burst.iterations == 1
+        assert not burst.abnormal
+    assert result.abnormal == ()
+    # The owed bursts descended: the run ends at what they reached, not at
+    # its inputs.
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_bursts_past_the_limit_while_one_is_owed_end_after_an_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two problems, one chain on each layer: after each handover both owe
+    # a burst, and A's runs while B still owes one.
+    free = FreeSpace()
+    chains = (
+        selected("A", "A", free, (0.0, 0.0), (5.0, 3.0), (10.0, 0.0)),
+        selected("B", "B", free, (3.0, 0.8), (5.0, 2.0), (7.0, 0.8), layer="B.Cu"),
+    )
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> float:
+        """A clock that moves only as the energy is evaluated."""
+        return float(_core.statistics().evaluations - start)
+
+    limited = replace(COARSE, time_limit=1.0)
+
+    result = optimize_chains(
+        chains, scenarios.PARAMS, limited, clock=evaluated, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    # The limit cuts A's first burst at once and hands both over, B from
+    # level 0 without a step; each later level runs one burst of each.
+    first, *later = bursts
+    assert (first.cut, first.iterations) == (True, 0)
+    assert len(later) == len(chains) * len(COARSE.coarse_spacings)
+    assert [(b.cut, b.iterations) for b in later] == [(True, 1)] * len(later)
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_burst_owed_past_the_limit_that_ends_unmoved_owes_no_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every burst ends abnormally where it started, before any iteration;
+    # the clock reads one second for each burst run.
+    ran: list[Burst] = []
+
+    def unmoved(
+        objective: Objective,
+        start: FloatArray,
+        revert: Check,
+        settings: OptimizerSettings,
+        stop: Stop | None = None,
+    ) -> Burst:
+        ran.append(Burst(start.copy(), abnormal=True))
+        return ran[-1]
+
+    monkeypatch.setattr(optimize_module, "run_burst", unmoved)
     scenario = bumps()
-    limited = replace(ONE_SPACING, time_limit=5.0)
+    limited = replace(COARSE, time_limit=0.5)
 
     result = optimize_chains(
         scenario.chains,
         scenario.params,
         limited,
-        clock=Ticking(now=10.0, step=0.0),
+        clock=lambda: float(len(ran)),
         started=0.0,
     )
 
+    # The limit runs out after each level's one burst: an owed burst that
+    # took no step still counts as run, and the run hands over, then ends.
     assert result.termination is Termination.TIME_LIMIT
-    assert result.iterations == 1
+    assert not result.before_final_spacing
+    assert len(ran) == len(COARSE.coarse_spacings) + 1
+
+
+def test_time_limit_counts_from_when_optimizing_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.drape()
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+    read: list[float] = []
+
+    def slow_setup() -> float:
+        """A clock that reads 0 when setup begins, SLOW_SETUP when it has
+        ended, and then moves only as the energy is evaluated."""
+        evaluated = _core.statistics().evaluations - start
+        read.append(0.0 if not read else SLOW_SETUP + evaluated)
+        return read[-1]
+
+    limited = replace(ONE_SPACING, time_limit=float(STOPPED_AFTER))
+
+    result = optimize_chains(
+        scenario.chains, scenario.params, limited, clock=slow_setup, started=0.0
+    )
+
+    assert result.termination is Termination.TIME_LIMIT
+    (burst,) = bursts
+    assert burst.cut
+    assert burst.evaluations == STOPPED_AFTER
+
+
+SET_UP = 2
+"""The questions a stop is asked in the setup of `bumps`, before the run
+asks the time limit too: after building its one problem, and after checking
+where its copper starts."""
 
 
 class Countdown:
@@ -646,18 +787,59 @@ def test_a_stop_keeps_the_best_state_and_is_reported(
         assert length(chain.polyline) < chain.before.length
 
 
-def test_a_stop_ends_the_burst_at_the_iteration_it_is_set(
+def test_a_stop_in_a_line_search_ends_the_burst_before_its_next_trial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = scenarios.drape()
+    bursts = recorded_bursts(monkeypatch)
+    start = _core.statistics().evaluations
+
+    def evaluated() -> int:
+        return _core.statistics().evaluations - start
+
+    result = optimize_chains(
+        scenario.chains,
+        scenario.params,
+        ONE_SPACING,
+        stop=lambda: evaluated() >= STOPPED_AFTER,
+    )
+
+    assert evaluated() == STOPPED_AFTER
+    (burst,) = bursts
+    assert burst.cut
+    assert result.termination is Termination.STOPPED
+    # The burst's last accepted point passed the guard and is the best.
+    for chain in result.chains:
+        assert length(chain.polyline) < chain.before.length
+
+
+def test_a_stop_after_the_last_problem_is_built_ends_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scenario = bumps()
     bursts = recorded_bursts(monkeypatch)
+
+    with pytest.raises(StoppedInSetupError):
+        optimize_chains(
+            scenario.chains, scenario.params, COARSE, stop=Countdown(SET_UP)
+        )
+
+    assert bursts == []
+
+
+def test_a_stop_before_a_step_s_burst_runs_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = bumps()
+    bursts = recorded_bursts(monkeypatch)
+
+    # Its first SET_UP questions come in setup, the next as the first
+    # step begins.
     result = optimize_chains(
-        scenario.chains, scenario.params, COARSE, stop=Countdown(2)
+        scenario.chains, scenario.params, COARSE, stop=Countdown(SET_UP + 1)
     )
 
-    (burst,) = bursts
-    assert burst.cut
-    assert burst.iterations == 2
+    assert bursts == []
     assert result.termination is Termination.STOPPED
 
 
@@ -666,17 +848,17 @@ def test_a_stop_ends_the_burst_at_the_iteration_it_is_set(
     [
         # The clock passes the limit at the second question, after the stop
         # has said no twice; it says yes at the next.
-        (3, Termination.TIME_LIMIT),
+        (SET_UP + 3, Termination.TIME_LIMIT),
         # The stop says yes at the second question, before the clock has
         # passed the limit; the clock passes it when the run reports.
-        (2, Termination.STOPPED),
+        (SET_UP + 2, Termination.STOPPED),
     ],
 )
 def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     stop_at: int, first: Termination
 ) -> None:
     scenario = bumps()
-    limited = replace(ONE_SPACING, time_limit=TIMED_ITERATIONS + 0.5)
+    limited = replace(ONE_SPACING, time_limit=TIMED_QUESTIONS - 0.5)
     clock = Ticking()
 
     result = optimize_chains(
@@ -689,7 +871,7 @@ def test_of_a_stop_and_a_time_limit_the_first_to_fire_is_reported(
     )
 
     assert result.termination is first
-    assert clock.now > TIMED_ITERATIONS + 0.5
+    assert clock.now > TIMED_QUESTIONS - 0.5
 
 
 def test_a_stop_after_a_problem_gave_up_without_improving_is_abnormal(
