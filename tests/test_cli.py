@@ -1015,6 +1015,14 @@ class TestSmooth:
         assert raised.value.code == 2
         assert "argument --spacing:" in capsys.readouterr().err
 
+    def test_a_rising_schedule_is_named_as_typed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            cli.parse_args(["smooth", "--spacing", "0.4", "1.6"])
+
+        assert "coarsest first, got 0.4 1.6\n" in capsys.readouterr().err
+
     def test_the_final_spacing_reaches_the_optimizer_and_the_reports(
         self,
         connect: Connector,

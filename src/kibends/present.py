@@ -189,12 +189,13 @@ def positive_problem(value: float) -> str | None:
     return finite_problem(value) or (None if value > 0 else "must be positive")
 
 
-def schedule_problem(spacings: Sequence[float]) -> str | None:
+def schedule_problem(spacings: Sequence[float], separator: str) -> str | None:
     """What is wrong with a spacing schedule whose values are each positive
     and finite: they must fall strictly to a final spacing of at most
-    MAX_SPACING and number at most one more than MAX_COARSE_LEVELS."""
+    MAX_SPACING and number at most one more than MAX_COARSE_LEVELS. The
+    message lists the values with `separator`, as they were typed."""
     if any(finer >= coarser for coarser, finer in pairwise(spacings)):
-        return f"must fall strictly, coarsest first, got {listed(spacings)}"
+        return f"must fall strictly, coarsest first, got {listed(spacings, separator)}"
     if spacings[-1] > MAX_SPACING:
         return (
             f"the final spacing, the last value, must be at most {MAX_SPACING:g}, "
@@ -205,9 +206,10 @@ def schedule_problem(spacings: Sequence[float]) -> str | None:
     return None
 
 
-def listed(spacings: Sequence[float]) -> str:
-    """`spacings` as the panel's Spacing field shows them."""
-    return ", ".join(f"{s:g}" for s in spacings)
+def listed(spacings: Sequence[float], separator: str = ", ") -> str:
+    """`spacings` as the panel's Spacing field shows them, or joined with
+    `separator`."""
+    return separator.join(f"{s:g}" for s in spacings)
 
 
 class Field(Enum):
@@ -295,7 +297,7 @@ def _schedule(text: str) -> tuple[float, ...]:
     if not words:
         raise _FieldError("needs a value")
     spacings = tuple(_checked(w, positive_problem) for w in words)
-    found = schedule_problem(spacings)
+    found = schedule_problem(spacings, ", ")
     if found is not None:
         raise _FieldError(found)
     return spacings

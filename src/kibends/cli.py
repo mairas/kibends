@@ -240,7 +240,7 @@ class _Schedule(argparse.Action):
         option_string: str | None = None,
     ) -> None:
         spacings = tuple(cast(Sequence[float], values))
-        problem = schedule_problem(spacings)
+        problem = schedule_problem(spacings, " ")
         if problem is not None:
             raise argparse.ArgumentError(self, problem)
         setattr(namespace, self.dest, spacings)
