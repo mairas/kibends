@@ -23,8 +23,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-pub use super::items::Copper;
-use super::items::{ItemSet, Picked, Source};
+use super::items::{Copper, ItemSet, Picked, Source};
 use super::smooth::SMOOTH_REACH;
 use super::union_find::UnionFind;
 use super::{DEGENERATE_DISTANCE, INDEXED_EDGES, Kind, TOUCH_TOLERANCE};
@@ -287,10 +286,6 @@ impl StaticEdges {
     pub fn kind(&self, item: usize) -> Kind {
         let (set, k) = self.at(item);
         set.kind(k)
-    }
-
-    pub fn members(&self) -> &[Member] {
-        &self.members
     }
 
     pub fn inflations(&self) -> &[f64] {

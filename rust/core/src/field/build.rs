@@ -41,8 +41,8 @@ use std::sync::Arc;
 
 use super::chain::ChainField;
 use super::edges::{Member, Override, StaticEdges, number};
+use super::items::Source;
 use super::items::{Copper, Interner, ItemIds, ItemSet, Record};
-pub use super::items::{Picked, Source};
 use super::obstacles::{Obstacles, edge_obstacle, obstacle_ids};
 use super::{Kind, TOUCH_TOLERANCE};
 use crate::geometry::{Part, Shape, V2};
@@ -474,7 +474,11 @@ impl<'b> Built<'b> {
 
     /// The items' obstacles, then the board edge, layer l's outline
     /// inflated by `edge_inflation`, if it has one.
-    fn with_edge(&mut self, outline: Option<usize>, edge_inflation: f64) -> (Vec<u32>, f64) {
+    fn with_edge(
+        &mut self,
+        outline: Option<usize>,
+        edge_inflation: f64,
+    ) -> (Vec<u32>, Option<f64>) {
         let keys: Vec<(ItemIds, f64)> = self
             .members
             .iter()
@@ -487,11 +491,11 @@ impl<'b> Built<'b> {
             .collect();
         let mut ids = obstacle_ids(&keys);
         match outline.and_then(|l| self.board.records[l].outline.map(|item| (l, item))) {
-            None => (ids, 0.0),
+            None => (ids, None),
             Some((l, item)) => {
                 ids.push(edge_obstacle(&ids));
                 self.push(l, item, edge_inflation, None);
-                (ids, edge_inflation)
+                (ids, Some(edge_inflation))
             }
         }
     }
@@ -895,6 +899,7 @@ pub fn own_net_stops(
     let vias = vias_field(&found.keeper, own);
     Ok(OwnNetStops { items, vias })
 }
+
 /// A via at its position as an obstacle to a chain: its netclass
 /// clearance and the zones it stays inside.
 #[derive(Clone, Copy, Debug)]
@@ -957,6 +962,7 @@ fn vias_field<'a>(
 mod tests {
     use super::*;
     use crate::field::Field;
+    use crate::field::items::Picked;
     use crate::field::obstacles::Item;
     use crate::rules::{HOLE_CLEARANCE, HOLE_TO_HOLE, Span};
     use crate::testing::Random;

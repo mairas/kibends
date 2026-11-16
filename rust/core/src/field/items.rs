@@ -26,9 +26,11 @@ use super::{Kind, MAX_EDGE_LENGTH};
 use crate::geometry::{LINE_STRING, Part, Shape, V2};
 
 /// What a clearance check joins of the items: copper of one net on one
-/// layer that touches is one obstacle to it. Nets and layers are numbered
-/// by the set's interner, None for an item that is not copper of one net
-/// on one layer.
+/// layer that touches is one obstacle to it. Nets are numbered by the
+/// set's interner; layers by the index of their layer in the board for a
+/// board's sets (`build::BoardItems`), by the interner for a set of a
+/// field's own items (`obstacles::Obstacles::new`). None for an item that
+/// is not copper of one net on one layer.
 #[derive(Clone, Debug, Default)]
 pub struct Copper {
     pub net: Vec<Option<u32>>,

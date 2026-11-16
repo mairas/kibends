@@ -88,13 +88,20 @@ impl Obstacles {
         if has_outline {
             ids.push(edge_obstacle(&ids));
         }
-        Self::of(StaticEdges::whole(set, inflations, ids), edge_inflation)
+        let edge = has_outline.then_some(edge_inflation);
+        Self::of(StaticEdges::whole(set, inflations, ids), edge)
     }
 
-    /// The field of `edges`, its last item the board edge if it is
-    /// `Outside`, inflated by `edge_inflation`.
-    pub fn of(edges: StaticEdges, edge_inflation: f64) -> Self {
-        let outline = !edges.is_empty() && edges.kind(edges.len() - 1) == Kind::Outside;
+    /// The field of `edges`; with `edge_inflation`, its last item is the
+    /// board edge, an `Outside` item inflated by it.
+    pub fn of(edges: StaticEdges, edge_inflation: Option<f64>) -> Self {
+        let outline = edge_inflation.is_some();
+        if outline {
+            assert!(
+                !edges.is_empty() && edges.kind(edges.len() - 1) == Kind::Outside,
+                "the board edge is the last item"
+            );
+        }
         let items = edges.len() - usize::from(outline);
         let max_inflation = edges.inflations()[..items]
             .iter()
@@ -104,7 +111,7 @@ impl Obstacles {
             edges: Arc::new(edges),
             items,
             outline,
-            edge_inflation,
+            edge_inflation: edge_inflation.unwrap_or(0.0),
             max_inflation,
         }
     }
