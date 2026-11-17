@@ -1,0 +1,19 @@
+{
+  "$schema": "https://go.kicad.org/pcm/schemas/v2",
+  "name": "kibends",
+  "description": "Smooth the selected tracks into short, curved paths that keep their clearance.",
+  "description_full": "kibends replaces each selected route in the PCB editor with a short, smooth path that keeps its clearance to other copper. Select tracks on any copper layers, or nothing for the whole board, and press Run in the kibends panel. One run is one undo step.\n\nThe kibends button in the PCB editor's toolbar opens the panel. kibends runs outside KiCad, so the first press offers to install uv and kibends, and installs nothing until you agree. That needs an internet connection. Later presses open the panel or bring it to the front.\n\nkibends needs KiCad's API server: Preferences > Plugins > Enable KiCad API.",
+  "identifier": "io.github.mairas.kibends",
+  "type": "plugin",
+  "author": {
+    "name": "Matti Airas",
+    "contact": {
+      "github": "https://github.com/mairas"
+    }
+  },
+  "license": "MIT",
+  "resources": {
+    "homepage": "https://github.com/mairas/kibends"
+  },
+  "tags": ["pcb", "routing"]
+}

@@ -40,6 +40,11 @@ runs:
       shell: bash
       run: ./run typecheck
 
+    # KiCad runs the plugin's launcher in its own Python, 3.9 on macOS.
+    - name: Compile the KiCad plugin's launcher with Python 3.9
+      shell: bash
+      run: uv run --no-project --python 3.9 python -m py_compile pcm/plugins/kibends_launcher.py
+
     - name: Test
       shell: bash
       run: ./run test-all

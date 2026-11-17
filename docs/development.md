@@ -29,7 +29,8 @@ Run `./run sync` in every fresh checkout or worktree before testing. Run
 | `./run typecheck` | Check that the stubs are current, and type-check with pyright in strict mode. |
 | `./run check` | Run lint, typecheck and every test, as CI does. |
 | `./run bench` | Measure the optimizer on benchmark boards (see `scripts/benchmark.py`). |
-| `./run bumpversion patch\|minor\|major` | Bump the version in `VERSION`, `pyproject.toml` and `Cargo.toml`, and refresh both lockfiles. Needs [bump2version](https://github.com/c4urself/bump2version) (`uv tool install bump2version`). |
+| `./run pcm-package v<VERSION>+<N>` | Build the KiCad Plugin and Content Manager package, `packages.json`, the resources archive and `repository.json` of that stable release into `dist/pcm/` (see `scripts/pcm_package.py`). `scripts/make_icons.py` redraws the plugin's icons. |
+| `./run bumpversion patch\|minor\|major` | Bump the version in `VERSION`, `pyproject.toml`, `Cargo.toml` and the KiCad launcher (`pcm/plugins/kibends_launcher.py`), and refresh both lockfiles. Needs [bump2version](https://github.com/c4urself/bump2version) (`uv tool install bump2version`). |
 | `./run help` | List the commands. |
 
 Tests never need a running KiCad: `tests/conftest.py` builds fake boards.
@@ -41,7 +42,15 @@ Every merge to main stages a release: a pre-release tagged
 builds of that version. Publishing the draft on GitHub builds the wheels
 and the sdist and uploads them to PyPI as version `<VERSION>`. PyPI
 takes each version once, so a release of a version already there uploads
-nothing.
+nothing. Once the release has uploaded its version to PyPI, it also
+publishes the KiCad Plugin and Content Manager files that `./run
+pcm-package` builds: the plugin's zip, `packages.json` and the resources
+archive go on the release, and its `repository.json`, which points at
+them, replaces the previous one in the pre-release tagged `pcm`, which
+users add as
+`https://github.com/mairas/kibends/releases/download/pcm/repository.json`.
+A release of a version already on PyPI publishes no plugin, so a change
+to the plugin ships only with a version bump.
 
 The first pull request that changes the package after a release bumps
 the version with `./run bumpversion`; the PR checks fail until it does.

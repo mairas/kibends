@@ -1,4 +1,6 @@
+import builtins
 import ctypes
+import importlib.metadata
 import itertools
 import json
 import math
@@ -6374,15 +6376,57 @@ class TestPanel:
     def test_without_the_gui_extra_says_how_to_install_it(
         self, monkeypatch: pytest.MonkeyPatch, log: list[str]
     ) -> None:
-        monkeypatch.setitem(sys.modules, "kibends.panel.window", None)
+        def without_pyside(
+            name: str,
+            globals: Mapping[str, object] | None = None,
+            locals: Mapping[str, object] | None = None,
+            fromlist: Sequence[str] = (),
+            level: int = 0,
+        ) -> types.ModuleType:
+            if name == "kibends.panel.window":
+                raise ModuleNotFoundError("No module named 'PySide6'", name="PySide6")
+            return real_import(name, globals, locals, fromlist, level)
+
+        real_import = builtins.__import__
+        monkeypatch.delitem(sys.modules, "kibends.panel.window", raising=False)
+        monkeypatch.setattr(builtins, "__import__", without_pyside)
 
         with pytest.raises(SystemExit) as raised:
             cli.panel_main([])
 
+        # Distinct from a failure (1) and a usage error (2), so that the
+        # KiCad plugin's launcher can offer to add the extra.
+        assert raised.value.code == cli.GUI_EXTRA_EXIT == 3
+        assert [line.rstrip() for line in log if line.startswith("ERROR")] == [
+            f"ERROR {cli.GUI_EXTRA_MESSAGE} (No module named 'PySide6')"
+        ]
+
+    def test_a_panel_that_fails_to_load_is_a_plain_failure(
+        self, monkeypatch: pytest.MonkeyPatch, log: list[str]
+    ) -> None:
+        def broken(
+            name: str,
+            globals: Mapping[str, object] | None = None,
+            locals: Mapping[str, object] | None = None,
+            fromlist: Sequence[str] = (),
+            level: int = 0,
+        ) -> types.ModuleType:
+            if name == "kibends.panel.window":
+                raise ImportError("libEGL.so.1: cannot open shared object file")
+            return real_import(name, globals, locals, fromlist, level)
+
+        real_import = builtins.__import__
+        monkeypatch.delitem(sys.modules, "kibends.panel.window", raising=False)
+        monkeypatch.setattr(builtins, "__import__", broken)
+
+        with pytest.raises(SystemExit) as raised:
+            cli.panel_main([])
+
+        # Reinstalling cannot help, so the launcher must not offer it.
         assert raised.value.code == 1
         assert [line.rstrip() for line in log if line.startswith("ERROR")] == [
-            f"ERROR {cli.GUI_EXTRA_MESSAGE} (import of kibends.panel.window "
-            "halted; None in sys.modules)"
+            "ERROR The panel could not start: libEGL.so.1: cannot open shared "
+            "object file"
         ]
 
     def test_smooth_never_loads_the_panel(self) -> None:
@@ -6395,3 +6439,39 @@ class TestPanel:
 
     def test_takes_verbose(self) -> None:
         assert cli.parse_panel_args(["-v"]).verbose
+
+
+class TestVersion:
+    def test_kibends_prints_its_version(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["--version"])
+
+        assert raised.value.code == 0
+        assert (
+            capsys.readouterr().out
+            == f"kibends {importlib.metadata.version('kibends')}\n"
+        )
+
+    def test_the_panel_prints_it_without_pyside6(self) -> None:
+        code = (
+            "import sys\n"
+            "sys.modules['PySide6'] = None\n"
+            "import kibends.cli\n"
+            "try:\n"
+            "    kibends.cli.panel_main(['--version'])\n"
+            "finally:\n"
+            "    loaded = [m for m, v in sys.modules.items() if v is not None]\n"
+            "    print(any(m.startswith(('PySide6', 'kibends.panel')) "
+            "for m in loaded), file=sys.stderr)\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+
+        assert (done.returncode, done.stdout, done.stderr) == (
+            0,
+            f"kibends {importlib.metadata.version('kibends')}\n",
+            "False\n",
+        )

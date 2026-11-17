@@ -16,13 +16,15 @@ landed.
 
 `kibends-panel` (`panel_main`) opens the panel (`kibends.panel`), imported
 only then, since PySide6 comes with the `gui` extra; without it the command
-says how to install it. `kibends` never imports it.
+says how to install it. `kibends` never imports it. Both commands take
+`--version`, which prints `kibends X.Y.Z` before anything imports PySide6.
 
 `_exit_on`-style error mapping and `configure_logging` follow kistitch's
 cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 import argparse
+import importlib.metadata
 import os
 import signal
 import sys
@@ -70,8 +72,13 @@ CLEARANCE_FLAGS = {
 `rules.Clearances` field."""
 GUI_EXTRA_MESSAGE = (
     "The panel needs PySide6, which comes with the `gui` extra: "
-    "uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'"
+    "uv tool install --python 3.14 'kibends[gui]'"
 )
+GUI_EXTRA_EXIT = 3
+"""`kibends-panel`'s exit code without the `gui` extra, apart from a
+failure (1) and a usage error (2): the KiCad plugin's launcher keys on it
+to offer adding the extra, and keeps its own copy, since it cannot import
+kibends."""
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
 
 DEFAULT_LOG_LEVEL = "INFO"
@@ -79,9 +86,9 @@ VERBOSE_LOG_LEVEL = "DEBUG"
 LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
-def _fail(message: str) -> NoReturn:
+def _fail(message: str, code: int = 1) -> NoReturn:
     logger.error(message)
-    raise SystemExit(1)
+    raise SystemExit(code)
 
 
 @contextmanager
@@ -247,6 +254,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="kibends", description="Smooth KiCad tracks through the IPC API."
     )
+    _add_version(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
     smooth_parser = subparsers.add_parser(
         "smooth",
@@ -449,6 +457,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _add_version(parser: argparse.ArgumentParser) -> None:
+    """`--version`, printing `kibends X.Y.Z`: the plugin's launcher parses
+    that line to check the installed version."""
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"kibends {importlib.metadata.version('kibends')}",
+    )
+
+
 def _add_verbose(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--verbose",
@@ -467,6 +485,7 @@ def parse_panel_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "shows its progress and can stop it, keeping the result so far. Needs "
         "the gui extra.",
     )
+    _add_version(parser)
     _add_verbose(parser)
     return parser.parse_args(argv)
 
@@ -513,8 +532,14 @@ def panel_main(argv: Sequence[str] | None = None) -> None:
     configure_logging(verbose=args.verbose)
     try:
         from kibends.panel.window import main as open_panel
+    except ModuleNotFoundError as e:
+        if (e.name or "").partition(".")[0] != "PySide6":
+            _fail(f"The panel could not start: {e}")
+        _fail(f"{GUI_EXTRA_MESSAGE} ({e})", GUI_EXTRA_EXIT)
     except ImportError as e:
-        _fail(f"{GUI_EXTRA_MESSAGE} ({e})")
+        # PySide6 is there but cannot load, such as a missing system library;
+        # reinstalling the extra would not help.
+        _fail(f"The panel could not start: {e}")
     open_panel()
 
 

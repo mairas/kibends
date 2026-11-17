@@ -35,15 +35,21 @@ gives a shorter path.
 
 ## Install
 
-```sh
-uv tool install 'kibends[gui]'
-```
+kibends installs from KiCad's Plugin and Content Manager:
 
-You need:
+1. In the Plugin and Content Manager, open Manage repositories and add
+   `https://github.com/mairas/kibends/releases/download/pcm/repository.json`.
+2. Pick the kibends repository, install kibends and apply the changes.
+3. Open a board in the PCB editor and press the kibends button in the
+   toolbar.
 
-- KiCad 10 or later, with the API server enabled (Preferences > Plugins >
-  Enable KiCad API).
-- Python 3.14 or later.
+kibends runs outside KiCad. The first press of the button offers to
+install [uv](https://docs.astral.sh/uv/) and kibends, which needs an
+internet connection, and installs nothing until you agree. Later presses
+open the panel, or bring it to the front.
+
+You need KiCad 10 or later, with the API server enabled (Preferences >
+Plugins > Enable KiCad API).
 
 kibends has prebuilt packages for Windows on x86_64, macOS on Apple
 silicon, and Linux with glibc 2.28 or later on x86_64 and aarch64.
@@ -53,14 +59,25 @@ one into its own cache; [rustup](https://rustup.rs) installs one to keep.
 An older `cargo` on the path, such as a distribution's package, stops the
 build.
 
-The `gui` extra adds the panel and needs macOS 14 or later, or on Linux
-glibc 2.34 or later (2.39 on aarch64). Without it you get only the
-[command line](#command-line).
+The panel needs macOS 14 or later, or on Linux glibc 2.34 or later (2.39
+on aarch64).
+
+### Without the plugin manager
+
+kibends is on PyPI. It needs Python 3.14; name it, since one of its
+dependencies has no packages for 3.15 yet:
+
+```sh
+uv tool install --python 3.14 'kibends[gui]'
+```
+
+Without the `gui` extra you get only the [command line](#command-line).
 
 ## Using it
 
 1. Open the board in KiCad's PCB editor.
-2. Start `kibends-panel`. A small window opens and stays open between runs.
+2. Press the kibends button in the PCB editor's toolbar, or run
+   `kibends-panel`. A small window opens and stays open between runs.
 3. Select the tracks to smooth, on any copper layers, with the vias that
    may move with them. Select nothing to smooth the whole board. The top
    line of the panel says what Run will touch.

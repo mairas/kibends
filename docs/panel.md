@@ -1,9 +1,22 @@
 # The panel
 
-`kibends-panel` opens a small window for selecting, running, looking at
-the result in KiCad and running again. It comes with the `gui` extra (see
-[Install](../README.md#install)). The window stays above other windows,
-except on Wayland, which does not allow it.
+The panel is a small window for selecting, running, looking at the result
+in KiCad and running again. The window stays above other windows, except
+on Wayland, which does not allow it.
+
+Open it with the kibends button in the PCB editor's toolbar, which the
+plugin from KiCad's Plugin and Content Manager adds (see
+[Install](../README.md#install)), or by running `kibends-panel`, which
+comes with the `gui` extra.
+
+There is one panel per KiCad: pressing the button again, or starting
+`kibends-panel` again for the same KiCad, brings the open panel to the
+front instead of opening another. A panel started from a terminal talks
+to the KiCad that `KICAD_API_SOCKET` names, or to KiCad's default socket.
+KiCad gives the panels it starts a token (`KICAD_API_TOKEN`) that is new
+each time KiCad starts, and the panel counts as that KiCad's only with the
+same token: after KiCad restarts, the button opens a new panel, and a
+panel started from a terminal without the token is a panel of its own.
 
 <img src="images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
 

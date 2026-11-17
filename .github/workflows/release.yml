@@ -2,7 +2,8 @@
 #
 # On a published stable release: check the release, build and smoke-test the
 # wheels and the sdist (wheels.yml), then upload them. Only the upload job
-# holds the OIDC token; nothing it runs comes from the build.
+# holds the OIDC token; nothing it runs comes from the build. Then publish
+# the KiCad PCM package and repository index.
 name: Publish stable release
 
 on:
@@ -97,3 +98,60 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
+
+  # KiCad's Plugin and Content Manager reads kibends' repository from
+  # releases/download/pcm/repository.json: a fixed pre-release, never latest,
+  # whose repository.json each stable release replaces. The plugin zip,
+  # packages.json and the resources archive go on the stable release, so the
+  # one replaced file always names files that exist with matching hashes. The
+  # launcher installs kibends of this version from PyPI, so this runs only
+  # after this run uploaded it; a release of a version already on PyPI
+  # changes nothing here, and a launcher change needs a VERSION bump.
+  pcm:
+    needs: publish
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Two releases must not interleave their index uploads.
+    concurrency:
+      group: ${{ github.repository }}-pcm-index
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+      INDEX_TAG: pcm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      # The script needs only the standard library, so no sync and no Rust build.
+      - name: Build the PCM files
+        run: uv run --no-project --python 3.14 python scripts/pcm_package.py "$TAG" --out dist/pcm
+
+      - name: Create the index release
+        run: |
+          if ! err=$(gh release view "$INDEX_TAG" --json tagName 2>&1 >/dev/null); then
+            if [[ $err != *"release not found"* ]]; then
+              echo "::error::Reading release $INDEX_TAG failed: $err"
+              exit 1
+            fi
+            URL="https://github.com/$GH_REPO/releases/download/$INDEX_TAG/repository.json"
+            gh release create "$INDEX_TAG" --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "KiCad plugin repository" \
+              --notes "The KiCad Plugin and Content Manager repository of kibends, not a kibends release. Every stable release replaces its files. To install kibends in KiCad, add $URL in the Plugin and Content Manager's Manage repositories."
+          fi
+
+      # repository.json goes last, after the files it holds the hashes of.
+      # --clobber lets a rerun replace files a failed run left behind.
+      - name: Upload the package and the index
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          gh release upload "$TAG" "dist/pcm/kibends-pcm-$VERSION.zip" \
+            dist/pcm/packages.json dist/pcm/kibends-pcm-resources.zip --clobber
+          gh release upload "$INDEX_TAG" dist/pcm/repository.json --clobber

@@ -14,6 +14,8 @@ window (`window`) a queued Qt signal (`window.Poster`), in tests a plain
 call.
 
 `curve` draws the graph of the track length's change by iteration;
-`window` lays out the widgets and runs the Qt application. Only `window`
-and `curve` import PySide6, which the `gui` extra installs.
+`window` lays out the widgets and runs the Qt application. `instance`
+keeps one panel per KiCad instance: a second start for the same KiCad
+brings the open panel forward and exits. Only `window`, `curve` and
+`instance` import PySide6, which the `gui` extra installs.
 """
