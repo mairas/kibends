@@ -12,7 +12,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from loguru import logger
 from PySide6.QtCore import QCoreApplication, QMimeData, Qt
-from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from test_panel_controller import LEVELLED, PROGRESS, STOPPED, Scripted
@@ -30,6 +30,7 @@ from kibends.panel.curve import (
     y_axis,
 )
 from kibends.panel.window import (
+    KICAD_PANEL,
     MIN_WIDTH,
     REPORT_HEIGHT,
     WIDTH,
@@ -173,6 +174,39 @@ class TestLayout:
         w = window(Scripted())
 
         assert w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+
+    def test_run_sits_left_of_stop(
+        self, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        w = window(Scripted())
+
+        assert w.run_button.x() < w.stop_button.x()
+        assert w.restore.nextInFocusChain() is w.run_button
+        assert w.run_button.nextInFocusChain() is w.stop_button
+
+    def test_a_light_palette_takes_kicads_panel_colour(
+        self, app: QApplication, window: Callable[[Scripted], PanelWindow]
+    ) -> None:
+        w = window(Scripted())
+        original = app.palette()
+        light = QPalette(QColor("#ffffff"))
+        dark = QPalette(QColor("#202020"))
+        window_role = QPalette.ColorRole.Window
+        try:
+            for system, expected in (
+                (light, KICAD_PANEL),
+                (dark, dark.color(window_role)),
+                (light, KICAD_PANEL),
+            ):
+                app.setPalette(system)
+                settle()
+                assert w.palette().color(window_role) == expected
+                assert w.palette().color(QPalette.ColorRole.Base) == system.color(
+                    QPalette.ColorRole.Base
+                )
+        finally:
+            app.setPalette(original)
+            settle()
 
     def test_ground_nets_show_the_detected_nets(
         self, window: Callable[[Scripted], PanelWindow]
