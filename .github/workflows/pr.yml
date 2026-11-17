@@ -7,7 +7,7 @@ on:
 
 jobs:
   checks:
-    uses: halos-org/shared-workflows/.github/workflows/checks.yml@main
+    uses: halos-org/shared-workflows/.github/workflows/checks.yml@v1.0.0-rc.1
 
   # Branch protection requires only this job. List every other job in needs,
   # including jobs defined in this file.

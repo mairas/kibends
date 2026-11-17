@@ -1,0 +1,42 @@
+name: Main branch release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Required: release-version.yml computes the next revision from existing tags,
+# so two concurrent runs would compute the same one.
+concurrency:
+  group: ${{ github.repository }}-main-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-tests
+
+  version:
+    needs: tests
+    uses: halos-org/shared-workflows/.github/workflows/release-version.yml@v1.0.0-rc.1
+
+  # Notes-only releases: publishing the draft starts release.yml, which builds
+  # the wheels and publishes them to PyPI.
+  stage-release:
+    needs: version
+    permissions:
+      contents: write
+    uses: halos-org/shared-workflows/.github/workflows/stage-release.yml@v1.0.0-rc.1
+    with:
+      package-name: kibends
+      package-description: "Smooth KiCad tracks into short, clearance-keeping paths"
+      debian-version: ${{ needs.version.outputs.debian-version }}
+      prerelease-tag: ${{ needs.version.outputs.prerelease-tag }}
+      stable-tag: ${{ needs.version.outputs.stable-tag }}
