@@ -96,11 +96,12 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 
 # Resolves the 0.35 mm corner radius to within 5%, several times faster than
 # the defaults.
-WRAP_SETTINGS = replace(
-    SETTINGS, spacing=0.25, settled_change=0.0025, burst_maxiter=100
-)
+WRAP_SETTINGS = replace(SETTINGS, spacing=0.2, settled_change=0.0025, burst_maxiter=100)
 BEND_RESOLUTION = 0.05
 """Relative error within which WRAP_SETTINGS resolve the corner's radius."""
+LEAST_BURSTS = 5
+"""Bursts each spacing level runs before any rule settles it: the Rust core's
+`LEVEL_WINDOW`."""
 RERUN_DRIFT = DEFAULT_CHORD_TOLERANCE
 """mm a rerun on converged output may move it: no more than simplification
 may move the committed tracks anyway."""
@@ -827,9 +828,8 @@ def test_progress_follows_the_levels_the_time_limit_hands_over(
 def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
     monkeypatch: pytest.MonkeyPatch, log: list[str]
 ) -> None:
-    # The first 1.2 mm burst straightens the chain, so the 0.6 mm level
-    # settles in its first burst, the one the limit runs out in; the final
-    # level's burst runs past it.
+    # The limit runs out in each coarse level's first burst, before it has
+    # run its least bursts; the final level's burst runs past it.
     settings = replace(COARSE, coarse_spacings=COARSE_LEVELS, time_limit=ONE_BURST)
 
     result = optimize_chains(
@@ -840,6 +840,8 @@ def test_a_level_entered_as_the_time_limit_runs_out_still_runs_a_burst(
     assert levels_of(log, "F.Cu") == [*COARSE_LEVELS, None]
     assert limit_lines(log) == [
         "INFO Time limit reached at 1.2 mm spacing; going on at 0.6 mm spacing "
+        "with the chains on F.Cu",
+        "INFO Time limit reached at 0.6 mm spacing; going on at 0.3 mm spacing "
         "with the chains on F.Cu",
     ]
 
@@ -1229,8 +1231,8 @@ def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
     )
 
     assert result.termination is Termination.CONVERGED
-    # One burst at each level, each settling it.
-    assert result.iterations == len(lax.coarse_spacings) + 1
+    # Each level settles once it has run its least bursts.
+    assert result.iterations == (len(lax.coarse_spacings) + 1) * LEAST_BURSTS
     assert (
         clearances(result.polyline, scenario.field).mean()
         > clearances(scenario.polyline, scenario.field).mean()

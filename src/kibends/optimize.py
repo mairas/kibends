@@ -227,12 +227,15 @@ def optimize_chains(
     ended normally and that state costs no more than its inputs; else from
     the inputs.
 
-    The problem settles when its burst moved no shape or via by
-    `settled_change` and moved nothing back, or when the lowest energy its
-    bursts reached, whether or not the guard took them as its best state,
-    and its tracks' length stalled over `stall_window` bursts (`stalled`),
-    or after MAX_ABNORMAL_BURSTS abnormal bursts in a row, at a coarse level
-    handing over instead; the run converges
+    The problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row,
+    or, once it has run five bursts at its level, when its burst moved no
+    shape or via by `settled_change` and moved nothing back, when its last
+    five bursts lowered the lowest energy by less than 0.1 % of the run's
+    decrease from its inputs (`kibends_core::optimize::state::levelled_off`),
+    or when the lowest energy its bursts reached, whether or not the guard
+    took them as its best state, and its tracks' length stalled over
+    `stall_window` bursts (`stalled`); at a coarse level it hands over
+    instead; the run converges
     when it has, and gives up (`Termination.GAVE_UP`) if it settled on
     abnormal bursts. A run that gave up and whose best state has no less
     energy than its inputs ends `Termination.ABNORMAL`, whatever stopped

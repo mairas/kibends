@@ -966,6 +966,30 @@ fn anchors(mask: &[bool], contact_of: &[Option<usize>], loose: &[End]) -> Vec<bo
     anchors
 }
 
+/// Bursts each level runs before any rule but giving up settles it, and
+/// that `levelled_off` looks back over.
+pub const LEVEL_WINDOW: usize = 5;
+/// The share of the run's energy decrease so far below which a level's
+/// last `LEVEL_WINDOW` bursts count as levelled off.
+pub const LEVEL_GAIN: f64 = 0.001;
+
+/// Whether a level whose bursts' lowest energies since it began are
+/// `lowest`, its first entry where the level began, has levelled off: its
+/// last `LEVEL_WINDOW` bursts lowered the energy by less than `LEVEL_GAIN`
+/// of how far it has fallen from `input_energy`, the run's inputs. Measured
+/// against the whole run's decrease, it ends a coarse level once its large
+/// early gains are past and leaves the finer levels to fine-tuning
+/// (https://github.com/mairas/kibends/issues/233).
+pub fn levelled_off(lowest: &[f64], input_energy: f64) -> bool {
+    let n = lowest.len();
+    if n <= LEVEL_WINDOW {
+        return false;
+    }
+    let last = lowest[n - 1];
+    let fallen = input_energy - last;
+    fallen > 0.0 && lowest[n - 1 - LEVEL_WINDOW] - last < LEVEL_GAIN * fallen
+}
+
 impl State {
     /// The problem `setup` makes, at its inputs (`Shared::inputs`); Err if
     /// its energy there is not finite.
@@ -1632,17 +1656,21 @@ impl State {
         let settings = shared.settings();
         let handed_over = std::mem::take(&mut self.handed_over);
         let unchanged = !cut_short && change < settings.settled_change;
+        let ran_enough = self.lowest.len() > LEVEL_WINDOW;
         self.settled = self.gave_up()
             || (!ran.cut
-                && (((!ran.abnormal || handed_over) && unchanged)
-                    || (!ran.abnormal
-                        && stalled(
-                            &self.lowest,
-                            &self.lengths,
-                            settings,
-                            self.free.len(),
-                            shared.setup.vias.len(),
-                        ))));
+                && ((handed_over && ran.abnormal && unchanged)
+                    || (ran_enough
+                        && !ran.abnormal
+                        && (unchanged
+                            || levelled_off(&self.lowest, self.input_energy)
+                            || stalled(
+                                &self.lowest,
+                                &self.lengths,
+                                settings,
+                                self.free.len(),
+                                shared.setup.vias.len(),
+                            )))));
         // A burst a stop or the time limit cut before it accepted an
         // iteration has not descended: it is where it started.
         let descended = !ran.abnormal && !(ran.cut && ran.iterations == 0);
@@ -2063,17 +2091,31 @@ mod tests {
         .expect("finite")
     }
 
-    // Too few bursts for the best energy to stall.
-    const STILL_ITERATIONS: u64 = 2;
+    // Enough bursts for a level to settle on an unchanged burst.
+    const STILL_ITERATIONS: u64 = LEVEL_WINDOW as u64 + 1;
+
+    /// `problem`'s settings with a stall window too long for
+    /// `STILL_ITERATIONS` bursts to stall.
+    fn unstalling() -> Settings {
+        Settings {
+            stall_window: STILL_ITERATIONS as usize + 1,
+            ..settings()
+        }
+    }
+
+    /// `problem` with `unstalling` settings.
+    fn still_problem(via: Option<Arc<dyn Field>>) -> State {
+        chains(&[(Arc::new(FreeSpace), 1.0, 10.0)], via, unstalling())
+    }
 
     #[test]
     fn a_problem_whose_bursts_move_back_does_not_settle() {
-        let mut moving = problem(Arc::new(FreeSpace), 1.0, None);
+        let mut moving = still_problem(None);
         assert_eq!(
             run(&mut moving, &mut still(5, 0), STILL_ITERATIONS),
             Outcome::IterationCap
         );
-        let mut settling = problem(Arc::new(FreeSpace), 1.0, None);
+        let mut settling = still_problem(None);
         assert_ne!(
             run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
             Outcome::IterationCap
@@ -2082,12 +2124,12 @@ mod tests {
 
     #[test]
     fn a_via_moved_back_keeps_its_problem_from_settling() {
-        let mut moving = problem(Arc::new(FreeSpace), 1.0, Some(Arc::new(FreeSpace)));
+        let mut moving = still_problem(Some(Arc::new(FreeSpace)));
         assert_eq!(
             run(&mut moving, &mut still(0, 1), STILL_ITERATIONS),
             Outcome::IterationCap
         );
-        let mut settling = problem(Arc::new(FreeSpace), 1.0, Some(Arc::new(FreeSpace)));
+        let mut settling = still_problem(Some(Arc::new(FreeSpace)));
         assert_ne!(
             run(&mut settling, &mut still(0, 0), STILL_ITERATIONS),
             Outcome::IterationCap
@@ -2314,7 +2356,7 @@ mod tests {
         );
 
         assert_ne!(outcome, Outcome::IterationCap);
-        assert_eq!(p.lowest.len(), settings().stall_window + 1);
+        assert_eq!(p.lowest.len(), LEVEL_WINDOW + 1);
         let members = p.free.len() as f64;
         let vias = p.shared.setup.vias.len() as f64;
         let (gain, shortened) = over_the_window(&p);
@@ -2323,7 +2365,7 @@ mod tests {
     }
 
     #[test]
-    fn a_problem_still_shortening_on_a_flat_energy_does_not_stall() {
+    fn a_problem_still_shortening_on_a_flat_energy_levels_off() {
         let tolerance = settings().stall_tolerance;
         let window = settings().stall_window as f64;
         let mut p = problem(Arc::new(FreeSpace), 1.0, Some(under_the_via()));
@@ -2334,10 +2376,13 @@ mod tests {
             CAP,
         );
 
-        assert_eq!(outcome, Outcome::IterationCap);
+        // The stall rule's length side would keep it running; the energy,
+        // the run's one goal, has levelled off.
+        assert_eq!(outcome, Outcome::Converged);
         let (gain, shortened) = over_the_window(&p);
         assert!(gain <= tolerance);
         assert!(shortened > tolerance);
+        assert!(levelled_off(&p.lowest, p.input_energy));
     }
 
     /// Coarse spacings above `settings`' final 0.5 mm.
@@ -2427,9 +2472,11 @@ mod tests {
 
         assert_eq!(p.level, LEVELS.len());
         let counts: Vec<usize> = bursts.counts.iter().map(|c| c[0]).collect();
-        // The levels, coarsest first, then the final spacing.
+        // The levels, coarsest first, then the final spacing; within a
+        // level a straighter shape may lay out with fewer vertices.
         assert!(counts[0] * 3 < fine, "{counts:?}");
-        assert!(counts.windows(2).all(|w| w[0] <= w[1]), "{counts:?}");
+        assert_eq!(counts.iter().min(), Some(&counts[0]), "{counts:?}");
+        assert_eq!(counts.iter().max(), counts.last(), "{counts:?}");
         assert!(
             counts
                 .iter()
@@ -2648,7 +2695,12 @@ mod tests {
             straighten.variables[1],
             straighten.counts[1][1] - pinned_ends
         );
-        // That settles the level, and the next tries the chain again.
+        // The level settles once it has run its bursts, and the next tries
+        // the chain again.
+        for _ in 2..LEVEL_WINDOW {
+            p.step(None, &mut straighten, &mut |_| Ok(()))
+                .expect("finite");
+        }
         assert_eq!(p.level, 1);
         assert!(!p.held.iter().any(|&h| h));
     }
@@ -2717,13 +2769,13 @@ mod tests {
     }
 
     #[test]
-    fn a_straight_chain_with_coarse_levels_has_nothing_to_do_after_a_burst_per_level() {
+    fn a_straight_chain_with_coarse_levels_has_nothing_to_do_after_its_least_bursts() {
         let mut p = coarse_problem(Arc::new(FreeSpace), 0.0, &LEVELS);
 
-        let levels = LEVELS.len() as u64 + 1;
+        let bursts = (LEVELS.len() + 1) as u64 * LEVEL_WINDOW as u64;
         assert_eq!(
             advanced(&mut p, &mut still(0, 0)),
-            (Outcome::NothingToDo, levels)
+            (Outcome::NothingToDo, bursts)
         );
         assert_eq!(p.level, LEVELS.len());
         assert!(p.best_energy <= p.input_energy);
@@ -2734,12 +2786,12 @@ mod tests {
     const SETTLED_RISE: f64 = 0.004;
 
     #[test]
-    fn a_problem_each_burst_settles_runs_one_burst_per_level() {
+    fn a_problem_each_burst_settles_runs_its_least_bursts_per_level() {
         let mut p = coarse_problem(Arc::new(FreeSpace), SETTLED_RISE, &LEVELS);
         let mut bursts = toward(0.0);
 
-        let levels = LEVELS.len() as u64 + 1;
-        assert_eq!(advanced(&mut p, &mut bursts), (Outcome::Converged, levels));
+        let least = (LEVELS.len() + 1) as u64 * LEVEL_WINDOW as u64;
+        assert_eq!(advanced(&mut p, &mut bursts), (Outcome::Converged, least));
         assert_eq!(p.level, LEVELS.len());
         assert!(p.best_energy <= p.input_energy);
     }
@@ -3007,10 +3059,13 @@ mod tests {
         assert_eq!(p.level, 0);
         assert!(p.ran);
 
-        // A burst that settles its level hands over to one it has not run at.
-        p.step(None, &mut still(0, 0), &mut |_| Ok(()))
-            .expect("finite")
-            .expect("its burst ran");
+        // The burst that settles its level hands over to one it has not run
+        // at.
+        for _ in 1..LEVEL_WINDOW {
+            p.step(None, &mut still(0, 0), &mut |_| Ok(()))
+                .expect("finite")
+                .expect("its burst ran");
+        }
         assert_eq!(p.level, 1);
         assert!(!p.ran);
         p.hand_over().expect("finite");
@@ -3039,9 +3094,9 @@ mod tests {
         )
         .expect("finite");
 
-        // Each burst settles its level: the problem owes one at each level
-        // it is handed to, until it settles at the final one.
-        assert_eq!(owing, vec![false, true, false]);
+        // The problem owes a burst at each level it is handed to, until its
+        // first burst there.
+        assert_eq!(owing, vec![false, true, false, true, false]);
     }
 
     #[test]
@@ -3638,6 +3693,10 @@ mod tests {
 
         assert!(shape_change(&drawn, &p.now.points[0]) > settings().settled_change);
         assert!(change < settings().settled_change, "{change}");
+        for _ in 1..LEVEL_WINDOW {
+            p.step(None, &mut still(0, 0), &mut |_| Ok(()))
+                .expect("finite");
+        }
         assert!(p.settled);
     }
 
@@ -3739,5 +3798,33 @@ mod tests {
         }
         // A free section is simplified as a chain is.
         assert_eq!(got.points[6], ends(6));
+    }
+
+    /// A level's lowest energies: it began at `start` and its last
+    /// `LEVEL_WINDOW` bursts lowered the energy by `gain` in all.
+    fn level_gaining(start: f64, gain: f64) -> Vec<f64> {
+        let step = gain / LEVEL_WINDOW as f64;
+        (0..=LEVEL_WINDOW)
+            .map(|i| start - step * i as f64)
+            .collect()
+    }
+
+    #[test]
+    fn a_level_levels_off_once_its_window_gains_under_its_share_of_the_fall() {
+        // The run fell from 200 to 100 before the window; 0.1 % of that is 0.1.
+        assert!(levelled_off(&level_gaining(100.0, 0.09), 200.0));
+        assert!(!levelled_off(&level_gaining(100.0, 0.11), 200.0));
+    }
+
+    #[test]
+    fn a_level_has_not_levelled_off_before_its_window_has_run() {
+        let short = &level_gaining(100.0, 0.0)[1..];
+        assert!(!levelled_off(short, 200.0));
+    }
+
+    #[test]
+    fn a_run_whose_energy_has_not_fallen_never_levels_off() {
+        assert!(!levelled_off(&level_gaining(100.0, 0.0), 100.0));
+        assert!(!levelled_off(&level_gaining(100.0, 0.0), 90.0));
     }
 }

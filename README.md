@@ -207,8 +207,12 @@ A run's chains, sections and moving vias, on every layer, are one problem,
 which a single optimizer run moves at once. The optimizer works in bursts:
 each burst moves every vertex and via of the problem at once, and undoes any move that would
 bring an edge or a via newly into another item's clearance. An outer iteration gives the
-problem one burst unless it has settled. It settles when a burst
-barely changes it or its energy stops improving. Each evaluation of a
+problem one burst unless it has settled. Each spacing level (below) runs at
+least five bursts; after that it settles when a burst barely changes it, its
+energy stops improving, or its last five bursts lowered the energy by less
+than 0.1 % of how far the run has lowered it so far. Measured against the
+whole run, that last rule ends the coarsest level once its large early gains
+are past and leaves the finer levels to fine-tune. Each evaluation of a
 burst spreads over every logical CPU; set the environment variable
 `RAYON_NUM_THREADS=N` to use N threads instead, with the same result.
 
