@@ -118,6 +118,15 @@ function check {
 }
 
 ################################################################################
+# Release Commands
+
+function pcm-package {
+  #@ Build the KiCad PCM package and repository files for a stable release tag v<VERSION>+<N> into dist/pcm
+  #@ Category: Release
+  .venv/bin/python scripts/pcm_package.py "$@"
+}
+
+################################################################################
 # Version Commands
 
 function bumpversion {
