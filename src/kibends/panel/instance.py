@@ -23,10 +23,11 @@ needs, since KiCad brings only the process it starts to the front.
 import getpass
 import hashlib
 import os
+import sys
+import tempfile
 from collections.abc import Callable
 from enum import Enum, auto
 
-from kipy.kicad import _default_socket_path  # pyright: ignore[reportPrivateUsage]
 from loguru import logger
 from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -49,9 +50,31 @@ class Claim(Enum):
 
 
 def kicad_socket() -> str:
-    """The KiCad socket kipy connects to without arguments."""
-    # kipy's own choice, so the panel keys on the KiCad it will talk to.
+    """The KiCad socket kipy connects to without arguments.
+
+    kipy's own choice, so the panel keys on the KiCad it will talk to. The
+    helper is private to kipy; without it, `KICAD_API_SOCKET`, else
+    `default_socket`.
+    """
+    try:
+        from kipy.kicad import (
+            _default_socket_path,  # pyright: ignore[reportPrivateUsage]
+        )
+    except ImportError:
+        socket = os.environ.get("KICAD_API_SOCKET")
+        if socket is not None:
+            return socket
+        return default_socket(windows=sys.platform == "win32")
     return _default_socket_path()
+
+
+def default_socket(*, windows: bool) -> str:
+    """KiCad's default API socket, as kipy 0.8.0 gives it, but for the
+    Flatpak's socket under the home directory, which kipy prefers when it
+    exists."""
+    if windows:
+        return f"ipc://{tempfile.gettempdir()}\\kicad\\api.sock"
+    return "ipc:///tmp/kicad/api.sock"
 
 
 def kicad_token() -> str:

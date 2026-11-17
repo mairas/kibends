@@ -6,11 +6,13 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import kipy.kicad
 import pytest
 
 pytest.importorskip("PySide6.QtNetwork")
@@ -25,6 +27,7 @@ from kibends.panel.instance import (
     bring_forward,
     claim,
     decide,
+    default_socket,
     kicad_socket,
     kicad_token,
     serve,
@@ -108,6 +111,32 @@ class TestServerName:
             else kicad_socket()  # under the temp directory on Windows
         )
         assert kicad_socket() == expected
+
+    def test_without_kipys_helper_keys_on_kicads_socket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delattr(kipy.kicad, "_default_socket_path")
+        monkeypatch.setenv("KICAD_API_SOCKET", "ipc:///tmp/kicad/api-3.sock")
+
+        assert kicad_socket() == "ipc:///tmp/kicad/api-3.sock"
+
+    def test_without_kipys_helper_falls_back_to_the_platform_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delattr(kipy.kicad, "_default_socket_path")
+        monkeypatch.delenv("KICAD_API_SOCKET", raising=False)
+
+        assert kicad_socket() == default_socket(windows=sys.platform == "win32")
+
+    @pytest.mark.parametrize(
+        ("windows", "expected"),
+        [
+            (False, "ipc:///tmp/kicad/api.sock"),
+            (True, f"ipc://{tempfile.gettempdir()}\\kicad\\api.sock"),
+        ],
+    )
+    def test_the_platform_default_is_kicads(self, windows: bool, expected: str) -> None:
+        assert default_socket(windows=windows) == expected
 
     def test_the_token_is_kicads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KICAD_API_TOKEN", TOKEN)
