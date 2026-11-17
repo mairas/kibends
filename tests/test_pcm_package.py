@@ -97,7 +97,7 @@ def test_resources_archive_holds_the_icon_under_the_identifier(
     assert icon == (ROOT / "pcm" / "resources" / "icon.png").read_bytes()
 
 
-def test_repository_json_points_at_this_releases_files(
+def test_repository_json_points_at_the_stable_release(
     built: pcm_package.Built,
 ) -> None:
     repository = _json(built.repository.read_bytes())

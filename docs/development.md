@@ -42,9 +42,15 @@ Every merge to main stages a release: a pre-release tagged
 builds of that version. Publishing the draft on GitHub builds the wheels
 and the sdist and uploads them to PyPI as version `<VERSION>`. PyPI
 takes each version once, so a release of a version already there uploads
-nothing. Once the version is on PyPI, the release also gets the KiCad
-Plugin and Content Manager files that `./run pcm-package` builds, which
-users reach through the newest stable release's `repository.json`.
+nothing. Once the release has uploaded its version to PyPI, it also
+publishes the KiCad Plugin and Content Manager files that `./run
+pcm-package` builds: the plugin's zip, `packages.json` and the resources
+archive go on the release, and its `repository.json`, which points at
+them, replaces the previous one in the pre-release tagged `pcm`, which
+users add as
+`https://github.com/mairas/kibends/releases/download/pcm/repository.json`.
+A release of a version already on PyPI publishes no plugin, so a change
+to the plugin ships only with a version bump.
 
 The first pull request that changes the package after a release bumps
 the version with `./run bumpversion`; the PR checks fail until it does.

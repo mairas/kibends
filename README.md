@@ -38,7 +38,7 @@ gives a shorter path.
 kibends installs from KiCad's Plugin and Content Manager:
 
 1. In the Plugin and Content Manager, open Manage repositories and add
-   `https://github.com/mairas/kibends/releases/latest/download/repository.json`.
+   `https://github.com/mairas/kibends/releases/download/pcm/repository.json`.
 2. Pick the kibends repository, install kibends and apply the changes.
 3. Open a board in the PCB editor and press the kibends button in the
    toolbar.

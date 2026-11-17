@@ -1,7 +1,8 @@
 """Build kibends' KiCad Plugin and Content Manager (PCM) repository files.
 
-Writes four files for one stable release, which ``release.yml`` attaches to
-it:
+Writes four files for one stable release. ``release.yml`` attaches three of
+them to that release and the fourth, ``repository.json``, to the fixed
+pre-release tagged ``pcm``, replacing the previous release's:
 
 - ``kibends-pcm-<VERSION>.zip``, the package: ``metadata.json`` with this
   version, ``plugins/`` and ``resources/icon.png``;
@@ -9,11 +10,13 @@ it:
   it;
 - ``kibends-pcm-resources.zip``, the PCM's resources archive:
   ``<identifier>/icon.png``;
-- ``repository.json``, which points at the other two by this release's URLs.
+- ``repository.json``, which points at the other two by their URLs in the
+  stable release, with their sha256.
 
-Users add ``https://github.com/mairas/kibends/releases/latest/download/
-repository.json`` to the PCM. GitHub redirects that to the newest stable
-release's asset, so ``packages.json`` lists only the latest version.
+Only ``repository.json`` is ever replaced, so whatever version of it KiCad
+reads names files that exist and match their hashes. Users add
+``https://github.com/mairas/kibends/releases/download/pcm/repository.json``
+to the PCM. The index lists only the newest version.
 
 The package metadata lives in ``pcm/metadata.json``; the version entry comes
 from ``VERSION`` here. Usage:
