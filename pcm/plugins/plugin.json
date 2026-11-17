@@ -1,0 +1,19 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "io.github.mairas.kibends",
+  "name": "kibends",
+  "description": "Smooth the selected tracks into short paths that keep their clearance",
+  "runtime": {
+    "type": "python"
+  },
+  "actions": [
+    {
+      "identifier": "open-panel",
+      "name": "kibends",
+      "description": "Open the kibends panel, installing kibends first if needed",
+      "show-button": true,
+      "scopes": ["pcb"],
+      "entrypoint": "kibends_launcher.py"
+    }
+  ]
+}
