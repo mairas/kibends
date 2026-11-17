@@ -1,4 +1,6 @@
-"""The panel's window and Qt application (`main`).
+"""The panel's window and Qt application (`main`), one per KiCad instance:
+`main` brings an open panel for the same KiCad forward instead of opening
+another, and brings its own window forward at start (`instance`).
 
 `PanelWindow` lays out one column: the scope line (what Run touches),
 the settings (Ground nets and Time limit, then the rest behind an Advanced
@@ -85,6 +87,14 @@ from kibends.panel.controller import (
     Spawn,
 )
 from kibends.panel.curve import LengthGraph, secondary, small
+from kibends.panel.instance import (
+    Claim,
+    bring_forward,
+    claim,
+    kicad_socket,
+    serve,
+    server_name,
+)
 from kibends.panel.probe import BoardId, Probe, Prober
 from kibends.present import Field, PanelFields
 from kibends.run import run_smooth
@@ -1031,9 +1041,15 @@ def start_thread(work: Callable[[], None], *, daemon: bool) -> None:
 
 
 def main() -> None:
-    """Open the panel and run until it is closed."""
+    """Open the panel and run until it is closed, or, when a panel for the
+    same KiCad is open, bring that one forward and return (`instance`)."""
     app = QApplication(sys.argv)
+    outcome, server = claim(server_name(kicad_socket()))
+    if outcome == Claim.RAISED:
+        return
     window = PanelWindow(Prober(), run_smooth, spawn=start_thread)
-    window.show()
+    serve(server, partial(bring_forward, window))
+    bring_forward(window)
     window.controller.tick()
     app.exec()
+    server.close()

@@ -5,6 +5,11 @@ the result in KiCad and running again. It comes with the `gui` extra (see
 [Install](../README.md#install)). The window stays above other windows,
 except on Wayland, which does not allow it.
 
+There is one panel per KiCad: starting `kibends-panel` again for the same
+KiCad brings the open panel to the front instead of opening another. A
+panel started from a terminal talks to the KiCad that `KICAD_API_SOCKET`
+names, or to KiCad's default socket, and counts as that KiCad's panel.
+
 <img src="images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
 
 ## Scope line
