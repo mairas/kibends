@@ -1,4 +1,5 @@
 import ctypes
+import importlib.metadata
 import itertools
 import json
 import math
@@ -6395,3 +6396,39 @@ class TestPanel:
 
     def test_takes_verbose(self) -> None:
         assert cli.parse_panel_args(["-v"]).verbose
+
+
+class TestVersion:
+    def test_kibends_prints_its_version(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["--version"])
+
+        assert raised.value.code == 0
+        assert (
+            capsys.readouterr().out
+            == f"kibends {importlib.metadata.version('kibends')}\n"
+        )
+
+    def test_the_panel_prints_it_without_pyside6(self) -> None:
+        code = (
+            "import sys\n"
+            "sys.modules['PySide6'] = None\n"
+            "import kibends.cli\n"
+            "try:\n"
+            "    kibends.cli.panel_main(['--version'])\n"
+            "finally:\n"
+            "    loaded = [m for m, v in sys.modules.items() if v is not None]\n"
+            "    print(any(m.startswith(('PySide6', 'kibends.panel')) "
+            "for m in loaded), file=sys.stderr)\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+
+        assert (done.returncode, done.stdout, done.stderr) == (
+            0,
+            f"kibends {importlib.metadata.version('kibends')}\n",
+            "False\n",
+        )

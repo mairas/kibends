@@ -16,13 +16,15 @@ landed.
 
 `kibends-panel` (`panel_main`) opens the panel (`kibends.panel`), imported
 only then, since PySide6 comes with the `gui` extra; without it the command
-says how to install it. `kibends` never imports it.
+says how to install it. `kibends` never imports it. Both commands take
+`--version`, which prints `kibends X.Y.Z` before anything imports PySide6.
 
 `_exit_on`-style error mapping and `configure_logging` follow kistitch's
 cli.py (MIT, Copyright (c) 2025 Hat Labs Oy).
 """
 
 import argparse
+import importlib.metadata
 import os
 import signal
 import sys
@@ -247,6 +249,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="kibends", description="Smooth KiCad tracks through the IPC API."
     )
+    _add_version(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
     smooth_parser = subparsers.add_parser(
         "smooth",
@@ -449,6 +452,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _add_version(parser: argparse.ArgumentParser) -> None:
+    """`--version`, printing `kibends X.Y.Z`: the plugin's launcher parses
+    that line to check the installed version."""
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"kibends {importlib.metadata.version('kibends')}",
+    )
+
+
 def _add_verbose(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--verbose",
@@ -467,6 +480,7 @@ def parse_panel_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "shows its progress and can stop it, keeping the result so far. Needs "
         "the gui extra.",
     )
+    _add_version(parser)
     _add_verbose(parser)
     return parser.parse_args(argv)
 
