@@ -72,7 +72,7 @@ CLEARANCE_FLAGS = {
 `rules.Clearances` field."""
 GUI_EXTRA_MESSAGE = (
     "The panel needs PySide6, which comes with the `gui` extra: "
-    "uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'"
+    "uv tool install 'kibends[gui]'"
 )
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
 

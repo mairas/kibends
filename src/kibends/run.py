@@ -145,7 +145,7 @@ KICAD_TIMEOUT_MS = 30_000
 
 PLOT_EXTRA_MESSAGE = (
     "--plot needs matplotlib, which comes with the `plot` extra: "
-    "uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'"
+    "uv tool install 'kibends[plot]'"
 )
 
 
