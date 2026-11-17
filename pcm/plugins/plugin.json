@@ -13,7 +13,9 @@
       "description": "Open the kibends panel, installing kibends first if needed",
       "show-button": true,
       "scopes": ["pcb"],
-      "entrypoint": "kibends_launcher.py"
+      "entrypoint": "kibends_launcher.py",
+      "icons-light": ["icon-light-24.png", "icon-light-48.png"],
+      "icons-dark": ["icon-dark-24.png", "icon-dark-48.png"]
     }
   ]
 }
