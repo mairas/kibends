@@ -27,6 +27,9 @@ export PYO3_PYTHON="$PROJECT_ROOT/.venv/bin/python"
 function sync {
   #@ Create or update the virtualenv with dev dependencies and the plot and gui extras, building kibends._core
   #@ Category: Development
+  # A version-specific build from before kibends._core targeted the stable
+  # ABI would load in place of the abi3 one, so a checkout would test stale Rust.
+  rm -f src/kibends/_core.cpython-*
   uv sync --extra plot --extra gui "$@"
 }
 

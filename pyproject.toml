@@ -49,13 +49,14 @@ build-backend = "maturin"
 python-source = "src"
 module-name = "kibends._core"
 manifest-path = "rust/py/Cargo.toml"
-# The dev profile, as `cargo test` uses, so an edit rebuilds only its crate.
-profile = "dev"
 
 [tool.uv]
 # Built with the project's own Python, whose path stays put, rather than a
 # fresh build environment's, so pyo3 is not rebuilt on every sync.
 no-build-isolation-package = ["kibends"]
+# Synced builds use the dev profile, as `cargo test` does, so an edit rebuilds
+# only its crate; wheels and installs from the sdist use maturin's release.
+config-settings-package = { kibends = { build-args = "--profile=dev" } }
 # uv rebuilds the extension only when one of these changes.
 cache-keys = [
     { file = "pyproject.toml" },
