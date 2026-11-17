@@ -82,6 +82,12 @@ from kibends.vias import StaticVia, ViaInput
 MAX_ABNORMAL_BURSTS = _core.MAX_ABNORMAL_BURSTS
 """After this many abnormal L-BFGS ends in a row a problem counts as
 settled and keeps what its bursts reached."""
+LEVEL_WINDOW = _core.LEVEL_WINDOW
+"""Bursts each level runs before the rules that end it when it stops
+improving, and that `LEVEL_GAIN` looks back over."""
+LEVEL_GAIN = _core.LEVEL_GAIN
+"""The share of the run's energy decrease below which a level's last
+`LEVEL_WINDOW` bursts count as levelled off."""
 
 
 MIN_TRACK_LENGTH = math.sqrt(2) / NM_PER_MM
@@ -224,48 +230,47 @@ def optimize_chains(
     more violations than it started with, and leaves no via deeper inside
     its clearance or its stops than it started. It goes on at the final
     spacing from the coarse levels' best state only if some coarse burst
-    ended normally and that state costs no more than its inputs; else from
-    the inputs.
+    ended normally and that state passes the guard there; else from the
+    inputs.
 
-    The problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row,
-    or, once it has run five bursts at its level, when its burst moved no
-    shape or via by `settled_change` and moved nothing back, when its last
-    five bursts lowered the lowest energy by less than 0.1 % of the run's
-    decrease from its inputs (`kibends_core::optimize::state::levelled_off`),
-    or when the lowest energy its bursts reached, whether or not the guard
-    took them as its best state, and its tracks' length stalled over
-    `stall_window` bursts (`stalled`); at a coarse level it hands over
-    instead; the run converges
-    when it has, and gives up (`Termination.GAVE_UP`) if it settled on
-    abnormal bursts. A run that gave up and whose best state has no less
-    energy than its inputs ends `Termination.ABNORMAL`, whatever stopped
-    it. With a time limit in `settings`, the limit runs out once `clock`
-    reads it or more past the end of setup, when optimizing starts, and
-    the problem owes no burst at its level (`_core.OwingNotice`): it owes
-    one when it has not settled and has run none at a level a handover
-    took it to. While it owes one, a burst past the limit runs until it
-    accepts its first L-BFGS iteration and ends there, cut, so that each
-    level a handover took it to descends. Once the limit has run out, the
-    running burst ends before its next line-search trial, at its last
-    accepted point (`bursts.run_burst`), and its state goes through the
-    checks and the guard as any burst's. The problem, if still before the
-    final level, then goes on at its next level as if it had settled where
-    it runs, leaving level 0 if it has taken no step, and the limit counts
-    again from then (`_hand_over`). At the final level the run ends
-    `Termination.TIME_LIMIT`. So every level the problem reaches above
-    level 0 runs a burst, and the limit counts at most once for each
-    level, besides the overrun of the burst running when it runs out,
-    about an L-BFGS iteration for an owed one, and the holds. Should it
-    run out in the outer iteration that reaches the iteration cap with the
-    problem before the final level, the cap ends the run; after a hold the
-    limit is still out, so the run goes on as when it runs out, with no
-    burst first. `stop`, asked whenever the time limit is, ends the
-    running burst the same way and the run at once,
-    `Termination.STOPPED`, if it answered true before the limit ran out. A
-    run that `stop` or the iteration cap ends while the problem runs at a
-    coarse level ends it at the final spacing (`ProblemState.finish`), at
-    its inputs if it has taken no step; either way it says so
-    (`RunResult.before_final_spacing`).
+    The problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row;
+    at a level a descending coarser one handed over to, when its first burst
+    ends abnormally and moves nothing; at a coarse level with no via, once
+    every chain is held; or, once it has run LEVEL_WINDOW bursts at its
+    level, when its burst moved no shape or via by `settled_change` and
+    moved nothing back, when its last LEVEL_WINDOW bursts lowered the lowest
+    energy by less than LEVEL_GAIN of the run's decrease from where it
+    started (`kibends_core::optimize::state::levelled_off`), or when the
+    lowest energy its bursts reached, whether or not the guard took them as
+    its best state, and its tracks' length stalled over `stall_window`
+    bursts (`stalled`); at a coarse level it hands over instead; the run
+    converges when it has, and gives up (`Termination.GAVE_UP`) if it
+    settled on abnormal bursts. With a time limit in `settings`, the limit
+    runs out once `clock` reads it or more past the end of setup, when
+    optimizing starts, and the problem owes no burst at its level
+    (`_core.OwingNotice`): it owes one when it has not settled and has run
+    none at a level a handover took it to. While it owes one, a burst past
+    the limit runs until it accepts its first L-BFGS iteration and ends
+    there, cut, so that each level a handover took it to descends. Once the
+    limit has run out, the running burst ends before its next line-search
+    trial, at its last accepted point (`bursts.run_burst`), and its state
+    goes through the checks and the guard as any burst's. The problem, if
+    still before the final level, then goes on at its next level as if it
+    had settled where it runs, leaving level 0 if it has taken no step, and
+    the limit counts again from then (`_hand_over`). At the final level the
+    run ends `Termination.TIME_LIMIT`. So every level the problem reaches
+    above level 0 runs a burst, and the limit counts at most once for each
+    level, besides the overrun of the burst running when it runs out, about
+    an L-BFGS iteration for an owed one, and the holds. Should it run out in
+    the outer iteration that reaches the iteration cap with the problem
+    before the final level, the cap ends the run; after a hold the limit is
+    still out, so the run goes on as when it runs out, with no burst first.
+    `stop`, asked whenever the time limit is, ends the running burst the
+    same way and the run at once, `Termination.STOPPED`, if it answered true
+    before the limit ran out. A run that `stop` or the iteration cap ends
+    while the problem runs at a coarse level ends it at the final spacing
+    (`ProblemState.finish`), at its inputs if it has taken no step; either
+    way it says so (`RunResult.before_final_spacing`).
 
     Whenever the run would end, `to_hold` is given each section's best
     state and names the sections to hold (`Hold.CROWDING`). The problem
@@ -468,15 +473,10 @@ def optimize_chains(
     before_final = problem.moving and problem.state.before_final
     if problem.moving:
         problem.state.finish()
-    final = replace(
+    return replace(
         result(termination, iteration, best=True),
         before_final_spacing=before_final,
     )
-    if final.gave_up and (
-        not problem.moving or problem.best_energy >= problem.input_energy
-    ):
-        return replace(final, termination=Termination.ABNORMAL)
-    return final
 
 
 _Notice = (
@@ -933,10 +933,6 @@ class _Problem:
     @property
     def best_energy(self) -> float:
         return self.state.best_energy
-
-    @property
-    def input_energy(self) -> float:
-        return self.state.input_energy
 
     @property
     def points(self) -> list[FloatArray]:

@@ -79,10 +79,6 @@ BUSY_MESSAGE = (
 )
 
 
-class RunRefusedError(RuntimeError):
-    """The run refused the result; nothing committed."""
-
-
 # Failures that need no traceback; all but CommitUncertainError leave the
 # board untouched.
 EXPECTED_ERRORS = (
@@ -95,7 +91,6 @@ EXPECTED_ERRORS = (
     InsideClearanceError,
     NoBoardError,
     PlotUnavailableError,
-    RunRefusedError,
 )
 MAPPED_ERRORS = (KeyboardInterrupt, *EXPECTED_ERRORS, ApiError, KiCadConnectionError)
 """The failures `error_message` words; any other is unexpected."""
@@ -360,8 +355,6 @@ def _ending(termination: Termination) -> str:
             return "Stopped at the iteration cap"
         case Termination.GAVE_UP:
             return "Stopped on abnormal bursts"
-        case Termination.ABNORMAL:
-            return "Terminated abnormally"
         case _:
             assert_never(termination)
 
@@ -373,7 +366,7 @@ def counted(n: int, noun: str) -> str:
 
 @dataclass(frozen=True)
 class RunFigures:
-    """What a run without a refusal did, as its summary tells it."""
+    """What a run did, as its summary tells it."""
 
     ending: str
     iterations: int
@@ -411,7 +404,7 @@ def figures(report: RunReport) -> RunFigures:
 
 
 def summary(report: RunReport) -> str:
-    """How a run without a refusal ended, in one line: its ending,
+    """How a run ended, in one line: its ending,
     iterations and time, the chains and vias it changed, their summed
     length change, the edge moves it rejected and its scope; "Nothing to
     do" or, for a stop, "Stopped; nothing changed" when nothing changed."""

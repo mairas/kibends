@@ -738,24 +738,6 @@ class TestSmooth:
         assert raised.value.code == 2
 
     @pytest.mark.usefixtures("coarse_optimizer")
-    def test_abnormal_termination_is_refused(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-    ) -> None:
-        board = connect.to(l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-
-        def abnormal(*args: object, **kwargs: object) -> RunResult:
-            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
-
-        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
-
-        assert "abnormally" in exit_message(log)
-        assert board.calls == []
-
-    @pytest.mark.usefixtures("coarse_optimizer")
     def test_iteration_cap_warns_and_still_commits(
         self,
         connect: Connector,
@@ -778,6 +760,33 @@ class TestSmooth:
         assert "push_commit" in board.calls
 
     @pytest.mark.usefixtures("coarse_optimizer")
+    def test_a_run_given_up_without_progress_says_so_and_commits_nothing(
+        self,
+        connect: Connector,
+        monkeypatch: pytest.MonkeyPatch,
+        log: list[str],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        board = connect.to(l_board())
+
+        def failing(
+            objective: Objective,
+            start: FloatArray,
+            revert: Check,
+            settings: OptimizerSettings,
+            stop: Stop | None = None,
+        ) -> Burst:
+            return Burst(start.copy(), abnormal=True)
+
+        monkeypatch.setattr(optimize_module, "run_burst", failing)
+
+        run()
+
+        (outcome,) = capsys.readouterr().out.splitlines()
+        assert outcome.startswith(f"Optimizer: {Termination.GAVE_UP.value} after ")
+        assert any("Nothing to do" in line for line in log)
+        assert "begin_commit" not in board.calls
+
     def test_a_run_given_up_after_progress_says_so_and_commits(
         self,
         connect: Connector,
@@ -1250,7 +1259,6 @@ class TestStop:
         assert stages[-1] is stage
         assert report.termination is Termination.STOPPED
         assert not report.changes and not report.committed
-        assert report.refusal is None
         assert report.scope.tracks == 2
         assert optimized == []
         assert "begin_commit" not in board.calls
@@ -1300,27 +1308,6 @@ class TestStop:
         assert any(line.startswith("INFO Stopped") for line in log)
         assert not any("Nothing to do" in line for line in log)
         assert "begin_commit" not in board.calls
-
-    @pytest.mark.usefixtures("coarse_optimizer")
-    def test_a_stop_on_a_run_that_gave_up_without_improving_commits_nothing(
-        self,
-        connect: Connector,
-        monkeypatch: pytest.MonkeyPatch,
-        log: list[str],
-    ) -> None:
-        board = connect.to(l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-
-        def abnormal(*args: object, **kwargs: object) -> RunResult:
-            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
-
-        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
-        clock = BurstClock(monkeypatch)
-        stopping(monkeypatch, lambda: clock.bursts >= 1)
-
-        assert "abnormally" in exit_message(log)
-        assert clock.bursts == 1
-        assert board.calls == []
 
 
 class TestStages:
@@ -2223,20 +2210,6 @@ class TestSeveralChains:
         assert board.selection == tracks
         assert any("Nothing to do" in line for line in log)
 
-    def test_abnormal_run_commits_nothing(
-        self, connect: Connector, monkeypatch: pytest.MonkeyPatch, log: list[str]
-    ) -> None:
-        board = connect.to(two_l_board())
-        real: Callable[..., RunResult] = pipeline.optimize_chains
-
-        def abnormal(*args: object, **kwargs: object) -> RunResult:
-            return replace(real(*args, **kwargs), termination=Termination.ABNORMAL)
-
-        monkeypatch.setattr(pipeline, "optimize_chains", abnormal)
-
-        assert "abnormally" in exit_message(log)
-        assert board.calls == []
-
     def test_chains_starting_inside_each_other_s_clearance_are_refused(
         self, connect: Connector, log: list[str]
     ) -> None:
@@ -2279,7 +2252,7 @@ class TestSeveralChains:
         assert report.abnormal == ()
         assert report.termination in (Termination.CONVERGED, Termination.ITERATION_CAP)
         assert report.iterations > 0
-        assert (report.committed, report.refusal) == (False, None)
+        assert not report.committed
         assert board.calls == []
         gap = LineString(simplified[0]).distance(LineString(simplified[1]))
         assert gap >= CLEARANCE + WIDTH - NM_ROUNDING

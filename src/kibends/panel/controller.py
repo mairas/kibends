@@ -830,10 +830,6 @@ class Controller:
         self._graph_description = text + "."
 
     def _finished(self, report: RunReport, warnings: tuple[str, ...]) -> None:
-        if report.refusal is not None:
-            self._failed_optimizing = False
-            self._fail(replace(GAVE_UP, warnings=warnings), Stage.OPTIMIZING)
-            return
         if not self._lengths:
             self._no_points = (
                 NOTHING_TO_OPTIMIZE
@@ -972,15 +968,7 @@ _ENDINGS: Mapping[Termination, tuple[Icon, str]] = {
     ),
 }
 """Each ending's icon and the headline after its name, for a run that
-changed something; an abnormal end arrives as a refusal (`GAVE_UP`)."""
-
-GAVE_UP = Outcome(
-    Icon.WARNING,
-    "The optimizer gave up",
-    NOTHING_COMMITTED,
-    "L-BFGS ended abnormally without improving the tracks. Try other "
-    "Repulsion or Repulsion range values under Advanced.",
-)
+changed something."""
 
 
 def failure(error: BaseException) -> Outcome:

@@ -1263,7 +1263,7 @@ LAID_OUT_SPACING = 0.25
 """A spacing that divides 5 mm."""
 
 
-def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
+def test_a_problem_whose_bursts_all_fail_without_moving_gives_up_at_its_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def failing(
@@ -1283,10 +1283,9 @@ def test_a_problem_whose_bursts_all_fail_without_moving_ends_abnormally(
 
     result = optimize_chains([chain], scenarios.PARAMS, settings)
 
-    # No burst descended at a coarse level, so the run ends at its inputs
-    # and is refused, as at one spacing.
+    # No burst descended at a coarse level, so the run ends at its inputs.
     assert result.iterations == all_abnormal_bursts(settings)
-    assert result.termination is Termination.ABNORMAL
+    assert result.termination is Termination.GAVE_UP
 
 
 def test_a_normal_burst_ends_an_abnormal_streak(

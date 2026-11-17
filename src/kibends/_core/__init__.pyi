@@ -32,6 +32,8 @@ __all__ = [
     "Inside",
     "InsideOf",
     "Integrand",
+    "LEVEL_GAIN",
+    "LEVEL_WINDOW",
     "LINE",
     "Lookups",
     "MAX_ABNORMAL_BURSTS",
@@ -137,6 +139,8 @@ AREA: builtins.int = 1
 DEFAULT_ATTRACTION_RANGE: builtins.float = 3.0
 INDEXED_EDGES: builtins.int = 128
 INSIDE_TOLERANCE: builtins.float = 1e-07
+LEVEL_GAIN: builtins.float = 0.001
+LEVEL_WINDOW: builtins.int = 5
 LINE: builtins.int = 0
 MAX_ABNORMAL_BURSTS: builtins.int = 3
 MAX_COARSE_LEVELS: builtins.int = 7
@@ -870,11 +874,6 @@ class ProblemState:
     @property
     def best_energy(self) -> builtins.float: ...
     @property
-    def input_energy(self) -> builtins.float:
-        r"""
-        Its energy at its inputs, laid out at the final spacing.
-        """
-    @property
     def abnormal_bursts(self) -> builtins.int:
         r"""
         Its bursts that L-BFGS ended abnormally.
@@ -974,10 +973,10 @@ class ProblemState:
         """
     def finish(self) -> None:
         r"""
-        End a run stopped at a coarse level at the final spacing: its best
-        state subdivided there if some coarse burst ended normally, that
-        passes the guard and its energy is no higher than the inputs'; else
-        the inputs. Does nothing at the final level. Raises ValueError if the
+        End a run stopped before the final level at the final spacing: its
+        best state subdivided there if some coarse burst ended normally and
+        that passes the guard; else the inputs. Does nothing at the final
+        level. Raises ValueError if the
         energy there is not finite.
         """
     def hand_over(self) -> typing.Optional[builtins.int]:

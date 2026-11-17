@@ -99,9 +99,6 @@ def test_l_path_in_free_space_becomes_straight() -> None:
 WRAP_SETTINGS = replace(SETTINGS, spacing=0.2, settled_change=0.0025, burst_maxiter=100)
 BEND_RESOLUTION = 0.05
 """Relative error within which WRAP_SETTINGS resolve the corner's radius."""
-LEAST_BURSTS = 5
-"""Bursts each spacing level runs before any rule settles it: the Rust core's
-`LEVEL_WINDOW`."""
 RERUN_DRIFT = DEFAULT_CHORD_TOLERANCE
 """mm a rerun on converged output may move it: no more than simplification
 may move the committed tracks anyway."""
@@ -1031,7 +1028,7 @@ def test_a_time_limit_at_one_spacing_ends_the_run(
     assert limit_lines(log) == []
 
 
-def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
+def test_bursts_that_all_fail_without_progress_give_up() -> None:
     # Straight and off the walls' midline, the chain is as short as it can
     # be, so every step the misleading gradient takes, towards the nearer
     # wall, raises the energy, however a burst scales its variables.
@@ -1040,7 +1037,7 @@ def test_bursts_that_all_fail_without_progress_end_the_run_abnormally() -> None:
 
     result = optimize(polyline, fixed, MisleadingWalls(1.0), params)
 
-    assert result.termination is Termination.ABNORMAL
+    assert result.termination is Termination.GAVE_UP
     assert np.array_equal(result.polyline[[0, -1]], polyline[[0, -1]])
 
 
@@ -1232,7 +1229,8 @@ def test_a_settled_change_beyond_the_first_burst_still_keeps_it() -> None:
 
     assert result.termination is Termination.CONVERGED
     # Each level settles once it has run its least bursts.
-    assert result.iterations == (len(lax.coarse_spacings) + 1) * LEAST_BURSTS
+    levels = len(lax.coarse_spacings) + 1
+    assert result.iterations == levels * optimize_module.LEVEL_WINDOW
     assert (
         clearances(result.polyline, scenario.field).mean()
         > clearances(scenario.polyline, scenario.field).mean()

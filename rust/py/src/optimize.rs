@@ -314,12 +314,6 @@ impl ProblemState {
         self.inner.best_energy
     }
 
-    /// Its energy at its inputs, laid out at the final spacing.
-    #[getter]
-    fn input_energy(&self) -> f64 {
-        self.inner.input_energy
-    }
-
     /// Its bursts that L-BFGS ended abnormally.
     #[getter]
     fn abnormal_bursts(&self) -> u32 {
@@ -522,10 +516,10 @@ impl ProblemState {
         self.inner.before_final()
     }
 
-    /// End a run stopped at a coarse level at the final spacing: its best
-    /// state subdivided there if some coarse burst ended normally, that
-    /// passes the guard and its energy is no higher than the inputs'; else
-    /// the inputs. Does nothing at the final level. Raises ValueError if the
+    /// End a run stopped before the final level at the final spacing: its
+    /// best state subdivided there if some coarse burst ended normally and
+    /// that passes the guard; else the inputs. Does nothing at the final
+    /// level. Raises ValueError if the
     /// energy there is not finite.
     fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
         self.inner.finish().map_err(|e| not_finite(py, e.0))
@@ -1078,6 +1072,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("INSIDE_TOLERANCE", core::INSIDE_TOLERANCE)?;
     m.add("MAX_COARSE_LEVELS", core::MAX_COARSE_LEVELS)?;
     m.add("MERGE_EDGE", core::state::MERGE_EDGE)?;
+    m.add("LEVEL_WINDOW", core::state::LEVEL_WINDOW)?;
+    m.add("LEVEL_GAIN", core::state::LEVEL_GAIN)?;
     Ok(())
 }
 
@@ -1100,3 +1096,10 @@ pyo3_stub_gen::module_variable!(
     core::MAX_COARSE_LEVELS
 );
 pyo3_stub_gen::module_variable!("kibends._core", "MERGE_EDGE", f64, core::state::MERGE_EDGE);
+pyo3_stub_gen::module_variable!(
+    "kibends._core",
+    "LEVEL_WINDOW",
+    usize,
+    core::state::LEVEL_WINDOW
+);
+pyo3_stub_gen::module_variable!("kibends._core", "LEVEL_GAIN", f64, core::state::LEVEL_GAIN);

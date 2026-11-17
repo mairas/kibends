@@ -2,10 +2,10 @@
 
 `smooth` prints the optimizer's outcome line, logs its warnings (an
 iteration cap or time limit) and, at debug, the abnormal bursts, all from
-`run_smooth`'s `on_optimized` callback, and raises the returned report's
-refusal. The per-chain, per-pair and per-via figures stay in the reports
-and are not printed. The first Ctrl-C while reading, building the
-obstacles or optimizing is the run's `stop`, so the run commits the best
+`run_smooth`'s `on_optimized` callback. The per-chain, per-pair and
+per-via figures stay in the reports and are not printed. The first
+Ctrl-C while reading, building the obstacles or optimizing is the run's
+`stop`, so the run commits the best
 result so far; a second, or one from simplifying on, raises
 `KeyboardInterrupt`, which ends the run with nothing committed, or, during
 the push, as one that may have landed. Every IPC failure ends the
@@ -45,7 +45,6 @@ from kibends.present import (
     DEFAULT_SCHEDULE,
     MAPPED_ERRORS,
     MAX_SPACING,
-    RunRefusedError,
     SmoothValues,
     error_message,
     non_negative_problem,
@@ -151,8 +150,6 @@ def smooth(options: SmoothOptions) -> None:
 
     with _first_interrupt_stops() as (stop, on_stage):
         report = run_smooth(options, show, stop=stop, on_stage=on_stage)
-    if report.refusal is not None:
-        raise RunRefusedError(report.refusal)
     if not report.changes:
         logger.info(
             "Stopped before anything changed: nothing committed"

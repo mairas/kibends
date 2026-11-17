@@ -57,8 +57,11 @@
 //!
 //! When it stops
 //! -------------
-//! A problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row, or,
-//! once it has run `state::LEVEL_WINDOW` bursts at its level, when its burst
+//! A problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row; at a
+//! level a descending coarser one handed over to, when its first burst ends
+//! abnormally and moves nothing; at a coarse level with no via, once every
+//! chain is held; or, once it has run `state::LEVEL_WINDOW` bursts at its
+//! level, when its burst
 //! moves nothing by `settled_change` and moves nothing back, when its lowest
 //! energy levels off against the run's decrease (`state::levelled_off`), or
 //! when its lowest energy and its tracks' length stall over `stall_window`
