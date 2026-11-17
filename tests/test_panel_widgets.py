@@ -14,7 +14,7 @@ from loguru import logger
 from PySide6.QtCore import QCoreApplication, QMimeData, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QStyleFactory, QWidget
 from test_panel_controller import LEVELLED, PROGRESS, STOPPED, Scripted
 from test_panel_probe import prober, ten_tracks_four_vias
 
@@ -33,6 +33,7 @@ from kibends.panel.window import (
     KICAD_PANEL,
     MIN_WIDTH,
     REPORT_HEIGHT,
+    STYLE,
     WIDTH,
     PanelWindow,
     Poster,
@@ -49,6 +50,12 @@ def app() -> QApplication:
     if isinstance(existing, QApplication):
         return existing
     return QApplication([])
+
+
+def test_the_panels_style_is_one_qt_offers() -> None:
+    """`setStyle` with a name Qt lacks keeps the native style without a word."""
+    styles = QStyleFactory.keys()
+    assert STYLE.casefold() in {style.casefold() for style in styles}
 
 
 def settle() -> None:

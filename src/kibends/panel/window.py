@@ -20,6 +20,10 @@ stops and never closes the window. Closing
 while the run can still stop asks first; later in a run the window waits
 for the run to end (`Controller.close`).
 
+The panel draws in Qt's Fusion style (`STYLE`) on every platform, as
+kistitch's does: macOS's native style draws the Advanced disclosure as a
+square bevel button. Fusion still follows the system palette.
+
 Colours come from the palette (`curve.secondary` for captions), but for
 the window's background under a light palette, which takes KiCad's panel
 grey (`KICAD_PANEL`) since Qt reads macOS's light window as white. The
@@ -118,6 +122,8 @@ ERROR_LIGHT = "#C4161C"
 ERROR_DARK = "#FF6B62"
 DARK = 0.5
 """A palette whose window is darker than this lightness is dark."""
+STYLE = "Fusion"
+"""Qt's style for the panel, the same on every platform."""
 KICAD_PANEL = QColor("#ECECEC")
 """The background of KiCad's own panels in its light theme."""
 WARNING_ICON = 14
@@ -1045,6 +1051,7 @@ def main() -> None:
     """Open the panel and run until it is closed, or, when a panel for the
     same KiCad is open, bring that one forward and return (`instance`)."""
     app = QApplication(sys.argv)
+    app.setStyle(STYLE)
     outcome, server = claim(server_name(kicad_socket(), kicad_token()))
     if outcome == Claim.RAISED:
         return
