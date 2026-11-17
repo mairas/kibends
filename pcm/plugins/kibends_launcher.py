@@ -25,7 +25,12 @@ stdout. A declined dialog exits 0, since the user chose it.
 
 The panel starts detached, with the launcher's environment, so that
 ``KICAD_API_SOCKET`` and ``KICAD_API_TOKEN`` reach it. Each press starts it
-again; the panel itself hands over to one already open.
+again; the panel itself hands over to one already open, and exits 0. The
+launcher waits ``START_WAIT`` for the panel to exit, with its stderr in a
+temporary file, and one still running then has started. One that exited
+with an error is reported with its stderr, in a dialog or on stderr; one
+that exited with ``GUI_EXTRA_EXIT``, a kibends installed without the
+``gui`` extra, gets the offer to reinstall, as an outdated one does.
 
 The decisions in ``launch`` take the machine (``System``) and the dialogs
 (``Ui``) as arguments, so that they test without KiCad, wx or subprocesses.
@@ -63,6 +68,16 @@ UV_INSTALL_PS1 = (
 )
 PROBE_TIMEOUT = 60.0
 """Seconds a probe such as ``--version`` or a download may take."""
+START_WAIT = 5.0
+"""Seconds a starting panel has to fail before it counts as started. A
+panel without PySide6 fails in about 0.3 s once its bytecode is compiled,
+and one that cannot start Qt soon after; the first start after an install
+also compiles kibends' bytecode, and on macOS has its new binaries
+scanned, which take seconds. A panel that starts keeps the launcher only
+this long, and is not delayed by it."""
+GUI_EXTRA_EXIT = 3
+"""``kibends-panel``'s exit code without the ``gui`` extra; a copy of
+``kibends.cli.GUI_EXTRA_EXIT``, since the launcher cannot import kibends."""
 PULSE_INTERVAL = 0.1
 """Seconds between updates of the progress dialog."""
 TITLE = "kibends"
@@ -146,8 +161,12 @@ class System(Protocol):
         """Run Astral's uv installer; raises ``OSError`` if it cannot."""
         ...
 
-    def start(self, panel: str) -> None:
-        """Start ``panel`` detached; raises ``OSError`` if it cannot."""
+    def start(self, panel: str) -> Completed | None:
+        """Start ``panel`` detached; raises ``OSError`` if it cannot.
+
+        Its exit code and stderr if it exits within ``START_WAIT``, else
+        None, leaving it running.
+        """
         ...
 
 
@@ -171,12 +190,14 @@ class Ui(Protocol):
 class Start:
     panel: str
     version: tuple[int, ...]
+    uv: str | None
 
 
 class Need(enum.Enum):
     UV_AND_KIBENDS = enum.auto()
     KIBENDS = enum.auto()
     UPGRADE = enum.auto()
+    GUI_EXTRA = enum.auto()
 
 
 @dataclass(frozen=True)
@@ -240,7 +261,7 @@ def decide(host: Host, system: System) -> Start | Offer:
         return Offer(Need.KIBENDS if uv else Need.UV_AND_KIBENDS, uv)
     version = panel_version(system, panel)
     if version is not None and _REQUIRED is not None and version >= _REQUIRED:
-        return Start(panel, version)
+        return Start(panel, version, uv)
     return Offer(Need.UPGRADE, uv, version)
 
 
@@ -253,6 +274,9 @@ def status(offer: Offer) -> str:
         return "kibends is not installed, nor is uv, which installs it"
     if offer.need is Need.KIBENDS:
         return "kibends is not installed"
+    if offer.need is Need.GUI_EXTRA:
+        installed = f"kibends {_dotted(offer.found)}" if offer.found else "kibends"
+        return f"the installed {installed} lacks the gui extra, which the panel needs"
     found = (
         f"kibends {_dotted(offer.found)} is installed"
         if offer.found
@@ -266,6 +290,7 @@ def offer_message(offer: Offer) -> str:
         Need.UV_AND_KIBENDS: "Install uv with Astral's installer, then kibends?",
         Need.KIBENDS: "Install it with uv?",
         Need.UPGRADE: "Upgrade it with uv?",
+        Need.GUI_EXTRA: "Reinstall it with uv?",
     }[offer.need]
     text = status(offer)
     return f"{text[0].upper()}{text[1:]}. {question}"
@@ -332,12 +357,15 @@ def _fail(ui: Ui | None, err: TextIO, message: str, details: str) -> int:
     return 1
 
 
-def _start(system: System, panel: str, ui: Ui | None, err: TextIO) -> int:
+def _start(system: System, panel: str) -> tuple[str, Completed] | None:
+    """Start ``panel``; None once it has started, else why not and its output."""
     try:
-        system.start(panel)
+        exited = system.start(panel)
     except OSError as error:
-        return _fail(ui, err, f"could not start {panel}", str(error))
-    return 0
+        return f"could not start {panel}", Completed(1, "", str(error))
+    if exited is None or exited.code == 0:
+        return None
+    return f"{panel} stopped at start with exit code {exited.code}.", exited
 
 
 def launch(
@@ -346,7 +374,13 @@ def launch(
     """Start the panel, installing it first if the user approves; the exit code."""
     target = decide(host, system)
     if isinstance(target, Start):
-        return _start(system, target.panel, None, err)
+        failure = _start(system, target.panel)
+        if failure is None:
+            return 0
+        message, exited = failure
+        if exited.code != GUI_EXTRA_EXIT:
+            return _fail(make_ui(), err, message, exited.output)
+        target = Offer(Need.GUI_EXTRA, target.uv, target.version)
     ui = make_ui()
     if ui is None:
         print(f"kibends: {status(target)}.\n{instructions(target, host)}", file=err)
@@ -357,7 +391,9 @@ def launch(
     if choice is Choice.INSTRUCTIONS:
         ui.show_instructions(instructions(target, host))
         return 0
-    doing = "Upgrading" if target.need is Need.UPGRADE else "Installing"
+    doing = {Need.UPGRADE: "Upgrading", Need.GUI_EXTRA: "Reinstalling"}.get(
+        target.need, "Installing"
+    )
     result = ui.working(
         f"{doing} kibends. This downloads Python and Qt and can take minutes.",
         lambda: perform(target, host, system),
@@ -368,14 +404,19 @@ def launch(
     if not isinstance(after, Start):
         return _fail(ui, err, f"After installing, {status(after)}.", "")
     ui.succeeded(f"kibends {_dotted(after.version)} is installed.")
-    return _start(system, after.panel, ui, err)
+    failure = _start(system, after.panel)
+    if failure is None:
+        return 0
+    message, exited = failure
+    return _fail(ui, err, message, exited.output)
 
 
 class RealSystem:
     """The machine, through subprocesses and the file system."""
 
-    def __init__(self, host: Host) -> None:
+    def __init__(self, host: Host, start_wait: float = START_WAIT) -> None:
         self.host = host
+        self.start_wait = start_wait
 
     def which(self, name: str) -> str | None:
         path = self.host.env.get("PATH")
@@ -413,20 +454,33 @@ class RealSystem:
                 file.write(script)
             return self.run(["/bin/sh", path])
 
-    def start(self, panel: str) -> None:
-        subprocess.Popen(
-            [panel],
-            env=dict(self.host.env),
-            # KiCad starts the launcher in the plugin's directory; a panel
-            # left there would keep Windows from updating or removing it.
-            cwd=self.host.home,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=sys.platform != "win32",
-            creationflags=_DETACHED,
-        )
+    def start(self, panel: str) -> Completed | None:
+        # A file, not a pipe: a pipe would block the panel once full, or end
+        # it once the launcher has gone. The file is unlinked on POSIX and
+        # deleted on close on Windows, so it goes when the panel, which
+        # holds the last handle, exits, and is never opened by name, which
+        # Windows would refuse while the panel holds it.
+        with tempfile.TemporaryFile() as log:
+            process = subprocess.Popen(
+                [panel],
+                env=dict(self.host.env),
+                # KiCad starts the launcher in the plugin's directory; a panel
+                # left there would keep Windows from updating or removing it.
+                cwd=self.host.home,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                close_fds=True,
+                start_new_session=sys.platform != "win32",
+                creationflags=_DETACHED,
+            )
+            try:
+                code = process.wait(self.start_wait)
+            except subprocess.TimeoutExpired:
+                return None
+            # Read only after the panel exits: it shares the file's offset.
+            log.seek(0)
+            return Completed(code, "", log.read().decode("utf-8", "replace"))
 
 
 if sys.platform == "win32":

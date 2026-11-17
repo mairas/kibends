@@ -1,13 +1,17 @@
 import importlib.util
 import io
 import json
+import os
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
+from kibends import cli
 
 LAUNCHER = Path(__file__).parent.parent / "pcm" / "plugins" / "kibends_launcher.py"
 
@@ -38,6 +42,12 @@ CURRENT_VERSIONS = [
     f"{_MAJOR + 1}.0.0",
 ]
 OK = Completed(0, "", "")
+NO_GUI = Completed(
+    launcher.GUI_EXTRA_EXIT,
+    "",
+    "ERROR | The panel needs PySide6 (No module named PySide6)",
+)
+CRASHED = Completed(1, "", "Traceback ...\nRuntimeError: no Qt platform plugin")
 
 Response = Completed | OSError | Callable[[], Completed]
 
@@ -63,6 +73,9 @@ class FakeSystem:
         self.uv_installer = uv_installer
         self.ran: list[tuple[str, ...]] = []
         self.started: list[str] = []
+        self.exits: list[Completed | None] = []
+        """What each start gives in turn: an early exit, or None for a
+        panel still running; None once used up."""
         self.uv_installs = 0
 
     def which(self, name: str) -> str | None:
@@ -87,8 +100,9 @@ class FakeSystem:
         assert self.uv_installer is not None
         return self.uv_installer()
 
-    def start(self, panel: str) -> None:
+    def start(self, panel: str) -> Completed | None:
         self.started.append(panel)
+        return self.exits.pop(0) if self.exits else None
 
     def installs(self) -> list[tuple[str, ...]]:
         return [argv for argv in self.ran if "install" in argv]
@@ -190,7 +204,7 @@ class TestStart:
     def test_a_failing_start_is_reported_on_stderr(self) -> None:
         system = uv_with_panel(Completed(0, CURRENT, ""))
 
-        def refuse(panel: str) -> None:
+        def refuse(panel: str) -> Completed | None:
             raise PermissionError(13, "Permission denied", panel)
 
         system.start = refuse
@@ -199,6 +213,94 @@ class TestStart:
 
         assert code != 0
         assert "Permission denied" in err
+
+
+class TestEarlyExit:
+    def test_a_panel_that_exits_at_once_without_error_has_started(self) -> None:
+        """It found a panel already open for this KiCad and raised it."""
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        system.exits = [OK]
+        ui = FakeUi(Choice.CANCEL)
+
+        code, err = launch(system, ui)
+
+        assert (code, err, ui.failures, ui.asked) == (0, "", [], [])
+
+    def test_a_panel_that_fails_at_start_is_reported_in_a_dialog(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        system.exits = [CRASHED]
+        ui = FakeUi(Choice.CANCEL)
+
+        code, err = launch(system, ui)
+
+        assert code != 0
+        [(message, details)] = ui.failures
+        assert "exit code 1" in message
+        assert details == CRASHED.output
+        assert "no Qt platform plugin" in err
+        assert (ui.asked, system.installs()) == ([], [])
+
+    def test_without_wx_a_failing_panel_is_reported_on_stderr(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        system.exits = [CRASHED]
+
+        code, err = launch(system, None)
+
+        assert code != 0
+        assert "no Qt platform plugin" in err
+
+    def test_a_panel_without_the_gui_extra_offers_to_reinstall(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        system.exits = [NO_GUI]
+        ui = FakeUi(Choice.CANCEL)
+
+        code, _ = launch(system, ui)
+
+        assert code == 0
+        [(message, commands)] = ui.asked
+        assert "gui extra" in message
+        assert commands == f"{LOCAL_UV} tool install '{SPEC}'"
+        assert ui.failures == []
+
+    def test_reinstalling_with_the_gui_extra_starts_the_panel(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        installs_panel(system)
+        system.exits = [NO_GUI]
+        ui = FakeUi(Choice.INSTALL)
+
+        code, _ = launch(system, ui)
+
+        assert code == 0
+        assert system.installs() == [(LOCAL_UV, "tool", "install", SPEC)]
+        assert ui.successes
+        assert system.started == [LOCAL_PANEL, LOCAL_PANEL]
+
+    def test_a_panel_still_without_the_extra_after_reinstalling_fails(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        installs_panel(system)
+        system.exits = [NO_GUI, NO_GUI]
+        ui = FakeUi(Choice.INSTALL)
+
+        code, _ = launch(system, ui)
+
+        assert code != 0
+        [(_, details)] = ui.failures
+        assert "PySide6" in details
+
+    def test_without_wx_the_missing_extra_prints_the_reinstall(self) -> None:
+        system = uv_with_panel(Completed(0, CURRENT, ""))
+        system.exits = [NO_GUI]
+
+        code, err = launch(system, None)
+
+        assert code != 0
+        assert "gui" in err
+        assert f"{LOCAL_UV} tool install '{SPEC}'" in err
+        assert system.installs() == []
+
+    def test_the_exit_code_is_the_panels(self) -> None:
+        """The launcher cannot import kibends, so it keeps a copy."""
+        assert launcher.GUI_EXTRA_EXIT == cli.GUI_EXTRA_EXIT
 
 
 class TestOffer:
@@ -560,3 +662,49 @@ class TestRealSystem:
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert started.read_text() == "ipc:///tmp/kicad/api.sock\n"
+
+    def panel(self, tmp_path: Path, body: str) -> str:
+        path = tmp_path / "kibends-panel"
+        path.write_text(f"#!/bin/sh\n{body}")
+        path.chmod(0o755)
+        return str(path)
+
+    def system(self, tmp_path: Path, wait: float) -> launcher.RealSystem:
+        host = launcher.Host(
+            windows=False, home=str(tmp_path), env={"PATH": os.defpath}
+        )
+        return launcher.RealSystem(host, start_wait=wait)
+
+    WAIT_S = 0.2
+    """The start wait for a panel that outlives it."""
+
+    def test_an_early_exit_gives_its_code_and_stderr(self, tmp_path: Path) -> None:
+        panel = self.panel(tmp_path, "echo out; echo 'no PySide6' >&2; exit 3\n")
+
+        exited = self.system(tmp_path, launcher.START_WAIT).start(panel)
+
+        assert exited == Completed(3, "", "no PySide6\n")
+
+    def test_a_running_panel_is_left_running_and_its_stderr_unblocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its stderr goes on into a file deleted with nothing left behind,
+        not a pipe, which would block it or end it once the launcher left."""
+        temp = tmp_path / "temp"
+        temp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temp))
+        done = tmp_path / "done"
+        panel = self.panel(
+            tmp_path,
+            f"sleep {2 * self.WAIT_S}\n"
+            "head -c 200000 /dev/zero | tr '\\0' x >&2\n"
+            f'touch "{done}"\n',
+        )
+
+        assert self.system(tmp_path, self.WAIT_S).start(panel) is None
+        assert list(temp.iterdir()) == []
+
+        deadline = time.monotonic() + 5
+        while not done.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert done.exists()
