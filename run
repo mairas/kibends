@@ -130,7 +130,7 @@ function pcm-package {
 # Version Commands
 
 function bumpversion {
-  #@ Bump the version in VERSION, pyproject.toml and Cargo.toml (patch|minor|major)
+  #@ Bump the version in VERSION, pyproject.toml, Cargo.toml and the KiCad launcher (patch|minor|major)
   #@ Category: Version
   local BUMP_TYPE="${1:-}"
 

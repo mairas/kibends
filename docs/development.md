@@ -30,7 +30,7 @@ Run `./run sync` in every fresh checkout or worktree before testing. Run
 | `./run check` | Run lint, typecheck and every test, as CI does. |
 | `./run bench` | Measure the optimizer on benchmark boards (see `scripts/benchmark.py`). |
 | `./run pcm-package v<VERSION>+<N>` | Build the KiCad Plugin and Content Manager package, `packages.json`, the resources archive and `repository.json` of that stable release into `dist/pcm/` (see `scripts/pcm_package.py`). `scripts/make_icons.py` redraws the plugin's icons. |
-| `./run bumpversion patch\|minor\|major` | Bump the version in `VERSION`, `pyproject.toml` and `Cargo.toml`, and refresh both lockfiles. Needs [bump2version](https://github.com/c4urself/bump2version) (`uv tool install bump2version`). |
+| `./run bumpversion patch\|minor\|major` | Bump the version in `VERSION`, `pyproject.toml`, `Cargo.toml` and the KiCad launcher (`pcm/plugins/kibends_launcher.py`), and refresh both lockfiles. Needs [bump2version](https://github.com/c4urself/bump2version) (`uv tool install bump2version`). |
 | `./run help` | List the commands. |
 
 Tests never need a running KiCad: `tests/conftest.py` builds fake boards.
