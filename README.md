@@ -4,10 +4,32 @@ kibends smooths the tracks of a KiCad board. It replaces each selected
 route with a short, smooth path that keeps its clearance to other copper,
 and it does so in the running PCB editor as one undo step.
 
-![HALMET before smoothing](docs/images/halmet-before.png)
-![HALMET after smoothing](docs/images/halmet-after.png)
+<table>
+  <tr><th>Before</th><th>After</th></tr>
+  <tr>
+    <td><img src="docs/images/halmet-before.png" alt="HALMET before smoothing"></td>
+    <td><img src="docs/images/halmet-after.png" alt="HALMET after smoothing"></td>
+  </tr>
+</table>
 
-Status: early development.
+## Why
+
+Mostly for the look: routes drawn as straight runs and 45° corners become
+smooth curves. The more even spacing between tracks may also help signal
+integrity a little.
+
+The result follows the board's clearances: netclass clearances and the
+edge, hole and hole-to-hole clearances from the project. Custom DRC rules
+are not read (see [Limits](#limits)).
+
+The board stays fully editable. The result is ordinary straight track
+segments, so you can push, drag and reroute it with KiCad's router like
+any other track, and run kibends again afterwards.
+
+The board's topology does not change in general: tracks keep their
+connections and stay on the same side of the copper around them. In rare
+cases a track can jump over a lone via to its other side, where that
+gives a shorter path.
 
 ## Install
 
