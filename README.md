@@ -64,10 +64,11 @@ on aarch64).
 
 ### Without the plugin manager
 
-kibends is on PyPI and needs Python 3.14 or later:
+kibends is on PyPI. It needs Python 3.14; name it, since one of its
+dependencies has no packages for 3.15 yet:
 
 ```sh
-uv tool install 'kibends[gui]'
+uv tool install --python 3.14 'kibends[gui]'
 ```
 
 Without the `gui` extra you get only the [command line](#command-line).

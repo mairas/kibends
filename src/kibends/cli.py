@@ -72,7 +72,7 @@ CLEARANCE_FLAGS = {
 `rules.Clearances` field."""
 GUI_EXTRA_MESSAGE = (
     "The panel needs PySide6, which comes with the `gui` extra: "
-    "uv tool install 'kibends[gui]'"
+    "uv tool install --python 3.14 'kibends[gui]'"
 )
 GUI_EXTRA_EXIT = 3
 """`kibends-panel`'s exit code without the `gui` extra, apart from a

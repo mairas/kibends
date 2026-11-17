@@ -177,7 +177,7 @@ def installs_panel(system: FakeSystem, uv: str = LOCAL_UV) -> None:
         system.responses[(LOCAL_PANEL, "--version")] = Completed(0, CURRENT, "")
         return OK
 
-    system.responses[(uv, "tool", "install", SPEC)] = install
+    system.responses[(uv, "tool", "install", "--python", "3.14", SPEC)] = install
 
 
 class TestStart:
@@ -259,7 +259,7 @@ class TestEarlyExit:
         assert code == 0
         [(message, commands)] = ui.asked
         assert "gui extra" in message
-        assert commands == f"{LOCAL_UV} tool install '{SPEC}'"
+        assert commands == f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'"
         assert ui.failures == []
 
     def test_reinstalling_with_the_gui_extra_starts_the_panel(self) -> None:
@@ -271,7 +271,9 @@ class TestEarlyExit:
         code, _ = launch(system, ui)
 
         assert code == 0
-        assert system.installs() == [(LOCAL_UV, "tool", "install", SPEC)]
+        assert system.installs() == [
+            (LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)
+        ]
         assert ui.successes
         assert system.started == [LOCAL_PANEL, LOCAL_PANEL]
 
@@ -295,7 +297,7 @@ class TestEarlyExit:
 
         assert code != 0
         assert "gui" in err
-        assert f"{LOCAL_UV} tool install '{SPEC}'" in err
+        assert f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'" in err
         assert system.installs() == []
 
     def test_the_exit_code_is_the_panels(self) -> None:
@@ -327,7 +329,7 @@ class TestOffer:
         assert launcher.REQUIRED_VERSION in message
         if found is not None:
             assert found in message
-        assert commands == f"{LOCAL_UV} tool install '{SPEC}'"
+        assert commands == f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'"
         assert system.started == []
 
     def test_uv_without_kibends_offers_installing_kibends(self) -> None:
@@ -337,7 +339,7 @@ class TestOffer:
 
         [(message, commands)] = ui.asked
         assert "not installed" in message
-        assert commands == f"{LOCAL_UV} tool install '{SPEC}'"
+        assert commands == f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'"
 
     def test_neither_offers_uv_then_kibends(self) -> None:
         ui = FakeUi(Choice.CANCEL)
@@ -348,7 +350,7 @@ class TestOffer:
         assert "uv" in message
         assert commands.splitlines() == [
             "Download https://astral.sh/uv/install.sh and run it with sh",
-            f"uv tool install '{SPEC}'",
+            f"uv tool install --python 3.14 '{SPEC}'",
         ]
 
 
@@ -359,7 +361,7 @@ class TestFindUv:
         launch(uv_without_panel(on_path=False), ui)
 
         [(_, commands)] = ui.asked
-        assert commands == f"{LOCAL_UV} tool install '{SPEC}'"
+        assert commands == f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'"
 
     @pytest.mark.parametrize(
         "uv",
@@ -418,7 +420,7 @@ class TestDecline:
         assert code == 0
         [text] = ui.instructions
         assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in text
-        assert f"uv tool install '{SPEC}'" in text
+        assert f"uv tool install --python 3.14 '{SPEC}'" in text
         assert (system.uv_installs, system.installs(), system.started) == (0, [], [])
 
 
@@ -429,7 +431,7 @@ class TestNoWx:
         code, err = launch(system, None)
 
         assert code != 0
-        assert f"{LOCAL_UV} tool install '{SPEC}'" in err
+        assert f"{LOCAL_UV} tool install --python 3.14 '{SPEC}'" in err
         assert (system.installs(), system.started) == ([], [])
 
 
@@ -442,7 +444,9 @@ class TestInstall:
         code, _ = launch(system, ui)
 
         assert code == 0
-        assert system.installs() == [(LOCAL_UV, "tool", "install", SPEC)]
+        assert system.installs() == [
+            (LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)
+        ]
         assert ui.working_on and ui.successes
         assert system.started == [LOCAL_PANEL]
 
@@ -453,7 +457,9 @@ class TestInstall:
         code, _ = launch(system, FakeUi(Choice.INSTALL))
 
         assert code == 0
-        assert system.installs() == [(LOCAL_UV, "tool", "install", SPEC)]
+        assert system.installs() == [
+            (LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)
+        ]
         assert system.started == [LOCAL_PANEL]
 
     def test_installing_uv_then_kibends(self) -> None:
@@ -473,13 +479,15 @@ class TestInstall:
 
         assert code == 0
         assert system.uv_installs == 1
-        assert system.installs() == [(LOCAL_UV, "tool", "install", SPEC)]
+        assert system.installs() == [
+            (LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)
+        ]
         assert system.started == [LOCAL_PANEL]
 
     def test_a_failing_install_reports_its_output_and_starts_nothing(self) -> None:
         system = uv_without_panel()
-        system.responses[(LOCAL_UV, "tool", "install", SPEC)] = Completed(
-            1, "", "error: No solution found"
+        system.responses[(LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)] = (
+            Completed(1, "", "error: No solution found")
         )
         ui = FakeUi(Choice.INSTALL)
 
@@ -513,7 +521,7 @@ class TestInstall:
 
     def test_a_panel_still_outdated_after_installing_is_a_failure(self) -> None:
         system = uv_with_panel(Completed(0, OLD, ""))
-        system.responses[(LOCAL_UV, "tool", "install", SPEC)] = OK
+        system.responses[(LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)] = OK
         ui = FakeUi(Choice.INSTALL)
 
         code, _ = launch(system, ui)
@@ -524,8 +532,8 @@ class TestInstall:
 
     def test_an_install_that_cannot_start_is_a_failure(self) -> None:
         system = uv_without_panel()
-        system.responses[(LOCAL_UV, "tool", "install", SPEC)] = PermissionError(
-            13, "Permission denied"
+        system.responses[(LOCAL_UV, "tool", "install", "--python", "3.14", SPEC)] = (
+            PermissionError(13, "Permission denied")
         )
         ui = FakeUi(Choice.INSTALL)
 
@@ -573,7 +581,7 @@ class TestWindows:
         launch(system, ui, windows())
 
         [(_, commands)] = ui.asked
-        assert commands == f'{uv} tool install "{SPEC}"'
+        assert commands == f'{uv} tool install --python 3.14 "{SPEC}"'
 
     def test_without_uv_a_panel_in_local_bin_starts(self) -> None:
         system = FakeSystem(
@@ -595,7 +603,7 @@ class TestWindows:
             'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1'
             ' | iex"' in text
         )
-        assert f'uv tool install "{SPEC}"' in text
+        assert f'uv tool install --python 3.14 "{SPEC}"' in text
 
     def test_the_offer_names_the_powershell_installer(self) -> None:
         ui = FakeUi(Choice.CANCEL)

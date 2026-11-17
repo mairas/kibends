@@ -57,6 +57,10 @@ from typing import Protocol, TextIO
 
 REQUIRED_VERSION = "0.2.0"
 PACKAGE = f"kibends[gui]>={REQUIRED_VERSION}"
+PYTHON = "3.14"
+"""The Python uv installs kibends for. Without it uv takes the newest Python
+it finds or downloads, and kicad-python's dependency pynng has wheels only
+up to 3.14 (0.9.0), so on 3.15 the install fails building it."""
 
 UV_INSTALL_SH = "https://astral.sh/uv/install.sh"
 UV_INSTALL_PS1 = (
@@ -296,8 +300,12 @@ def offer_message(offer: Offer) -> str:
     return f"{text[0].upper()}{text[1:]}. {question}"
 
 
+def _install_command(uv: str) -> list[str]:
+    return [uv, "tool", "install", "--python", PYTHON, PACKAGE]
+
+
 def _uv_tool_install(host: Host, uv: str) -> str:
-    return host.shell_line([uv, "tool", "install", PACKAGE])
+    return host.shell_line(_install_command(uv))
 
 
 def offer_commands(offer: Offer, host: Host) -> str:
@@ -345,7 +353,7 @@ def perform(offer: Offer, host: Host, system: System) -> Completed:
                 return Completed(
                     1, installed.output, f"uv was installed, but not found in {places}"
                 )
-        return system.run([uv, "tool", "install", PACKAGE])
+        return system.run(_install_command(uv))
     except OSError as error:
         return Completed(1, "", str(error))
 
