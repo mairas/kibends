@@ -644,20 +644,31 @@ class TestRealSystem:
         bin_dir.mkdir(parents=True)
         started = tmp_path / "started"
         panel = bin_dir / "kibends-panel"
+        # A Python started with KiCad's PYTHONHOME dies before running anything.
         panel.write_text(
             "#!/bin/sh\n"
+            'if [ -n "$PYTHONHOME$PYTHONPATH" ]; then exit 1; fi\n'
             f'if [ "$1" = --version ]; then echo "{CURRENT.strip()}"; exit 0; fi\n'
-            f'echo "$KICAD_API_SOCKET" > "{started}"\n'
+            'echo "$KICAD_API_SOCKET $KICAD_API_TOKEN'
+            ' [$PYTHONHOME$PYTHONPATH$VIRTUAL_ENV$__PYVENV_LAUNCHER__]"'
+            f' > "{started}"\n'
         )
         panel.chmod(0o755)
         host = launcher.Host(
             windows=False,
             home=str(tmp_path),
             # A uv in a system location must not find the host's own panel.
+            # KiCad gives its plugins its own Python's settings, which the
+            # Python 3.14 panel must not inherit.
             env={
                 "PATH": "",
                 "UV_TOOL_BIN_DIR": str(bin_dir),
                 "KICAD_API_SOCKET": "ipc:///tmp/kicad/api.sock",
+                "KICAD_API_TOKEN": "token",
+                "PYTHONHOME": "/kicad/Python.framework/Versions/Current",
+                "PYTHONPATH": "/kicad/scripting",
+                "VIRTUAL_ENV": "/kicad/python-environments/io.github.mairas.kibends",
+                "__PYVENV_LAUNCHER__": "/kicad/venv/bin/python",
             },
         )
 
@@ -669,7 +680,7 @@ class TestRealSystem:
         deadline = time.monotonic() + 5
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert started.read_text() == "ipc:///tmp/kicad/api.sock\n"
+        assert started.read_text() == "ipc:///tmp/kicad/api.sock token []\n"
 
     def panel(self, tmp_path: Path, body: str) -> str:
         path = tmp_path / "kibends-panel"

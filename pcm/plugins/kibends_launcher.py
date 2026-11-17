@@ -102,6 +102,24 @@ def _version(text: str) -> tuple[int, ...] | None:
 _REQUIRED = _version(f"kibends {REQUIRED_VERSION}")
 
 
+KICAD_PYTHON = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONEXECUTABLE",
+    "__PYVENV_LAUNCHER__",
+    "VIRTUAL_ENV",
+)
+"""What KiCad sets for its own Python and its plugin's venv. uv, the
+installer and the Python 3.14 panel must not inherit them: with KiCad's
+PYTHONHOME a Python 3.14 cannot even start."""
+
+
+def child_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """``env`` without KiCad's Python settings, for the processes we start."""
+    return {key: value for key, value in env.items() if key not in KICAD_PYTHON}
+
+
 @dataclass(frozen=True)
 class Host:
     """The platform, home directory and environment the launcher runs in."""
@@ -437,7 +455,7 @@ class RealSystem:
         try:
             result = subprocess.run(
                 list(argv),
-                env=dict(self.host.env),
+                env=child_environment(self.host.env),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 encoding="utf-8",
@@ -471,7 +489,7 @@ class RealSystem:
         with tempfile.TemporaryFile() as log:
             process = subprocess.Popen(
                 [panel],
-                env=dict(self.host.env),
+                env=child_environment(self.host.env),
                 # KiCad starts the launcher in the plugin's directory; a panel
                 # left there would keep Windows from updating or removing it.
                 cwd=self.host.home,
