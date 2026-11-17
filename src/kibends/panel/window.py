@@ -4,7 +4,7 @@
 the settings (Ground nets and Time limit, then the rest behind an Advanced
 disclosure, collapsed at launch), the activity area (the progress line
 with the elapsed time, the graph's header, the graph (`curve`) and the
-report area), then Stop and Run. It mirrors its `Controller` on every
+report area), then Run and Stop. It mirrors its `Controller` on every
 change and keeps no state of its own beyond what the widgets hold and
 whether the run's warnings are shown: each edit hands the controller the
 fields as typed, each field the user leaves is reported (`leave`), and
@@ -18,7 +18,9 @@ stops and never closes the window. Closing
 while the run can still stop asks first; later in a run the window waits
 for the run to end (`Controller.close`).
 
-Colours come from the palette (`curve.secondary` for captions), and the
+Colours come from the palette (`curve.secondary` for captions), but for
+the window's background under a light palette, which takes KiCad's panel
+grey (`KICAD_PANEL`) since Qt reads macOS's light window as white. The
 only style sheet is an invalid field's border, in an error red picked for
 a light or a dark palette. The window asks to stay above other windows
 with Qt's stay-on-top hint, a normal window rather than a tool window,
@@ -105,6 +107,8 @@ ERROR_LIGHT = "#C4161C"
 ERROR_DARK = "#FF6B62"
 DARK = 0.5
 """A palette whose window is darker than this lightness is dark."""
+KICAD_PANEL = QColor("#ECECEC")
+"""The background of KiCad's own panels in its light theme."""
 WARNING_ICON = 14
 MESSAGE_ICON = 12
 HEADLINE_ICON = 16
@@ -561,6 +565,7 @@ class PanelWindow(QWidget):
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        self._backdrop()
         self._recolour()
         self._disclose(False)
         self.setFocus()
@@ -680,7 +685,7 @@ class PanelWindow(QWidget):
         column.addWidget(self.report, 1)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        for button in (self.stop_button, self.run_button):
+        for button in (self.run_button, self.stop_button):
             width = max(
                 BUTTON_WIDTH, button.sizeHint().width(), self._stopping_width(button)
             )
@@ -698,8 +703,8 @@ class PanelWindow(QWidget):
             *(self.edits[f] for f in Field if f in ADVANCED),
             self.via_in_pad,
             self.restore,
-            self.stop_button,
             self.run_button,
+            self.stop_button,
         ]
         for first, second in pairwise(order):
             QWidget.setTabOrder(first, second)
@@ -919,8 +924,21 @@ class PanelWindow(QWidget):
             )
             and self._built
         ):
+            self._backdrop()
             self._recolour()
             self.refresh()
+
+    def _backdrop(self) -> None:
+        """Set the window's background from the application's palette:
+        KiCad's panel grey under a light one, its own under a dark one.
+        Setting it only when it differs ends the palette change it sends."""
+        system = QApplication.palette()
+        role = QPalette.ColorRole.Window
+        colour = system.color(role) if is_dark(system) else KICAD_PANEL
+        if self.palette().color(role) != colour:
+            palette = QPalette()
+            palette.setColor(role, colour)
+            self.setPalette(palette)
 
     def _recolour(self) -> None:
         palette = self.palette()
