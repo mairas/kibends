@@ -14,9 +14,10 @@ The repository is public. Never write host names, addresses or other details of 
 - `./run check` runs lint, typecheck and `test-all`, as CI does. Run it before committing.
 - `./run bench` measures the optimizer's time, with its setup and the time outside L-BFGS apart, iterations, energy evaluations and neighbour-list searches on stitched planes, the scenarios, buses of parallel tracks (`--only bus`, one of them also timing simplification), a lone track solved beside a cluster of pressed tracks (`--only joint`, `--plot DIR` saving its length plots) and return vias. `--tree DIR` compares with another checkout of any era: it syncs DIR's virtualenv, runs DIR's own benchmark with DIR's interpreter, then this one's, and prints their rows side by side.
 - `./run bumpversion patch|minor|major` bumps `VERSION`, `pyproject.toml` and `Cargo.toml` together; the PR checks require the three to agree. Releases follow the Halos flow (`docs/development.md`, Releasing).
+- `./run pcm-package v<VERSION>+<N>` builds the KiCad PCM package, `packages.json`, the resources archive and `repository.json` of that stable release into `dist/pcm/` (`scripts/pcm_package.py`); `scripts/make_icons.py` redraws the plugin's icons, whose PNGs are committed.
 - `./run help` lists the commands. `run` follows the halos convention: one bash function per command, documented with `#@` docstrings.
 
-Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests` and `.github/actions/check-versions`, and `wheels.yml`, which builds the wheels and the sdist and runs `tests/test_scipy_baseline.py` against each wheel. `main.yml` stages releases; `release.yml` publishes a released version to PyPI with the wheels `wheels.yml` builds.
+Ruff and pyright are configured in `pyproject.toml`. CI (`.github/workflows/pr.yml`) calls the halos-org shared checks workflow, which runs `.github/actions/run-tests` and `.github/actions/check-versions`, and `wheels.yml`, which builds the wheels and the sdist and runs `tests/test_scipy_baseline.py` against each wheel. `main.yml` stages releases; `release.yml` publishes a released version to PyPI with the wheels `wheels.yml` builds, then attaches the PCM files to the release.
 
 ## Where design detail lives
 

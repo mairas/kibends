@@ -29,6 +29,7 @@ Run `./run sync` in every fresh checkout or worktree before testing. Run
 | `./run typecheck` | Check that the stubs are current, and type-check with pyright in strict mode. |
 | `./run check` | Run lint, typecheck and every test, as CI does. |
 | `./run bench` | Measure the optimizer on benchmark boards (see `scripts/benchmark.py`). |
+| `./run pcm-package v<VERSION>+<N>` | Build the KiCad Plugin and Content Manager package, `packages.json`, the resources archive and `repository.json` of that stable release into `dist/pcm/` (see `scripts/pcm_package.py`). `scripts/make_icons.py` redraws the plugin's icons. |
 | `./run bumpversion patch\|minor\|major` | Bump the version in `VERSION`, `pyproject.toml` and `Cargo.toml`, and refresh both lockfiles. Needs [bump2version](https://github.com/c4urself/bump2version) (`uv tool install bump2version`). |
 | `./run help` | List the commands. |
 
@@ -41,7 +42,9 @@ Every merge to main stages a release: a pre-release tagged
 builds of that version. Publishing the draft on GitHub builds the wheels
 and the sdist and uploads them to PyPI as version `<VERSION>`. PyPI
 takes each version once, so a release of a version already there uploads
-nothing.
+nothing. Once the version is on PyPI, the release also gets the KiCad
+Plugin and Content Manager files that `./run pcm-package` builds, which
+users reach through the newest stable release's `repository.json`.
 
 The first pull request that changes the package after a release bumps
 the version with `./run bumpversion`; the PR checks fail until it does.
