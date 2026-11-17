@@ -115,6 +115,32 @@ function check {
 }
 
 ################################################################################
+# Version Commands
+
+function bumpversion {
+  #@ Bump the version in VERSION, pyproject.toml and Cargo.toml (patch|minor|major)
+  #@ Category: Version
+  local BUMP_TYPE="${1:-}"
+
+  if [[ ! "$BUMP_TYPE" =~ ^(patch|minor|major)$ ]]; then
+    echo "Usage: ./run bumpversion [patch|minor|major]"
+    exit 1
+  fi
+
+  if ! command -v bumpversion &> /dev/null; then
+    echo "Error: bumpversion not installed"
+    echo "Install with: uv tool install bump2version"
+    exit 1
+  fi
+
+  command bumpversion --no-commit "$BUMP_TYPE"
+  # Both lockfiles record the project's own version.
+  uv lock
+  cargo update --workspace --quiet
+  echo "Version is now $(cat VERSION)"
+}
+
+################################################################################
 # Help System
 
 function help {
