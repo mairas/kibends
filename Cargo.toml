@@ -3,7 +3,7 @@ members = ["rust/core", "rust/py"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Matti Airas <matti.airas@hatlabs.fi>"]
 edition = "2024"
 rust-version = "1.90"

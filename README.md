@@ -39,7 +39,9 @@ kibends installs from KiCad's Plugin and Content Manager:
 
 1. In the Plugin and Content Manager, open Manage repositories and add
    `https://github.com/mairas/kibends/releases/download/pcm/repository.json`.
-2. Pick the kibends repository, install kibends and apply the changes.
+2. Choose kibends in the repository list at the top of the window; adding
+   a repository does not show it. Install kibends from the Plugins tab and
+   apply the changes.
 3. Open a board in the PCB editor and press the kibends button in the
    toolbar.
 
@@ -89,7 +91,7 @@ Without the `gui` extra you get only the [command line](#command-line).
    warnings. One Ctrl+Z in KiCad undoes the whole run.
 6. Refill the zones (B) and run KiCad's DRC.
 
-<img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+<img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/panel.png" width="400" alt="The panel after a run on a selection of HALMET">
 
 To change a smoothed route, edit it by hand or with the router, select it
 again and run again. After a run on a selection, the new tracks and moved

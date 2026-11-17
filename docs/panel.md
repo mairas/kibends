@@ -18,7 +18,7 @@ each time KiCad starts, and the panel counts as that KiCad's only with the
 same token: after KiCad restarts, the button opens a new panel, and a
 panel started from a terminal without the token is a panel of its own.
 
-<img src="images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+<img src="images/panel.png" width="400" alt="The panel after a run on a selection of HALMET">
 
 ## Scope line
 
