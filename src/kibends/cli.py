@@ -74,6 +74,11 @@ GUI_EXTRA_MESSAGE = (
     "The panel needs PySide6, which comes with the `gui` extra: "
     "uv tool install 'kibends[gui]'"
 )
+GUI_EXTRA_EXIT = 3
+"""`kibends-panel`'s exit code without the `gui` extra, apart from a
+failure (1) and a usage error (2): the KiCad plugin's launcher keys on it
+to offer adding the extra, and keeps its own copy, since it cannot import
+kibends."""
 STOPPING_MESSAGE = "Stopping; press Ctrl-C again to abort"
 
 DEFAULT_LOG_LEVEL = "INFO"
@@ -81,9 +86,9 @@ VERBOSE_LOG_LEVEL = "DEBUG"
 LOG_LEVEL_VARIABLE = "LOGURU_LEVEL"
 
 
-def _fail(message: str) -> NoReturn:
+def _fail(message: str, code: int = 1) -> NoReturn:
     logger.error(message)
-    raise SystemExit(1)
+    raise SystemExit(code)
 
 
 @contextmanager
@@ -527,8 +532,14 @@ def panel_main(argv: Sequence[str] | None = None) -> None:
     configure_logging(verbose=args.verbose)
     try:
         from kibends.panel.window import main as open_panel
+    except ModuleNotFoundError as e:
+        if (e.name or "").partition(".")[0] != "PySide6":
+            _fail(f"The panel could not start: {e}")
+        _fail(f"{GUI_EXTRA_MESSAGE} ({e})", GUI_EXTRA_EXIT)
     except ImportError as e:
-        _fail(f"{GUI_EXTRA_MESSAGE} ({e})")
+        # PySide6 is there but cannot load, such as a missing system library;
+        # reinstalling the extra would not help.
+        _fail(f"The panel could not start: {e}")
     open_panel()
 
 
