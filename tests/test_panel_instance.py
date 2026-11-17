@@ -211,6 +211,34 @@ class TestClaim:
         assert until(lambda: requests == [True])
         first.close()
 
+    def test_a_start_that_missed_the_first_does_not_take_its_name(
+        self, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two starts at once: the second asked before the first listened."""
+        _, first = claim(name)
+        requests: list[bool] = []
+        serve(first, lambda: requests.append(True))
+        tries: list[bool] = []
+
+        def connect(server: str) -> bool:
+            tries.append(True)
+            if len(tries) == 1:
+                return False
+            client = QLocalSocket()
+            client.connectToServer(server)
+            connected = client.waitForConnected(SETTLE_MS)
+            client.abort()
+            return connected
+
+        monkeypatch.setattr("kibends.panel.instance._connect", connect)
+
+        outcome, second = claim(name)
+
+        assert outcome == Claim.RAISED
+        assert not second.isListening()
+        assert until(lambda: requests == [True])
+        first.close()
+
     def test_another_kicad_gets_its_own_panel(self, app: QApplication) -> None:
         claims = [claim(server_name(kicad_path(), TOKEN)) for _ in "ab"]
 

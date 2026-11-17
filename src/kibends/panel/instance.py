@@ -12,7 +12,9 @@ from a terminal without that token therefore does not share a name with
 one KiCad started. A start that reaches a running panel's server
 asks it to come forward and exits; a connection is the whole request.
 Otherwise it listens itself, after removing a name a crashed panel left
-(`decide`, `claim`). A panel that can take no name opens anyway, alone.
+(`decide`, `claim`). Listening on a name a live panel holds fails, so two
+starts at once, the second asking before the first listened, still end
+with one panel. A panel that can take no name opens anyway, alone.
 
 `bring_forward` shows, raises and activates the window, at start and on
 each request. On macOS Qt's raise also activates the application
@@ -119,8 +121,10 @@ def _connect(name: str) -> bool:
 
 def claim(name: str) -> tuple[Claim, QLocalServer]:
     """`decide` on real local sockets; the server listens when serving."""
+    # No socket options: with UserAccessOption Qt binds in a private
+    # directory and renames over the name, so a second listen succeeds and
+    # takes a running panel's name, leaving that panel unreachable.
     server = QLocalServer()
-    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
 
     def remove() -> None:
         QLocalServer.removeServer(name)
