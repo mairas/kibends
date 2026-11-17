@@ -49,7 +49,7 @@ KiCad's undo history.
 |---|---|
 | `--all` | Smooth every track, arc and via on the board, whatever is selected, shown or filtered in KiCad. Group members stay as drawn. The run adds nothing to KiCad's selection. |
 | `--dry-run`, `-n` | Optimize and report without changing the board. |
-| `--plot FILE` | Draw each original and smoothed chain over the area it must avoid, one subplot per chain titled with its length before and after; the format follows the extension. Needs the `plot` extra: `uv tool install 'kibends[gui,plot] @ git+https://github.com/mairas/kibends'`. |
+| `--plot FILE` | Draw each original and smoothed chain over the area it must avoid, one subplot per chain titled with its length before and after; the format follows the extension. Needs the `plot` extra: `uv tool install 'kibends[gui,plot]'`. |
 | `--verbose`, `-v` | Show progress after every iteration and the debug lines, such as why a selected via stays where it is. Overrides the `LOGURU_LEVEL` environment variable. |
 
 ### Shape
