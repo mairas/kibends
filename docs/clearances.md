@@ -39,10 +39,12 @@ set.
 ## The start check
 
 A run checks the selected copper as drawn before it changes anything. If
-any of it is already inside one of the clearances above, the run stops,
+any of it is already inside a netclass, edge, hole or hole-to-hole
+clearance, the run stops,
 commits nothing and lists each place: the chain or via, what it is too
 close to, how far apart they are, what is required, and where. Move the
-copper apart or relax the rules, then run again.
+copper apart or relax the rules, then run again. A moving via that starts
+inside its zone's clearance is not refused: the run moves it out.
 
 Positions are in millimetres from the board's grid origin, with y
 pointing down, as the PCB editor shows them with the grid origin chosen

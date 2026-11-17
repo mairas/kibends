@@ -102,6 +102,9 @@ via moves when all of these hold:
 - every copper item touching it, on a layer it spans, is the end of a
   selected chain or a zone of its net, and no other copper touches those
   ends;
+- no track of a selected group ends at it;
+- it is not at the edge of a zone of its net, where moving it might lose
+  the connection it has now;
 - a selected chain ends at it, or a zone of its net reaches it.
 
 One chain end is enough. A pad's fan-out via moves along its track toward

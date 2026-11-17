@@ -25,7 +25,7 @@ Where selected chains of one net overlap or cross away from their ends,
 nothing pins either: copper of one net does not interact, so a run may move
 them apart even where that overlap was their only connection. A stub drawn
 past the track it crosses, its end beyond that track's copper, is not
-joined and may come off it without a warning; the README tells users to
+joined and may come off it without a warning; docs/selection.md tells users to
 end stubs on the track or check the ratsnest.
 
 A route through a via is one chain per layer. A selected via that may move

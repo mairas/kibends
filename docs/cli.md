@@ -13,11 +13,21 @@ kibends smooth                              # then commit
 
 ## Output
 
-The command prints when it starts optimizing, its progress every few
-seconds while a run lasts longer than that, and one line at the end: how
-the run ended, its iterations and time, the chains and vias it changed,
-their summed length change, the moves it rejected and its scope. The
-endings are those of the [panel's report](panel.md#report).
+The command logs when it starts optimizing and its progress every few
+seconds while a run lasts longer than that. When optimizing ends it
+prints one line:
+
+```
+Optimizer: converged after 82 iterations in 299.0 s, 3 rejected edge moves
+```
+
+The ending is one of `converged`, `nothing to do`, `iteration cap
+reached`, `time limit reached`, `stopped` or `stopped on abnormal bursts`
+([the panel's report](panel.md#report) explains each). An edge move is a
+step of a track segment the run refused because it would have entered a
+clearance. Any warnings follow, then a line saying what was committed
+(`Committed 'smooth': replaced 1578 tracks with 3445 and moved 318
+vias`), or `Dry run: nothing committed`, or `Nothing to do`.
 
 Every position it prints is in millimetres from the board's grid origin,
 as described under [Clearances](clearances.md#the-start-check).
@@ -44,16 +54,19 @@ KiCad's undo history.
 
 ### Shape
 
-These are the panel's fields of the same names.
+These set the panel's fields; [The panel](panel.md#fields) describes
+each.
 
-| Option | Default | Effect |
+| Option | Default | Panel field |
 |---|---|---|
-| `--repulsion WEIGHT` | 0.5 | How strongly tracks and vias keep away from other copper, relative to length. 0 pulls tracks tight at exactly the clearance. |
-| `--range MM` | 1 | How far beyond the clearance that push reaches. |
-| `--attraction WEIGHT` | 1.15 | How strongly ground vias and other vias pull each other ([Return vias](return-vias.md)). 0 turns it off. |
-| `--attraction-range MM` | 3 | Centre distance at which that pull fades out. |
-| `--ground-nets NET ...` | detected | The ground nets, instead of the detected ones. Ignored with `--attraction 0`. |
-| `--allow-via-in-pad` | | Let a moving via settle inside a pad of its own net. KiCad's DRC does not check via-in-pad: use it only where the fabricator fills and caps vias in pads. |
+| `--ground-nets NET ...` | detected | Ground nets |
+| `--repulsion WEIGHT` | 0.5 | Repulsion |
+| `--range MM` | 1 | Repulsion's range |
+| `--attraction WEIGHT` | 1.15 | Attraction |
+| `--attraction-range MM` | 3 | Attraction's range |
+| `--spacing MM ...` | 1.6 0.4 0.1 | Spacing |
+| `--time-limit SECONDS` | none | Time limit |
+| `--allow-via-in-pad` | off | Allow via in pad |
 
 ### Clearances
 
@@ -73,9 +86,7 @@ close the result gets to the optimum.
 
 | Option | Default | Effect, and when to touch it |
 |---|---|---|
-| `--time-limit SECONDS` | none | How long each spacing level may optimize. When the time runs out at the last level, the run commits its best result so far. Use it to cap a run on a large board. |
 | `--chord-tolerance MM` | 0.01 | How far the committed straight tracks may depart from the smooth curve. Raise it for fewer, longer track segments. |
-| `--spacing MM ...` | 1.6 0.4 0.1 | The distances between track points that the run works at, coarsest first. The last is at most 0.1; at most 8 values, each smaller than the one before. `--spacing 0.1` skips the coarse levels, which rarely helps. |
 | `--max-iterations N` | 200 | The most iterations a run takes before it commits its best result. Raise it if runs end at the iteration cap. |
 | `--settled-change MM` | half `--chord-tolerance` | The tracks count as settled when an iteration moves none by this much. Rarely worth changing. |
 | `--stall-tolerance MM` | 0.001 | The tracks also count as settled when they shorten by less than this over `--stall-window` iterations. Raising it saves little time. |

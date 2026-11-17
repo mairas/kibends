@@ -1,7 +1,7 @@
 # Return vias
 
 A signal via that changes layers needs a ground via near it to carry its
-return current. kibends draws ground vias and the other vias toward each
+return current. kibends draws ground vias and signal vias toward each
 other, so that a moving signal via keeps its return vias near and a
 moving stitching via stays near the signal vias it serves.
 
@@ -19,13 +19,13 @@ field, or give them with `--ground-nets` on the command line. The panel
 shows the nets it found and how it found them.
 
 A via on a ground net is a ground via. A via on any other net, power nets
-included, is a regular via. Every via takes part, selected or not, but
+included, is a signal via here. Every via takes part, selected or not, but
 only selected vias that may move do move, and two vias affect each other
 only where they share a layer.
 
 ## How vias are drawn together
 
-A ground via and a regular via within the attraction range of each other,
+A ground via and a signal via within the attraction range of each other,
 centre to centre, pull each other (3 mm by default). Each still keeps its
 clearance from the other. The tracks and copper around a via hold it well
 beyond its clearance: with the defaults, a signal via on a straight route

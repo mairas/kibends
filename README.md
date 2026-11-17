@@ -37,9 +37,10 @@ glibc 2.34 or later (2.39 on aarch64). Without it you get only the
    may move with them. Select nothing to smooth the whole board. The top
    line of the panel says what Run will touch.
 4. Press Run. The panel shows the progress and a graph of how much shorter
-   the tracks get. Stop commits the best result so far.
+   the tracks get. Stop ends optimizing and commits the best result so
+   far.
 5. Look at the result in KiCad. The report in the panel says how much
-   length the run saved, which tracks and vias it changed, and any
+   length the run saved, how many chains and vias it changed, and any
    warnings. One Ctrl+Z in KiCad undoes the whole run.
 6. Refill the zones (B) and run KiCad's DRC.
 
@@ -93,8 +94,8 @@ for each other. Signal vias are also drawn toward their ground return vias
 
 ## Command line
 
-`kibends smooth` does the same as the panel's Run on the current
-selection:
+`kibends smooth` does the same as the panel's Run. It needs a
+selection; `--all` smooths the whole board:
 
 ```sh
 kibends smooth --dry-run   # optimize and report, change nothing
