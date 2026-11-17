@@ -223,7 +223,11 @@ if __name__ == "__main__" and ARGS.tree is not None:
     compare_trees(ARGS.tree.resolve())
     sys.exit()
 
-sys.path[:0] = [str(ROOT / "tests"), str(ROOT / "src")]
+sys.path.insert(0, str(ROOT / "tests"))
+# Run as a script, it measures this checkout's code. Imported by the tests,
+# it uses whichever kibends they test, which may be an installed wheel.
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT / "src"))
 
 import conftest  # noqa: E402
 import numpy as np  # noqa: E402
@@ -270,7 +274,8 @@ from kibends.vias import ViaInput  # noqa: E402
 
 Problem = optimize_module._Problem  # pyright: ignore[reportPrivateUsage]
 
-assert Path(kibends.__file__).is_relative_to(ROOT), kibends.__file__
+if __name__ == "__main__":
+    assert Path(kibends.__file__).is_relative_to(ROOT), kibends.__file__
 
 
 SET_UP = "Optimizer set up"
