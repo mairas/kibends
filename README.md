@@ -14,9 +14,11 @@ and it does so in the running PCB editor as one undo step.
 
 ## Why
 
-Mostly for the look: routes drawn as straight runs and 45° corners become
-smooth curves. The more even spacing between tracks may also help signal
-integrity a little.
+Mostly for the looks, as inspired by
+[mitxela/kicad-round-tracks](https://github.com/mitxela/kicad-round-tracks):
+those pre-1990s hand-drawn PCBs look groovy! There may be theoretical
+benefits in reducing the power and signal track lengths, and the more
+even spacing between tracks may also help signal integrity a little.
 
 The result follows the board's clearances: netclass clearances and the
 edge, hole and hole-to-hole clearances from the project. Custom DRC rules
