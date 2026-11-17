@@ -1,0 +1,29 @@
+name: Check version consistency
+description: Require VERSION to be X.Y.Z and to match pyproject.toml and Cargo.toml
+
+runs:
+  using: composite
+  steps:
+    - name: Check version consistency
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        VERSION=$(tr -d '[:space:]' < VERSION)
+        PYPROJECT=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+        CARGO=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+        echo "VERSION:        $VERSION"
+        echo "pyproject.toml: $PYPROJECT"
+        echo "Cargo.toml:     $CARGO"
+
+        # Valid as PEP 440, as semver and in the shared version bump check's
+        # release tag pattern.
+        if ! [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::VERSION must be X.Y.Z, got '$VERSION'"
+          exit 1
+        fi
+        if [ "$PYPROJECT" != "$VERSION" ] || [ "$CARGO" != "$VERSION" ]; then
+          echo "::error::VERSION ($VERSION), pyproject.toml ($PYPROJECT) and Cargo.toml ($CARGO) differ"
+          echo "Use './run bumpversion [patch|minor|major]' to update versions consistently."
+          exit 1
+        fi

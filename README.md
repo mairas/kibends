@@ -7,8 +7,8 @@ and it does so in the running PCB editor as one undo step.
 <table>
   <tr><th>Before</th><th>After</th></tr>
   <tr>
-    <td><img src="docs/images/halmet-before.png" alt="HALMET before smoothing"></td>
-    <td><img src="docs/images/halmet-after.png" alt="HALMET after smoothing"></td>
+    <td><img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/halmet-before.png" alt="HALMET before smoothing"></td>
+    <td><img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/halmet-after.png" alt="HALMET after smoothing"></td>
   </tr>
 </table>
 
@@ -36,7 +36,7 @@ gives a shorter path.
 ## Install
 
 ```sh
-uv tool install 'kibends[gui] @ git+https://github.com/mairas/kibends'
+uv tool install 'kibends[gui]'
 ```
 
 You need:
@@ -44,10 +44,14 @@ You need:
 - KiCad 10 or later, with the API server enabled (Preferences > Plugins >
   Enable KiCad API).
 - Python 3.14 or later.
-- A Rust toolchain, 1.90 or later, since the install builds kibends from
-  source. Without `cargo` on the path, the build downloads one into its
-  own cache; [rustup](https://rustup.rs) installs one to keep. An older
-  `cargo` on the path, such as a distribution's package, stops the build.
+
+kibends has prebuilt packages for Windows on x86_64, macOS on Apple
+silicon, and Linux with glibc 2.28 or later on x86_64 and aarch64.
+Anywhere else the install builds kibends from source, which needs a Rust
+toolchain, 1.90 or later. Without `cargo` on the path, the build downloads
+one into its own cache; [rustup](https://rustup.rs) installs one to keep.
+An older `cargo` on the path, such as a distribution's package, stops the
+build.
 
 The `gui` extra adds the panel and needs macOS 14 or later, or on Linux
 glibc 2.34 or later (2.39 on aarch64). Without it you get only the
@@ -68,14 +72,14 @@ glibc 2.34 or later (2.39 on aarch64). Without it you get only the
    warnings. One Ctrl+Z in KiCad undoes the whole run.
 6. Refill the zones (B) and run KiCad's DRC.
 
-<img src="docs/images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+<img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
 
 To change a smoothed route, edit it by hand or with the router, select it
 again and run again. After a run on a selection, the new tracks and moved
 vias are selected, so a second run needs no new selection.
 
-[The panel](docs/panel.md) describes its fields and report, and
-[What gets smoothed](docs/selection.md) how kibends reads a selection.
+[The panel](https://github.com/mairas/kibends/blob/main/docs/panel.md) describes its fields and report, and
+[What gets smoothed](https://github.com/mairas/kibends/blob/main/docs/selection.md) how kibends reads a selection.
 
 ## What it changes and what it does not
 
@@ -85,12 +89,12 @@ vias are selected, so a second run needs no new selection.
   groups, such as length-tuning patterns, are never modified.
 - A via moves only when it is selected, or the run covers the whole
   board, and only where kibends can tell the move is safe;
-  [which vias move](docs/selection.md#vias) has the rules. A moved via
+  [which vias move](https://github.com/mairas/kibends/blob/main/docs/selection.md#vias) has the rules. A moved via
   stays inside the zones of its net that connected it.
 - A route keeps its connections: its ends stay on the pads, vias and
   tracks they meet, and it keeps touching every pad and via it touched.
   Tracks of one net that only cross each other may come apart; see
-  [crossing tracks](docs/selection.md#tracks-of-one-net-that-cross).
+  [crossing tracks](https://github.com/mairas/kibends/blob/main/docs/selection.md#tracks-of-one-net-that-cross).
 - kibends never refills zones and never runs the DRC. Refill the zones and
   run KiCad's DRC after every run.
 
@@ -100,12 +104,12 @@ vias are selected, so a second run needs no new selection.
   straight tracks; kibends never draws KiCad arcs.
 - kibends cannot read custom DRC rules (`.kicad_dru`) or board minimums.
   It keeps the netclass clearances and the edge, hole and hole-to-hole
-  clearances from the project file. [Clearances](docs/clearances.md) lists
+  clearances from the project file. [Clearances](https://github.com/mairas/kibends/blob/main/docs/clearances.md) lists
   what only KiCad's DRC checks.
 - A selection whose copper already violates a clearance is refused, with
   each place listed.
 - Skew between the two tracks of a differential pair is not corrected.
-  See [Differential pairs](docs/differential-pairs.md).
+  See [Differential pairs](https://github.com/mairas/kibends/blob/main/docs/differential-pairs.md).
 
 ## How it works
 
@@ -114,7 +118,7 @@ from the copper around it. Tracks drift toward the middle of the free space
 and bend smoothly round what they have to avoid. It refines all selected
 routes and vias together, coarse to fine, so neighbouring tracks make room
 for each other. Signal vias are also drawn toward their ground return vias
-([Return vias](docs/return-vias.md)).
+([Return vias](https://github.com/mairas/kibends/blob/main/docs/return-vias.md)).
 
 ## Command line
 
@@ -128,17 +132,17 @@ kibends smooth --all       # the whole board, whatever is selected
 ```
 
 Ctrl-C stops a run and commits the best result so far.
-[Command line](docs/cli.md) lists every option.
+[Command line](https://github.com/mairas/kibends/blob/main/docs/cli.md) lists every option.
 
 ## Documentation
 
-- [The panel](docs/panel.md)
-- [What gets smoothed](docs/selection.md)
-- [Differential pairs](docs/differential-pairs.md)
-- [Return vias](docs/return-vias.md)
-- [Clearances](docs/clearances.md)
-- [Command line](docs/cli.md)
-- [Development](docs/development.md)
+- [The panel](https://github.com/mairas/kibends/blob/main/docs/panel.md)
+- [What gets smoothed](https://github.com/mairas/kibends/blob/main/docs/selection.md)
+- [Differential pairs](https://github.com/mairas/kibends/blob/main/docs/differential-pairs.md)
+- [Return vias](https://github.com/mairas/kibends/blob/main/docs/return-vias.md)
+- [Clearances](https://github.com/mairas/kibends/blob/main/docs/clearances.md)
+- [Command line](https://github.com/mairas/kibends/blob/main/docs/cli.md)
+- [Development](https://github.com/mairas/kibends/blob/main/docs/development.md)
 
 kibends uses the KiCad IPC API through
 [kicad-python](https://pypi.org/project/kicad-python/).
