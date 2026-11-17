@@ -1,6 +1,6 @@
 # kibends
 
-`kibends smooth` replaces each chain of track segments selected in KiCad's PCB editor (several chains per run, on any copper layers) with a short, smooth path of straight segments that keeps clearance to other copper and to the other selected chains. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README is the user documentation.
+`kibends smooth` replaces each chain of track segments selected in KiCad's PCB editor (several chains per run, on any copper layers) with a short, smooth path of straight segments that keeps clearance to other copper and to the other selected chains. It talks to a running KiCad 10 through the IPC API (kicad-python, imported as `kipy`). The README and the pages in `docs/` are the user documentation.
 
 The repository is public. Never write host names, addresses or other details of the author's machines into files, commits, issues or PRs.
 
