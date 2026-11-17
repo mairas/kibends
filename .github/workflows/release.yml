@@ -2,7 +2,8 @@
 #
 # On a published stable release: check the release, build and smoke-test the
 # wheels and the sdist (wheels.yml), then upload them. Only the upload job
-# holds the OIDC token; nothing it runs comes from the build.
+# holds the OIDC token; nothing it runs comes from the build. Then attach
+# the KiCad PCM package and repository files to the release.
 name: Publish stable release
 
 on:
@@ -97,3 +98,38 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
+
+  # KiCad's Plugin and Content Manager reads kibends' repository from
+  # releases/latest/download/repository.json, so every stable release carries
+  # the PCM files. The plugin's launcher installs kibends of this version from
+  # PyPI, so they go up only once it is there: just uploaded, or uploaded
+  # before (check found it and skipped the upload).
+  pcm:
+    needs: [check, publish]
+    if: >-
+      ${{ !cancelled() && needs.check.result == 'success' &&
+      (needs.publish.result == 'success' || needs.check.outputs.publish == 'false') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      # The script needs only the standard library, so no sync and no Rust build.
+      - name: Build the PCM files
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: uv run --no-project --python 3.14 python scripts/pcm_package.py "$TAG" --out dist/pcm
+
+      # --clobber lets a rerun replace files a failed run left behind.
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/pcm/* --clobber
