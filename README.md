@@ -43,6 +43,8 @@ glibc 2.34 or later (2.39 on aarch64). Without it you get only the
    warnings. One Ctrl+Z in KiCad undoes the whole run.
 6. Refill the zones (B) and run KiCad's DRC.
 
+<img src="docs/images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+
 To change a smoothed route, edit it by hand or with the router, select it
 again and run again. After a run on a selection, the new tracks and moved
 vias are selected, so a second run needs no new selection.

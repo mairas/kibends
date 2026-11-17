@@ -5,6 +5,8 @@ the result in KiCad and running again. It comes with the `gui` extra (see
 [Install](../README.md#install)). The window stays above other windows,
 except on Wayland, which does not allow it.
 
+<img src="images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+
 ## Scope line
 
 The top line says what Run will touch, and is refreshed about once a
