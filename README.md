@@ -89,7 +89,7 @@ Without the `gui` extra you get only the [command line](#command-line).
    warnings. One Ctrl+Z in KiCad undoes the whole run.
 6. Refill the zones (B) and run KiCad's DRC.
 
-<img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
+<img src="https://raw.githubusercontent.com/mairas/kibends/main/docs/images/panel.png" width="400" alt="The panel after a run on a selection of HALMET">
 
 To change a smoothed route, edit it by hand or with the router, select it
 again and run again. After a run on a selection, the new tracks and moved
