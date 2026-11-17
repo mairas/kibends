@@ -12,8 +12,11 @@ comes with the `gui` extra.
 There is one panel per KiCad: pressing the button again, or starting
 `kibends-panel` again for the same KiCad, brings the open panel to the
 front instead of opening another. A panel started from a terminal talks
-to the KiCad that `KICAD_API_SOCKET` names, or to KiCad's default socket,
-and counts as that KiCad's panel.
+to the KiCad that `KICAD_API_SOCKET` names, or to KiCad's default socket.
+KiCad gives the panels it starts a token (`KICAD_API_TOKEN`) that is new
+each time KiCad starts, and the panel counts as that KiCad's only with the
+same token: after KiCad restarts, the button opens a new panel, and a
+panel started from a terminal without the token is a panel of its own.
 
 <img src="images/panel.png" width="400" alt="The panel after a whole-board run on HALMET">
 

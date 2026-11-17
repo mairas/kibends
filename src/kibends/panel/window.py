@@ -92,6 +92,7 @@ from kibends.panel.instance import (
     bring_forward,
     claim,
     kicad_socket,
+    kicad_token,
     serve,
     server_name,
 )
@@ -1044,7 +1045,7 @@ def main() -> None:
     """Open the panel and run until it is closed, or, when a panel for the
     same KiCad is open, bring that one forward and return (`instance`)."""
     app = QApplication(sys.argv)
-    outcome, server = claim(server_name(kicad_socket()))
+    outcome, server = claim(server_name(kicad_socket(), kicad_token()))
     if outcome == Claim.RAISED:
         return
     window = PanelWindow(Prober(), run_smooth, spawn=start_thread)

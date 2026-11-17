@@ -26,10 +26,13 @@ from kibends.panel.instance import (
     claim,
     decide,
     kicad_socket,
+    kicad_token,
     serve,
     server_name,
 )
 
+SOCKET = "ipc:///tmp/kicad/api.sock"
+TOKEN = "token-1"
 SETTLE_MS = 1000
 """How long a test waits for a raise request to arrive."""
 POLL_S = 0.05
@@ -51,7 +54,7 @@ def kicad_path() -> str:
 @pytest.fixture
 def name(app: QApplication) -> Iterator[str]:
     """A server name no other test uses, removed afterwards."""
-    made = server_name(kicad_path())
+    made = server_name(kicad_path(), TOKEN)
     yield made
     QLocalServer.removeServer(made)
 
@@ -65,18 +68,23 @@ def until(done: Callable[[], bool]) -> bool:
 
 
 class TestServerName:
-    def test_the_same_socket_gives_the_same_name(self) -> None:
-        assert server_name("ipc:///tmp/kicad/api.sock") == server_name(
-            "ipc:///tmp/kicad/api.sock"
-        )
+    def test_the_same_socket_and_token_give_the_same_name(self) -> None:
+        assert server_name(SOCKET, TOKEN) == server_name(SOCKET, TOKEN)
 
     def test_another_socket_gives_another_name(self) -> None:
-        assert server_name("ipc:///tmp/kicad/api.sock") != server_name(
-            "ipc:///tmp/kicad/api-2.sock"
+        assert server_name(SOCKET, TOKEN) != server_name(
+            "ipc:///tmp/kicad/api-2.sock", TOKEN
         )
 
+    def test_another_token_on_the_same_socket_gives_another_name(self) -> None:
+        """A KiCad restarted on the same socket has a new token, which the
+        panel the old one started cannot use."""
+        assert server_name(SOCKET, TOKEN) != server_name(SOCKET, "token-2")
+
     def test_is_short_and_safe_as_a_file_name(self) -> None:
-        made = server_name("ipc:///a very/long path/" + "x" * 300 + "/api.sock")
+        made = server_name(
+            "ipc:///a very/long path/" + "x" * 300 + "/api.sock", "t" * 300
+        )
 
         assert len(made) <= 40
         assert made.replace("-", "").isalnum()
@@ -100,6 +108,16 @@ class TestServerName:
             else kicad_socket()  # under the temp directory on Windows
         )
         assert kicad_socket() == expected
+
+    def test_the_token_is_kicads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KICAD_API_TOKEN", TOKEN)
+
+        assert kicad_token() == TOKEN
+
+    def test_without_a_token_it_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KICAD_API_TOKEN", raising=False)
+
+        assert kicad_token() == ""
 
 
 class TestDecide:
@@ -165,7 +183,7 @@ class TestClaim:
         first.close()
 
     def test_another_kicad_gets_its_own_panel(self, app: QApplication) -> None:
-        claims = [claim(server_name(kicad_path())) for _ in "ab"]
+        claims = [claim(server_name(kicad_path(), TOKEN)) for _ in "ab"]
 
         assert [outcome for outcome, _ in claims] == [Claim.SERVING, Claim.SERVING]
         for _, server in claims:
@@ -253,7 +271,7 @@ class TestPanelCommand:
     def start(self, kicad: str) -> subprocess.Popen[bytes]:
         return subprocess.Popen(
             self.PANEL,
-            env=os.environ | {"KICAD_API_SOCKET": kicad},
+            env=os.environ | {"KICAD_API_SOCKET": kicad, "KICAD_API_TOKEN": TOKEN},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -263,7 +281,7 @@ class TestPanelCommand:
         deadline = time.monotonic() + self.START_S
         while panel.poll() is None and time.monotonic() < deadline:
             client = QLocalSocket()
-            client.connectToServer(server_name(kicad))
+            client.connectToServer(server_name(kicad, TOKEN))
             if client.waitForConnected(SETTLE_MS):
                 client.abort()
                 return True
@@ -283,7 +301,7 @@ class TestPanelCommand:
         finally:
             first.kill()
             first.wait()
-            QLocalServer.removeServer(server_name(kicad))
+            QLocalServer.removeServer(server_name(kicad, TOKEN))
 
     def test_a_start_for_another_kicad_opens_its_own(self, app: QApplication) -> None:
         kicads = [kicad_path() for _ in "ab"]
@@ -295,4 +313,4 @@ class TestPanelCommand:
             for kicad, panel in zip(kicads, panels, strict=True):
                 panel.kill()
                 panel.wait()
-                QLocalServer.removeServer(server_name(kicad))
+                QLocalServer.removeServer(server_name(kicad, TOKEN))

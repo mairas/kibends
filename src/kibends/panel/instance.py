@@ -1,11 +1,15 @@
 """One panel per KiCad instance.
 
 A panel listens on a local server (Qt's `QLocalServer`: a Unix socket in
-the temp directory, a named pipe on Windows) named after the user and the
-KiCad socket it talks to (`server_name`, `kicad_socket`): the one kipy
-connects to, `KICAD_API_SOCKET`, which KiCad sets when it starts the
-panel, else kipy's default, so a panel started from a terminal and one
-KiCad started share a name. A start that reaches a running panel's server
+the temp directory, a named pipe on Windows) named after the user, the
+KiCad socket it talks to and KiCad's API token (`server_name`,
+`kicad_socket`, `kicad_token`). The socket is the one kipy connects to:
+`KICAD_API_SOCKET`, which KiCad sets when it starts the panel, else kipy's
+default. The token, `KICAD_API_TOKEN`, is new each time KiCad starts, so a
+KiCad restarted on the same socket gets a panel of its own instead of
+raising one that holds the old token, which KiCad refuses. A panel started
+from a terminal without that token therefore does not share a name with
+one KiCad started. A start that reaches a running panel's server
 asks it to come forward and exits; a connection is the whole request.
 Otherwise it listens itself, after removing a name a crashed panel left
 (`decide`, `claim`). A panel that can take no name opens anyway, alone.
@@ -18,6 +22,7 @@ needs, since KiCad brings only the process it starts to the front.
 
 import getpass
 import hashlib
+import os
 from collections.abc import Callable
 from enum import Enum, auto
 
@@ -49,9 +54,16 @@ def kicad_socket() -> str:
     return _default_socket_path()
 
 
-def server_name(socket_path: str) -> str:
-    """The panel's server name for KiCad's socket at `socket_path`."""
-    key = f"{getpass.getuser()}\0{socket_path}".encode()
+def kicad_token() -> str:
+    """KiCad's API token, `KICAD_API_TOKEN`; empty when KiCad did not start
+    the panel."""
+    return os.environ.get("KICAD_API_TOKEN", "")
+
+
+def server_name(socket_path: str, token: str) -> str:
+    """The panel's server name for KiCad's socket at `socket_path` and its
+    API `token`."""
+    key = f"{getpass.getuser()}\0{socket_path}\0{token}".encode()
     return NAME_PREFIX + hashlib.sha256(key).hexdigest()[:DIGEST_LENGTH]
 
 
