@@ -57,11 +57,16 @@
 //!
 //! When it stops
 //! -------------
-//! A problem settles when its burst moves nothing by `settled_change` and
-//! moves nothing back, when its lowest energy and its tracks' length stall
-//! over `stall_window` bursts, the energy by a tolerance for each moving
-//! member and via and the length by one (`stalled`), or after
-//! MAX_ABNORMAL_BURSTS abnormal bursts in a row. At a coarse level any of
+//! A problem settles after MAX_ABNORMAL_BURSTS abnormal bursts in a row; at a
+//! level a descending coarser one handed over to, when its first burst ends
+//! abnormally and moves nothing; at a coarse level with no via, once every
+//! chain is held; or, once it has run `state::LEVEL_WINDOW` bursts at its
+//! level, when its burst
+//! moves nothing by `settled_change` and moves nothing back, when its lowest
+//! energy levels off against the run's decrease (`state::levelled_off`), or
+//! when its lowest energy and its tracks' length stall over `stall_window`
+//! bursts, the energy by a tolerance for each moving member and via and the
+//! length by one (`stalled`). At a coarse level any of
 //! these hands over to the next level instead (`state`), so only the final
 //! level gives up. The settle threshold and
 //! the energy's tolerance hold per member, so that a problem and far-apart

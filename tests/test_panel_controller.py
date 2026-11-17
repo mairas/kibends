@@ -64,10 +64,9 @@ from kibends.panel.controller import (
     signed,
 )
 from kibends.panel.probe import BoardId, Probe
-from kibends.present import MAPPED_ERRORS, Field, PanelFields, RunRefusedError
+from kibends.present import MAPPED_ERRORS, Field, PanelFields
 from kibends.results import Termination
 from kibends.run import (
-    ABNORMAL_MESSAGE,
     NoBoardError,
     OptimizerReport,
     PlotUnavailableError,
@@ -1363,7 +1362,6 @@ NOT_FROM_PANEL_RUNS: frozenset[type[BaseException]] = frozenset(
     {
         KeyboardInterrupt,  # the run is on a worker thread
         PlotUnavailableError,  # the panel never plots
-        RunRefusedError,  # the CLI's; the panel reads the report's refusal
     }
 )
 """The mapped errors a panel run never raises."""
@@ -1578,37 +1576,12 @@ class TestErrors:
         assert probes.calls == 2
         assert p.controller.scope_line == WHOLE_BOARD
 
-    def test_an_abnormal_end_says_the_optimizer_gave_up(self) -> None:
-        refused = replace(CHANGED, committed=False, refusal=ABNORMAL_MESSAGE)
-        c = opened(run=Scripted(outcome=refused, stages=STAGES[:4])).controller
-
-        c.run()
-
-        o = outcome(c)
-        assert c.state is State.FAILED
-        assert (o.icon, o.title, o.rest) == (
-            Icon.WARNING,
-            "The optimizer gave up",
-            " — nothing committed",
-        )
-        assert "Repulsion range values under Advanced" in o.body
-        assert c.progress_line == Line("Failed", " while optimizing")
-
-    @pytest.mark.parametrize(
-        "ending",
-        [
-            InsideClearanceError(VIOLATIONS, UserFrame()),
-            replace(CHANGED, committed=False, refusal=ABNORMAL_MESSAGE),
-        ],
-        ids=["failure", "refusal"],
-    )
-    def test_keeps_the_warnings_the_run_logged(
-        self, ending: RunReport | BaseException
-    ) -> None:
+    def test_keeps_the_warnings_the_run_logged(self) -> None:
         def during(stage: Stage) -> None:
             if stage is Stage.READING:
                 logger.warning("Cannot read the project file")
 
+        ending = InsideClearanceError(VIOLATIONS, UserFrame())
         run = Scripted(outcome=ending, stages=STAGES[:3], during=during)
         c = opened(run=run).controller
 

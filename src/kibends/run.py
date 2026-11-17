@@ -29,15 +29,15 @@ Before optimizing, the optimizer refuses a selection whose drawn copper
 starts inside a clearance (`inside`), which raises with nothing committed.
 The run checks no clearance of its own after optimizing: what the
 optimizer and simplification leave is committed, and the user's KiCad DRC
-reports any violation. It refuses only an abnormal optimizer stop then.
+reports any violation.
 
 Before the commit, which may raise, `run_smooth` hands an `OptimizerReport`
 (per-chain, per-pair and per-via figures, termination, abnormal bursts,
 the optimize stage's wall time) to its `on_optimized` callback; it returns
-a `RunReport`, which adds whether it committed, any refusal and the
-`Scope` it read. It tells an `on_stage` callback each `Stage` as it begins,
-and an `on_progress` callback the optimizer's `Progress`, first at its
-start as iteration 0, then after each outer iteration. A caller's `stop`
+a `RunReport`, which adds whether it committed and the `Scope` it read.
+It tells an `on_stage` callback each `Stage` as it begins, and an
+`on_progress` callback the optimizer's `Progress`, first at its start as
+iteration 0, then after each outer iteration. A caller's `stop`
 ends the run before optimizing with nothing changed, or ends the
 optimizer with its best state, which goes on to the commit
 (`Termination.STOPPED`). Positions in reports stay in the board
@@ -146,11 +146,6 @@ KICAD_TIMEOUT_MS = 30_000
 PLOT_EXTRA_MESSAGE = (
     "--plot needs matplotlib, which comes with the `plot` extra: "
     "uv tool install 'kibends[plot] @ git+https://github.com/mairas/kibends'"
-)
-ABNORMAL_MESSAGE = (
-    "The optimizer terminated abnormally without improving the track; "
-    "nothing committed. "
-    "Try other --repulsion or --range values"
 )
 
 
@@ -325,10 +320,6 @@ class OptimizerReport:
 @dataclass(frozen=True)
 class RunReport(OptimizerReport):
     committed: bool
-    refusal: str | None
-    """Why nothing was committed, when the optimizer stopped abnormally
-    (`ABNORMAL_MESSAGE`). The run checks no clearance after optimizing;
-    the user's KiCad DRC does."""
     scope: Scope
 
     @property
@@ -427,8 +418,7 @@ def run_smooth(
     raise. Raises on failures that leave nothing to report (no board, a bad
     selection, a selection that starts inside a clearance, which
     `inside.InsideClearanceError` names in the run's frame, a refused
-    commit); an abnormal optimizer stop comes back as the report's
-    `refusal`, with nothing committed.
+    commit).
 
     `on_stage` hears each `Stage` as it begins, committing only when there
     is something to commit. `stop` is asked after reading and after
@@ -508,7 +498,6 @@ def _stopped(read: _Read) -> RunReport:
         (),
         read.frame,
         committed=False,
-        refusal=None,
         scope=read.scope,
     )
 
@@ -835,15 +824,11 @@ def _commit(
     options: SmoothOptions,
     on_stage: Callable[[Stage], None],
 ) -> RunReport:
-    """Commit the changed chains and moved vias unless dry-running or
-    refused, telling `on_stage` before committing."""
+    """Commit the changed chains and moved vias unless dry-running,
+    telling `on_stage` before committing."""
     run = optimized.run
 
-    def report(
-        *,
-        committed: bool = False,
-        refusal: str | None = None,
-    ) -> RunReport:
+    def report(*, committed: bool = False) -> RunReport:
         return RunReport(
             outcome.reports,
             outcome.via_reports,
@@ -855,12 +840,9 @@ def _commit(
             run.abnormal,
             read.frame,
             committed,
-            refusal,
             read.scope,
         )
 
-    if run.termination is Termination.ABNORMAL:
-        return report(refusal=ABNORMAL_MESSAGE)
     if options.dry_run or not report().changes:
         return report()
     changed = [

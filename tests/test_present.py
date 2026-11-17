@@ -18,7 +18,6 @@ from kibends.inside import INSIDE_MESSAGE, InsideClearanceError
 from kibends.present import Field, Invalid, PanelFields, SmoothValues
 from kibends.results import PolylineStats, Termination
 from kibends.run import (
-    ABNORMAL_MESSAGE,
     PLOT_EXTRA_MESSAGE,
     ChainReport,
     NoBoardError,
@@ -69,7 +68,6 @@ def report(
         (),
         UserFrame(),
         committed=True,
-        refusal=None,
         scope=scope,
     )
 
@@ -187,7 +185,6 @@ class TestErrorMessage:
             InsideClearanceError(()),
             NoBoardError("No board is open in KiCad"),
             PlotUnavailableError(PLOT_EXTRA_MESSAGE),
-            present.RunRefusedError(ABNORMAL_MESSAGE),
         ],
         ids=lambda e: type(e).__name__,
     )
@@ -195,7 +192,7 @@ class TestErrorMessage:
         assert present.error_message(error) == str(error)
 
     def test_every_expected_error_is_covered(self) -> None:
-        assert len(present.EXPECTED_ERRORS) == 10
+        assert len(present.EXPECTED_ERRORS) == 9
         assert present.error_message(InsideClearanceError(())) == INSIDE_MESSAGE
 
     def test_busy_kicad(self) -> None:
