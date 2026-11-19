@@ -1209,7 +1209,8 @@ class Via:
 class ViaPairs:
     r"""
     The pairwise term of a problem's moving vias, with each other and with
-    the vias standing still (`kibends_core::vias::pairs::ViaPairs`).
+    the vias and pads standing still
+    (`kibends_core::vias::pairs::ViaPairs`).
     """
     @property
     def empty(self) -> builtins.bool:
@@ -1221,12 +1222,14 @@ class ViaPairs:
         r"""
         Per via, the problem's vias it pairs with.
         """
-    def __new__(cls, vias: typing.Sequence[Via], grounds: typing.Sequence[builtins.bool], clearances: typing.Sequence[builtins.float], zones: typing.Sequence[typing.Sequence[Zone]], apart: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], statics: typing.Sequence[Via], static_grounds: typing.Sequence[builtins.bool], static_clearances: typing.Sequence[builtins.float], params: energy.EnergyParams, hole_clearance: builtins.float, hole_to_hole: builtins.float) -> ViaPairs:
+    def __new__(cls, vias: typing.Sequence[Via], grounds: typing.Sequence[builtins.bool], clearances: typing.Sequence[builtins.float], zones: typing.Sequence[typing.Sequence[Zone]], apart: typing.Sequence[typing.Mapping[builtins.int, builtins.float]], statics: typing.Sequence[Via], static_grounds: typing.Sequence[builtins.bool], static_clearances: typing.Sequence[builtins.float], pad_positions: typing.Sequence[tuple[builtins.float, builtins.float]], pad_drills: typing.Sequence[builtins.float], pad_nets: typing.Sequence[builtins.str], pad_grounds: typing.Sequence[builtins.bool], pad_clearances: typing.Sequence[builtins.float], params: energy.EnergyParams, hole_clearance: builtins.float, hole_to_hole: builtins.float) -> ViaPairs:
         r"""
         The moving `vias`, each a ground via or not, with its netclass
         clearance and zones, keeping the distances `apart` gives from each
-        other; and the `statics`, each a ground via or not with its netclass
-        clearance.
+        other; the `statics`, each a ground via or not with its netclass
+        clearance; and the plated through-hole pads standing still, by
+        their centres, drill diameters, nets, whether each is on a ground
+        net and their netclass clearances.
         """
     def kept(self, k: builtins.int, other: Via, clearance: builtins.float) -> typing.Optional[builtins.float]:
         r"""

@@ -14,6 +14,7 @@ from conftest import (
     FakeBoard,
     build_via_obstacles,
     contained,
+    in_pool,
     judged_obstacles,
     kipy_pad,
     kipy_rect,
@@ -52,7 +53,7 @@ from kibends.snapshot import (
     ViaZone,
     via_from_kipy,
 )
-from kibends.via_pairs import ViaPairs
+from kibends.via_pairs import StaticPad, ViaPairs
 from kibends.vias import StaticVia, ViaInput, pairs_with
 
 NET = "SIG"
@@ -1128,3 +1129,130 @@ class TestStaticViasSplit:
         via = via_of(snaps)
 
         assert split_via_obstacles(snaps, via, ())[1] is None
+
+
+PAD_DRILL = 1.0
+
+
+def static_pad(net: str, x: float, drill: float = PAD_DRILL) -> StaticPad:
+    """A pad of `net` standing still with its centre at (x, 0), classed by
+    `SPLIT_GROUND`."""
+    return StaticPad((x, 0.0), drill, net, net in SPLIT_GROUND, DEFAULT_CLEARANCE)
+
+
+def pad_pairs(
+    net: str, pads: Sequence[StaticPad], params: EnergyParams = PAIR_PARAMS
+) -> ViaPairs:
+    """The pair term of `split_board`'s moving via of `net` with `pads`."""
+    _, moving = split_inputs(net)
+    return ViaPairs(
+        [moving],
+        [{}],
+        (),
+        params,
+        hole_clearance=HOLE_CLEARANCE,
+        hole_to_hole=HOLE_TO_HOLE,
+        pads=pads,
+    )
+
+
+def at_origin(pairs: ViaPairs) -> tuple[float, FloatArray]:
+    """The term's value and its gradient with the moving via at the origin."""
+    value, gradient = pairs.energy([np.zeros(2)])
+    return value, gradient[0]
+
+
+BESIDE = 1.5 + PAD_DRILL / 2
+"""A pad centre 1.5 mm from its barrel to the origin."""
+
+
+class TestStaticPads:
+    @pytest.mark.parametrize(("net", "pad_net"), [("SIG", "GND"), ("GND", "SIG")])
+    def test_a_ground_side_and_a_regular_one_draw_together(
+        self, net: str, pad_net: str
+    ) -> None:
+        value, gradient = at_origin(pad_pairs(net, [static_pad(pad_net, BESIDE)]))
+
+        assert value < 0
+        assert gradient[0] < 0
+        assert gradient[1] == 0
+
+    def test_a_ground_pad_of_its_net_pushes_a_ground_via_away(self) -> None:
+        pad = static_pad("GND", 1.0 + PAD_DRILL / 2)
+
+        value, gradient = at_origin(pad_pairs("GND", [pad]))
+        unattracted = replace(PAIR_PARAMS, attraction=0)
+        repelled = at_origin(pad_pairs("GND", [pad], unattracted))
+
+        assert value > 0
+        assert gradient[0] > 0
+        assert value == repelled[0]
+        np.testing.assert_array_equal(gradient, repelled[1])
+
+    @pytest.mark.parametrize(("net", "pad_net"), [("GND", "AGND"), ("SIG", "OTHER")])
+    def test_other_ground_nets_and_two_regular_nets_give_nothing(
+        self, net: str, pad_net: str
+    ) -> None:
+        pairs = pad_pairs(net, [static_pad(pad_net, BESIDE)])
+
+        assert pairs.empty
+        value, gradient = at_origin(pairs)
+        assert value == 0
+        np.testing.assert_array_equal(gradient, [0, 0])
+
+    def test_the_range_runs_from_the_barrel(self) -> None:
+        reach = PAIR_PARAMS.attraction_range
+        beyond = pad_pairs("SIG", [static_pad("GND", reach + PAD_DRILL / 2 + 1e-3)])
+        inside = pad_pairs("SIG", [static_pad("GND", reach + 0.1)])
+
+        assert at_origin(beyond)[0] == 0
+        assert at_origin(inside)[0] < 0
+
+    def test_a_wider_drill_pulls_harder(self) -> None:
+        narrow = at_origin(pad_pairs("SIG", [static_pad("GND", 2.0, drill=0.6)]))
+        wide = at_origin(pad_pairs("SIG", [static_pad("GND", 2.0, drill=1.2)]))
+
+        assert wide[0] < narrow[0]
+        assert wide[1][0] < narrow[1][0]
+
+    def test_a_pad_out_of_reach_leaves_the_bits(self) -> None:
+        _, moving = split_inputs("SIG")
+        snaps = slices(split_board("SIG"), ("F.Cu", "In1.Cu", "B.Cu"))
+        others = {v.id: v for s in snaps for v in s.vias}.values()
+        static = [
+            s for v in others if pairs_with(moving.via, False, s := standing(snaps, v))
+        ]
+
+        def term(pads: Sequence[StaticPad]) -> ViaPairs:
+            return ViaPairs(
+                [moving],
+                [{}],
+                static,
+                PAIR_PARAMS,
+                hole_clearance=HOLE_CLEARANCE,
+                hole_to_hole=HOLE_TO_HOLE,
+                pads=pads,
+            )
+
+        at = [np.array([0.1, -0.2])]
+        value, gradient = term(()).energy(at)
+        far_value, far_gradient = term([static_pad("GND", 40.0)]).energy(at)
+
+        assert static
+        assert far_value == value
+        np.testing.assert_array_equal(far_gradient, gradient)
+
+    def test_the_bits_do_not_depend_on_the_thread_count(self) -> None:
+        pads = [
+            static_pad("GND", BESIDE),
+            StaticPad((-0.4, 1.6), 0.8, "GND", True, DEFAULT_CLEARANCE),
+            StaticPad((0.3, -1.9), 1.1, "OTHER", False, DEFAULT_CLEARANCE),
+        ]
+        pairs = pad_pairs("SIG", pads)
+        at = [np.array([0.2, 0.1])]
+
+        one = in_pool(1, lambda: pairs.energy(at))
+        many = in_pool(8, lambda: pairs.energy(at))
+
+        assert one[0] == many[0]
+        np.testing.assert_array_equal(one[1], many[1])
