@@ -573,7 +573,7 @@ def _read(
         may,
         carried=carried,
         every_copper_layer=bool(may),
-        pad_connections=grounded,
+        with_pad_connections=grounded,
     )
     snapshots = _slices(whole, replaced)
     ground = _ground_nets(whole, ground_nets) if grounded else frozenset[str]()

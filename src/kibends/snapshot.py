@@ -18,7 +18,7 @@ from outlines and priorities alone (`_zone_region`). Where such a via may
 go is `vias`' to decide (`ZoneUnion`, `zone_unions`). Thermal reliefs,
 island removal, hatched fills and minimum-width necks are not modelled.
 
-Asked for (`pad_connections`), the read also records on which copper
+Asked for (`with_pad_connections`), the read also records on which copper
 layers each plated through-hole pad connects to copper of its net: a track
 whose copper meets the pad's there, or a zone whose region there meets it
 (`_pad_connections`), as kistitch's `returnvia` counts the layers a layer
@@ -490,12 +490,12 @@ class BoardSnapshot:
         *,
         carried: Mapping[str, Sequence[Disc]] | None = None,
         every_copper_layer: bool = False,
-        pad_connections: bool = False,
+        with_pad_connections: bool = False,
     ) -> BoardSnapshot:
         """Read the board once for the copper layers `layers`, or for every
         copper layer the board enables, and the copper touching
         `selected_vias` or the copper `carried` gives, by via id, as moving
-        with each; with `pad_connections`, also the layers on which each
+        with each; with `with_pad_connections`, also the layers on which each
         plated through-hole pad connects, from what the read already holds,
         without a further request. Pads are judged on the layers read only,
         so a caller judging them on every layer asks for every copper
@@ -585,7 +585,7 @@ class BoardSnapshot:
             - {""},
             pad_connections=(
                 _pad_connections(pads_by_layer, tracks, zone_regions)
-                if pad_connections
+                if with_pad_connections
                 else {}
             ),
         )

@@ -1575,9 +1575,12 @@ def four_layer_board(
     )
 
 
-def read_four_layers(fake: FakeBoard, *, pad_connections: bool) -> BoardSnapshot:
+def read_four_layers(fake: FakeBoard, *, with_pad_connections: bool) -> BoardSnapshot:
     return BoardSnapshot.read(
-        board(fake), ["F.Cu"], every_copper_layer=True, pad_connections=pad_connections
+        board(fake),
+        ["F.Cu"],
+        every_copper_layer=True,
+        with_pad_connections=with_pad_connections,
     )
 
 
@@ -1585,7 +1588,7 @@ def pad_connections(
     *copper: kbt.Track | kbt.ArcTrack | kbt.Zone, pads: Sequence[kbt.Pad] = ()
 ) -> Mapping[str, frozenset[str]]:
     fake = four_layer_board(*copper, pads=pads)
-    return read_four_layers(fake, pad_connections=True).pad_connections
+    return read_four_layers(fake, with_pad_connections=True).pad_connections
 
 
 def spy_regions(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -1688,11 +1691,11 @@ class TestPadConnections:
             return four_layer_board(to_pad("f", BL.BL_F_Cu), zone)
 
         unasked = board_with_plane()
-        read_four_layers(unasked, pad_connections=False)
+        read_four_layers(unasked, with_pad_connections=False)
         built = spy_regions(monkeypatch)
         fake = board_with_plane()
 
-        snap = read_four_layers(fake, pad_connections=asked)
+        snap = read_four_layers(fake, with_pad_connections=asked)
 
         assert fake.reads == unasked.reads
         assert built == (["In1.Cu"] if asked else [])
@@ -1713,7 +1716,7 @@ class TestPadConnections:
             ["F.Cu"],
             selected,
             every_copper_layer=True,
-            pad_connections=True,
+            with_pad_connections=True,
         )
 
         assert [z.layers for z in snap.via_zones["v"]] == [("In1.Cu",)]

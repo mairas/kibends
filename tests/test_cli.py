@@ -4063,16 +4063,16 @@ def pad_reads(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
         *,
         carried: Mapping[str, Sequence[Disc]] | None = None,
         every_copper_layer: bool = False,
-        pad_connections: bool = False,
+        with_pad_connections: bool = False,
     ) -> BoardSnapshot:
-        asked.append(pad_connections)
+        asked.append(with_pad_connections)
         return real(
             board,
             layers,
             selected_vias,
             carried=carried,
             every_copper_layer=every_copper_layer,
-            pad_connections=pad_connections,
+            with_pad_connections=with_pad_connections,
         )
 
     monkeypatch.setattr(BoardSnapshot, "read", spy)
