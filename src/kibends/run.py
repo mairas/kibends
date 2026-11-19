@@ -120,6 +120,7 @@ from kibends.snapshot import (
     BoardSnapshot,
     GroundSource,
     LayerSnapshot,
+    PadKind,
     Via,
     ViaZone,
     read_board,
@@ -129,6 +130,7 @@ from kibends.snapshot import (
 from kibends.via_moves import MovingVias
 from kibends.vias import (
     MovableVia,
+    StaticPad,
     StaticVia,
     ViaInput,
     carried_copper,
@@ -142,6 +144,11 @@ from kibends.vias import (
 # kipy's 2 s default is too short for reading a large board as text and for
 # deleting or creating items on one.
 KICAD_TIMEOUT_MS = 30_000
+
+MIN_CONNECTED_LAYERS = 2
+"""The copper layers a signal pad's barrel connects, at least, for it to
+change layers and take part in the pairwise term, as kistitch counts a
+layer change's (`MIN_CONNECTED_LAYERS` in its `returnvia`)."""
 
 PLOT_EXTRA_MESSAGE = (
     "--plot needs matplotlib, which comes with the `plot` extra: "
@@ -342,6 +349,10 @@ class _Read:
     ground_nets: frozenset[str]
     """Empty when no selected via may move or vias are not paired, as they
     are then not looked for."""
+    pad_connections: Mapping[str, frozenset[str]]
+    """By pad id, the layers each plated through-hole pad connects on
+    (`BoardSnapshot.pad_connections`); read only when the ground nets
+    are."""
     arcs: tuple[Arc, ...]
     """The selected arcs, whose segments are among `selected`, as read."""
     scope: Scope
@@ -362,6 +373,9 @@ class _Built:
     """With the selected chains' ends."""
     static: dict[str, StaticVia]
     """The vias standing still, classed (`_static_vias`)."""
+    pads: tuple[StaticPad, ...]
+    """The plated through-hole pads the pairwise term takes
+    (`_static_pads`)."""
 
 
 @dataclass(frozen=True)
@@ -549,15 +563,17 @@ def _read(
     )
     # A moving via meets the copper of every layer it spans, so a selection
     # holding one reads them all.
+    grounded = bool(may) and paired
     whole = BoardSnapshot.read(
         board,
         {s.layer for s in selected if not s.locked},
         may,
         carried=carried,
         every_copper_layer=bool(may),
+        pad_connections=grounded,
     )
     snapshots = _slices(whole, replaced)
-    ground = _ground_nets(whole, ground_nets) if may and paired else frozenset[str]()
+    ground = _ground_nets(whole, ground_nets) if grounded else frozenset[str]()
     # A moving via's copper must not hold the chains it carries where they
     # leave it, and the chains through it end there. Only the last extraction
     # before the copper is final says what it leaves out.
@@ -600,6 +616,7 @@ def _read(
         movable,
         frame,
         ground,
+        whole.pad_connections,
         selection.arcs,
         read_scope,
         clearances,
@@ -713,7 +730,8 @@ def _build(read: _Read, options: SmoothOptions) -> _Built:
     via_inputs = _via_inputs(
         read.movable, board, options, clearances, read.ground_nets, static
     )
-    return _Built(whole, parts, pairs, layout, via_inputs, static)
+    pads = _static_pads(read.snapshots, read.pad_connections, read.ground_nets)
+    return _Built(whole, parts, pairs, layout, via_inputs, static, pads)
 
 
 def _optimize(
@@ -742,6 +760,7 @@ def _optimize(
             clock=monotonic,
             started=started,
             static_vias=tuple(built.static.values()),
+            static_pads=built.pads,
             to_hold=_bent_too_tightly,
             stop=stop,
             on_progress=on_progress,
@@ -1064,6 +1083,30 @@ def _static_vias(
         if v.id not in moving
     }
     return {i: StaticVia(v, v.net in ground, c) for i, (v, c) in vias.items()}
+
+
+def _static_pads(
+    snapshots: Mapping[str, LayerSnapshot],
+    connections: Mapping[str, frozenset[str]],
+    ground: Collection[str],
+) -> tuple[StaticPad, ...]:
+    """The plated through-hole pads with a net the snapshots hold, once
+    each, that take part in the pairwise term: every pad of the `ground`
+    nets, and each other one that `connections` connect on at least
+    MIN_CONNECTED_LAYERS layers; none without `ground` nets."""
+    if not ground:
+        return ()
+    pads = {
+        p.id: StaticPad(p.position, p.drill, p.net, p.net in ground, s.clearance(p.net))
+        for s in snapshots.values()
+        for p in s.pads
+        if p.kind is PadKind.PTH and p.net
+    }
+    return tuple(
+        p
+        for i, p in pads.items()
+        if p.ground or len(connections.get(i, ())) >= MIN_CONNECTED_LAYERS
+    )
 
 
 def _laid_out_vias(layout: Layout, via_inputs: Sequence[ViaInput]) -> list[ViaInput]:

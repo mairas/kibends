@@ -53,8 +53,8 @@ from kibends.snapshot import (
     ViaZone,
     via_from_kipy,
 )
-from kibends.via_pairs import StaticPad, ViaPairs
-from kibends.vias import StaticVia, ViaInput, pairs_with
+from kibends.via_pairs import ViaPairs
+from kibends.vias import StaticPad, StaticVia, ViaInput, pairs_with
 
 NET = "SIG"
 VIA_ID = "moving"

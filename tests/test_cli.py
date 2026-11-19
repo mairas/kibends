@@ -10,13 +10,14 @@ import subprocess
 import sys
 import types
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import NoReturn, cast
 
 import conftest
+import kipy.board
 import kipy.board_types as kbt
 import numpy as np
 import pytest
@@ -55,7 +56,7 @@ from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KiCadConnectionError
 from kipy.geometry import Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
-from kipy.proto.board.board_types_pb2 import ViaType
+from kipy.proto.board.board_types_pb2 import PadType, ViaType
 from kipy.proto.common.envelope_pb2 import ApiStatusCode
 from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, MultiLineString, Point, box
@@ -93,9 +94,15 @@ from kibends.pair_blocks import Hold, PairBlock
 from kibends.pairs import GAP_TOLERANCE, BendCheck, offset_pair
 from kibends.polylines import measure
 from kibends.results import PairResult, PolylineStats, RunResult, Termination
-from kibends.snapshot import CONTACT_MARGIN, KICAD_MAX_ERROR
+from kibends.snapshot import (
+    CONTACT_MARGIN,
+    KICAD_MAX_ERROR,
+    BoardSnapshot,
+    Disc,
+    Via,
+)
 from kibends.via_moves import MovingVias
-from kibends.vias import StaticVia, ViaInput
+from kibends.vias import StaticPad, StaticVia, ViaInput
 
 WIDTH = 0.25
 CLEARANCE = 0.2
@@ -3998,6 +4005,7 @@ class Optimized:
 
     vias: Sequence[ViaInput] = ()
     static_vias: Sequence[StaticVia] = ()
+    static_pads: Sequence[StaticPad] = ()
 
 
 @pytest.fixture
@@ -4008,6 +4016,7 @@ def optimized(monkeypatch: pytest.MonkeyPatch) -> Optimized:
     def spy(*args: object, **kwargs: object) -> RunResult:
         seen.vias = cast(Sequence[ViaInput], kwargs["vias"])
         seen.static_vias = cast(Sequence[StaticVia], kwargs["static_vias"])
+        seen.static_pads = cast(Sequence[StaticPad], kwargs["static_pads"])
         return real(*args, **kwargs)
 
     monkeypatch.setattr(pipeline, "optimize_chains", spy)
@@ -4016,6 +4025,58 @@ def optimized(monkeypatch: pytest.MonkeyPatch) -> Optimized:
 
 def classes(vias: Sequence[ViaInput | StaticVia]) -> dict[str, bool]:
     return {v.via.id: v.ground for v in vias}
+
+
+def pad_classes(pads: Sequence[StaticPad]) -> dict[Point2, bool]:
+    return {p.position: p.ground for p in pads}
+
+
+def pth(pad_id: str, net: str, at: tuple[float, float]) -> kbt.Pad:
+    """A plated through-hole pad with copper on F.Cu and B.Cu."""
+    return kipy_pad(
+        pad_id,
+        net,
+        *at,
+        layers=(BL.BL_F_Cu, BL.BL_B_Cu),
+        pad_type=PadType.PT_PTH,
+        drill=0.3,
+    )
+
+
+def onto(
+    track_id: str, net: str, at: tuple[float, float], layer: BL.ValueType
+) -> kbt.Track:
+    """A track of `net` on `layer` from 2 mm above `at` down onto it."""
+    return kipy_track(track_id, net, (at[0], at[1] + 2), at, layer=layer)
+
+
+@pytest.fixture
+def pad_reads(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Whether each board read asked for the layers PTH pads connect on."""
+    asked: list[bool] = []
+    real = BoardSnapshot.read
+
+    def spy(
+        board: kipy.board.Board,
+        layers: Iterable[str],
+        selected_vias: Sequence[Via] = (),
+        *,
+        carried: Mapping[str, Sequence[Disc]] | None = None,
+        every_copper_layer: bool = False,
+        pad_connections: bool = False,
+    ) -> BoardSnapshot:
+        asked.append(pad_connections)
+        return real(
+            board,
+            layers,
+            selected_vias,
+            carried=carried,
+            every_copper_layer=every_copper_layer,
+            pad_connections=pad_connections,
+        )
+
+    monkeypatch.setattr(BoardSnapshot, "read", spy)
+    return asked
 
 
 def on_net(tracks: Sequence[kbt.Track], net: str) -> list[kbt.Track]:
@@ -4099,6 +4160,150 @@ class TestViaClasses:
         assert optimized.static_vias == ()
         (given,) = optimized.vias
         assert (given.ground, given.static_vias) == (False, None)
+
+    def test_plated_through_hole_pads_with_a_net_are_static_with_their_class(
+        self, connect: Connector, optimized: Optimized, pad_reads: list[bool]
+    ) -> None:
+        # Above the route, each with its own x. A signal pad counts only
+        # connected on two layers.
+        board = moving_via_board()
+        board.pads += [
+            pth("ground", "GND", (1, 8)),
+            pth("two", "PWR", (3, 8)),
+            pth("one", "VCC", (5, 8)),
+            pth("bare", "", (7, 8)),
+            kipy_pad("smd", "GND", 9, 8),
+            kipy_pad(
+                "npth",
+                "GND",
+                11,
+                8,
+                layers=(BL.BL_F_Cu, BL.BL_B_Cu),
+                pad_type=PadType.PT_NPTH,
+            ),
+        ]
+        board.tracks += [
+            onto("two-f", "PWR", (3, 8), BL.BL_F_Cu),
+            onto("two-b", "PWR", (3, 8), BL.BL_B_Cu),
+            onto("one-f", "VCC", (5, 8), BL.BL_F_Cu),
+        ]
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert pad_reads == [True]
+        assert pad_classes(optimized.static_pads) == {
+            (1.0, 8.0): True,
+            (3.0, 8.0): False,
+        }
+        ground, two = sorted(optimized.static_pads)
+        assert (ground.net, ground.drill, ground.clearance) == ("GND", 0.3, CLEARANCE)
+        assert two.net == "PWR"
+
+    def test_without_attraction_no_pad_is_static_nor_read_for(
+        self, connect: Connector, optimized: Optimized, pad_reads: list[bool]
+    ) -> None:
+        board = moving_via_board()
+        board.pads.append(pth("ground", "GND", (1, 8)))
+        connect.to(board)
+
+        run("--dry-run", "--attraction=0")
+
+        assert pad_reads == [False]
+        assert optimized.static_pads == ()
+
+    @pytest.mark.parametrize(
+        ("layers", "drawn"),
+        [((BL.BL_F_Cu, BL.BL_B_Cu), True), ((BL.BL_F_Cu,), False)],
+        ids=["two layers", "one layer"],
+    )
+    def test_a_signal_pad_draws_a_stitching_via_when_it_changes_layers(
+        self,
+        connect: Connector,
+        coarse_optimizer: None,
+        reports: list[pipeline.RunReport],
+        layers: tuple[BL.ValueType, ...],
+        drawn: bool,
+    ) -> None:
+        # The GND stitching via 2.5 mm above a SIG pad its tracks reach on
+        # `layers`, in a GND plane on the inner layers.
+        start = (5.0, 2.5)
+        ends: list[Point2] = []
+        for args in ((), ("--attraction=0",)):
+            board = return_via_board(start, stitching=True)
+            pad = kipy_pad(
+                "p",
+                "SIG",
+                *RETURN_SIGNAL_VIA,
+                layers=board.enabled_layers,
+                pad_type=PadType.PT_PTH,
+                drill=0.3,
+            )
+            tracks: list[kbt.Track | kbt.ArcTrack] = [
+                kipy_track(f"t{k}", "SIG", (0, 0), RETURN_SIGNAL_VIA, layer=layer)
+                for k, layer in enumerate(layers)
+            ]
+            (ground,) = [v for v in board.vias if v.id.value == "g"]
+            board.pads, board.tracks = [pad], tracks
+            board.vias, board.selection = [ground], [ground]
+            connect.to(board)
+
+            run("--dry-run", *args)
+
+            (via,) = reports[-1].vias
+            ends.append(via.end)
+
+        pulled, alone = ends
+        if drawn:
+            assert (
+                math.dist(pulled, RETURN_SIGNAL_VIA)
+                < math.dist(alone, RETURN_SIGNAL_VIA) - RETURN_SETTLED
+            )
+        else:
+            assert pulled == alone
+
+    def test_a_run_commits_a_via_drawn_toward_a_ground_pad_clear_of_it(
+        self,
+        connect: Connector,
+        coarse_optimizer: None,
+        reports: list[pipeline.RunReport],
+    ) -> None:
+        # `return_via_board`'s GND via swapped for a GND PTH pad.
+        pad_at = (5.0, 1.5)
+        ends: list[Point2] = []
+        for args in (("--dry-run", "--attraction=0"), ()):
+            board = return_via_board(pad_at, stitching=False)
+            board.vias = [v for v in board.vias if v.id.value == "v"]
+            board.pads = [
+                kipy_pad(
+                    "p",
+                    "GND",
+                    *pad_at,
+                    layers=board.enabled_layers,
+                    pad_type=PadType.PT_PTH,
+                    drill=0.3,
+                )
+            ]
+            connect.to(board)
+
+            run(*args)
+
+            (via,) = reports[-1].vias
+            ends.append(via.end)
+
+        alone, pulled = ends
+        assert reports[-1].committed
+        (committed,) = created_vias(board)
+        position = committed.position
+        assert (
+            math.dist((position.x / NM_PER_MM, position.y / NM_PER_MM), pulled)
+            <= NM_ROUNDING
+        )
+        assert math.dist(pulled, pad_at) < math.dist(alone, pad_at) - RETURN_SETTLED
+        h = PAD_HALF_SIZE
+        copper = box(pad_at[0] - h, pad_at[1] - h, pad_at[0] + h, pad_at[1] + h)
+        ring = 0.3
+        assert copper.distance(Point(pulled)) >= ring + CLEARANCE - NM_ROUNDING
 
     def test_attraction_is_on_by_default(self) -> None:
         params = cli.smooth_options(cli.parse_args(["smooth"])).params

@@ -56,7 +56,7 @@ from shapely.geometry.base import BaseGeometry
 
 from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
-from kibends.chain import Chain, carries
+from kibends.chain import Chain, Point2, carries
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment, core_via, plain_shapes
@@ -169,6 +169,21 @@ class StaticVia(NamedTuple):
     still, and its class."""
 
     via: Via
+    ground: bool
+    """Whether it is on a ground net."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
+
+
+class StaticPad(NamedTuple):
+    """A plated through-hole pad standing still, as the pairwise term takes
+    it."""
+
+    position: Point2
+    """Its centre, mm."""
+    drill: float
+    """Its drill's diameter, mm."""
+    net: str
     ground: bool
     """Whether it is on a ground net."""
     clearance: float

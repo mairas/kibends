@@ -14,7 +14,7 @@ of the optimizer's nearest-only via terms and out of a moving via's static
 field (`obstacles.split_via_obstacles`); clearance judging is unchanged:
 the pairs keep the distances `obstacles.via_via_inflation` gives.
 
-A pad's barrel connects the planes as a via does (`StaticPad`). A moving
+A pad's barrel connects the planes as a via does (`vias.StaticPad`). A moving
 via and a pad interact at the barrel distance, the centre distance less the
 pad's drill radius: a ground side and a regular one attract alone, with no
 obstacle term, and a ground via spreads from a pad of its ground net by the
@@ -23,30 +23,13 @@ via's static field, which keeps clearance from its copper.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import NamedTuple
 
 import numpy as np
 
 from kibends import _core
-from kibends.chain import Point2
 from kibends.energy import EnergyParams, FloatArray
 from kibends.obstacles import core_via, core_zones
-from kibends.vias import StaticVia, ViaInput
-
-
-class StaticPad(NamedTuple):
-    """A plated through-hole pad standing still, as the pairwise term takes
-    it."""
-
-    position: Point2
-    """Its centre, mm."""
-    drill: float
-    """Its drill's diameter, mm."""
-    net: str
-    ground: bool
-    """Whether it is on a ground net."""
-    clearance: float
-    """Its net's netclass clearance, mm."""
+from kibends.vias import StaticPad, StaticVia, ViaInput
 
 
 class ViaPairs:

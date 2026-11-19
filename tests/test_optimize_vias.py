@@ -48,6 +48,7 @@ from kibends.bursts import (
 )
 from kibends.energy import (
     SMOOTH_WIDTH,
+    EnergyParams,
     ObstacleField,
     attraction_integrand,
     combine_fields,
@@ -70,9 +71,9 @@ from kibends.obstacles import (
 from kibends.optimize import MAX_ABNORMAL_BURSTS, optimize_chains
 from kibends.pair_blocks import PairInput, pair_block
 from kibends.results import RunResult, Termination
-from kibends.snapshot import LayerSnapshot, ViaZone
+from kibends.snapshot import LayerSnapshot, Pad, PadKind, Via, ViaZone
 from kibends.via_moves import MovingVias
-from kibends.vias import ChainEnd, StaticVia, ViaInput, pairs_with
+from kibends.vias import ChainEnd, StaticPad, StaticVia, ViaInput, pairs_with
 
 COARSE = OptimizerSettings(spacing=0.3, settled_change=0.003, burst_maxiter=30)
 
@@ -2420,9 +2421,18 @@ def split_from(given: ViaInput, static: Sequence[StaticVia]) -> ViaInput:
     return replace(given, field=field, static_vias=static_vias)
 
 
-def pair_run(vias: Sequence[ViaInput], static: Sequence[StaticVia] = ()) -> RunResult:
+def pair_run(
+    vias: Sequence[ViaInput],
+    static: Sequence[StaticVia] = (),
+    pads: Sequence[StaticPad] = (),
+) -> RunResult:
     return optimize_chains(
-        (far_chain(),), RETURN_PARAMS, COARSE, vias, static_vias=static
+        (far_chain(),),
+        RETURN_PARAMS,
+        COARSE,
+        vias,
+        static_vias=static,
+        static_pads=pads,
     )
 
 
@@ -2543,13 +2553,18 @@ GROUND_RINGS = scenarios.VIA_TO_VIA
 one net only repel."""
 
 
-def ground_run(vias: Sequence[ViaInput], static: Sequence[StaticVia] = ()) -> RunResult:
+def ground_run(
+    vias: Sequence[ViaInput],
+    static: Sequence[StaticVia] = (),
+    pads: Sequence[StaticPad] = (),
+) -> RunResult:
     return optimize_chains(
         (far_chain(),),
         RETURN_PARAMS,
         replace(COARSE, max_iterations=100),
         vias,
         static_vias=static,
+        static_pads=pads,
     )
 
 
@@ -2656,6 +2671,95 @@ class TestGroundVias:
         assert moved.position[1] < scenarios.DETOUR_VIA[1] - 1.0
         distance = math.dist(moved.position, under.via.position)
         assert distance >= scenarios.VIA_TO_VIA - INSIDE_TOLERANCE
+
+
+PTH_COPPER = 1.5
+"""The diameter of a plated through-hole pad's copper, mm."""
+PTH_DRILL = 0.8
+PTH_AT = (5.0, 2.5)
+"""Where a pad stands above the straight route: its barrel within the
+attraction range of the route's via."""
+PAD_PULL = replace(RETURN_PARAMS, attraction=1.0)
+"""Attraction strong enough to draw a straight route's via well off its
+line toward a pad, against the route's length and the pad's repulsion."""
+PULLED_NEARER = 0.2
+"""mm by which a pad's pull must bring a via nearer than it ends without,
+to tell the pull from settling noise. A measured margin: the route's via
+ends 0.38 mm nearer under PAD_PULL, and a ground via under RETURN_PARAMS
+0.98 mm nearer."""
+
+
+def pth(pad_id: str, net: str, at: tuple[float, float]) -> Pad:
+    copper = Point(at).buffer(PTH_COPPER / 2)
+    return Pad(pad_id, "1", net, PadKind.PTH, at, PTH_DRILL, copper)
+
+
+def standing(pad: Pad, ground: bool) -> StaticPad:
+    return StaticPad(pad.position, pad.drill, pad.net, ground, scenarios.PAIR_CLEARANCE)
+
+
+def pad_field(via: Via, pad: Pad) -> ObstacleField:
+    """`via`'s field over its layers, holding `pad`, as `run` builds it."""
+    layers = [replace(layer(name), pads=(pad,)) for name in via.span]
+    field, apart = split_via_obstacles(layers, via, ())
+    assert apart is None
+    return field
+
+
+class TestStaticPads:
+    """A plated through-hole pad standing still draws vias of the other
+    class toward its barrel, and spreads ground vias of its net."""
+
+    def test_a_ground_pad_draws_a_route_s_via_and_keeps_its_clearance(self) -> None:
+        pad = pth("p", "GND", PTH_AT)
+        via = scenarios.through_via("v", "N", scenarios.STRAIGHT_VIA)
+        given = scenarios.joining(via, 0, pad_field(via, pad))
+        chains = scenarios.route("N", scenarios.STRAIGHT_VIA)
+
+        def end(params: EnergyParams) -> tuple[float, float]:
+            result = optimize_chains(
+                chains, params, COARSE, [given], static_pads=[standing(pad, True)]
+            )
+            (moved,) = result.vias
+            return moved.position
+
+        pulled = end(PAD_PULL)
+        alone = end(replace(PAD_PULL, attraction=0.0))
+
+        assert math.dist(pulled, PTH_AT) < math.dist(alone, PTH_AT) - PULLED_NEARER
+        assert pad.shape is not None
+        assert pad.shape.distance(Point(pulled)) >= (
+            via.diameter / 2 + scenarios.PAIR_CLEARANCE - INSIDE_TOLERANCE
+        )
+
+    def test_a_signal_pad_draws_a_ground_via_and_keeps_its_clearance(self) -> None:
+        pad = pth("p", "SIG", (0.0, 0.0))
+        start = (0.0, 3.0)
+        given = stitching("g", "GND", start)
+        given = replace(given, field=pad_field(given.via, pad))
+
+        result = pair_run([given], pads=[standing(pad, False)])
+
+        (via,) = result.vias
+        assert math.dist(via.position, pad.position) < (
+            math.dist(start, pad.position) - PULLED_NEARER
+        )
+        assert pad.shape is not None
+        assert pad.shape.distance(Point(via.position)) >= (
+            given.via.diameter / 2 + scenarios.PAIR_CLEARANCE - INSIDE_TOLERANCE
+        )
+
+    def test_a_ground_pad_of_its_net_pushes_a_ground_via_away(self) -> None:
+        pad = pth("p", "GND", (0.0, 2.0))
+        # Its ring and clearance a little beyond the barrel, within the
+        # pad's copper, which is of its net.
+        apart = PTH_DRILL / 2 + scenarios.VIA_DIAMETER / 2 + scenarios.PAIR_CLEARANCE
+        start = (0.0, 2.0 + apart + 0.1)
+
+        result = ground_run([stitching("g", "GND", start)], pads=[standing(pad, True)])
+
+        (via,) = result.vias
+        assert math.dist(via.position, pad.position) > math.dist(start, pad.position)
 
 
 STITCHING_PITCH = 1.27
