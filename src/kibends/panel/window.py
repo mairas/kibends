@@ -152,9 +152,10 @@ DIGITS = {
 }
 """How many digits wide each line edit is."""
 TIPS = {
-    Field.GROUND_NETS: "Vias of these nets are return vias: other vias are drawn "
-    "toward them, and they spread apart from each other. Separate names with "
-    "commas. Override detection when it picked a power net poured on inner layers.",
+    Field.GROUND_NETS: "Vias and plated through-hole pads of these nets are returns: "
+    "other vias are drawn toward them, and their vias spread apart. Separate "
+    "names with commas. Override detection when it picked a power net poured on "
+    "inner layers.",
     Field.TIME_LIMIT: "How long each spacing level may optimize. When it runs out "
     "at a coarse level, the run moves to the next level and the time starts "
     "again; at the final level, optimizing stops and the best result so far is "
