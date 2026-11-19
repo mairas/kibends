@@ -38,7 +38,10 @@ two ground vias of different ground nets, are a pair of two nets
 (`pairs_with`); the vias standing still that a moving via so pairs with
 are held apart from its field (`ViaInput.static_vias`). Ground vias of one
 net stay in its stops, which keep hole-to-hole, and the pairwise term also
-has them repel each other.
+has them repel each other. A plated through-hole pad standing still is a
+ground pad or a regular one by the same rule (`StaticPad`); the pairwise
+term takes it for attraction and spread alone, and it stays in a moving
+via's field.
 """
 
 import dataclasses

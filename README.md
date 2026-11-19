@@ -137,6 +137,7 @@ from the copper around it. Tracks drift toward the middle of the free space
 and bend smoothly round what they have to avoid. It refines all selected
 routes and vias together, coarse to fine, so neighbouring tracks make room
 for each other. Signal vias are also drawn toward their ground return vias
+and through-hole ground pins
 ([Return vias](https://github.com/mairas/kibends/blob/main/docs/return-vias.md)).
 
 ## Command line

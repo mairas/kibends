@@ -40,7 +40,7 @@ value disables Run and shows a message under its field.
 
 | Field | Default | What it does |
 |---|---|---|
-| Ground nets | detected | The nets whose vias are return vias for the others ([Return vias](return-vias.md)). |
+| Ground nets | detected | The nets whose vias and through-hole pads are returns for the others ([Return vias](return-vias.md)). |
 | Time limit | none | Seconds each spacing level may optimize. At the last level, the run stops and commits the best result so far. |
 
 The caption under Ground nets says how the nets were found. Typing in the
@@ -54,8 +54,8 @@ Under Advanced:
 |---|---|---|
 | Repulsion | 0.5 | How strongly tracks and vias keep away from other nets' copper, relative to length. It rounds bends and centres tracks in free space. 0 pulls tracks tight against obstacles at exactly the clearance. |
 | range | 1 mm | How far beyond the clearance that push reaches. |
-| Attraction | 1.15 | How strongly ground vias and signal vias pull each other ([Return vias](return-vias.md)). 0 turns it off. |
-| range | 3 mm | Centre distance at which that pull fades out. |
+| Attraction | 1.15 | How strongly ground vias and signal vias, and the through-hole pads among them, pull each other ([Return vias](return-vias.md)). 0 turns it off. |
+| range | 3 mm | Distance at which that pull fades out: centre to centre between two vias, from a pad's hole wall to a via's centre. |
 | Spacing | 1.6, 0.4, 0.1 mm | The distances between track points that the run works at, coarsest first: at most 8 values, each smaller than the one before, the last at most 0.1 mm. The coarse levels straighten long tracks quickly, the last adds the detail around copper. One value runs at it alone, which rarely helps. |
 | Allow via in pad | off | Let a moving via settle inside a pad of its own net. Use it only where the fabricator fills and caps vias in pads ([Vias](selection.md#vias)). |
 

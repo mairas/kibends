@@ -14,16 +14,19 @@ moving via carries a paired chain. Selected tracks that form no chain, stray
 zero-length tracks, stay on the board as unselected copper, and the chains
 are extracted again with them pinning. When a selected via may move and
 attraction is on, it finds the ground nets, logs them and classes every via
-by them; with attraction off nothing is classed, and the optimizer's energy
-is the one without ground vias. It then builds the fields, optimizes,
-simplifies and commits. A coupled section the run would leave bent too
-tightly is held as drawn, and the optimizer goes on in the same run
-(`optimize.optimize_chains`). A chain whose result equals its selected
-tracks, and that shares no split track with a changed chain, is left out of
-the commit; nothing is committed when every chain is unchanged and no via
-moved. A selected arc thus stays an arc only in a chain left exactly as
-drawn; simplification merges its pieces and the optimizer shortens it, so it
-is nearly always replaced.
+by them, and hands the pairwise term the plated through-hole pads with a
+net that take part: every pad of a ground net, and each other one its
+net's tracks or zones connect on at least MIN_CONNECTED_LAYERS layers
+(`_static_pads`). With attraction off nothing is classed, no pad is handed
+over, and the optimizer's energy is the one without ground vias. It then
+builds the fields, optimizes, simplifies and commits. A coupled section the
+run would leave bent too tightly is held as drawn, and the optimizer goes on
+in the same run (`optimize.optimize_chains`). A chain whose result equals
+its selected tracks, and that shares no split track with a changed chain, is
+left out of the commit; nothing is committed when every chain is unchanged
+and no via moved. A selected arc thus stays an arc only in a chain left
+exactly as drawn; simplification merges its pieces and the optimizer
+shortens it, so it is nearly always replaced.
 
 Before optimizing, the optimizer refuses a selection whose drawn copper
 starts inside a clearance (`inside`), which raises with nothing committed.

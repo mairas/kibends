@@ -146,7 +146,8 @@ zone of its net touches, is a stitching via. It moves too, even when the
 selection holds no tracks or only locked ones. It has no length to
 shorten, so only the copper around it moves it: it backs away from other
 nets' copper close by until the pushes balance. Ground vias are also drawn
-toward signal vias near them ([Return vias](return-vias.md)).
+toward signal vias near them, and toward through-hole signal pins that
+change layers ([Return vias](return-vias.md)).
 
 ### Vias in zones
 
