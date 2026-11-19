@@ -13,6 +13,8 @@ from conftest import (
     PAD_HALF_SIZE,
     TEXT_HALF_HEIGHT,
     TEXT_HALF_WIDTH,
+    TYPELESS,
+    UNKNOWN_TYPE,
     FakeBoard,
     FakeClient,
     kipy_arc,
@@ -43,6 +45,7 @@ from kipy.geometry import Vector2
 from kipy.proto.board.board_types_pb2 import BoardLayer as BL
 from kipy.proto.board.board_types_pb2 import PadType, ViaType, ZoneType
 from kipy.proto.common import ApiStatusCode
+from kipy.proto.common.types import KIID
 from kipy.util.board_layer import iter_copper_layers
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
@@ -269,6 +272,26 @@ class TestReadSelection:
         with pytest.raises(SelectionError, match="no tracks or vias"):
             read_selection(board(FakeBoard()))
 
+    def test_ignores_items_kipy_cannot_read(self) -> None:
+        track = kipy_track("a", "SIG", (0, 0), (1, 0))
+        fake = FakeBoard(selection=[track], unreadable=[TYPELESS, UNKNOWN_TYPE])
+
+        assert [s.id for s in read_selection(board(fake)).segments] == ["a"]
+
+    def test_a_group_reads_its_members_kipy_can_read(self) -> None:
+        track = kipy_track("a", "SIG", (0, 0), (1, 0))
+        group = kipy_group("g", [track])
+        group.proto.items.extend([KIID(value="table"), KIID(value="mark")])
+        fake = FakeBoard(
+            selection=[group],
+            tracks=[track],
+            unreadable_members={"table": UNKNOWN_TYPE, "mark": TYPELESS},
+        )
+
+        (segment,) = read_selection(board(fake)).segments
+
+        assert (segment.id, segment.held) == ("a", True)
+
     def test_is_not_the_whole_board(self) -> None:
         fake = FakeBoard(selection=[kipy_track("a", "SIG", (0, 0), (1, 0))])
 
@@ -356,6 +379,17 @@ class TestReadBoard:
 
         assert segment.held
 
+    def test_a_group_member_kipy_cannot_read_is_skipped(self) -> None:
+        fake = whole_board_fake()
+        group = kipy_group("g", [fake.tracks[0]])
+        group.proto.items.append(KIID(value="table"))
+        fake.groups = [group]
+        fake.unreadable_members = {"table": TYPELESS}
+
+        held = {s.id: s.held for s in read_board(board(fake)).segments}
+
+        assert held == {"a": True, "b": False}
+
     def test_an_empty_board_is_an_error(self) -> None:
         fake = FakeBoard(
             selection=[kipy_track("x", "SIG", (0, 0), (1, 0))],
@@ -383,6 +417,13 @@ class TestReadSelectionElseBoard:
 
     def test_a_selection_without_copper_is_an_error(self) -> None:
         fake = whole_board_fake([kipy_footprint("fp")])
+
+        with pytest.raises(SelectionError, match="selection has no tracks or vias"):
+            read_selection(board(fake), else_board=True)
+
+    def test_a_selection_of_items_without_a_type_is_an_error(self) -> None:
+        fake = whole_board_fake()
+        fake.unreadable = [TYPELESS]
 
         with pytest.raises(SelectionError, match="selection has no tracks or vias"):
             read_selection(board(fake), else_board=True)

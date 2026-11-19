@@ -5,6 +5,7 @@ import kipy.board_types as kbt
 import pytest
 from conftest import (
     BOARD_FILE,
+    TYPELESS,
     FakeBoard,
     FakeKiCad,
     kipy_arc,
@@ -62,6 +63,12 @@ class TestSelection:
     def test_a_selection_without_copper_counts_none(self) -> None:
         board = ten_tracks_four_vias()
         board.selection = [kipy_footprint("U1")]
+
+        assert prober(board)(None).selected == Counts(0, 0)
+
+    def test_items_kicad_sends_without_a_type_count_none(self) -> None:
+        board = ten_tracks_four_vias()
+        board.unreadable = [TYPELESS]
 
         assert prober(board)(None).selected == Counts(0, 0)
 

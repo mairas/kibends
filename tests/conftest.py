@@ -23,6 +23,7 @@ import kipy.board_types as kbt
 import numpy as np
 import pytest
 import shapely
+from google.protobuf import any_pb2
 from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import ArcStartMidEnd, PolygonWithHoles, PolyLineNode, Vector2
@@ -37,6 +38,9 @@ from kipy.proto.common.commands.editor_commands_pb2 import (
     CreateItemsResponse,
     DeleteItems,
     DeleteItemsResponse,
+    GetItemsById,
+    GetItemsResponse,
+    GetSelection,
     ItemDeletionStatus,
     ItemStatusCode,
     SelectionResponse,
@@ -843,14 +847,28 @@ def _text_box(x: float, y: float) -> base_types_pb2.GraphicShape:
     return shape
 
 
+TYPELESS = any_pb2.Any()
+"""A selected item as KiCad sends kinds it does not serialize."""
+UNKNOWN_TYPE = any_pb2.Any(type_url="type.googleapis.com/kiapi.board.types.Unknown")
+"""A selected item of a kind kipy has no type for."""
+
+
 @dataclass
 class FakeClient:
-    """Renders every text as a filled box of 2 x 1 mm around its position."""
+    """Answers GetSelection with `board`'s selection, and renders every text
+    as a filled box of 2 x 1 mm around its position."""
 
     error: Exception | None = None
     renders: int = 0
+    board: FakeBoard | None = None
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
+        if isinstance(command, GetSelection):
+            assert self.board is not None
+            return self.board.answer_selection(command)
+        if isinstance(command, GetItemsById):
+            assert self.board is not None
+            return self.board.answer_items_by_id(command)
         assert isinstance(command, base_commands_pb2.GetTextAsShapes)
         self.renders += 1
         if self.error is not None:
@@ -885,6 +903,14 @@ class FakeBoard:
     """Answers the reads the snapshot makes; `reads` counts them by method."""
 
     selection: list[Wrapper] = field(default_factory=list[Wrapper])
+    unreadable: list[any_pb2.Any] = field(default_factory=list[any_pb2.Any])
+    """More selected items, as KiCad sends them, that kipy cannot read
+    (`TYPELESS`, `UNKNOWN_TYPE`)."""
+    unreadable_members: dict[str, any_pb2.Any] = field(
+        default_factory=dict[str, any_pb2.Any]
+    )
+    """Items by id that a fetch by id finds and kipy cannot read, as group
+    members."""
     pads: list[kbt.Pad] = field(default_factory=list[kbt.Pad])
     vias: list[kbt.Via] = field(default_factory=list[kbt.Via])
     tracks: list[kbt.Track | kbt.ArcTrack] = field(
@@ -931,15 +957,37 @@ class FakeBoard:
         x, y = self.grid_origin
         return Vector2.from_xy(round(x * NM_PER_MM), round(y * NM_PER_MM))
 
-    def get_selection(self) -> list[Wrapper]:
+    def __post_init__(self) -> None:
+        self.client.board = self
+
+    def answer_selection(self, command: GetSelection) -> SelectionResponse:
         self.reads["get_selection"] += 1
-        return self.selection
+        assert command.header.document == self.document
+        response = SelectionResponse()
+        response.items.extend(pack_any(i.proto) for i in self.selection)
+        response.items.extend(self.unreadable)
+        return response
+
+    def answer_items_by_id(self, command: GetItemsById) -> GetItemsResponse:
+        assert command.header.document == self.document
+        self.reads["get_items_by_id"] += 1
+        wanted = {i.value for i in command.items}
+        items = [*self.tracks, *self.vias, *self.groups, *self.patterns]
+        response = GetItemsResponse()
+        response.items.extend(pack_any(i.proto) for i in items if i.id.value in wanted)
+        response.items.extend(
+            item
+            for i in command.items
+            if (item := self.unreadable_members.get(i.value)) is not None
+        )
+        return response
 
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
-        self.reads["get_items_by_id"] += 1
-        wanted = {i.value for i in ids}
-        items = [*self.tracks, *self.vias, *self.groups, *self.patterns]
-        return [i for i in items if i.id.value in wanted]
+        """As kipy reads the answer, failing on items it cannot read."""
+        command = GetItemsById()
+        command.header.document.CopyFrom(self.document)
+        command.items.extend(ids)
+        return [kbt.unwrap(i) for i in self.answer_items_by_id(command).items]
 
     def get_as_string(self) -> str:
         self.reads["get_as_string"] += 1
@@ -1053,16 +1101,15 @@ COMMIT_CALLS = ["begin_commit", "delete", "create", "push_commit", "select"]
 class CommitClient(FakeClient):
     """Answers the item commands commit.py sends directly, besides text shapes."""
 
-    board: CommitBoard | None = None
-
     def send(self, command: Message, response_type: type[Message]) -> Message:
-        assert self.board is not None
+        board = self.board
+        assert isinstance(board, CommitBoard)
         if isinstance(command, CreateItems):
-            return self.board.answer_create(command)
+            return board.answer_create(command)
         if isinstance(command, DeleteItems):
-            return self.board.answer_delete(command)
+            return board.answer_delete(command)
         if isinstance(command, AddToSelection):
-            return self.board.answer_select(command)
+            return board.answer_select(command)
         return super().send(command, response_type)
 
 
@@ -1100,7 +1147,8 @@ class CommitBoard(FakeBoard):
     select_error: BaseException | None = None
 
     def __post_init__(self) -> None:
-        self.client = CommitClient(board=self)
+        self.client = CommitClient()
+        super().__post_init__()
 
     def begin_commit(self) -> Commit:
         self.calls.append("begin_commit")

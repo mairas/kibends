@@ -1405,7 +1405,9 @@ class TestScope:
         assert board.calls == [c for c in COMMIT_CALLS if c != "select"]
         assert board.selected_ids() == ["v"]
 
-    @pytest.mark.parametrize("call", ["get_groups", "get_items_by_id", "get_as_string"])
+    @pytest.mark.parametrize(
+        "call", ["get_groups", "answer_items_by_id", "get_as_string"]
+    )
     @pytest.mark.parametrize(
         ("error", "expected"),
         [
