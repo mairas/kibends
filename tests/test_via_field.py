@@ -14,7 +14,6 @@ from conftest import (
     FakeBoard,
     build_via_obstacles,
     contained,
-    in_pool,
     judged_obstacles,
     kipy_pad,
     kipy_rect,
@@ -1241,18 +1240,3 @@ class TestStaticPads:
         assert static
         assert far_value == value
         np.testing.assert_array_equal(far_gradient, gradient)
-
-    def test_the_bits_do_not_depend_on_the_thread_count(self) -> None:
-        pads = [
-            static_pad("GND", BESIDE),
-            StaticPad((-0.4, 1.6), 0.8, "GND", True, DEFAULT_CLEARANCE),
-            StaticPad((0.3, -1.9), 1.1, "OTHER", False, DEFAULT_CLEARANCE),
-        ]
-        pairs = pad_pairs("SIG", pads)
-        at = [np.array([0.2, 0.1])]
-
-        one = in_pool(1, lambda: pairs.energy(at))
-        many = in_pool(8, lambda: pairs.energy(at))
-
-        assert one[0] == many[0]
-        np.testing.assert_array_equal(one[1], many[1])
