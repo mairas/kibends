@@ -4212,6 +4212,18 @@ class TestViaClasses:
         assert pad_reads == [False]
         assert optimized.static_pads == ()
 
+    def test_without_a_via_no_pad_is_static_nor_read_for(
+        self, connect: Connector, optimized: Optimized, pad_reads: list[bool]
+    ) -> None:
+        board = l_board()
+        board.pads.append(pth("ground", "GND", (1, 8)))
+        connect.to(board)
+
+        run("--dry-run")
+
+        assert pad_reads == [False]
+        assert optimized.static_pads == ()
+
     @pytest.mark.parametrize(
         ("layers", "drawn"),
         [((BL.BL_F_Cu, BL.BL_B_Cu), True), ((BL.BL_F_Cu,), False)],
