@@ -124,14 +124,23 @@ pub struct PairPad {
     pub clearance: f64,
 }
 
-/// How moving `given` and `pad` interact in the pairwise term: a ground
-/// side and a regular one attract (`PairKind::Return`, with no obstacle
-/// term), a ground via spreads from a pad of its net; None otherwise.
-pub fn pad_kind(given: &PairVia, pad: &PairPad) -> Option<PairKind> {
+/// How a moving via and a pad interact in the pairwise term.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadKind {
+    /// A ground side and a regular one: the attraction alone.
+    Attract,
+    /// A ground via and a pad of its net: the repulsion alone, beyond the
+    /// via's ring and the larger netclass clearance.
+    Spread,
+}
+
+/// How moving `given` and `pad` interact in the pairwise term; None if
+/// they do not.
+pub fn pad_kind(given: &PairVia, pad: &PairPad) -> Option<PadKind> {
     if given.via.net == pad.net {
-        return given.ground.then_some(PairKind::Spread);
+        return given.ground.then_some(PadKind::Spread);
     }
-    (given.ground != pad.ground).then_some(PairKind::Return)
+    (given.ground != pad.ground).then_some(PadKind::Attract)
 }
 
 /// The closest a via's centre may come to another net's plated barrel by
@@ -171,12 +180,12 @@ fn py_max(a: f64, b: f64) -> f64 {
 }
 
 /// By moving via, then standing item, how they pair.
-type Kinds = Vec<Vec<Option<PairKind>>>;
+type Kinds<K> = Vec<Vec<Option<K>>>;
 
 /// The `items` standing still that pair with some moving via, and by
 /// moving via how it pairs with each of them, from how it pairs with each
 /// of `items` (`kinds`).
-fn met_only<T>(items: Vec<T>, kinds: Kinds) -> (Vec<T>, Kinds) {
+fn met_only<T, K>(items: Vec<T>, kinds: Kinds<K>) -> (Vec<T>, Kinds<K>) {
     let met: Vec<bool> = (0..items.len())
         .map(|s| kinds.iter().any(|row| row[s].is_some()))
         .collect();
@@ -200,15 +209,19 @@ fn met_only<T>(items: Vec<T>, kinds: Kinds) -> (Vec<T>, Kinds) {
 type StaticPoint = GeomWithData<[f64; 2], usize>;
 
 /// The items of `tree` whose centres lie within `reach` of `at` and that
-/// pair with the moving via whose row of kinds is `row`, in the order
-/// they stand.
-fn near(tree: &RTree<StaticPoint>, row: &[Option<PairKind>], at: V2, reach: f64) -> Vec<usize> {
-    let mut found: Vec<usize> = tree
+/// pair with the moving via whose row of kinds is `row`, each with how it
+/// pairs, in the order they stand.
+fn near<K: Copy>(
+    tree: &RTree<StaticPoint>,
+    row: &[Option<K>],
+    at: V2,
+    reach: f64,
+) -> Vec<(usize, K)> {
+    let mut found: Vec<(usize, K)> = tree
         .locate_within_distance(at.array(), reach * reach)
-        .map(|s| s.data)
-        .filter(|&s| row[s].is_some())
+        .filter_map(|s| row[s.data].map(|kind| (s.data, kind)))
         .collect();
-    found.sort_unstable();
+    found.sort_unstable_by_key(|&(s, _)| s);
     found
 }
 
@@ -233,7 +246,7 @@ pub struct ViaPairs {
     /// The vias standing still that pair with some moving via.
     statics: Vec<PairVia>,
     /// By moving via, then static via, how they pair.
-    static_kinds: Kinds,
+    static_kinds: Kinds<PairKind>,
     tree: RTree<StaticPoint>,
     /// By moving via, how far from its centre a static via may give it
     /// energy.
@@ -241,7 +254,7 @@ pub struct ViaPairs {
     /// The pads that pair with some moving via.
     pads: Vec<PairPad>,
     /// By moving via, then pad, how they pair.
-    pad_kinds: Kinds,
+    pad_kinds: Kinds<PadKind>,
     pad_tree: RTree<StaticPoint>,
     /// By moving via, how far from its centre a pad's centre may give it
     /// energy.
@@ -312,7 +325,7 @@ impl ViaPairs {
         for p in &pairs {
             paired[p.first].insert(p.second);
         }
-        let all_kinds: Kinds = vias
+        let all_kinds: Kinds<PairKind> = vias
             .iter()
             .map(|v| {
                 statics
@@ -413,10 +426,7 @@ impl ViaPairs {
         if !self.statics.is_empty() {
             for (k, &at) in positions.iter().enumerate() {
                 let row = &self.static_kinds[k];
-                for s in near(&self.tree, row, at, self.static_reach[k]) {
-                    let Some(kind) = row[s] else {
-                        continue;
-                    };
+                for (s, kind) in near(&self.tree, row, at, self.static_reach[k]) {
                     let other = &self.statics[s];
                     let apart = if kind == PairKind::Spread {
                         spread(&self.vias[k], other)
@@ -435,10 +445,7 @@ impl ViaPairs {
         if !self.pads.is_empty() {
             for (k, &at) in positions.iter().enumerate() {
                 let row = &self.pad_kinds[k];
-                for s in near(&self.pad_tree, row, at, self.pad_reach[k]) {
-                    let Some(kind) = row[s] else {
-                        continue;
-                    };
+                for (s, kind) in near(&self.pad_tree, row, at, self.pad_reach[k]) {
                     let (value, push) = self.pad_term(k, at, &self.pads[s], kind);
                     values.push(value);
                     from_static[k] = from_static[k] + push;
@@ -474,17 +481,18 @@ impl ViaPairs {
     /// centre distance less the pad's drill radius: the attraction alone,
     /// or the repulsion alone beyond the via's ring and the larger
     /// netclass clearance, as `spread` gives two vias.
-    fn pad_term(&self, k: usize, at: V2, pad: &PairPad, kind: PairKind) -> (f64, V2) {
+    fn pad_term(&self, k: usize, at: V2, pad: &PairPad, kind: PadKind) -> (f64, V2) {
         let given = &self.vias[k];
         let delta = at - pad.position;
         let r = delta.norm();
         let barrel = r - pad.drill / 2.0;
-        let (value, slope) = if kind == PairKind::Spread {
-            let ring = given.via.diameter / 2.0;
-            self.repulsion
-                .at(barrel - (ring + py_max(given.clearance, pad.clearance)))
-        } else {
-            self.attraction.at(barrel, self.pad_limits[k])
+        let (value, slope) = match kind {
+            PadKind::Spread => {
+                let ring = given.via.diameter / 2.0;
+                self.repulsion
+                    .at(barrel - (ring + py_max(given.clearance, pad.clearance)))
+            }
+            PadKind::Attract => self.attraction.at(barrel, self.pad_limits[k]),
         };
         weighted(given.via.diameter, value, slope, delta, r)
     }
