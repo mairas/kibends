@@ -44,6 +44,7 @@ from typing import NamedTuple, cast
 import kipy.board
 import kipy.board_types as kbt
 import shapely
+from google.protobuf.any_pb2 import Any as AnyMessage
 from google.protobuf.message import Message
 from kipy import common_types
 from kipy.errors import ApiError
@@ -57,6 +58,10 @@ from kipy.proto.board.board_types_pb2 import (
 )
 from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import base_commands_pb2
+from kipy.proto.common.commands.editor_commands_pb2 import (
+    GetSelection,
+    SelectionResponse,
+)
 from kipy.proto.common.types import KIID
 from kipy.util.board_layer import (
     canonical_name,
@@ -617,7 +622,7 @@ def read_selection(board: kipy.board.Board, *, else_board: bool = False) -> Sele
     and those of the groups in it, at any depth (`_grouped`): its tracks
     and arcs are held as drawn (`Segment.held`), and its vias stay fixed as
     locked ones do."""
-    items = board.get_selection()
+    items = selected_items(board)
     if not items and else_board:
         return read_board(board)
     held = _grouped(board, [i for i in items if isinstance(i, kbt.Group)])
@@ -632,6 +637,24 @@ def read_selection(board: kipy.board.Board, *, else_board: bool = False) -> Sele
 _GENERATED = re.compile(r'\(generated\s+\(uuid "([^"]+)"\)')
 """The uuid of each generator, such as a tuning pattern, in KiCad's board
 file text."""
+
+
+def selected_items(board: kipy.board.Board) -> list[Wrapper | None]:
+    """The selected items, None for each that kipy cannot read.
+
+    KiCad sends some selected kinds without a type, and kipy's
+    get_selection fails on those and on kinds it does not know."""
+    command = GetSelection()
+    command.header.document.CopyFrom(board.document)
+    response = board.client.send(command, SelectionResponse)
+    return [_unwrapped(item) for item in response.items]
+
+
+def _unwrapped(item: AnyMessage) -> Wrapper | None:
+    try:
+        return kbt.unwrap(item)
+    except ValueError, NotImplementedError:
+        return None
 
 
 def read_board(board: kipy.board.Board) -> Selection:
@@ -657,7 +680,7 @@ def read_board(board: kipy.board.Board) -> Selection:
 
 
 def _selection(
-    board: kipy.board.Board, items: Iterable[tuple[Wrapper, bool]]
+    board: kipy.board.Board, items: Iterable[tuple[Wrapper | None, bool]]
 ) -> Selection | None:
     """The tracks, arcs and vias among `items`, each with whether it is
     held; None when there are none."""

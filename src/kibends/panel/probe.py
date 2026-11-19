@@ -10,7 +10,13 @@ import kipy
 from kipy.errors import ConnectionError as KiCadConnectionError
 
 from kibends.run import KICAD_TIMEOUT_MS, open_board
-from kibends.snapshot import BoardSnapshot, GroundNets, SelectionError, read_selection
+from kibends.snapshot import (
+    BoardSnapshot,
+    GroundNets,
+    SelectionError,
+    read_selection,
+    selected_items,
+)
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,7 @@ class Prober:
             ground = BoardSnapshot.read(board, ()).ground_nets()
             totals = Totals(len(board.get_tracks()), len(board.get_vias()), ground)
         selected = None
-        if board.get_selection():
+        if selected_items(board):
             try:
                 selection = read_selection(board)
                 selected = Counts(

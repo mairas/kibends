@@ -23,6 +23,7 @@ import kipy.board_types as kbt
 import numpy as np
 import pytest
 import shapely
+from google.protobuf import any_pb2
 from google.protobuf.message import Message
 from kipy.common_types import Commit, Text, TextBox
 from kipy.geometry import ArcStartMidEnd, PolygonWithHoles, PolyLineNode, Vector2
@@ -37,6 +38,7 @@ from kipy.proto.common.commands.editor_commands_pb2 import (
     CreateItemsResponse,
     DeleteItems,
     DeleteItemsResponse,
+    GetSelection,
     ItemDeletionStatus,
     ItemStatusCode,
     SelectionResponse,
@@ -845,12 +847,17 @@ def _text_box(x: float, y: float) -> base_types_pb2.GraphicShape:
 
 @dataclass
 class FakeClient:
-    """Renders every text as a filled box of 2 x 1 mm around its position."""
+    """Answers GetSelection with `board`'s selection, and renders every text
+    as a filled box of 2 x 1 mm around its position."""
 
     error: Exception | None = None
     renders: int = 0
+    board: FakeBoard | None = None
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
+        if isinstance(command, GetSelection):
+            assert self.board is not None
+            return self.board.answer_selection(command)
         assert isinstance(command, base_commands_pb2.GetTextAsShapes)
         self.renders += 1
         if self.error is not None:
@@ -885,6 +892,9 @@ class FakeBoard:
     """Answers the reads the snapshot makes; `reads` counts them by method."""
 
     selection: list[Wrapper] = field(default_factory=list[Wrapper])
+    unreadable: int = 0
+    """How many more items are selected that KiCad sends without a type,
+    as it does for some kinds it does not serialize."""
     pads: list[kbt.Pad] = field(default_factory=list[kbt.Pad])
     vias: list[kbt.Via] = field(default_factory=list[kbt.Via])
     tracks: list[kbt.Track | kbt.ArcTrack] = field(
@@ -931,9 +941,16 @@ class FakeBoard:
         x, y = self.grid_origin
         return Vector2.from_xy(round(x * NM_PER_MM), round(y * NM_PER_MM))
 
-    def get_selection(self) -> list[Wrapper]:
+    def __post_init__(self) -> None:
+        self.client.board = self
+
+    def answer_selection(self, command: GetSelection) -> SelectionResponse:
         self.reads["get_selection"] += 1
-        return self.selection
+        assert command.header.document == self.document
+        response = SelectionResponse()
+        response.items.extend(pack_any(i.proto) for i in self.selection)
+        response.items.extend(any_pb2.Any() for _ in range(self.unreadable))
+        return response
 
     def get_items_by_id(self, ids: Sequence[KIID]) -> list[Wrapper]:
         self.reads["get_items_by_id"] += 1
@@ -1053,16 +1070,16 @@ COMMIT_CALLS = ["begin_commit", "delete", "create", "push_commit", "select"]
 class CommitClient(FakeClient):
     """Answers the item commands commit.py sends directly, besides text shapes."""
 
-    board: CommitBoard | None = None
+    commit_board: CommitBoard | None = None
 
     def send(self, command: Message, response_type: type[Message]) -> Message:
-        assert self.board is not None
+        assert self.commit_board is not None
         if isinstance(command, CreateItems):
-            return self.board.answer_create(command)
+            return self.commit_board.answer_create(command)
         if isinstance(command, DeleteItems):
-            return self.board.answer_delete(command)
+            return self.commit_board.answer_delete(command)
         if isinstance(command, AddToSelection):
-            return self.board.answer_select(command)
+            return self.commit_board.answer_select(command)
         return super().send(command, response_type)
 
 
@@ -1100,7 +1117,8 @@ class CommitBoard(FakeBoard):
     select_error: BaseException | None = None
 
     def __post_init__(self) -> None:
-        self.client = CommitClient(board=self)
+        self.client = CommitClient(commit_board=self)
+        super().__post_init__()
 
     def begin_commit(self) -> Commit:
         self.calls.append("begin_commit")

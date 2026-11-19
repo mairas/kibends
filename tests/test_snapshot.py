@@ -269,6 +269,12 @@ class TestReadSelection:
         with pytest.raises(SelectionError, match="no tracks or vias"):
             read_selection(board(FakeBoard()))
 
+    def test_ignores_items_kicad_sends_without_a_type(self) -> None:
+        track = kipy_track("a", "SIG", (0, 0), (1, 0))
+        fake = FakeBoard(selection=[track], unreadable=2)
+
+        assert [s.id for s in read_selection(board(fake)).segments] == ["a"]
+
     def test_is_not_the_whole_board(self) -> None:
         fake = FakeBoard(selection=[kipy_track("a", "SIG", (0, 0), (1, 0))])
 
@@ -383,6 +389,13 @@ class TestReadSelectionElseBoard:
 
     def test_a_selection_without_copper_is_an_error(self) -> None:
         fake = whole_board_fake([kipy_footprint("fp")])
+
+        with pytest.raises(SelectionError, match="selection has no tracks or vias"):
+            read_selection(board(fake), else_board=True)
+
+    def test_a_selection_of_items_without_a_type_is_an_error(self) -> None:
+        fake = whole_board_fake()
+        fake.unreadable = 1
 
         with pytest.raises(SelectionError, match="selection has no tracks or vias"):
             read_selection(board(fake), else_board=True)

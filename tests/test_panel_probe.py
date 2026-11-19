@@ -65,6 +65,12 @@ class TestSelection:
 
         assert prober(board)(None).selected == Counts(0, 0)
 
+    def test_items_kicad_sends_without_a_type_count_none(self) -> None:
+        board = ten_tracks_four_vias()
+        board.unreadable = 1
+
+        assert prober(board)(None).selected == Counts(0, 0)
+
 
 class TestBoard:
     def test_names_the_board(self) -> None:
