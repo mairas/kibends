@@ -1544,6 +1544,183 @@ class TestGroundNets:
         assert fake.reads == reads
 
 
+FOUR_LAYERS = [BL.BL_F_Cu, BL.BL_In1_Cu, BL.BL_In2_Cu, BL.BL_B_Cu]
+PAD_AT = (5.0, 5.0)
+
+
+def pth(pad_id: str = "p", net: str = "SIG") -> kbt.Pad:
+    """A plated through-hole pad at PAD_AT with copper on FOUR_LAYERS."""
+    return kipy_pad(
+        pad_id, net, *PAD_AT, layers=FOUR_LAYERS, pad_type=PadType.PT_PTH, drill=0.3
+    )
+
+
+def to_pad(
+    track_id: str, layer: BL.ValueType, net: str = "SIG", end_x: float = PAD_AT[0]
+) -> kbt.Track:
+    """A track along y = PAD_AT's y from x = 0 to `end_x`."""
+    return kipy_track(track_id, net, (0, PAD_AT[1]), (end_x, PAD_AT[1]), layer=layer)
+
+
+def four_layer_board(
+    *copper: kbt.Track | kbt.ArcTrack | kbt.Zone, pads: Sequence[kbt.Pad] = ()
+) -> FakeBoard:
+    """`pads`, or one SIG PTH pad at PAD_AT, with `copper` on a board of
+    four copper layers."""
+    return FakeBoard(
+        pads=list(pads) or [pth()],
+        tracks=[c for c in copper if not isinstance(c, kbt.Zone)],
+        zones=[c for c in copper if isinstance(c, kbt.Zone)],
+        enabled_layers=FOUR_LAYERS,
+    )
+
+
+def read_four_layers(fake: FakeBoard, *, pad_connections: bool) -> BoardSnapshot:
+    return BoardSnapshot.read(
+        board(fake), ["F.Cu"], every_copper_layer=True, pad_connections=pad_connections
+    )
+
+
+def pad_connections(
+    *copper: kbt.Track | kbt.ArcTrack | kbt.Zone, pads: Sequence[kbt.Pad] = ()
+) -> Mapping[str, frozenset[str]]:
+    fake = four_layer_board(*copper, pads=pads)
+    return read_four_layers(fake, pad_connections=True).pad_connections
+
+
+def spy_regions(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The layers of the zone regions built from now on, in order."""
+    built: list[str] = []
+    region = snapshot_module._zone_region  # pyright: ignore[reportPrivateUsage]
+
+    def spy(zones: Sequence[kbt.Zone], zone: kbt.Zone, layer: str) -> BaseGeometry:
+        built.append(layer)
+        return region(zones, zone, layer)
+
+    monkeypatch.setattr(snapshot_module, "_zone_region", spy)
+    return built
+
+
+class TestPadConnections:
+    def test_tracks_on_two_layers_connect_it_on_both(self) -> None:
+        found = pad_connections(to_pad("f", BL.BL_F_Cu), to_pad("b", BL.BL_B_Cu))
+
+        assert found == {"p": {"F.Cu", "B.Cu"}}
+
+    def test_a_zone_of_its_net_reaching_it_connects_it_there(self) -> None:
+        zone = kipy_copper_zone("plane", "SIG", PLANE, [BL.BL_In1_Cu])
+
+        found = pad_connections(to_pad("f", BL.BL_F_Cu), zone)
+
+        assert found == {"p": {"F.Cu", "In1.Cu"}}
+
+    def test_one_track_connects_it_on_one_layer(self) -> None:
+        assert pad_connections(to_pad("f", BL.BL_F_Cu)) == {"p": {"F.Cu"}}
+
+    def test_an_arc_counts_by_its_chords(self) -> None:
+        arc = kipy_arc("a", "SIG", (0, 5), (2.5, 4), PAD_AT, layer=BL.BL_B_Cu)
+
+        assert pad_connections(arc) == {"p": {"B.Cu"}}
+
+    @pytest.mark.parametrize(
+        ("end_x", "connected"),
+        # The pad's copper starts at x = 4.75; the track is 0.25 wide.
+        [(4.6, False), (4.65, True)],
+        ids=["short of it", "copper overlapping"],
+    )
+    def test_a_track_connects_where_its_copper_reaches_the_pad(
+        self, end_x: float, connected: bool
+    ) -> None:
+        found = pad_connections(to_pad("f", BL.BL_F_Cu, end_x=end_x))
+
+        assert found == {"p": {"F.Cu"} if connected else set()}
+
+    def test_a_zone_ending_short_of_it_does_not_count(self) -> None:
+        zone = kipy_copper_zone(
+            "plane", "SIG", kipy_rect(0, 0, 4.5, 10), [BL.BL_In1_Cu]
+        )
+
+        assert pad_connections(zone) == {"p": set()}
+
+    def test_a_zone_kept_out_of_it_does_not_count(self) -> None:
+        zone = kipy_copper_zone("plane", "SIG", PLANE, [BL.BL_In1_Cu])
+        area = kipy_zone(
+            kipy_rect(4, 4, 6, 6), [BL.BL_In1_Cu], keepout_tracks=False, zone_id="ko"
+        )
+        area.proto.rule_area_settings.keepout_copper = True
+
+        assert pad_connections(zone, area) == {"p": set()}
+
+    def test_copper_of_another_net_does_not_count(self) -> None:
+        zone = kipy_copper_zone("plane", "PWR", PLANE, [BL.BL_In1_Cu])
+
+        found = pad_connections(to_pad("f", BL.BL_F_Cu, "PWR"), zone)
+
+        assert found == {"p": set()}
+
+    def test_only_plated_through_hole_pads_with_a_net_are_judged(self) -> None:
+        pads = [
+            pth(),
+            pth("no-net", ""),
+            kipy_pad("smd", "SIG", *PAD_AT, pad_type=PadType.PT_SMD),
+            kipy_pad(
+                "npth", "SIG", *PAD_AT, layers=FOUR_LAYERS, pad_type=PadType.PT_NPTH
+            ),
+        ]
+
+        found = pad_connections(to_pad("f", BL.BL_F_Cu), pads=pads)
+
+        assert found == {"p": {"F.Cu"}}
+
+    def test_ground_pads_are_judged_too(self) -> None:
+        """The ground nets come from this same read, so the caller leaves
+        them out."""
+        found = pad_connections(to_pad("f", BL.BL_F_Cu, "GND"), pads=[pth("g", "GND")])
+
+        assert found == {"g": {"F.Cu"}}
+
+    @pytest.mark.parametrize("asked", [True, False])
+    def test_it_makes_no_request_and_builds_no_region_unless_asked(
+        self, asked: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def board_with_plane() -> FakeBoard:
+            zone = kipy_copper_zone("plane", "SIG", PLANE, [BL.BL_In1_Cu])
+            return four_layer_board(to_pad("f", BL.BL_F_Cu), zone)
+
+        unasked = board_with_plane()
+        read_four_layers(unasked, pad_connections=False)
+        built = spy_regions(monkeypatch)
+        fake = board_with_plane()
+
+        snap = read_four_layers(fake, pad_connections=asked)
+
+        assert fake.reads == unasked.reads
+        assert built == (["In1.Cu"] if asked else [])
+        assert snap.pad_connections == ({"p": {"F.Cu", "In1.Cu"}} if asked else {})
+
+    def test_vias_and_pads_share_each_region(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built = spy_regions(monkeypatch)
+        via = kipy_via("v", "SIG", 2, 5)
+        fake = four_layer_board(kipy_copper_zone("plane", "SIG", PLANE, [BL.BL_In1_Cu]))
+        fake.vias = [via]
+        fake.selection = [via, kipy_track("t", "SIG", (2, 5), (4, 5))]
+        selected = read_selection(board(fake)).vias
+
+        snap = BoardSnapshot.read(
+            board(fake),
+            ["F.Cu"],
+            selected,
+            every_copper_layer=True,
+            pad_connections=True,
+        )
+
+        assert [z.layers for z in snap.via_zones["v"]] == [("In1.Cu",)]
+        assert snap.pad_connections == {"p": {"In1.Cu"}}
+        assert built == ["In1.Cu"]
+
+
 class TestGeometryHelpers:
     def test_arc_points_keep_exact_endpoints_and_pass_through_mid(self) -> None:
         start, mid, end = (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)
