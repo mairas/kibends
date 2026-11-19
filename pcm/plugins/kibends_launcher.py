@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, TextIO
 
-REQUIRED_VERSION = "0.2.2"
+REQUIRED_VERSION = "0.3.0"
 PACKAGE = f"kibends[gui]>={REQUIRED_VERSION}"
 PYTHON = "3.14"
 """The Python uv installs kibends for. Without it uv takes the newest Python

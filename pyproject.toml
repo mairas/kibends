@@ -1,6 +1,6 @@
 [project]
 name = "kibends"
-version = "0.2.2"
+version = "0.3.0"
 authors = [{ name = "Matti Airas", email = "matti.airas@hatlabs.fi" }]
 description = "Smooth KiCad tracks into short, clearance-keeping paths"
 readme = "README.md"
