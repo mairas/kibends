@@ -18,6 +18,12 @@ from outlines and priorities alone (`_zone_region`). Where such a via may
 go is `vias`' to decide (`ZoneUnion`, `zone_unions`). Thermal reliefs,
 island removal, hatched fills and minimum-width necks are not modelled.
 
+Asked for (`with_pad_connections`), the read also records on which copper
+layers each plated through-hole pad connects to copper of its net: a track
+whose copper meets the pad's there, or a zone whose region there meets it
+(`_pad_connections`), as kistitch's `returnvia` counts the layers a layer
+change connects on. Vias and pads share each zone region, built once.
+
 The same read records the copper layers each net's zones cover
 (`zone_layers`, rule areas left out) and the nets with zones, vias or pads
 (`copper_nets`). From these `BoardSnapshot.ground_nets` resolves the
@@ -470,6 +476,10 @@ class BoardSnapshot:
     out."""
     copper_nets: frozenset[str]
     """The nets with a copper zone, a via or a pad on the board."""
+    pad_connections: Mapping[str, frozenset[str]]
+    """By id of every plated through-hole pad with a net, when the read was
+    asked for them: the copper layers read on which a track or copper zone
+    of its net connects to it (`_pad_connections`); empty otherwise."""
 
     @classmethod
     def read(
@@ -480,11 +490,16 @@ class BoardSnapshot:
         *,
         carried: Mapping[str, Sequence[Disc]] | None = None,
         every_copper_layer: bool = False,
+        with_pad_connections: bool = False,
     ) -> BoardSnapshot:
         """Read the board once for the copper layers `layers`, or for every
         copper layer the board enables, and the copper touching
         `selected_vias` or the copper `carried` gives, by via id, as moving
-        with each."""
+        with each; with `with_pad_connections`, also the layers on which each
+        plated through-hole pad connects, from what the read already holds,
+        without a further request. Pads are judged on the layers read only,
+        so a caller judging them on every layer asks for every copper
+        layer."""
         enabled = set(board.get_enabled_layers()) if every_copper_layer else None
         wanted = sorted(
             {*layers, *(canonical_name(L) for L in enabled or () if is_copper_layer(L))}
@@ -524,17 +539,17 @@ class BoardSnapshot:
             *(g.net for gs in graphics.values() for g in gs),
         } - {""}
         clearances = _read_clearances(board, sorted(nets), default_clearance)
+        tracks = {
+            layer: tuple(
+                _read_track(t) for t in all_tracks if canonical_name(t.layer) == layer
+            )
+            for layer in wanted
+        }
+        zone_regions = _ZoneRegions(zones)
         return cls(
             layers=frozenset(wanted),
             pads=pads_by_layer,
-            tracks={
-                layer: tuple(
-                    _read_track(t)
-                    for t in all_tracks
-                    if canonical_name(t.layer) == layer
-                )
-                for layer in wanted
-            },
+            tracks=tracks,
             vias=vias,
             graphics=graphics,
             track_keepouts={
@@ -562,12 +577,17 @@ class BoardSnapshot:
                 ),
                 enabled,
             ),
-            via_zones=_via_zones(zones, selected_vias),
+            via_zones=_via_zones(zone_regions, selected_vias),
             zone_layers=zone_layers,
             copper_nets=frozenset(
                 {*zone_layers, *(v.net for v in vias), *(p.net for p in shapeless)}
             )
             - {""},
+            pad_connections=(
+                _pad_connections(pads_by_layer, tracks, zone_regions)
+                if with_pad_connections
+                else {}
+            ),
         )
 
     def ground_nets(self, given: Collection[str] = ()) -> GroundNets:
@@ -1255,8 +1275,37 @@ def _via_contacts(
     }
 
 
+class _ZoneRegions:
+    """The board's zones, with each outline and region (`_zone_region`)
+    built once, when first asked for, and shared by every via and pad that
+    asks after it."""
+
+    def __init__(self, zones: Sequence[kbt.Zone]) -> None:
+        self.zones = zones
+        self._outlines: dict[int, BaseGeometry] = {}
+        self._regions: dict[tuple[int, str], BaseGeometry] = {}
+
+    def of_net(self, net: str) -> list[tuple[int, kbt.Zone]]:
+        """The copper zones of `net`, with their indices."""
+        return [
+            (k, z)
+            for k, z in enumerate(self.zones)
+            if z.type == ZoneType.ZT_COPPER and z.net is not None and z.net.name == net
+        ]
+
+    def outline(self, k: int) -> BaseGeometry:
+        if k not in self._outlines:
+            self._outlines[k] = _outline(self.zones[k])
+        return self._outlines[k]
+
+    def region(self, k: int, layer: str) -> BaseGeometry:
+        if (k, layer) not in self._regions:
+            self._regions[k, layer] = _zone_region(self.zones, self.zones[k], layer)
+        return self._regions[k, layer]
+
+
 def _via_zones(
-    zones: Sequence[kbt.Zone], vias: Sequence[Via]
+    zones: _ZoneRegions, vias: Sequence[Via]
 ) -> dict[str, tuple[ViaZone, ...]]:
     """By via id, the copper zones of each via's net that may connect to
     it, each with its region on the layers where it may: those the via
@@ -1266,39 +1315,21 @@ def _via_zones(
 
     Fills are never read: a fill holds where other copper stood at the last
     refill. Teardrops are not copper zones: KiCad reapplies them on the next
-    refill. Each region is built once, when a via its outline reaches first
-    asks for it.
+    refill.
     """
-    outlines: dict[int, BaseGeometry] = {}
-    regions: dict[tuple[int, str], BaseGeometry] = {}
-
-    def outline(k: int) -> BaseGeometry:
-        if k not in outlines:
-            outlines[k] = _outline(zones[k])
-        return outlines[k]
-
-    def region(k: int, layer: str) -> BaseGeometry:
-        if (k, layer) not in regions:
-            regions[k, layer] = _zone_region(zones, zones[k], layer)
-        return regions[k, layer]
-
     found: dict[str, tuple[ViaZone, ...]] = {}
     for via in vias:
         centre = Point(via.position)
         ring = via.diameter / 2
         connected: list[ViaZone] = []
-        for k, z in enumerate(zones):
-            if (
-                z.type != ZoneType.ZT_COPPER
-                or z.net is None
-                or z.net.name != via.net
-                or outline(k).distance(centre) > ring
-            ):
+        for k, z in zones.of_net(via.net):
+            if zones.outline(k).distance(centre) > ring:
                 continue
             reached = {
-                layer: region(k, layer)
+                layer: zones.region(k, layer)
                 for layer in (canonical_name(L) for L in sorted(z.layers))
-                if via.reaches(layer) and region(k, layer).distance(centre) <= ring
+                if via.reaches(layer)
+                and zones.region(k, layer).distance(centre) <= ring
             }
             if reached:
                 connected.append(
@@ -1311,6 +1342,52 @@ def _via_zones(
                 )
         found[via.id] = tuple(connected)
     return found
+
+
+def _pad_connections(
+    pads: Mapping[str, Sequence[Pad]],
+    tracks: Mapping[str, Sequence[Track]],
+    zones: _ZoneRegions,
+) -> dict[str, frozenset[str]]:
+    """By id of every plated through-hole pad with a net, the copper layers
+    read on which copper of its net connects to it, as kistitch's
+    `returnvia` counts them: a track whose copper, its centreline (an arc's
+    chords) grown by half its width, meets the pad's copper there, or a
+    copper zone whose region there (`_zone_region`) meets it.
+
+    A layer on which the pad has no copper does not count. Fills are not
+    read, as for `_via_zones`, so a zone counts where the next refill may
+    reach the pad, whatever other-net copper stands between.
+    """
+    found: dict[str, set[str]] = {}
+    for layer, on_layer in pads.items():
+        of_net: dict[str, list[Track]] = defaultdict(list)
+        for t in tracks.get(layer, ()):
+            of_net[t.net].append(t)
+        for pad in on_layer:
+            if pad.kind is not PadKind.PTH or not pad.net:
+                continue
+            connected = found.setdefault(pad.id, set())
+            if pad.shape is None:
+                continue
+            if _tracks_meet(pad.shape, of_net[pad.net]) or any(
+                layer in {canonical_name(L) for L in z.layers}
+                and zones.outline(k).intersects(pad.shape)
+                and zones.region(k, layer).intersects(pad.shape)
+                for k, z in zones.of_net(pad.net)
+            ):
+                connected.add(layer)
+    return {pad_id: frozenset(layers) for pad_id, layers in found.items()}
+
+
+def _tracks_meet(shape: BaseGeometry, tracks: Sequence[Track]) -> bool:
+    """Whether the copper of any of `tracks` meets `shape`."""
+    if not tracks:
+        return False
+    lines = [_touching(t.centreline) for t in tracks]
+    reach = [t.width / 2 for t in tracks]
+    gaps = shapely.distance(lines, shape)  # pyright: ignore[reportUnknownMemberType]
+    return bool((gaps <= reach).any())
 
 
 def _zone_layers(zones: Iterable[kbt.Zone]) -> dict[str, frozenset[str]]:

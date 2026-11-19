@@ -38,7 +38,10 @@ two ground vias of different ground nets, are a pair of two nets
 (`pairs_with`); the vias standing still that a moving via so pairs with
 are held apart from its field (`ViaInput.static_vias`). Ground vias of one
 net stay in its stops, which keep hole-to-hole, and the pairwise term also
-has them repel each other.
+has them repel each other. A plated through-hole pad standing still is a
+ground pad or a regular one by the same rule (`StaticPad`); the pairwise
+term takes it for attraction and spread alone, and it stays in a moving
+via's field.
 """
 
 import dataclasses
@@ -56,7 +59,7 @@ from shapely.geometry.base import BaseGeometry
 
 from kibends import _core
 from kibends.bursts import INSIDE_TOLERANCE
-from kibends.chain import Chain, carries
+from kibends.chain import Chain, Point2, carries
 from kibends.coords import UserFrame
 from kibends.energy import ObstacleField
 from kibends.obstacles import CompositeField, containment, core_via, plain_shapes
@@ -169,6 +172,21 @@ class StaticVia(NamedTuple):
     still, and its class."""
 
     via: Via
+    ground: bool
+    """Whether it is on a ground net."""
+    clearance: float
+    """Its net's netclass clearance, mm."""
+
+
+class StaticPad(NamedTuple):
+    """A plated through-hole pad standing still, as the pairwise term takes
+    it."""
+
+    position: Point2
+    """Its centre, mm."""
+    drill: float
+    """Its drill's diameter, mm."""
+    net: str
     ground: bool
     """Whether it is on a ground net."""
     clearance: float

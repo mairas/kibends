@@ -285,9 +285,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_non_negative,
         default=DEFAULT_ATTRACTION,
         metavar="WEIGHT",
-        help="Weight of the pull between ground vias and other vias, so that "
-        "signal vias keep their return vias near. While it is above 0, ground "
-        "vias of one net also repel each other, with --repulsion and --range. "
+        help="Weight of the pull between ground vias and other vias, and between "
+        "vias and plated through-hole pads, so that signal vias keep their "
+        "return vias near. While it is above 0, ground vias of one net also "
+        "repel each other and that net's pads, with --repulsion and --range. "
         f"0 turns off both (default: {DEFAULT_ATTRACTION:g})",
     )
     smooth_parser.add_argument(
@@ -295,7 +296,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive,
         default=DEFAULT_ATTRACTION_RANGE,
         metavar="MM",
-        help="Centre distance at which that pull fades to zero "
+        help="Distance at which that pull fades to zero: centre to centre "
+        "between vias, from a pad's hole wall to a via's centre "
         f"(default: {DEFAULT_ATTRACTION_RANGE:g})",
     )
     smooth_parser.add_argument(
@@ -449,9 +451,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         nargs="+",
         default=(),
         metavar="NET",
-        help="The ground nets, whose vias are return vias for the other nets' "
-        "vias; by default the nets with copper zones on at least two inner "
-        "layers, else GND if it has copper. Ignored with --attraction 0",
+        help="The ground nets, whose vias and plated through-hole pads are "
+        "returns for the other nets' vias; by default the nets with copper "
+        "zones on at least two inner layers, else GND if it has copper. "
+        "Ignored with --attraction 0",
     )
     _add_verbose(smooth_parser)
     return parser.parse_args(argv)

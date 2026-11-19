@@ -152,9 +152,10 @@ DIGITS = {
 }
 """How many digits wide each line edit is."""
 TIPS = {
-    Field.GROUND_NETS: "Vias of these nets are return vias: other vias are drawn "
-    "toward them, and they spread apart from each other. Separate names with "
-    "commas. Override detection when it picked a power net poured on inner layers.",
+    Field.GROUND_NETS: "Vias and plated through-hole pads of these nets are returns: "
+    "other vias are drawn toward them, and their vias spread apart. Separate "
+    "names with commas. Override detection when it picked a power net poured on "
+    "inner layers.",
     Field.TIME_LIMIT: "How long each spacing level may optimize. When it runs out "
     "at a coarse level, the run moves to the next level and the time starts "
     "again; at the final level, optimizing stops and the best result so far is "
@@ -166,11 +167,14 @@ TIPS = {
     Field.RANGE: "Distance beyond the required clearance at which the push fades "
     "to zero. Copper farther away has no effect.",
     Field.ATTRACTION: "Weight of the pull between ground vias and other vias, so "
-    "that signal vias keep their return vias near. While it is above 0, ground "
-    "vias of one net also push each other apart, with Repulsion's range. 0 turns "
-    "both off, and Ground nets is then ignored.",
-    Field.ATTRACTION_RANGE: "Centre-to-centre distance between a ground via and "
-    "another via at which the pull fades to zero.",
+    "that signal vias keep their return vias near. Plated through-hole pads pull "
+    "too: ground pads draw signal vias, and signal pads connected on two or more "
+    "layers draw ground vias. While it is above 0, ground vias of one net also "
+    "push each other apart, and away from pads of their net, with Repulsion's "
+    "range. 0 turns all of it off, and Ground nets is then ignored.",
+    Field.ATTRACTION_RANGE: "Distance at which the pull fades to zero: centre to "
+    "centre between a ground via and another via, and from a pad's hole wall to "
+    "a via's centre.",
     Field.SPACING: "The optimizer models each track as points joined by straight "
     "edges no longer than the spacing. It runs at each spacing in turn, coarsest "
     "first: with few points, long bowed tracks straighten quickly, and the finer "

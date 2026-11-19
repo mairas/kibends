@@ -77,7 +77,7 @@ from kibends.results import (
 from kibends.seen import Seen, ViaSight
 from kibends.via_moves import FreeDistances, MovingVias
 from kibends.via_pairs import ViaPairs
-from kibends.vias import StaticVia, ViaInput
+from kibends.vias import StaticPad, StaticVia, ViaInput
 
 MAX_ABNORMAL_BURSTS = _core.MAX_ABNORMAL_BURSTS
 """After this many abnormal L-BFGS ends in a row a problem counts as
@@ -195,6 +195,7 @@ def optimize_chains(
     clock: Callable[[], float] = time.monotonic,
     started: float | None = None,
     static_vias: Sequence[StaticVia] = (),
+    static_pads: Sequence[StaticPad] = (),
     to_hold: Callable[[Sequence[PairResult]], Sequence[int]] | None = None,
     stop: Callable[[], bool] | None = None,
     on_progress: Callable[[Progress], None] | None = None,
@@ -209,7 +210,8 @@ def optimize_chains(
     ends come back at one point, loose. A via keeps `hole_clearance` and
     `hole_to_hole` where holes are involved. `static_vias` are the board's
     vias that are none of `vias`; the problem keeps those its moving vias
-    share a layer with.
+    share a layer with. `static_pads` are the plated through-hole pads the
+    pairwise term takes, which every moving via shares a layer with.
 
     `stop` is asked in setup after building the problem and after checking
     where the copper starts, and raises `StoppedInSetupError` if it answers
@@ -311,7 +313,9 @@ def optimize_chains(
     if not _layers(moving_vias):
         stopped_in_setup()
         return RunResult((), Termination.NOTHING_TO_DO, 0)
-    problem = _problem_of(chains, blocks, moving_vias, params, settings, static_vias)
+    problem = _problem_of(
+        chains, blocks, moving_vias, params, settings, static_vias, static_pads
+    )
     stopped_in_setup()
     if problem.moving:
         unclean = problem.start_violations(arc_chords)
@@ -449,7 +453,7 @@ def optimize_chains(
         if gave_up is None and problem.gave_up:
             gave_up = (problem.description, problem.abnormal_streak)
         rebuilt = _problem_of(
-            chains, blocks, moving_vias, params, settings, static_vias
+            chains, blocks, moving_vias, params, settings, static_vias, static_pads
         )
         members, vias_back = rebuilt.go_on_from(problem)
         logger.info(
@@ -669,9 +673,11 @@ def _problem_of(
     params: EnergyParams,
     settings: OptimizerSettings,
     static_vias: Sequence[StaticVia] = (),
+    static_pads: Sequence[StaticPad] = (),
 ) -> _Problem:
     """The run's problem on its `_layers`: every chain, section and moving
-    via, with the `static_vias` that share a layer with a moving via."""
+    via, with the `static_vias` that share a layer with a moving via and
+    the `static_pads`."""
     return _Problem(
         _layers(vias),
         chains,
@@ -680,6 +686,7 @@ def _problem_of(
         params,
         settings,
         static_vias,
+        static_pads,
         hole_clearance=vias.hole_clearance,
         hole_to_hole=vias.hole_to_hole,
     )
@@ -790,6 +797,7 @@ class _Problem:
         params: EnergyParams,
         settings: OptimizerSettings,
         static_vias: Sequence[StaticVia] = (),
+        static_pads: Sequence[StaticPad] = (),
         *,
         hole_clearance: float,
         hole_to_hole: float,
@@ -809,6 +817,7 @@ class _Problem:
             params,
             hole_clearance=hole_clearance,
             hole_to_hole=hole_to_hole,
+            pads=static_pads,
         )
         self.pairs = None if pairs.empty else pairs
         """The pairwise term (`via_pairs`); None without a pair, so that

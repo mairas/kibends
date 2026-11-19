@@ -62,7 +62,8 @@ fn pair_vias(
 }
 
 /// The pairwise term of a problem's moving vias, with each other and with
-/// the vias standing still (`kibends_core::vias::pairs::ViaPairs`).
+/// the vias and pads standing still
+/// (`kibends_core::vias::pairs::ViaPairs`).
 #[gen_stub_pyclass]
 #[pyclass(frozen, module = "kibends._core")]
 pub struct ViaPairs {
@@ -74,8 +75,10 @@ pub struct ViaPairs {
 impl ViaPairs {
     /// The moving `vias`, each a ground via or not, with its netclass
     /// clearance and zones, keeping the distances `apart` gives from each
-    /// other; and the `statics`, each a ground via or not with its netclass
-    /// clearance.
+    /// other; the `statics`, each a ground via or not with its netclass
+    /// clearance; and the plated through-hole pads standing still, by
+    /// their centres, drill diameters, nets, whether each is on a ground
+    /// net and their netclass clearances.
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -87,6 +90,11 @@ impl ViaPairs {
         statics: Vec<PyRef<'_, Via>>,
         static_grounds: Vec<bool>,
         static_clearances: Vec<f64>,
+        pad_positions: Vec<(f64, f64)>,
+        pad_drills: Vec<f64>,
+        pad_nets: Vec<String>,
+        pad_grounds: Vec<bool>,
+        pad_clearances: Vec<f64>,
         params: Params,
         hole_clearance: f64,
         hole_to_hole: f64,
@@ -95,11 +103,35 @@ impl ViaPairs {
         same_lengths(&[moving.len(), apart.len()])?;
         let none: Vec<Vec<PyRef<'_, Zone>>> = statics.iter().map(|_| Vec::new()).collect();
         let still = pair_vias(&statics, &static_grounds, &static_clearances, &none)?;
+        same_lengths(&[
+            pad_positions.len(),
+            pad_drills.len(),
+            pad_nets.len(),
+            pad_grounds.len(),
+            pad_clearances.len(),
+        ])?;
+        let pads = pad_positions
+            .into_iter()
+            .zip(pad_drills)
+            .zip(pad_nets)
+            .zip(pad_grounds)
+            .zip(pad_clearances)
+            .map(
+                |(((((x, y), drill), net), ground), clearance)| pairs::PairPad {
+                    position: V2::new(x, y),
+                    drill,
+                    net,
+                    ground,
+                    clearance,
+                },
+            )
+            .collect();
         Ok(Self {
             inner: std::sync::Arc::new(pairs::ViaPairs::new(
                 moving,
                 &apart,
                 still,
+                pads,
                 &params.0,
                 HoleRules {
                     hole_clearance,
