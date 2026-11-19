@@ -3726,7 +3726,7 @@ class TestMovingVias:
         ring = box(x - h, y - h, x + h, y + h).distance(Point(VIA)) - VIA_DIAMETER / 2
         where = UserFrame(GRID_ORIGIN).point(VIA)
         assert (
-            f"via v is {ring:.3f} mm from pad p at {where} mm, "
+            f"at {where} mm: via v is {ring:.3f} mm from pad p, "
             f"{CLEARANCE:.3f} mm required"
         ) in message
 

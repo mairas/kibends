@@ -196,9 +196,10 @@ def test_the_refusal_prints_each_place_in_the_run_s_frame() -> None:
 
     assert str(error).splitlines() == [
         INSIDE_MESSAGE,
-        "  chain is 0.150 mm from pad q at (4.000, -1.000) mm, 0.200 mm required",
-        "  chain overlaps track t by 0.100 mm at (5.000, -1.000) mm, 0.200 mm required",
-        "  via v is 0.100 mm inside its clearance of via keepout at (1.000, 1.000) mm",
+        "  at (4.000, -1.000) mm: chain is 0.150 mm from pad q, 0.200 mm required",
+        "  at (5.000, -1.000) mm: chain overlaps track t by 0.100 mm, "
+        "0.200 mm required",
+        "  at (1.000, 1.000) mm: via v is 0.100 mm inside its clearance of via keepout",
     ]
     assert error.violations == (near, over, deep)
     assert near.depth > INSIDE_TOLERANCE

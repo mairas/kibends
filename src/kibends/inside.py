@@ -138,22 +138,23 @@ class Violation:
         return None if self.required is None else self.required - self.depth
 
     def describe(self, frame: UserFrame) -> str:
-        """The place as one line, positions in `frame`."""
-        where = f"at {frame.point(self.at)} mm"
+        """The place as one line, positions in `frame`, led by where it is,
+        since the subject may name another point of the chain."""
+        where = f"at {frame.point(self.at)} mm:"
         distance = self.distance
         if self.required is None or distance is None:
             return (
-                f"{self.subject} is {self.depth:.3f} mm inside its clearance of "
-                f"{self.obstacle} {where}"
+                f"{where} {self.subject} is {self.depth:.3f} mm inside its "
+                f"clearance of {self.obstacle}"
             )
         required = f"{self.required:.3f} mm required"
         if distance < 0.0:
             return (
-                f"{self.subject} overlaps {self.obstacle} by {-distance:.3f} mm "
-                f"{where}, {required}"
+                f"{where} {self.subject} overlaps {self.obstacle} by "
+                f"{-distance:.3f} mm, {required}"
             )
         return (
-            f"{self.subject} is {distance:.3f} mm from {self.obstacle} {where}, "
+            f"{where} {self.subject} is {distance:.3f} mm from {self.obstacle}, "
             f"{required}"
         )
 
