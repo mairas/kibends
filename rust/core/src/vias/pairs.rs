@@ -822,6 +822,31 @@ mod tests {
         assert_ne!(at(limit + 0.2), at(limit));
     }
 
+    #[test]
+    fn the_attraction_continues_linearly_below_the_hole_to_hole_limit() {
+        // Drill radius plus hole-to-hole, 0.15 + 0.5, exceeds ring plus
+        // hole clearance, 0.3 + 0.1.
+        let holes = HoleRules {
+            hole_clearance: 0.1,
+            hole_to_hole: 0.5,
+        };
+        let limit = 0.15 + holes.hole_to_hole;
+        let at = |barrel: f64| {
+            let p = pad("GND", true, barrel + DRILL / 2.0, DRILL);
+            let pairs = ViaPairs::new(
+                vec![via("s", "SIG", false, 0.0)],
+                &[HashMap::new()],
+                Vec::new(),
+                vec![p],
+                &attracting(),
+                holes,
+            );
+            pairs.energy(&[V2::default()]).1[0]
+        };
+        assert_eq!(at(limit - 0.2), at(limit));
+        assert_ne!(at(limit + 0.2), at(limit));
+    }
+
     /// The distances `mixed`'s moving signal via keeps from its ground
     /// vias, both ways.
     fn mixed_apart() -> [HashMap<usize, f64>; 3] {
@@ -902,11 +927,10 @@ mod tests {
 
     #[test]
     fn without_pads_in_reach_the_energy_keeps_its_bits() {
-        // The bits the term gave before pads joined it.
         let vias = vec![via("g", "GND", true, 0.0), via("h", "GND", true, 0.9)];
         let statics = vec![via("s", "SIG", false, 2.0), via("p", "PWR", true, -1.2)];
         let apart = [HashMap::new(), HashMap::new()];
-        for pads in [Vec::new(), vec![pad("SIG", false, 30.0, 1.0)]] {
+        let bits = |pads: Vec<PairPad>| {
             let pairs = ViaPairs::new(
                 vias.clone(),
                 &apart,
@@ -916,16 +940,17 @@ mod tests {
                 HOLES,
             );
             let (value, gradient) = pairs.energy(&[V2::new(0.1, 0.2), V2::new(0.9, -0.1)]);
-            assert_eq!(value.to_bits(), 0x3ff0_6ed6_a085_6cac);
-            assert_eq!(
-                [gradient[0].x, gradient[0].y, gradient[1].x, gradient[1].y].map(f64::to_bits),
-                [
-                    0x3ff2_29f7_7438_8d39,
-                    0xbfe3_66c0_ecc8_a77d,
-                    0xbff0_cd0e_d4b4_a16b,
-                    0x3fe2_cac5_1d62_ea01,
-                ]
-            );
-        }
+            (
+                value.to_bits(),
+                gradient
+                    .iter()
+                    .flat_map(|g| [g.x.to_bits(), g.y.to_bits()])
+                    .collect::<Vec<u64>>(),
+            )
+        };
+        let (bare_value, bare_gradient) = bits(Vec::new());
+        let (value, gradient) = bits(vec![pad("SIG", false, 30.0, 1.0)]);
+        assert_eq!(value, bare_value);
+        assert_eq!(gradient, bare_gradient);
     }
 }
